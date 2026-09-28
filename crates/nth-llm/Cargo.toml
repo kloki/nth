@@ -1,0 +1,15 @@
+[package]
+name = "nth-llm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

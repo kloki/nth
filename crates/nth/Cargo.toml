@@ -1,0 +1,13 @@
+[package]
+name = "nth"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nth-llm.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+futures.workspace = true
+owo-colors.workspace = true
+tokio.workspace = true
+uuid.workspace = true
