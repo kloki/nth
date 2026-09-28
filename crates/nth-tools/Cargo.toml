@@ -1,16 +1,14 @@
 [package]
-name = "nth-llm"
+name = "nth-tools"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 nth-protocol.workspace = true
-bytes.workspace = true
 futures.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
+tempfile.workspace = true

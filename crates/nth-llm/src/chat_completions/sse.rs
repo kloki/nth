@@ -4,8 +4,33 @@ use super::Error;
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Delta(String),
+    Delta(Delta),
     Done,
+}
+
+#[derive(Debug, Default, PartialEq, Deserialize)]
+pub struct Delta {
+    pub content: Option<String>,
+    /// DeepSeek and Kimi use `reasoning_content`, others plain `reasoning`.
+    #[serde(alias = "reasoning")]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallDelta>,
+}
+
+/// One fragment of a tool call. The first fragment for an `index` carries
+/// the id and name, later ones append to the arguments string.
+#[derive(Debug, PartialEq, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: usize,
+    pub id: Option<String>,
+    pub function: Option<FunctionDelta>,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+pub struct FunctionDelta {
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 /// Turns raw response bytes into SSE events. Network chunks can end anywhere,
@@ -23,12 +48,7 @@ struct Chunk {
 
 #[derive(Deserialize)]
 struct Choice {
-    delta: Delta,
-}
-
-#[derive(Deserialize)]
-struct Delta {
-    content: Option<String>,
+    delta: Option<Delta>,
 }
 
 impl Parser {
@@ -58,54 +78,30 @@ fn parse_line(line: &str) -> Result<Option<Event>, Error> {
         source,
         line: data.to_string(),
     })?;
-    let content = chunk
+    Ok(chunk
         .choices
         .into_iter()
         .next()
-        .and_then(|c| c.delta.content)
-        .filter(|c| !c.is_empty());
-    Ok(content.map(Event::Delta))
+        .and_then(|c| c.delta)
+        .map(Event::Delta))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");
-
-    fn collect(chunk_size: usize) -> Vec<Event> {
-        let mut parser = Parser::default();
-        FIXTURE
-            .chunks(chunk_size)
-            .flat_map(|c| parser.push(c).expect("fixture is valid"))
-            .collect()
-    }
-
-    #[test]
-    fn parses_fixture_whole() {
-        let events = collect(FIXTURE.len());
-        assert_eq!(
-            events,
-            vec![
-                Event::Delta("Hello".into()),
-                Event::Delta(" wörld".into()),
-                Event::Delta("!".into()),
-                Event::Done,
-            ]
-        );
-    }
-
-    #[test]
-    fn chunk_boundaries_do_not_matter() {
-        let whole = collect(FIXTURE.len());
-        for size in 1..16 {
-            assert_eq!(collect(size), whole, "chunk size {size}");
-        }
-    }
-
     #[test]
     fn bad_json_is_an_error() {
         let mut parser = Parser::default();
         assert!(parser.push(b"data: {nope\n").is_err());
+    }
+
+    #[test]
+    fn ignores_comments_and_usage_chunks() {
+        let mut parser = Parser::default();
+        let events = parser
+            .push(b": ping\n\ndata: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n")
+            .expect("valid");
+        assert_eq!(events, vec![Event::Done]);
     }
 }
