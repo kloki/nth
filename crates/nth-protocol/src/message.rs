@@ -1,4 +1,7 @@
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Message {
     System(String),
     User(String),
@@ -6,7 +9,7 @@ pub enum Message {
     ToolResult { call_id: String, content: String },
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AssistantMessage {
     pub text: String,
     /// Some models (Kimi, DeepSeek) require their reasoning to be sent back
@@ -15,7 +18,7 @@ pub struct AssistantMessage {
     pub tool_calls: Vec<ToolCall>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
