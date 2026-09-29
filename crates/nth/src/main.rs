@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::{ModelInfo, Provider};
+use nth_protocol::Provider;
 use nth_session::{CancellationToken, Session};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
@@ -139,7 +139,7 @@ async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
 
     let width = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
     for model in &models {
-        let limits = limits(model).dimmed().to_string();
+        let limits = model.limits().dimmed().to_string();
         if model.id == endpoint.model {
             writeln!(
                 out,
@@ -152,19 +152,4 @@ async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn limits(model: &ModelInfo) -> String {
-    let tokens = |n: u64| match n {
-        1_000_000.. => format!("{}M", n / 1_000_000),
-        _ => format!("{}k", n / 1_000),
-    };
-    [
-        model.context.map(|n| format!("{} ctx", tokens(n))),
-        model.output.map(|n| format!("{} out", tokens(n))),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
 }

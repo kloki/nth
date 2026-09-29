@@ -1,8 +1,10 @@
 //! The chat app: its state, the loop that drives it, and the fixed layout
-//! of chat history, one status row and a three-row prompt. Row heights never
-//! depend on content, so nothing shifts while a turn runs.
+//! of chat history, one status row and the panel below it, usually the
+//! prompt. Row heights never depend on content, so nothing shifts while a
+//! turn runs.
 
 mod keys;
+mod panel;
 mod turn;
 
 use std::{
@@ -14,8 +16,9 @@ use std::{
 use anyhow::{Context, Result};
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
-use nth_protocol::{Event, Provider, Tool};
+use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
 use nth_session::{CancellationToken, Session};
+use panel::{PANEL_ROWS, Panel};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -30,9 +33,9 @@ use turn::{Ended, Running};
 use crate::{
     chat::Chat,
     command::Command,
-    mention,
+    mention, models,
     popup::{self, Popup},
-    prompt::{self, PROMPT_ROWS, Prompt},
+    prompt::{self, Prompt},
     status,
 };
 
@@ -43,7 +46,11 @@ const TICK: Duration = Duration::from_millis(100);
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
+    /// What fills the rows under the status line.
+    panel: Panel,
+    /// The model and effort the next turn runs with.
     pub model: String,
+    pub effort: Effort,
     pub cwd: PathBuf,
     /// The working directory as shown in the status row, `~` for home.
     pub place: String,
@@ -58,6 +65,9 @@ pub struct App {
     /// Set when a turn ends mid-walk, so its files get picked up by one
     /// more walk rather than a second one racing the first.
     reindex: bool,
+    /// Kept once listed; after a failure the next open asks again.
+    models: Option<Vec<ModelInfo>>,
+    listing: Option<JoinHandle<Result<Vec<ModelInfo>, BoxError>>>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -120,6 +130,7 @@ enum Step {
     Session(Event),
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
+    Listed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
     Tick,
 }
 
@@ -134,7 +145,9 @@ impl App {
         Self {
             chat: Chat::new(session.cwd.clone()),
             prompt: Prompt::default(),
+            panel: Panel::Prompt,
             model: session.model.clone(),
+            effort: session.effort,
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
             busy_since: None,
@@ -142,6 +155,8 @@ impl App {
             files: Vec::new(),
             indexing: None,
             reindex: false,
+            models: None,
+            listing: None,
             session: Some(session),
             provider,
             tools,
@@ -164,6 +179,8 @@ impl App {
             let turn = self.turn.as_mut().map(|running| &mut running.handle);
             let indexing = self.indexing.is_some();
             let index = self.indexing.as_mut().map(|indexing| &mut indexing.handle);
+            let listing = self.listing.is_some();
+            let list = self.listing.as_mut();
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
@@ -179,6 +196,12 @@ impl App {
                         None => std::future::pending().await,
                     }
                 }, if indexing => Step::Indexed(files),
+                models = async {
+                    match list {
+                        Some(list) => list.await,
+                        None => std::future::pending().await,
+                    }
+                }, if listing => Step::Listed(models),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -189,6 +212,7 @@ impl App {
                 Step::Session(event) => self.chat.transcript.apply(&event),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
+                Step::Listed(models) => self.listed(models.context("listing models failed")?),
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
@@ -198,20 +222,25 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, status, prompt] = Layout::vertical([
+        let [chat, status, panel] = Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(1),
-            Constraint::Length(PROMPT_ROWS),
+            Constraint::Length(PANEL_ROWS),
         ])
         .areas(area);
 
         let banner = format!("nth · {} · {}", self.model, self.place);
         self.chat.draw(frame, chat, &banner);
         status::draw(frame, status, self);
-        prompt::draw(frame, prompt, &self.prompt, self.is_busy());
-        // Last, so it pops over the chat and status row.
-        if let Some(completion) = &self.completion {
-            completion.draw(frame, area, prompt);
+        match &self.panel {
+            Panel::Prompt => {
+                prompt::draw(frame, panel, &self.prompt, self.is_busy());
+                // Last, so it pops over the chat and status row.
+                if let Some(completion) = &self.completion {
+                    completion.draw(frame, area, panel);
+                }
+            }
+            Panel::Models(picker) => models::draw(frame, panel, picker),
         }
     }
 
@@ -223,7 +252,7 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) => {
+            TermEvent::Paste(text) if matches!(self.panel, Panel::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_completion();
@@ -264,9 +293,12 @@ impl App {
             // to replace yet.
             Command::Clear if self.is_busy() => {}
             Command::Clear => {
-                self.session = Some(Session::new(self.model.clone(), self.cwd.clone()));
+                let mut session = Session::new(self.model.clone(), self.cwd.clone());
+                session.effort = self.effort;
+                self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
             }
+            Command::Models => self.open_models(),
         }
     }
 }
@@ -302,7 +334,7 @@ pub(crate) mod tests {
     }
 
     fn rows(app: &mut App) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test backend");
+        let mut terminal = Terminal::new(TestBackend::new(40, 16)).expect("test backend");
         terminal.draw(|frame| app.draw(frame)).expect("draws");
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
@@ -318,23 +350,24 @@ pub(crate) mod tests {
     fn status_and_prompt_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert!(idle[8].trim_end().ends_with("glm · /repo"));
-        assert!(idle[9].starts_with(" ▎ Ask anything."));
+        assert!(idle[7].trim_end().ends_with("glm · /repo"));
+        assert!(idle[8].starts_with(" ▎ Ask anything."));
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
         }
-        app.prompt.insert_str("one\ntwo\nthree\nfour");
+        let lines: Vec<String> = (1..=10).map(|i| format!("line {i}")).collect();
+        app.prompt.insert_str(&lines.join("\n"));
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert!(busy[8].contains("thinking"));
-        assert!(busy[8].trim_end().ends_with("esc to interrupt"));
+        assert!(busy[7].contains("thinking"));
+        assert!(busy[7].trim_end().ends_with("esc to interrupt"));
         assert_eq!(
-            busy[9..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
-            [" ▎ two", " ▎ three", " ▎ four"]
+            busy[8..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
+            (3..=10).map(|i| format!(" ▎ line {i}")).collect::<Vec<_>>()
         );
-        assert_eq!(busy[7].trim_end(), " ▎ message 19");
+        assert_eq!(busy[6].trim_end(), " ▎ message 19");
     }
 
     #[test]
@@ -373,9 +406,10 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[7].starts_with("  /clear"));
-        assert!(rows[8].starts_with("  /exit"));
-        assert!(rows[9].starts_with(" ▎ /"));
+        assert!(rows[5].starts_with("  /clear"));
+        assert!(rows[6].starts_with("  /exit"));
+        assert!(rows[7].starts_with("  /models"));
+        assert!(rows[8].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -409,7 +443,170 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("  src/app/keys.rs"));
-        assert!(rows[9].starts_with(" ▎ see @ke"));
+        assert!(rows[7].starts_with("  src/app/keys.rs"));
+        assert!(rows[8].starts_with(" ▎ see @ke"));
+    }
+
+    /// An idle app whose model list is already in, so opening the picker
+    /// asks the provider for nothing.
+    pub(crate) fn listed_app() -> App {
+        let mut app = app();
+        app.models = Some(vec![
+            crate::models::tests::model("glm", true),
+            crate::models::tests::model("plain", false),
+        ]);
+        app
+    }
+
+    fn picker(app: &App) -> &crate::models::Picker {
+        match &app.panel {
+            Panel::Models(picker) => picker,
+            Panel::Prompt => panic!("picker not open"),
+        }
+    }
+
+    #[test]
+    fn the_picker_draws_in_place_of_the_prompt() {
+        let mut app = listed_app();
+        app.prompt.insert_str("/models");
+        app.submit();
+        let rows = rows(&mut app);
+
+        assert!(rows[7].trim_end().ends_with("glm · /repo"));
+        assert!(rows[8].starts_with(" ▎ switch model"));
+        assert!(rows[9].starts_with(" ▎ → glm   ✓"), "{:?}", rows[9]);
+        assert!(rows[9].trim_end().ends_with("◂ default ▸"));
+        assert!(rows[10].starts_with(" ▎   plain"));
+        assert!(rows.iter().all(|r| !r.contains("Ask anything")));
+    }
+
+    #[test]
+    fn the_picker_switches_model_and_effort() {
+        let mut app = listed_app();
+        app.apply(keys::Action::Models);
+        app.apply(keys::Action::Right);
+        app.apply(keys::Action::Right);
+        app.apply(keys::Action::Submit);
+
+        assert!(matches!(app.panel, Panel::Prompt));
+        assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
+        assert!(
+            rows(&mut app)[7]
+                .trim_end()
+                .ends_with("glm · medium · /repo")
+        );
+
+        app.apply(keys::Action::Models);
+        app.apply(keys::Action::SelectNext);
+        app.apply(keys::Action::Submit);
+        assert_eq!((app.model.as_str(), app.effort), ("plain", Effort::Default));
+    }
+
+    #[test]
+    fn esc_leaves_the_picker_unchanged() {
+        let mut app = listed_app();
+        app.apply(keys::Action::Models);
+        app.apply(keys::Action::SelectNext);
+        app.apply(keys::Action::Interrupt);
+
+        assert!(matches!(app.panel, Panel::Prompt));
+        assert_eq!(app.model, "glm");
+        assert!(!app.quit);
+    }
+
+    #[tokio::test]
+    async fn the_next_turn_runs_the_chosen_model() {
+        let mut app = listed_app();
+        app.apply(keys::Action::Models);
+        app.apply(keys::Action::Right);
+        app.apply(keys::Action::Submit);
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let running = app.turn.take().expect("turn started");
+        app.end_turn(running.handle.await.expect("turn task finished"));
+
+        let session = app.session.as_ref().expect("idle");
+        assert_eq!(
+            (session.model.as_str(), session.effort),
+            ("glm", Effort::Low)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_list_loads_into_the_open_picker() {
+        let mut app = app();
+        app.apply(keys::Action::Models);
+        assert!(picker(&app).chosen().is_none(), "still loading");
+
+        let listing = app.listing.take().expect("listing");
+        app.listed(Ok(vec![crate::models::tests::model("glm", true)]));
+        listing.abort();
+
+        assert_eq!(picker(&app).chosen(), Some(("glm".into(), Effort::Default)));
+        assert!(app.models.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_list_is_asked_for_again() {
+        let mut app = app();
+        app.apply(keys::Action::Models);
+        let listing = app.listing.take().expect("listing");
+        listing.abort();
+        app.listed(Err("offline".into()));
+        assert!(rows(&mut app)[9].contains("✗ offline"));
+
+        app.apply(keys::Action::Interrupt);
+        app.apply(keys::Action::Models);
+        assert!(app.listing.is_some(), "asked again");
+    }
+
+    /// A provider whose model list never arrives, and records when the
+    /// request for it is dropped.
+    struct SlowList(Arc<std::sync::atomic::AtomicBool>);
+
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Provider for SlowList {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            let guard = SetOnDrop(self.0.clone());
+            async move {
+                let _guard = guard;
+                std::future::pending().await
+            }
+            .boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_the_app_aborts_the_listing() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(
+            session,
+            Arc::new(SlowList(dropped.clone())),
+            Arc::new(Vec::new()),
+        );
+        app.apply(keys::Action::Models);
+        tokio::task::yield_now().await;
+
+        drop(app);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

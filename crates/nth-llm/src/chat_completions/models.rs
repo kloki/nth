@@ -35,6 +35,7 @@ struct CatalogProvider {
 #[derive(Deserialize)]
 struct CatalogModel {
     name: Option<String>,
+    reasoning: Option<bool>,
     limit: Option<Limit>,
     /// Set when this model needs a different SDK, and so a different wire
     /// protocol, than its provider's default.
@@ -100,7 +101,9 @@ fn provider_for<'a>(
 }
 
 /// Without a catalog entry for the endpoint, everything it lists is assumed
-/// to speak chat completions, since that is what the endpoint is for.
+/// to speak chat completions, since that is what the endpoint is for. An
+/// unknown model may reason, so it is offered an effort; a known one only
+/// when the catalog says it reasons.
 fn select(endpoint: Vec<String>, provider: Option<&CatalogProvider>) -> Vec<ModelInfo> {
     let mut models: Vec<_> = endpoint
         .into_iter()
@@ -111,6 +114,7 @@ fn select(endpoint: Vec<String>, provider: Option<&CatalogProvider>) -> Vec<Mode
                     name: None,
                     context: None,
                     output: None,
+                    reasoning: true,
                 });
             };
             let npm = model
@@ -126,6 +130,7 @@ fn select(endpoint: Vec<String>, provider: Option<&CatalogProvider>) -> Vec<Mode
                 name: model.name.clone(),
                 context: model.limit.as_ref().and_then(|l| l.context),
                 output: model.limit.as_ref().and_then(|l| l.output),
+                reasoning: model.reasoning.unwrap_or(false),
             })
         })
         .collect();
@@ -166,9 +171,15 @@ mod tests {
                 name: Some("GLM-5.3".into()),
                 context: Some(1_000_000),
                 output: Some(131_072),
+                reasoning: true,
             }
         );
+        assert!(
+            !models[1].reasoning,
+            "the catalog does not say kimi reasons"
+        );
         assert_eq!(models[2].context, None);
+        assert!(models[2].reasoning, "unlisted models may reason");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use nth_protocol::{
-    AssistantMessage, BoxError, Event, Message, Provider, Request, StreamEvent, Tool, ToolCall,
-    ToolContext, ToolResult,
+    AssistantMessage, BoxError, Effort, Event, Message, Provider, Request, StreamEvent, Tool,
+    ToolCall, ToolContext, ToolResult,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -22,10 +22,12 @@ pub enum Error {
     Interrupted,
 }
 
-/// Where a turn's requests go: which model, on behalf of which session.
+/// Where a turn's requests go: which model at what effort, on behalf of
+/// which session.
 #[derive(Debug, Clone, Copy)]
 pub struct Route<'a> {
     pub model: &'a str,
+    pub effort: Effort,
     pub session_id: &'a str,
 }
 
@@ -50,6 +52,7 @@ pub async fn run_turn(
         let request = Request {
             model: route.model,
             session_id: route.session_id,
+            effort: route.effort,
             messages,
             tools: &specs,
         };
@@ -171,6 +174,7 @@ mod tests {
     /// Replays one scripted reply per request and records the model asked for.
     const ROUTE: Route = Route {
         model: "glm-5.3",
+        effort: Effort::Default,
         session_id: "s1",
     };
 

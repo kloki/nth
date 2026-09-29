@@ -59,7 +59,12 @@ impl ChatClient {
             .bearer_auth(&self.api_key)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header("x-opencode-session", request.session_id)
-            .json(&wire::body(request.model, request.messages, request.tools))
+            .json(&wire::body(
+                request.model,
+                request.effort,
+                request.messages,
+                request.tools,
+            ))
             .send()
             .await?;
         let response = success(response).await?;

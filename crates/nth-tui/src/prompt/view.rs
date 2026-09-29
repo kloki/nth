@@ -1,4 +1,4 @@
-//! Draws the prompt bar: a fixed number of rows, scrolled to the cursor.
+//! Draws the prompt bar: as many rows as it is given, scrolled to the cursor.
 
 use ratatui::{
     Frame,
@@ -11,14 +11,13 @@ use ratatui::{
 use super::Prompt;
 use crate::theme::{BAR, BAR_WIDTH, dim};
 
-pub const PROMPT_ROWS: u16 = 3;
 const PLACEHOLDER: &str = "Ask anything.";
 
 /// `busy` dims the bar while a turn runs, since Enter won't submit.
 pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, busy: bool) {
     let room = usize::from(area.width.saturating_sub(BAR_WIDTH));
     let wrapped = prompt.wrap(room);
-    let rows = usize::from(PROMPT_ROWS);
+    let rows = usize::from(area.height).max(1);
     // Scroll inside the box just enough to keep the cursor row visible.
     let first = wrapped.cursor_row.saturating_sub(rows - 1);
 

@@ -4,6 +4,7 @@ mod app;
 mod chat;
 mod command;
 mod mention;
+mod models;
 mod popup;
 mod prompt;
 mod status;

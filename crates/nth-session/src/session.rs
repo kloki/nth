@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::SystemTime};
 
-use nth_protocol::{Event, Message, Provider, Tool, ToolContext};
+use nth_protocol::{Effort, Event, Message, Provider, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -16,6 +16,9 @@ pub struct Session {
     pub id: Uuid,
     pub cwd: PathBuf,
     pub model: String,
+    /// Sessions saved before effort existed load with the model's default.
+    #[serde(default)]
+    pub effort: Effort,
     pub created_at: SystemTime,
     pub messages: Vec<Message>,
 }
@@ -28,6 +31,7 @@ impl Session {
             id: Uuid::new_v4(),
             cwd,
             model,
+            effort: Effort::default(),
             created_at: SystemTime::now(),
             messages,
         }
@@ -60,6 +64,7 @@ impl Session {
             provider,
             Route {
                 model: &self.model,
+                effort: self.effort,
                 session_id: &self.id.to_string(),
             },
             tools,

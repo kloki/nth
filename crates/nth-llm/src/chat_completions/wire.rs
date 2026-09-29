@@ -1,14 +1,17 @@
 //! Converts nth's messages and tools to the chat completions JSON shape.
 
-use nth_protocol::{Message, ToolSpec};
+use nth_protocol::{Effort, Message, ToolSpec};
 use serde_json::{Value, json};
 
-pub fn body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> Value {
+pub fn body(model: &str, effort: Effort, messages: &[Message], tools: &[ToolSpec]) -> Value {
     let mut body = json!({
         "model": model,
         "stream": true,
         "messages": messages.iter().map(message).collect::<Vec<_>>(),
     });
+    if let Some(effort) = effort.wire() {
+        body["reasoning_effort"] = json!(effort);
+    }
     if !tools.is_empty() {
         body["tools"] = tools.iter().map(tool).collect();
     }
@@ -54,4 +57,18 @@ fn tool(spec: &ToolSpec) -> Value {
             "parameters": spec.parameters,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sends_an_effort_only_when_one_is_chosen() {
+        let chosen = body("glm", Effort::High, &[], &[]);
+        assert_eq!(chosen["reasoning_effort"], "high");
+
+        let default = body("glm", Effort::Default, &[], &[]);
+        assert!(default.get("reasoning_effort").is_none());
+    }
 }
