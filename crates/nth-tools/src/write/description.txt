@@ -1,0 +1,10 @@
+Writes a file to the local filesystem.
+
+Usage:
+- The filePath parameter should be an absolute path. Relative paths are resolved against the working directory.
+- This tool will overwrite the existing file if there is one at the provided path.
+- Missing parent directories are created.
+- If this is an existing file, read it first so you don't discard content you haven't seen.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
