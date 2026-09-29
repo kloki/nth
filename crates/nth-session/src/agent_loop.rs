@@ -4,9 +4,13 @@ use nth_protocol::{
     ToolContext, ToolResult,
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Guards against a model that never stops calling tools.
 pub const MAX_STEPS: usize = 100;
+
+/// What the model reads in place of a tool result the user cut short.
+const INTERRUPTED: &str = "Error: interrupted by the user";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -14,11 +18,17 @@ pub enum Error {
     Provider(BoxError),
     #[error("stopped after {MAX_STEPS} steps without a final answer")]
     TooManySteps,
+    #[error("interrupted")]
+    Interrupted,
 }
 
 /// Runs one user turn: stream a reply, run its tool calls in parallel, feed
 /// the results back, and repeat until the model answers without tools.
 /// Everything the model and tools produce is appended to `messages`.
+///
+/// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
+/// `messages` valid to continue from: partial text is kept, and every tool
+/// call has a result.
 pub async fn run_turn(
     provider: &dyn Provider,
     model: &str,
@@ -26,6 +36,7 @@ pub async fn run_turn(
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
     events: &mpsc::Sender<Event>,
+    cancel: &CancellationToken,
 ) -> Result<(), Error> {
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
     for _ in 0..MAX_STEPS {
@@ -34,9 +45,27 @@ pub async fn run_turn(
             messages,
             tools: &specs,
         };
-        let mut stream = provider.stream(request).await.map_err(Error::Provider)?;
+        let mut stream = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Error::Interrupted),
+            stream = provider.stream(request) => stream.map_err(Error::Provider)?,
+        };
         let mut reply = AssistantMessage::default();
-        while let Some(event) = stream.next().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Calls from an unfinished reply never ran, so they are
+                    // dropped rather than left without results.
+                    reply.tool_calls.clear();
+                    if !reply.text.is_empty() || !reply.reasoning.is_empty() {
+                        messages.push(Message::Assistant(reply));
+                    }
+                    return Err(Error::Interrupted);
+                }
+                event = stream.next() => event,
+            };
+            let Some(event) = event else { break };
             match event.map_err(Error::Provider)? {
                 StreamEvent::TextDelta(text) => {
                     reply.text.push_str(&text);
@@ -56,9 +85,20 @@ pub async fn run_turn(
             return Ok(());
         }
 
-        let results =
-            futures::future::join_all(calls.iter().map(|call| run_tool(tools, ctx, call, events)))
-                .await;
+        let running =
+            futures::future::join_all(calls.iter().map(|call| run_tool(tools, ctx, call, events)));
+        let results = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // Dropping the tool futures stops them; bash kills its process group.
+                messages.extend(calls.into_iter().map(|call| Message::ToolResult {
+                    call_id: call.id,
+                    content: INTERRUPTED.to_string(),
+                }));
+                return Err(Error::Interrupted);
+            }
+            results = running => results,
+        };
         for (call, content) in calls.into_iter().zip(results) {
             messages.push(Message::ToolResult {
                 call_id: call.id,
@@ -174,6 +214,51 @@ mod tests {
         }
     }
 
+    /// Cancels the turn from inside the tool, then never finishes.
+    struct Stall(CancellationToken);
+
+    impl Tool for Stall {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "stall",
+                description: "",
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            _: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            self.0.cancel();
+            std::future::pending().boxed()
+        }
+    }
+
+    /// Streams `events` and then stays open, like a reply cut off mid-way.
+    struct Unfinished(Vec<StreamEvent>);
+
+    impl Provider for Unfinished {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let events = self.0.clone();
+            async move {
+                Ok(stream::iter(events.into_iter().map(Ok))
+                    .chain(stream::pending())
+                    .boxed())
+            }
+            .boxed()
+        }
+    }
+
     fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
         ToolCall {
             id: id.into(),
@@ -196,9 +281,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(&provider, "glm-5.3", &tools, &ctx, &mut messages, &tx)
-            .await
-            .expect("turn completes");
+        run_turn(
+            &provider,
+            "glm-5.3",
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
 
         assert_eq!(
             messages[2..],
@@ -228,6 +321,67 @@ mod tests {
         assert_eq!(
             *provider.models.lock().expect("not poisoned"),
             ["glm-5.3"; 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupting_tools_answers_every_call() {
+        let provider = Scripted::new(vec![vec![
+            StreamEvent::ToolCall(call("1", "stall", "")),
+            StreamEvent::ToolCall(call("2", "echo", r#"{"say":"hi"}"#)),
+        ]]);
+        let cancel = CancellationToken::new();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stall(cancel.clone())), Box::new(Echo)];
+        let ctx = ToolContext { cwd: ".".into() };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            "glm-5.3",
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &cancel,
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Interrupted)));
+        assert_eq!(
+            messages[2..],
+            ["1", "2"].map(|id| Message::ToolResult {
+                call_id: id.into(),
+                content: INTERRUPTED.into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupting_a_reply_keeps_its_text_but_not_its_calls() {
+        let provider = Unfinished(vec![
+            StreamEvent::TextDelta("partial".into()),
+            StreamEvent::ToolCall(call("1", "echo", "")),
+        ]);
+        let cancel = CancellationToken::new();
+        let ctx = ToolContext { cwd: ".".into() };
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let turn = run_turn(&provider, "glm-5.3", &[], &ctx, &mut messages, &tx, &cancel);
+        let interrupt = async {
+            rx.recv().await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(turn, interrupt);
+
+        assert!(matches!(result, Err(Error::Interrupted)));
+        assert_eq!(
+            messages[1..],
+            [Message::Assistant(AssistantMessage {
+                text: "partial".into(),
+                ..Default::default()
+            })]
         );
     }
 }
