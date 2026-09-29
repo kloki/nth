@@ -1,0 +1,11 @@
+[package]
+name = "nth-session"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nth-protocol.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

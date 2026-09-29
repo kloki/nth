@@ -1,0 +1,24 @@
+: keep-alive
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Let me look."}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Reading wörld"}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" files."}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read","arguments":""}}]}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"filePath\":"}}]}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"bash","arguments":"{\"command\""}}]}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Cargo.toml\"}"}}]}}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"id":"1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}
+
+data: [DONE]
+

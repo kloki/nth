@@ -1,0 +1,28 @@
+Executes a given bash command with an optional timeout.
+
+All commands run in the working directory. Each call starts a fresh shell, so `cd` and exported variables do not carry over to the next call.
+
+IMPORTANT: This tool is for terminal operations like git, cargo, npm, docker, etc. Prefer the read tool for reading files instead of `cat`, `head` or `tail`.
+
+Before executing the command, please follow these steps:
+
+1. Directory Verification:
+   - If the command will create new directories or files, first use `ls` to verify the parent directory exists and is the correct location
+
+2. Command Execution:
+   - Always quote file paths that contain spaces with double quotes (e.g., rm "path with spaces/file.txt")
+   - Capture the output of the command.
+
+Usage notes:
+  - The command argument is required.
+  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will time out after 120000ms (2 minutes).
+  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
+  - stdout and stderr are combined. If the output exceeds 30000 characters, only the last 30000 characters are returned.
+  - When issuing multiple commands:
+    - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message.
+    - If the commands depend on each other and must run sequentially, use a single call with '&&' to chain them together.
+    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+
+# Git
+- Only commit, amend, push, or create PRs when explicitly requested.
+- Do not update git config, skip hooks, use interactive `-i`, or force-push unless explicitly requested.
