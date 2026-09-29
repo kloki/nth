@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,4 +27,50 @@ pub struct ToolCall {
     /// Raw JSON as the model produced it; parsed only when the tool runs, so
     /// a malformed call becomes a tool error the model can correct.
     pub arguments: String,
+}
+
+impl ToolCall {
+    /// The one argument that best says what a call is doing, with paths
+    /// shown relative to `cwd`.
+    pub fn summary(&self, cwd: &Path) -> String {
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.arguments) else {
+            return self.arguments.clone();
+        };
+        let text = ["filePath", "description", "command"]
+            .iter()
+            .find_map(|key| args[key].as_str())
+            .unwrap_or_default();
+        let cwd = cwd.to_string_lossy();
+        match text.strip_prefix(cwd.as_ref()) {
+            Some("") => ".".to_string(),
+            Some(rest) => rest.trim_start_matches('/').to_string(),
+            None => text.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    #[test]
+    fn summary_shows_paths_relative_to_cwd() {
+        let cwd = Path::new("/repo");
+
+        assert_eq!(
+            call(r#"{"filePath":"/repo/src/a.rs"}"#).summary(cwd),
+            "src/a.rs"
+        );
+        assert_eq!(call(r#"{"filePath":"/repo"}"#).summary(cwd), ".");
+        assert_eq!(call(r#"{"command":"ls"}"#).summary(cwd), "ls");
+        assert_eq!(call("not json").summary(cwd), "not json");
+    }
 }

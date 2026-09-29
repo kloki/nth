@@ -9,6 +9,7 @@ nth-llm.workspace = true
 nth-protocol.workspace = true
 nth-session.workspace = true
 nth-tools.workspace = true
+nth-tui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 owo-colors.workspace = true

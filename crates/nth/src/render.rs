@@ -3,7 +3,7 @@
 
 use std::{io::Write, path::PathBuf};
 
-use nth_protocol::{Event, ToolCall};
+use nth_protocol::Event;
 use owo_colors::OwoColorize;
 
 pub struct Printer {
@@ -40,7 +40,7 @@ impl Printer {
                     "{} {}  {}",
                     "▸".dimmed(),
                     call.name.cyan(),
-                    self.summary(call)
+                    call.summary(&self.cwd)
                 );
             }
             Event::ToolFinished {
@@ -87,24 +87,6 @@ impl Printer {
             Some(Stream::Text) => println!(),
             Some(Stream::Reasoning) => eprintln!(),
             None => {}
-        }
-    }
-
-    /// The one argument that best says what a call is doing, with paths
-    /// shown relative to the working directory.
-    fn summary(&self, call: &ToolCall) -> String {
-        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
-            return call.arguments.clone();
-        };
-        let text = ["filePath", "description", "command"]
-            .iter()
-            .find_map(|key| args[key].as_str())
-            .unwrap_or_default();
-        let cwd = self.cwd.to_string_lossy();
-        match text.strip_prefix(cwd.as_ref()) {
-            Some("") => ".".to_string(),
-            Some(rest) => rest.trim_start_matches('/').to_string(),
-            None => text.to_string(),
         }
     }
 }
