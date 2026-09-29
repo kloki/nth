@@ -6,9 +6,12 @@ mod scroll;
 mod transcript;
 mod view;
 
-use std::{io::stdout, sync::Arc};
+use std::{
+    io::{IsTerminal, stdin, stdout},
+    sync::Arc,
+};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -27,7 +30,12 @@ pub async fn run(
     provider: Arc<dyn Provider>,
     tools: Arc<Vec<Box<dyn Tool>>>,
 ) -> Result<()> {
-    let mut terminal = ratatui::init();
+    // Without this check, piped or tty-less runs would write setup escape
+    // codes into the pipe and then fail on raw mode.
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        bail!("the interactive chat needs a terminal; use `nth run` for scripted use");
+    }
+    let mut terminal = ratatui::try_init()?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         release_terminal();

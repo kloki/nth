@@ -40,11 +40,12 @@ impl ToolCall {
             .iter()
             .find_map(|key| args[key].as_str())
             .unwrap_or_default();
-        let cwd = cwd.to_string_lossy();
-        match text.strip_prefix(cwd.as_ref()) {
-            Some("") => ".".to_string(),
-            Some(rest) => rest.trim_start_matches('/').to_string(),
-            None => text.to_string(),
+        // Matching whole components keeps `/repository` from being cut down
+        // to `sitory` when cwd is `/repo`.
+        match Path::new(text).strip_prefix(cwd) {
+            Ok(rest) if rest.as_os_str().is_empty() => ".".to_string(),
+            Ok(rest) => rest.to_string_lossy().into_owned(),
+            Err(_) => text.to_string(),
         }
     }
 }
@@ -70,6 +71,10 @@ mod tests {
             "src/a.rs"
         );
         assert_eq!(call(r#"{"filePath":"/repo"}"#).summary(cwd), ".");
+        assert_eq!(
+            call(r#"{"filePath":"/repository/src/x.rs"}"#).summary(cwd),
+            "/repository/src/x.rs"
+        );
         assert_eq!(call(r#"{"command":"ls"}"#).summary(cwd), "ls");
         assert_eq!(call("not json").summary(cwd), "not json");
     }
