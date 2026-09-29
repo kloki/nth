@@ -1,13 +1,14 @@
 //! OpenAI-compatible chat completions over SSE. Works against OpenCode Go and
 //! any other endpoint speaking this protocol.
 
+mod models;
 mod sse;
 mod wire;
 
 use std::collections::{BTreeMap, VecDeque};
 
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use nth_protocol::{BoxError, Provider, Request, StreamEvent, ToolCall};
+use nth_protocol::{BoxError, ModelInfo, Provider, Request, StreamEvent, ToolCall};
 
 const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 
@@ -37,19 +38,17 @@ pub struct ChatClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
-    model: String,
     session_id: String,
 }
 
 impl ChatClient {
     /// `session_id` must stay stable for a conversation: Go routes and caches
     /// prompts on the `x-opencode-session` header.
-    pub fn new(base_url: String, api_key: String, model: String, session_id: String) -> Self {
+    pub fn new(base_url: String, api_key: String, session_id: String) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-            model,
             session_id,
         }
     }
@@ -64,15 +63,10 @@ impl ChatClient {
             .bearer_auth(&self.api_key)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header("x-opencode-session", &self.session_id)
-            .json(&wire::body(&self.model, request.messages, request.tools))
+            .json(&wire::body(request.model, request.messages, request.tools))
             .send()
             .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::Status { status, body });
-        }
+        let response = success(response).await?;
 
         let bytes = response
             .bytes_stream()
@@ -82,9 +76,24 @@ impl ChatClient {
     }
 }
 
+/// Turns a non-2xx response into an error that carries the server's body.
+async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    Err(Error::Status { status, body })
+}
+
 impl Provider for ChatClient {
-    fn model(&self) -> &str {
-        &self.model
+    fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+        async move {
+            models::list(&self.http, &self.base_url, &self.api_key)
+                .await
+                .map_err(BoxError::from)
+        }
+        .boxed()
     }
 
     fn stream<'a>(

@@ -1,11 +1,15 @@
 mod render;
 
-use std::{process::ExitCode, time::Instant};
+use std::{
+    io::{IsTerminal, Write},
+    process::ExitCode,
+    time::Instant,
+};
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, anyhow};
+use clap::{Args, Parser, Subcommand};
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::Provider;
+use nth_protocol::{ModelInfo, Provider};
 use nth_session::Session;
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
@@ -22,26 +26,41 @@ enum Command {
     /// Send one prompt and let the agent work until it answers
     Run {
         prompt: String,
-        #[arg(long, env = "NTH_MODEL", default_value = "glm-5.3")]
-        model: String,
-        #[arg(
-            long,
-            env = "NTH_BASE_URL",
-            default_value = "https://opencode.ai/zen/go/v1"
-        )]
-        base_url: String,
+        #[command(flatten)]
+        endpoint: Endpoint,
     },
+    /// List the models the endpoint serves that nth can talk to
+    Models {
+        /// Print JSON lines, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        endpoint: Endpoint,
+    },
+}
+
+#[derive(Args)]
+struct Endpoint {
+    #[arg(long, env = "NTH_MODEL", default_value = "glm-5.3")]
+    model: String,
+    #[arg(
+        long,
+        env = "NTH_BASE_URL",
+        default_value = "https://opencode.ai/zen/go/v1"
+    )]
+    base_url: String,
+}
+
+fn api_key() -> Result<String> {
+    std::env::var("OPENCODE_GO_API_KEY").context("OPENCODE_GO_API_KEY not set")
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Run {
-            prompt,
-            model,
-            base_url,
-        } => run(prompt, model, base_url).await,
+        Command::Run { prompt, endpoint } => run(prompt, endpoint).await,
+        Command::Models { json, endpoint } => models(json, endpoint).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -52,11 +71,11 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(prompt: String, model: String, base_url: String) -> Result<()> {
-    let api_key = std::env::var("OPENCODE_GO_API_KEY").context("OPENCODE_GO_API_KEY not set")?;
+async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
+    let api_key = api_key()?;
     let cwd = std::env::current_dir().context("no working directory")?;
-    let mut session = Session::new(model.clone(), cwd.clone());
-    let provider = ChatClient::new(base_url, api_key, model, session.id.to_string());
+    let mut session = Session::new(endpoint.model, cwd.clone());
+    let provider = ChatClient::new(endpoint.base_url, api_key, session.id.to_string());
     let tools = nth_tools::all();
 
     let started = Instant::now();
@@ -79,11 +98,56 @@ async fn run(prompt: String, model: String, base_url: String) -> Result<()> {
         "✓".green().bold(),
         format!(
             "{} · {} tool calls · {:.1}s",
-            provider.model(),
+            session.model,
             printer.tool_calls,
             started.elapsed().as_secs_f64()
         )
         .dimmed()
     );
     Ok(())
+}
+
+async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
+    // Listing needs no conversation, so no session id to route on.
+    let provider = ChatClient::new(endpoint.base_url, api_key()?, String::new());
+    let models = provider.models().await.map_err(|e| anyhow!(e))?;
+
+    let mut out = std::io::stdout().lock();
+    if json || !out.is_terminal() {
+        for model in &models {
+            writeln!(out, "{}", serde_json::to_string(model)?)?;
+        }
+        return Ok(());
+    }
+
+    let width = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
+    for model in &models {
+        let limits = limits(model).dimmed().to_string();
+        if model.id == endpoint.model {
+            writeln!(
+                out,
+                "{} {:width$}  {limits}",
+                "→".cyan().bold(),
+                model.id.bold()
+            )?;
+        } else {
+            writeln!(out, "  {:width$}  {limits}", model.id)?;
+        }
+    }
+    Ok(())
+}
+
+fn limits(model: &ModelInfo) -> String {
+    let tokens = |n: u64| match n {
+        1_000_000.. => format!("{}M", n / 1_000_000),
+        _ => format!("{}k", n / 1_000),
+    };
+    [
+        model.context.map(|n| format!("{} ctx", tokens(n))),
+        model.output.map(|n| format!("{} out", tokens(n))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
