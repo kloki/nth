@@ -7,6 +7,7 @@ use nth_session::{CancellationToken, Session};
 use tokio::task::JoinHandle;
 
 use super::App;
+use crate::command::Command;
 
 pub(super) type Ended = (Session, Result<(), nth_session::Error>);
 
@@ -23,6 +24,11 @@ impl App {
     }
 
     pub(super) fn submit(&mut self) {
+        if let Some(command) = Command::parse(self.prompt.text()) {
+            self.prompt.clear();
+            self.run_command(command);
+            return;
+        }
         if self.is_busy() || self.prompt.text().trim().is_empty() {
             return;
         }
@@ -73,6 +79,7 @@ impl App {
         }
         self.session = Some(session);
         self.turn = None;
+        self.index_files();
     }
 }
 
@@ -81,6 +88,9 @@ impl Drop for App {
         // Quitting mid-turn must not leave the agent running tools.
         if let Some(running) = &self.turn {
             running.handle.abort();
+        }
+        if let Some(indexing) = &self.indexing {
+            indexing.cancel.cancel();
         }
     }
 }

@@ -22,6 +22,13 @@ pub enum Error {
     Interrupted,
 }
 
+/// Where a turn's requests go: which model, on behalf of which session.
+#[derive(Debug, Clone, Copy)]
+pub struct Route<'a> {
+    pub model: &'a str,
+    pub session_id: &'a str,
+}
+
 /// Runs one user turn: stream a reply, run its tool calls in parallel, feed
 /// the results back, and repeat until the model answers without tools.
 /// Everything the model and tools produce is appended to `messages`.
@@ -31,7 +38,7 @@ pub enum Error {
 /// call has a result.
 pub async fn run_turn(
     provider: &dyn Provider,
-    model: &str,
+    route: Route<'_>,
     tools: &[Box<dyn Tool>],
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
@@ -41,7 +48,8 @@ pub async fn run_turn(
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
     for _ in 0..MAX_STEPS {
         let request = Request {
-            model,
+            model: route.model,
+            session_id: route.session_id,
             messages,
             tools: &specs,
         };
@@ -161,16 +169,22 @@ mod tests {
     use super::*;
 
     /// Replays one scripted reply per request and records the model asked for.
+    const ROUTE: Route = Route {
+        model: "glm-5.3",
+        session_id: "s1",
+    };
+
     struct Scripted {
         replies: Mutex<Vec<Vec<StreamEvent>>>,
-        models: Mutex<Vec<String>>,
+        /// The model and session id of every request, in order.
+        routes: Mutex<Vec<(String, String)>>,
     }
 
     impl Scripted {
         fn new(replies: Vec<Vec<StreamEvent>>) -> Self {
             Self {
                 replies: Mutex::new(replies),
-                models: Mutex::new(Vec::new()),
+                routes: Mutex::new(Vec::new()),
             }
         }
     }
@@ -185,10 +199,10 @@ mod tests {
             request: Request<'a>,
         ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
         {
-            self.models
+            self.routes
                 .lock()
                 .expect("not poisoned")
-                .push(request.model.to_string());
+                .push((request.model.to_string(), request.session_id.to_string()));
             let reply = self.replies.lock().expect("not poisoned").remove(0);
             async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
         }
@@ -283,7 +297,7 @@ mod tests {
 
         run_turn(
             &provider,
-            "glm-5.3",
+            ROUTE,
             &tools,
             &ctx,
             &mut messages,
@@ -319,8 +333,8 @@ mod tests {
         }
         assert_eq!(texts, ["done"]);
         assert_eq!(
-            *provider.models.lock().expect("not poisoned"),
-            ["glm-5.3"; 2]
+            *provider.routes.lock().expect("not poisoned"),
+            vec![("glm-5.3".to_string(), "s1".to_string()); 2]
         );
     }
 
@@ -336,16 +350,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let result = run_turn(
-            &provider,
-            "glm-5.3",
-            &tools,
-            &ctx,
-            &mut messages,
-            &tx,
-            &cancel,
-        )
-        .await;
+        let result = run_turn(&provider, ROUTE, &tools, &ctx, &mut messages, &tx, &cancel).await;
 
         assert!(matches!(result, Err(Error::Interrupted)));
         assert_eq!(
@@ -368,7 +373,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let turn = run_turn(&provider, "glm-5.3", &[], &ctx, &mut messages, &tx, &cancel);
+        let turn = run_turn(&provider, ROUTE, &[], &ctx, &mut messages, &tx, &cancel);
         let interrupt = async {
             rx.recv().await;
             cancel.cancel();

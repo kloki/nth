@@ -2,12 +2,18 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::App;
+use super::{App, Completion};
+use crate::{command::Command, mention, popup::Popup};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     Submit,
     Interrupt,
+    /// Highlights the next or previous entry in the completion popup.
+    SelectNext,
+    SelectPrev,
+    /// Fills the prompt with the highlighted entry.
+    Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
     Insert(char),
@@ -31,10 +37,13 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
+        KeyCode::Char('n') if ctrl => Action::Accept,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
         KeyCode::Enter => Action::Submit,
+        KeyCode::Down => Action::SelectNext,
+        KeyCode::Up => Action::SelectPrev,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
         KeyCode::Home if ctrl => Action::Top,
@@ -58,7 +67,24 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
+        if let Some(completion) = &mut self.completion {
+            match action {
+                Action::SelectNext => return completion.next(),
+                Action::SelectPrev => return completion.prev(),
+                Action::Interrupt => {
+                    self.completion = None;
+                    return;
+                }
+                Action::Accept | Action::Submit => {
+                    if let Some(completion) = self.completion.take() {
+                        return self.accept(completion, action == Action::Submit);
+                    }
+                }
+                _ => {}
+            }
+        }
         match action {
+            Action::SelectNext | Action::SelectPrev | Action::Accept => {}
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
@@ -75,6 +101,53 @@ impl App {
             Action::PageDown => self.chat.page_down(),
             Action::Top => self.chat.jump_top(),
             Action::Bottom => self.chat.jump_bottom(),
+        }
+        match action {
+            Action::Insert(_) | Action::Newline | Action::Backspace | Action::Delete => {
+                self.refresh_completion()
+            }
+            // Chat scrolling leaves the popup be; anything else on the
+            // prompt closes it.
+            Action::PageUp | Action::PageDown | Action::Top | Action::Bottom => {}
+            _ => self.completion = None,
+        }
+    }
+
+    pub(super) fn refresh_completion(&mut self) {
+        let text = self.prompt.text();
+        self.completion = Command::complete(text)
+            .map(Completion::Command)
+            .or_else(|| {
+                let mention = mention::find(text, self.prompt.cursor())?;
+                let files = mention::matches(&self.files, mention.query, mention::LIMIT);
+                Some(Completion::File {
+                    popup: Popup::new(files)?,
+                    start: mention.start,
+                })
+            });
+    }
+
+    /// `submit` runs a highlighted command; a file is filled in either way,
+    /// since sending a half-typed mention is never what Enter meant.
+    fn accept(&mut self, completion: Completion, submit: bool) {
+        match completion {
+            Completion::Command(popup) => {
+                let command = *popup.selected();
+                if submit {
+                    self.prompt.clear();
+                    self.run_command(command);
+                } else {
+                    self.prompt.set(&format!("/{}", command.name()));
+                    self.completion = Some(Completion::Command(popup));
+                }
+            }
+            Completion::File { popup, start } => {
+                let end = self.prompt.cursor();
+                let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
+                let gap = if spaced { "" } else { " " };
+                self.prompt
+                    .replace(start..end, &format!("@{}{gap}", popup.selected()));
+            }
         }
     }
 }
@@ -95,16 +168,162 @@ mod tests {
 
         assert_eq!(key(KeyCode::Esc, none), Some(Action::Interrupt));
         assert_eq!(key(KeyCode::Enter, none), Some(Action::Submit));
-        assert_eq!(
-            key(KeyCode::Enter, KeyModifiers::SHIFT),
-            Some(Action::Newline)
-        );
+        assert_eq!(key(KeyCode::Enter, ctrl), Some(Action::Newline));
         assert_eq!(key(KeyCode::Char('j'), ctrl), Some(Action::Newline));
         assert_eq!(key(KeyCode::Char('c'), ctrl), Some(Action::ClearOrQuit));
         assert_eq!(key(KeyCode::Char('c'), none), Some(Action::Insert('c')));
         assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
+        assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
+        assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
+        assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
+        assert_eq!(key(KeyCode::Tab, none), None);
         assert_eq!(key(KeyCode::Char('x'), ctrl), None);
+    }
+
+    fn typed(text: &str) -> App {
+        let mut app = app();
+        for c in text.chars() {
+            app.apply(Action::Insert(c));
+        }
+        app
+    }
+
+    fn selected(app: &App) -> Command {
+        match &app.completion {
+            Some(Completion::Command(popup)) => *popup.selected(),
+            _ => panic!("command popup not open"),
+        }
+    }
+
+    fn with_files(text: &str) -> App {
+        let mut app = app();
+        app.files = vec!["crates/nth-tui/src/app/keys.rs".into(), "README.md".into()];
+        for c in text.chars() {
+            app.apply(Action::Insert(c));
+        }
+        app
+    }
+
+    fn file(app: &App) -> &str {
+        match &app.completion {
+            Some(Completion::File { popup, .. }) => popup.selected(),
+            _ => panic!("file popup not open"),
+        }
+    }
+
+    #[test]
+    fn slash_opens_the_popup_and_typing_filters_it() {
+        let mut app = typed("/");
+        assert_eq!(selected(&app), Command::Clear);
+
+        app.apply(Action::Insert('e'));
+        assert_eq!(selected(&app), Command::Exit);
+
+        app.apply(Action::Insert('x'));
+        app.apply(Action::Insert('x'));
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn arrows_cycle_without_touching_the_prompt() {
+        let mut app = typed("/");
+        app.apply(Action::SelectNext);
+        assert_eq!(selected(&app), Command::Exit);
+        app.apply(Action::SelectNext);
+        assert_eq!(selected(&app), Command::Clear);
+        app.apply(Action::SelectPrev);
+        assert_eq!(selected(&app), Command::Exit);
+        assert_eq!(app.prompt.text(), "/");
+    }
+
+    #[test]
+    fn ctrl_n_fills_in_the_highlighted_command() {
+        let mut app = typed("/");
+        app.apply(Action::SelectNext);
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "/exit");
+        assert!(app.completion.is_some());
+    }
+
+    #[test]
+    fn enter_runs_the_highlighted_command() {
+        let mut app = typed("/ex");
+        app.apply(Action::Submit);
+        assert!(app.quit);
+        assert!(app.prompt.is_empty());
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn esc_closes_the_popup_until_the_next_edit() {
+        let mut app = typed("/c");
+        app.apply(Action::Interrupt);
+        assert!(app.completion.is_none());
+
+        app.apply(Action::SelectNext);
+        assert!(app.completion.is_none());
+
+        app.apply(Action::Backspace);
+        assert!(app.completion.is_some());
+    }
+
+    #[test]
+    fn plain_prompts_never_open_the_popup() {
+        let mut app = typed("hello");
+        assert!(app.completion.is_none());
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "hello");
+    }
+
+    #[test]
+    fn at_opens_the_file_popup_anywhere_in_the_prompt() {
+        let mut app = with_files("see @");
+        assert_eq!(file(&app), "README.md");
+
+        app.apply(Action::Insert('k'));
+        assert_eq!(file(&app), "crates/nth-tui/src/app/keys.rs");
+
+        app.apply(Action::Insert(' '));
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn ctrl_n_and_enter_fill_in_the_file() {
+        let mut app = with_files("see @ke");
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "see @crates/nth-tui/src/app/keys.rs ");
+        assert!(app.completion.is_none());
+
+        for c in "and @rea".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        assert_eq!(
+            app.prompt.text(),
+            "see @crates/nth-tui/src/app/keys.rs and @README.md "
+        );
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn a_mention_before_the_cursor_is_completed_in_place() {
+        let mut app = with_files("@rea tail");
+        for _ in 0.." tail".len() {
+            app.apply(Action::Left);
+        }
+        app.apply(Action::Backspace);
+        app.apply(Action::Insert('a'));
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "@README.md tail");
+    }
+
+    #[test]
+    fn esc_closes_the_file_popup() {
+        let mut app = with_files("@");
+        app.apply(Action::Interrupt);
+        assert!(app.completion.is_none());
+        assert!(!app.is_busy());
     }
 
     #[test]

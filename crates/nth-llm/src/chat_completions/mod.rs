@@ -38,18 +38,14 @@ pub struct ChatClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
-    session_id: String,
 }
 
 impl ChatClient {
-    /// `session_id` must stay stable for a conversation: Go routes and caches
-    /// prompts on the `x-opencode-session` header.
-    pub fn new(base_url: String, api_key: String, session_id: String) -> Self {
+    pub fn new(base_url: String, api_key: String) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-            session_id,
         }
     }
 
@@ -62,7 +58,7 @@ impl ChatClient {
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .header("x-opencode-session", &self.session_id)
+            .header("x-opencode-session", request.session_id)
             .json(&wire::body(request.model, request.messages, request.tools))
             .send()
             .await?;

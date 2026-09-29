@@ -59,7 +59,7 @@ struct Endpoint {
 fn setup(endpoint: Endpoint) -> Result<(Session, ChatClient)> {
     let cwd = std::env::current_dir().context("no working directory")?;
     let session = Session::new(endpoint.model, cwd);
-    let provider = ChatClient::new(endpoint.base_url, api_key()?, session.id.to_string());
+    let provider = ChatClient::new(endpoint.base_url, api_key()?);
     Ok((session, provider))
 }
 
@@ -126,8 +126,7 @@ async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
 }
 
 async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
-    // Listing needs no conversation, so no session id to route on.
-    let provider = ChatClient::new(endpoint.base_url, api_key()?, String::new());
+    let provider = ChatClient::new(endpoint.base_url, api_key()?);
     let models = provider.models().await.map_err(|e| anyhow!(e))?;
 
     let mut out = std::io::stdout().lock();

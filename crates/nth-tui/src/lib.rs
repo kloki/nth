@@ -2,6 +2,9 @@
 
 mod app;
 mod chat;
+mod command;
+mod mention;
+mod popup;
 mod prompt;
 mod status;
 mod terminal;

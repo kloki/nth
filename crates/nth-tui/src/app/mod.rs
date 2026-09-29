@@ -15,16 +15,23 @@ use anyhow::{Context, Result};
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use nth_protocol::{Event, Provider, Tool};
-use nth_session::Session;
+use nth_session::{CancellationToken, Session};
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Margin},
+    layout::{Constraint, Layout, Margin, Rect},
 };
-use tokio::{sync::mpsc, task::JoinError, time::MissedTickBehavior};
+use tokio::{
+    sync::mpsc,
+    task::{JoinError, JoinHandle},
+    time::MissedTickBehavior,
+};
 use turn::{Ended, Running};
 
 use crate::{
     chat::Chat,
+    command::Command,
+    mention,
+    popup::{self, Popup},
     prompt::{self, PROMPT_ROWS, Prompt},
     status,
 };
@@ -42,6 +49,15 @@ pub struct App {
     pub place: String,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
+    /// Open while the prompt starts a command; Esc closes it until the next edit.
+    completion: Option<Completion>,
+    /// What `@` mentions complete to, refreshed after every turn since the
+    /// model may have added files.
+    files: Vec<String>,
+    indexing: Option<Indexing>,
+    /// Set when a turn ends mid-walk, so its files get picked up by one
+    /// more walk rather than a second one racing the first.
+    reindex: bool,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -52,10 +68,58 @@ pub struct App {
     quit: bool,
 }
 
+/// A file walk in flight. The walk checks `cancel` between entries, since a
+/// blocking task can't be aborted and quitting shouldn't wait for it.
+struct Indexing {
+    handle: JoinHandle<Vec<String>>,
+    cancel: CancellationToken,
+}
+
+/// The open completion popup.
+enum Completion {
+    Command(Popup<Command>),
+    /// `start` is the byte offset of the mention's `@` in the prompt.
+    File {
+        popup: Popup<String>,
+        start: usize,
+    },
+}
+
+impl Completion {
+    fn next(&mut self) {
+        match self {
+            Completion::Command(popup) => popup.next(),
+            Completion::File { popup, .. } => popup.next(),
+        }
+    }
+
+    fn prev(&mut self) {
+        match self {
+            Completion::Command(popup) => popup.prev(),
+            Completion::File { popup, .. } => popup.prev(),
+        }
+    }
+
+    fn draw(&self, frame: &mut Frame, area: Rect, anchor: Rect) {
+        let (rows, selected): (Vec<(String, &str)>, _) = match self {
+            Completion::Command(popup) => (
+                popup.items().iter().map(|c| c.row()).collect(),
+                popup.selected_index(),
+            ),
+            Completion::File { popup, .. } => (
+                popup.items().iter().map(|f| (f.clone(), "")).collect(),
+                popup.selected_index(),
+            ),
+        };
+        popup::draw(frame, area, anchor, &rows, selected);
+    }
+}
+
 enum Step {
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     TurnEnded(Result<Ended, JoinError>),
+    Indexed(Result<Vec<String>, JoinError>),
     Tick,
 }
 
@@ -74,6 +138,10 @@ impl App {
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
             busy_since: None,
+            completion: None,
+            files: Vec::new(),
+            indexing: None,
+            reindex: false,
             session: Some(session),
             provider,
             tools,
@@ -88,11 +156,14 @@ impl App {
         let mut input = EventStream::new();
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        self.index_files();
 
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
             let busy = self.is_busy();
             let turn = self.turn.as_mut().map(|running| &mut running.handle);
+            let indexing = self.indexing.is_some();
+            let index = self.indexing.as_mut().map(|indexing| &mut indexing.handle);
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
@@ -102,6 +173,12 @@ impl App {
                         None => std::future::pending().await,
                     }
                 }, if busy => Step::TurnEnded(ended),
+                files = async {
+                    match index {
+                        Some(index) => index.await,
+                        None => std::future::pending().await,
+                    }
+                }, if indexing => Step::Indexed(files),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -111,6 +188,7 @@ impl App {
                 }
                 Step::Session(event) => self.chat.transcript.apply(&event),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
+                Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
@@ -131,6 +209,10 @@ impl App {
         self.chat.draw(frame, chat, &banner);
         status::draw(frame, status, self);
         prompt::draw(frame, prompt, &self.prompt, self.is_busy());
+        // Last, so it pops over the chat and status row.
+        if let Some(completion) = &self.completion {
+            completion.draw(frame, area, prompt);
+        }
     }
 
     fn on_terminal(&mut self, event: TermEvent) {
@@ -141,10 +223,50 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) => self
-                .prompt
-                .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n")),
+            TermEvent::Paste(text) => {
+                self.prompt
+                    .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                self.refresh_completion();
+            }
             _ => {}
+        }
+    }
+
+    /// Lists the files off the runtime; a big tree takes a while to walk.
+    pub(super) fn index_files(&mut self) {
+        if self.indexing.is_some() {
+            self.reindex = true;
+            return;
+        }
+        let root = self.cwd.clone();
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let handle = tokio::task::spawn_blocking(move || mention::walk(&root, &token));
+        self.indexing = Some(Indexing { handle, cancel });
+    }
+
+    fn indexed(&mut self, files: Vec<String>) {
+        self.files = files;
+        self.indexing = None;
+        if std::mem::take(&mut self.reindex) {
+            self.index_files();
+        }
+        if matches!(self.completion, Some(Completion::File { .. })) {
+            self.refresh_completion();
+        }
+    }
+
+    fn run_command(&mut self, command: Command) {
+        match command {
+            // Dropping the app aborts a running turn.
+            Command::Exit => self.quit = true,
+            // Mid-turn the session is in the turn task, so there is nothing
+            // to replace yet.
+            Command::Clear if self.is_busy() => {}
+            Command::Clear => {
+                self.session = Some(Session::new(self.model.clone(), self.cwd.clone()));
+                self.chat = Chat::new(self.cwd.clone());
+            }
         }
     }
 }
@@ -213,5 +335,81 @@ pub(crate) mod tests {
             [" ▎ two", " ▎ three", " ▎ four"]
         );
         assert_eq!(busy[7].trim_end(), " ▎ message 19");
+    }
+
+    #[test]
+    fn exit_command_quits() {
+        let mut app = app();
+        app.prompt.insert_str("/exit");
+        app.submit();
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn clear_command_starts_a_fresh_session() {
+        let mut app = app();
+        let old = app.session.as_ref().expect("idle").id;
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(nth_protocol::Message::User("hi".into()));
+        app.chat.transcript.push_user("hi".into());
+
+        app.prompt.insert_str("/clear");
+        app.submit();
+
+        let session = app.session.as_ref().expect("idle");
+        assert_ne!(session.id, old);
+        assert_eq!(session.messages.len(), 1, "only the system prompt");
+        assert!(app.chat.transcript.is_empty());
+        assert!(app.prompt.is_empty());
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn completion_pops_over_the_status_row() {
+        let mut app = app();
+        app.apply(keys::Action::Insert('/'));
+        let rows = rows(&mut app);
+
+        assert!(rows[7].starts_with("  /clear"));
+        assert!(rows[8].starts_with("  /exit"));
+        assert!(rows[9].starts_with(" ▎ /"));
+    }
+
+    #[tokio::test]
+    async fn a_second_walk_waits_for_the_first() {
+        let mut app = app();
+        app.index_files();
+        app.index_files();
+        assert!(app.reindex);
+
+        app.indexed(Vec::new());
+        assert!(!app.reindex);
+        assert!(app.indexing.is_some(), "the queued walk starts");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_app_cancels_the_walk() {
+        let mut app = app();
+        app.index_files();
+        let cancel = app.indexing.as_ref().expect("walking").cancel.clone();
+
+        drop(app);
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn file_popup_opens_mid_prompt() {
+        let mut app = app();
+        app.files = vec!["src/app/keys.rs".into(), "src/lib.rs".into()];
+        for c in "see @ke".chars() {
+            app.apply(keys::Action::Insert(c));
+        }
+        let rows = rows(&mut app);
+
+        assert!(rows[8].starts_with("  src/app/keys.rs"));
+        assert!(rows[9].starts_with(" ▎ see @ke"));
     }
 }
