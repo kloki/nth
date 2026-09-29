@@ -33,13 +33,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('d') if ctrl => Action::PageDown,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
-        KeyCode::Enter
-            if key
-                .modifiers
-                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
-        {
-            Action::Newline
-        }
+        KeyCode::Enter if ctrl => Action::Newline,
         KeyCode::Enter => Action::Submit,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
