@@ -10,11 +10,12 @@ use nth_session::CancellationToken;
 const MAX_FILES: usize = 20_000;
 
 /// Files under `root` as `/`-separated relative paths. Skips hidden files
-/// and whatever `.gitignore` and friends exclude, even outside a git repo.
+/// and whatever `.gitignore` and friends exclude. Like git, a `.gitignore`
+/// only counts inside a repo, so a `*` in a dotfiles `~/.gitignore` above
+/// it doesn't hide everything.
 /// Stops early, with what it has, once `cancel` fires.
 pub fn walk(root: &Path, cancel: &CancellationToken) -> Vec<String> {
     WalkBuilder::new(root)
-        .require_git(false)
         .build()
         .take_while(|_| !cancel.is_cancelled())
         .filter_map(Result::ok)
