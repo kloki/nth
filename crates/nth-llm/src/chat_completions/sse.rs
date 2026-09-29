@@ -5,6 +5,7 @@ use super::Error;
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Delta(Delta),
+    Finish(String),
     Done,
 }
 
@@ -14,8 +15,8 @@ pub struct Delta {
     /// DeepSeek and Kimi use `reasoning_content`, others plain `reasoning`.
     #[serde(alias = "reasoning")]
     pub reasoning_content: Option<String>,
-    #[serde(default)]
-    pub tool_calls: Vec<ToolCallDelta>,
+    /// Some servers send `"tool_calls": null` on plain text deltas.
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
 }
 
 /// One fragment of a tool call. The first fragment for an `index` carries
@@ -42,13 +43,16 @@ pub struct Parser {
 
 #[derive(Deserialize)]
 struct Chunk {
-    #[serde(default)]
-    choices: Vec<Choice>,
+    choices: Option<Vec<Choice>>,
+    /// Gateways such as OpenRouter report rate limits and overload in-stream,
+    /// after the 200 status has already been sent.
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 struct Choice {
     delta: Option<Delta>,
+    finish_reason: Option<String>,
 }
 
 impl Parser {
@@ -58,32 +62,38 @@ impl Parser {
         while let Some(end) = self.buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.buf.drain(..=end).collect();
             let line = String::from_utf8_lossy(&line);
-            if let Some(event) = parse_line(line.trim_end())? {
-                events.push(event);
-            }
+            parse_line(line.trim_end(), &mut events)?;
         }
         Ok(events)
     }
 }
 
-fn parse_line(line: &str) -> Result<Option<Event>, Error> {
+fn parse_line(line: &str, events: &mut Vec<Event>) -> Result<(), Error> {
     let Some(data) = line.strip_prefix("data:") else {
-        return Ok(None);
+        return Ok(());
     };
     let data = data.trim_start();
     if data == "[DONE]" {
-        return Ok(Some(Event::Done));
+        events.push(Event::Done);
+        return Ok(());
     }
     let chunk: Chunk = serde_json::from_str(data).map_err(|source| Error::Parse {
         source,
         line: data.to_string(),
     })?;
-    Ok(chunk
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|c| c.delta)
-        .map(Event::Delta))
+    if let Some(error) = chunk.error {
+        let message = match error.get("message").and_then(|m| m.as_str()) {
+            Some(message) => message.to_string(),
+            None => error.to_string(),
+        };
+        return Err(Error::Provider(message));
+    }
+    let Some(choice) = chunk.choices.into_iter().flatten().next() else {
+        return Ok(());
+    };
+    events.extend(choice.delta.map(Event::Delta));
+    events.extend(choice.finish_reason.map(Event::Finish));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -103,5 +113,29 @@ mod tests {
             .push(b": ping\n\ndata: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n")
             .expect("valid");
         assert_eq!(events, vec![Event::Done]);
+    }
+
+    #[test]
+    fn in_stream_error_is_an_error() {
+        let mut parser = Parser::default();
+        let err = parser
+            .push(b"data: {\"error\":{\"message\":\"rate limited\",\"code\":429}}\n")
+            .expect_err("error chunk");
+        assert!(err.to_string().contains("rate limited"), "{err}");
+    }
+
+    #[test]
+    fn null_tool_calls_parse() {
+        let mut parser = Parser::default();
+        let events = parser
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":null},\"finish_reason\":null}]}\n")
+            .expect("valid");
+        assert_eq!(
+            events,
+            vec![Event::Delta(Delta {
+                content: Some("hi".into()),
+                ..Delta::default()
+            })]
+        );
     }
 }

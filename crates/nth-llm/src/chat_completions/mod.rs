@@ -25,6 +25,12 @@ pub enum Error {
         source: serde_json::Error,
         line: String,
     },
+    #[error("provider error: {0}")]
+    Provider(String),
+    #[error("stream ended before the response was complete")]
+    Incomplete,
+    #[error("response hit the output token limit")]
+    Truncated,
 }
 
 pub struct ChatClient {
@@ -92,8 +98,9 @@ impl Provider for ChatClient {
 struct State<S> {
     bytes: S,
     parser: sse::Parser,
-    pending: VecDeque<StreamEvent>,
+    pending: VecDeque<Result<StreamEvent, Error>>,
     calls: BTreeMap<usize, ToolCall>,
+    finish_reason: Option<String>,
     finished: bool,
 }
 
@@ -108,12 +115,13 @@ where
         parser: sse::Parser::default(),
         pending: VecDeque::new(),
         calls: BTreeMap::new(),
+        finish_reason: None,
         finished: false,
     };
     futures::stream::unfold(state, |mut s| async move {
         loop {
             if let Some(event) = s.pending.pop_front() {
-                return Some((Ok(event), s));
+                return Some((event, s));
             }
             if s.finished {
                 return None;
@@ -121,7 +129,10 @@ where
             let parsed = match s.bytes.next().await {
                 Some(Ok(chunk)) => s.parser.push(&chunk),
                 Some(Err(e)) => Err(e),
-                None => Ok(vec![sse::Event::Done]),
+                // Some servers close right after the finish chunk without
+                // `[DONE]`; without either, the connection was cut mid-reply.
+                None if s.finish_reason.is_some() => Ok(vec![sse::Event::Done]),
+                None => Err(Error::Incomplete),
             };
             let parsed = match parsed {
                 Ok(parsed) => parsed,
@@ -133,11 +144,18 @@ where
             for event in parsed {
                 match event {
                     sse::Event::Delta(delta) => s.apply(delta),
+                    sse::Event::Finish(reason) => s.finish_reason = Some(reason),
                     sse::Event::Done => {
                         s.finished = true;
+                        // Tool calls cut off at the token limit have partial
+                        // JSON arguments and must not run.
+                        if s.finish_reason.as_deref() == Some("length") {
+                            s.pending.push_back(Err(Error::Truncated));
+                            break;
+                        }
                         let calls = std::mem::take(&mut s.calls);
                         s.pending
-                            .extend(calls.into_values().map(StreamEvent::ToolCall));
+                            .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
                         break;
                     }
                 }
@@ -149,12 +167,13 @@ where
 impl<S> State<S> {
     fn apply(&mut self, delta: sse::Delta) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
-            self.pending.push_back(StreamEvent::ReasoningDelta(text));
+            self.pending
+                .push_back(Ok(StreamEvent::ReasoningDelta(text)));
         }
         if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
-            self.pending.push_back(StreamEvent::TextDelta(text));
+            self.pending.push_back(Ok(StreamEvent::TextDelta(text)));
         }
-        for part in delta.tool_calls {
+        for part in delta.tool_calls.into_iter().flatten() {
             let call = self.calls.entry(part.index).or_insert_with(|| ToolCall {
                 id: String::new(),
                 name: String::new(),
@@ -182,14 +201,25 @@ mod tests {
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");
 
     async fn replay(chunk_size: usize) -> Vec<StreamEvent> {
-        let chunks = FIXTURE
+        replay_bytes(FIXTURE, chunk_size)
+            .await
+            .into_iter()
+            .map(|e| e.expect("fixture is valid"))
+            .collect()
+    }
+
+    async fn replay_bytes(input: &[u8], chunk_size: usize) -> Vec<Result<StreamEvent, Error>> {
+        let chunks = input
             .chunks(chunk_size)
             .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
             .collect::<Vec<_>>();
-        events(futures::stream::iter(chunks))
-            .map(|e| e.expect("fixture is valid"))
-            .collect()
-            .await
+        events(futures::stream::iter(chunks)).collect().await
+    }
+
+    fn fixture_until(marker: &str) -> &'static [u8] {
+        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let end = text.find(marker).expect("marker in fixture");
+        &FIXTURE[..end]
     }
 
     #[tokio::test]
@@ -221,5 +251,39 @@ mod tests {
         for size in 1..16 {
             assert_eq!(replay(size).await, whole, "chunk size {size}");
         }
+    }
+
+    #[tokio::test]
+    async fn missing_done_after_finish_reason_is_fine() {
+        let events = replay_bytes(fixture_until("data: [DONE]"), FIXTURE.len()).await;
+        let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();
+        assert_eq!(events, replay(FIXTURE.len()).await);
+    }
+
+    #[tokio::test]
+    async fn cut_off_stream_is_an_error_and_runs_no_tools() {
+        let events = replay_bytes(fixture_until("\"finish_reason\""), FIXTURE.len()).await;
+        assert!(matches!(events.last(), Some(Err(Error::Incomplete))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
+        );
+    }
+
+    #[tokio::test]
+    async fn length_finish_is_an_error_and_runs_no_tools() {
+        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = text.replace(
+            "\"finish_reason\":\"tool_calls\"",
+            "\"finish_reason\":\"length\"",
+        );
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(matches!(events.last(), Some(Err(Error::Truncated))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
+        );
     }
 }
