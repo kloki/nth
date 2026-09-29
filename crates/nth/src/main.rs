@@ -5,7 +5,8 @@ use std::{process::ExitCode, time::Instant};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::{Message, Provider, ToolContext};
+use nth_protocol::Provider;
+use nth_session::Session;
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
@@ -53,14 +54,10 @@ async fn main() -> ExitCode {
 
 async fn run(prompt: String, model: String, base_url: String) -> Result<()> {
     let api_key = std::env::var("OPENCODE_GO_API_KEY").context("OPENCODE_GO_API_KEY not set")?;
-    let provider = ChatClient::new(base_url, api_key, model, uuid::Uuid::new_v4().to_string());
     let cwd = std::env::current_dir().context("no working directory")?;
-    let mut messages = vec![
-        Message::System(nth_session::system_prompt(provider.model(), &cwd)),
-        Message::User(prompt),
-    ];
+    let mut session = Session::new(model.clone(), cwd.clone());
+    let provider = ChatClient::new(base_url, api_key, model, session.id.to_string());
     let tools = nth_tools::all();
-    let ctx = ToolContext { cwd: cwd.clone() };
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::channel(256);
@@ -71,7 +68,7 @@ async fn run(prompt: String, model: String, base_url: String) -> Result<()> {
         }
         out
     });
-    let turn = nth_session::run_turn(&provider, &tools, &ctx, &mut messages, &tx).await;
+    let turn = session.prompt(prompt, &provider, &tools, &tx).await;
     drop(tx);
     let printer = printer.await.context("printer task failed")?;
     printer.finish();
