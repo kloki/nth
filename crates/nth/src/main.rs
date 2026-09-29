@@ -45,7 +45,7 @@ enum Command {
 
 #[derive(Args)]
 struct Endpoint {
-    #[arg(long, env = "NTH_MODEL", default_value = "glm-5.3")]
+    #[arg(long, env = "NTH_MODEL", default_value = "deepseek-v4.1-flash")]
     model: String,
     #[arg(
         long,
