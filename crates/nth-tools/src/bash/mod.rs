@@ -63,6 +63,9 @@ impl Tool for Bash {
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             let mut stdout = child.stdout.take().ok_or("bash stdout is not piped")?;
+            // Declared after `child` so it drops first, while the child is
+            // still unreaped and its pid cannot have been reused.
+            let mut abandoned = KillGroupOnDrop(child.id());
 
             let mut buf = Vec::new();
             let run = tokio::time::timeout(
@@ -70,6 +73,7 @@ impl Tool for Bash {
                 wait_for_exit(&mut child, &mut stdout, &mut buf),
             )
             .await;
+            abandoned.0 = None;
             let status = match run {
                 Ok(status) => status.map_err(|e| e.to_string())?,
                 Err(_) => {
@@ -116,8 +120,26 @@ async fn wait_for_exit(
     }
 }
 
+/// Kills the command's whole group if the call is dropped mid-run, as when
+/// a front-end quits during a turn. `kill_on_drop` alone reaches only bash,
+/// not what it started.
+struct KillGroupOnDrop(Option<u32>);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            kill_pid_group(pid);
+        }
+    }
+}
+
 fn kill_group(child: &Child) {
-    let Some(pid) = child.id() else { return };
+    if let Some(pid) = child.id() {
+        kill_pid_group(pid);
+    }
+}
+
+fn kill_pid_group(pid: u32) {
     let Ok(pgid) = libc::pid_t::try_from(pid) else {
         return;
     };
@@ -212,5 +234,27 @@ mod tests {
             "background sleep {} survived the timeout",
             pid.trim()
         );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_running_call_kills_its_processes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+        };
+        let call = Bash.call(
+            json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "description": "t" }),
+            &ctx,
+        );
+        let out = tokio::time::timeout(Duration::from_millis(300), call).await;
+        assert!(out.is_err(), "the call should still be running");
+        let pid = std::fs::read_to_string(dir.path().join("pid")).expect("pid file");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .expect("run kill")
+            .success();
+        assert!(!alive, "background sleep {} survived the drop", pid.trim());
     }
 }

@@ -3,6 +3,7 @@ mod render;
 use std::{
     io::{IsTerminal, Write},
     process::ExitCode,
+    sync::Arc,
     time::Instant,
 };
 
@@ -17,8 +18,11 @@ use tokio::sync::mpsc;
 #[derive(Parser)]
 #[command(name = "nth", version, about = "A coding harness, for the N-th time")]
 struct Cli {
+    /// Without a subcommand, nth opens the interactive chat.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    #[command(flatten)]
+    endpoint: Endpoint,
 }
 
 #[derive(Subcommand)]
@@ -51,6 +55,14 @@ struct Endpoint {
     base_url: String,
 }
 
+/// A fresh session in the working directory and the client it talks through.
+fn setup(endpoint: Endpoint) -> Result<(Session, ChatClient)> {
+    let cwd = std::env::current_dir().context("no working directory")?;
+    let session = Session::new(endpoint.model, cwd);
+    let provider = ChatClient::new(endpoint.base_url, api_key()?, session.id.to_string());
+    Ok((session, provider))
+}
+
 fn api_key() -> Result<String> {
     std::env::var("OPENCODE_GO_API_KEY").context("OPENCODE_GO_API_KEY not set")
 }
@@ -59,8 +71,9 @@ fn api_key() -> Result<String> {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Run { prompt, endpoint } => run(prompt, endpoint).await,
-        Command::Models { json, endpoint } => models(json, endpoint).await,
+        None => chat(cli.endpoint).await,
+        Some(Command::Run { prompt, endpoint }) => run(prompt, endpoint).await,
+        Some(Command::Models { json, endpoint }) => models(json, endpoint).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -71,11 +84,14 @@ async fn main() -> ExitCode {
     }
 }
 
+async fn chat(endpoint: Endpoint) -> Result<()> {
+    let (session, provider) = setup(endpoint)?;
+    nth_tui::run(session, Arc::new(provider), Arc::new(nth_tools::all())).await
+}
+
 async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
-    let api_key = api_key()?;
-    let cwd = std::env::current_dir().context("no working directory")?;
-    let mut session = Session::new(endpoint.model, cwd.clone());
-    let provider = ChatClient::new(endpoint.base_url, api_key, session.id.to_string());
+    let (mut session, provider) = setup(endpoint)?;
+    let cwd = session.cwd.clone();
     let tools = nth_tools::all();
 
     let started = Instant::now();
