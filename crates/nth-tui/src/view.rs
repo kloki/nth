@@ -9,7 +9,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{app::App, spinner, transcript::Activity};
+use crate::{app::App, transcript::Activity};
 
 pub const PROMPT_ROWS: u16 = 3;
 const BAR: &str = "▎ ";
@@ -60,14 +60,8 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
-    if let Some(since) = app.busy_since {
-        let mut spans = vec![
-            Span::styled(
-                spinner::frame(since.elapsed()),
-                Style::new().fg(Color::Magenta),
-            ),
-            Span::raw(" "),
-        ];
+    if app.busy_since.is_some() {
+        let mut spans = Vec::new();
         match app.transcript.activity() {
             Activity::Thinking => spans.push(Span::styled("thinking", dim())),
             Activity::Writing => spans.push(Span::styled("writing", dim())),

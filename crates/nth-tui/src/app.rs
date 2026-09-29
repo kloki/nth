@@ -18,9 +18,11 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use crate::{prompt::Prompt, scroll::Scroll, spinner, transcript::Transcript, view};
+use crate::{prompt::Prompt, scroll::Scroll, transcript::Transcript, view};
 
 const WHEEL_LINES: usize = 3;
+/// How often a running turn redraws, so the live reasoning timer advances.
+const TICK: Duration = Duration::from_millis(100);
 
 type Turn = JoinHandle<(Session, Result<(), nth_session::Error>)>;
 
@@ -92,7 +94,7 @@ impl App {
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut input = EventStream::new();
-        let mut tick = tokio::time::interval(spinner::INTERVAL);
+        let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         while !self.quit {
@@ -117,7 +119,7 @@ impl App {
                 }
                 Step::Session(event) => self.transcript.apply(&event),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
-                // Nothing changed but time: the redraw advances the spinner.
+                // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
         }

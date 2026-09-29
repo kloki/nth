@@ -3,7 +3,6 @@
 mod app;
 mod prompt;
 mod scroll;
-mod spinner;
 mod transcript;
 mod view;
 
