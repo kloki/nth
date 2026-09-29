@@ -1,5 +1,5 @@
-//! Draws the completion popup: a grey box sized to its rows, the selected
-//! one in bold purple, sitting just above `anchor` and over whatever is there.
+//! Draws the popup: a grey box sized to its rows, the selected one in bold
+//! purple, sitting just above `anchor` and over whatever is there.
 
 use ratatui::{
     Frame,
@@ -9,21 +9,12 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 
-use super::Completion;
-
-/// Longest command name plus its leading `/`, so descriptions line up.
-const NAME_WIDTH: usize = 8;
-
-/// `area` bounds the popup; `anchor` is the prompt it sits above.
-pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, completion: &Completion) {
-    let rows: Vec<(String, &str)> = completion
-        .matches
-        .iter()
-        .map(|c| (format!("/{:<NAME_WIDTH$}", c.name()), c.about()))
-        .collect();
+/// `area` bounds the popup; `anchor` is the prompt it sits above. Each row
+/// is a label, drawn in blue, and a detail after it.
+pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, rows: &[(String, &str)], selected: usize) {
     let content = rows
         .iter()
-        .map(|(name, about)| name.chars().count() + about.chars().count())
+        .map(|(label, detail)| label.chars().count() + detail.chars().count())
         .max()
         .unwrap_or(0);
     // One column of padding either side.
@@ -40,14 +31,12 @@ pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, completion: &Completion
         height,
     };
 
-    let selected = completion.selected;
     let lines: Vec<Line> = rows
-        .into_iter()
+        .iter()
         .enumerate()
-        .map(|(i, (name, about))| {
-            let pad = content - name.chars().count();
-            let about = format!("{about:<pad$}");
-            let (row, name_style) = if i == selected {
+        .map(|(i, (label, detail))| {
+            let pad = content - label.chars().count();
+            let (row, label_style) = if i == selected {
                 let row = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
                 (row, row)
             } else {
@@ -55,9 +44,8 @@ pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, completion: &Completion
             };
             Line::from(vec![
                 Span::raw(" "),
-                Span::styled(name, name_style),
-                Span::raw(about),
-                Span::raw(" "),
+                Span::styled(label.as_str(), label_style),
+                Span::raw(format!("{detail:<pad$} ")),
             ])
             .style(row)
         })

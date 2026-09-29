@@ -79,6 +79,7 @@ impl App {
         }
         self.session = Some(session);
         self.turn = None;
+        self.index_files();
     }
 }
 
@@ -87,6 +88,9 @@ impl Drop for App {
         // Quitting mid-turn must not leave the agent running tools.
         if let Some(running) = &self.turn {
             running.handle.abort();
+        }
+        if let Some(indexing) = &self.indexing {
+            indexing.cancel.cancel();
         }
     }
 }

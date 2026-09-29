@@ -3,6 +3,8 @@
 mod view;
 mod wrap;
 
+use std::ops::Range;
+
 pub use view::{PROMPT_ROWS, draw};
 
 #[derive(Debug, Default)]
@@ -15,6 +17,10 @@ pub struct Prompt {
 impl Prompt {
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
     }
 
     pub fn is_empty(&self) -> bool {
@@ -30,6 +36,12 @@ impl Prompt {
     pub fn set(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor = self.text.len();
+    }
+
+    /// Replaces `range` of the text, with the cursor after the new part.
+    pub fn replace(&mut self, range: Range<usize>, with: &str) {
+        self.cursor = range.start + with.len();
+        self.text.replace_range(range, with);
     }
 
     pub fn take(&mut self) -> String {
@@ -106,6 +118,14 @@ pub(super) mod tests {
         assert_eq!(p.text, "héLo");
         assert_eq!(p.take(), "héLo");
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn replace_leaves_the_cursor_after_the_new_text() {
+        let mut p = prompt("see @ke and");
+        p.replace(4..7, "@src/keys.rs ");
+        assert_eq!(p.text, "see @src/keys.rs  and");
+        assert_eq!(p.cursor, 17);
     }
 
     #[test]

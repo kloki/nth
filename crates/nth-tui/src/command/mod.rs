@@ -1,9 +1,10 @@
 //! Slash commands typed into the prompt, and picking from the ones that
 //! match what has been typed so far.
 
-mod view;
+use crate::popup::Popup;
 
-pub use view::draw;
+/// Longest command name plus its leading `/`, so descriptions line up.
+const NAME_WIDTH: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
@@ -28,11 +29,21 @@ impl Command {
         }
     }
 
+    /// How the command shows in the completion popup.
+    pub fn row(self) -> (String, &'static str) {
+        (format!("/{:<NAME_WIDTH$}", self.name()), self.about())
+    }
+
     /// Only a prompt that is exactly `/<name>` is a command. Anything else,
     /// such as `/etc/hosts what is this`, is meant for the model.
     pub fn parse(text: &str) -> Option<Command> {
         let name = text.trim().strip_prefix('/')?;
         Self::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    /// The popup for `stem`, or `None` when no command completes it.
+    pub fn complete(stem: &str) -> Option<Popup<Command>> {
+        Popup::new(Self::matching(stem))
     }
 
     /// Commands that complete `stem`, a `/` followed by part of a name.
@@ -44,36 +55,6 @@ impl Command {
                 .collect(),
             _ => Vec::new(),
         }
-    }
-}
-
-/// The commands matching the prompt, and which one is highlighted.
-#[derive(Debug)]
-pub struct Completion {
-    matches: Vec<Command>,
-    selected: usize,
-}
-
-impl Completion {
-    /// `None` when nothing matches `stem`.
-    pub fn new(stem: &str) -> Option<Self> {
-        let matches = Command::matching(stem);
-        (!matches.is_empty()).then_some(Self {
-            matches,
-            selected: 0,
-        })
-    }
-
-    pub fn next(&mut self) {
-        self.selected = (self.selected + 1) % self.matches.len();
-    }
-
-    pub fn prev(&mut self) {
-        self.selected = (self.selected + self.matches.len() - 1) % self.matches.len();
-    }
-
-    pub fn selected(&self) -> Command {
-        self.matches[self.selected]
     }
 }
 
@@ -97,19 +78,5 @@ mod tests {
         assert_eq!(Command::matching("/x"), []);
         assert_eq!(Command::matching("/c x"), []);
         assert_eq!(Command::matching("c"), []);
-    }
-
-    #[test]
-    fn completion_cycles_both_ways() {
-        assert!(Completion::new("/x").is_none());
-
-        let mut completion = Completion::new("/").expect("matches");
-        assert_eq!(completion.selected(), Command::Clear);
-        completion.next();
-        assert_eq!(completion.selected(), Command::Exit);
-        completion.next();
-        assert_eq!(completion.selected(), Command::Clear);
-        completion.prev();
-        assert_eq!(completion.selected(), Command::Exit);
     }
 }

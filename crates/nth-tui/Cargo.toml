@@ -9,7 +9,12 @@ nth-session.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true
 futures.workspace = true
+ignore.workspace = true
+nucleo-matcher.workspace = true
 ratatui.workspace = true
 textwrap.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

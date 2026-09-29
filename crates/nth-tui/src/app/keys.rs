@@ -2,17 +2,17 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::App;
-use crate::command::Completion;
+use super::{App, Completion};
+use crate::{command::Command, mention, popup::Popup};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     Submit,
     Interrupt,
-    /// Highlights the next or previous command in the completion popup.
+    /// Highlights the next or previous entry in the completion popup.
     SelectNext,
     SelectPrev,
-    /// Fills the prompt with the highlighted command.
+    /// Fills the prompt with the highlighted entry.
     Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
@@ -73,19 +73,14 @@ impl App {
             match action {
                 Action::SelectNext => return completion.next(),
                 Action::SelectPrev => return completion.prev(),
-                Action::Accept => {
-                    let name = format!("/{}", completion.selected().name());
-                    return self.prompt.set(&name);
-                }
-                Action::Submit => {
-                    let command = completion.selected();
-                    self.completion = None;
-                    self.prompt.clear();
-                    return self.run_command(command);
-                }
                 Action::Interrupt => {
                     self.completion = None;
                     return;
+                }
+                Action::Accept | Action::Submit => {
+                    if let Some(completion) = self.completion.take() {
+                        return self.accept(completion, action == Action::Submit);
+                    }
                 }
                 _ => {}
             }
@@ -121,14 +116,48 @@ impl App {
     }
 
     pub(super) fn refresh_completion(&mut self) {
-        self.completion = Completion::new(self.prompt.text());
+        let text = self.prompt.text();
+        self.completion = Command::complete(text)
+            .map(Completion::Command)
+            .or_else(|| {
+                let mention = mention::find(text, self.prompt.cursor())?;
+                let files = mention::matches(&self.files, mention.query, mention::LIMIT);
+                Some(Completion::File {
+                    popup: Popup::new(files)?,
+                    start: mention.start,
+                })
+            });
+    }
+
+    /// `submit` runs a highlighted command; a file is filled in either way,
+    /// since sending a half-typed mention is never what Enter meant.
+    fn accept(&mut self, completion: Completion, submit: bool) {
+        match completion {
+            Completion::Command(popup) => {
+                let command = *popup.selected();
+                if submit {
+                    self.prompt.clear();
+                    self.run_command(command);
+                } else {
+                    self.prompt.set(&format!("/{}", command.name()));
+                    self.completion = Some(Completion::Command(popup));
+                }
+            }
+            Completion::File { popup, start } => {
+                let end = self.prompt.cursor();
+                let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
+                let gap = if spaced { "" } else { " " };
+                self.prompt
+                    .replace(start..end, &format!("@{}{gap}", popup.selected()));
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::tests::app, command::Command};
+    use crate::app::tests::app;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         action(KeyEvent::new(code, modifiers))
@@ -164,7 +193,26 @@ mod tests {
     }
 
     fn selected(app: &App) -> Command {
-        app.completion.as_ref().expect("popup open").selected()
+        match &app.completion {
+            Some(Completion::Command(popup)) => *popup.selected(),
+            _ => panic!("command popup not open"),
+        }
+    }
+
+    fn with_files(text: &str) -> App {
+        let mut app = app();
+        app.files = vec!["crates/nth-tui/src/app/keys.rs".into(), "README.md".into()];
+        for c in text.chars() {
+            app.apply(Action::Insert(c));
+        }
+        app
+    }
+
+    fn file(app: &App) -> &str {
+        match &app.completion {
+            Some(Completion::File { popup, .. }) => popup.selected(),
+            _ => panic!("file popup not open"),
+        }
     }
 
     #[test]
@@ -229,6 +277,56 @@ mod tests {
         assert!(app.completion.is_none());
         app.apply(Action::Accept);
         assert_eq!(app.prompt.text(), "hello");
+    }
+
+    #[test]
+    fn at_opens_the_file_popup_anywhere_in_the_prompt() {
+        let mut app = with_files("see @");
+        assert_eq!(file(&app), "README.md");
+
+        app.apply(Action::Insert('k'));
+        assert_eq!(file(&app), "crates/nth-tui/src/app/keys.rs");
+
+        app.apply(Action::Insert(' '));
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn tab_and_enter_fill_in_the_file() {
+        let mut app = with_files("see @ke");
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "see @crates/nth-tui/src/app/keys.rs ");
+        assert!(app.completion.is_none());
+
+        for c in "and @rea".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        assert_eq!(
+            app.prompt.text(),
+            "see @crates/nth-tui/src/app/keys.rs and @README.md "
+        );
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn a_mention_before_the_cursor_is_completed_in_place() {
+        let mut app = with_files("@rea tail");
+        for _ in 0.." tail".len() {
+            app.apply(Action::Left);
+        }
+        app.apply(Action::Backspace);
+        app.apply(Action::Insert('a'));
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "@README.md tail");
+    }
+
+    #[test]
+    fn esc_closes_the_file_popup() {
+        let mut app = with_files("@");
+        app.apply(Action::Interrupt);
+        assert!(app.completion.is_none());
+        assert!(!app.is_busy());
     }
 
     #[test]
