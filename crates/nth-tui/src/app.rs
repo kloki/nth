@@ -10,7 +10,7 @@ use crossterm::event::{
 };
 use futures::StreamExt;
 use nth_protocol::{Event, Provider, Tool};
-use nth_session::Session;
+use nth_session::{CancellationToken, Session};
 use ratatui::DefaultTerminal;
 use tokio::{
     sync::mpsc,
@@ -25,6 +25,13 @@ const WHEEL_LINES: usize = 3;
 const TICK: Duration = Duration::from_millis(100);
 
 type Turn = JoinHandle<(Session, Result<(), nth_session::Error>)>;
+
+/// A turn in flight. Esc cancels it cooperatively so the session comes back;
+/// aborting the task would drop the session with it.
+struct Running {
+    handle: Turn,
+    cancel: CancellationToken,
+}
 
 pub struct App {
     pub transcript: Transcript,
@@ -45,7 +52,7 @@ pub struct App {
     tools: Arc<Vec<Box<dyn Tool>>>,
     events_tx: mpsc::Sender<Event>,
     events_rx: mpsc::Receiver<Event>,
-    turn: Option<Turn>,
+    turn: Option<Running>,
     quit: bool,
 }
 
@@ -100,7 +107,7 @@ impl App {
         while !self.quit {
             terminal.draw(|frame| view::draw(frame, self))?;
             let busy = self.is_busy();
-            let turn = self.turn.as_mut();
+            let turn = self.turn.as_mut().map(|running| &mut running.handle);
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
@@ -156,6 +163,7 @@ impl App {
                     self.prompt.clear();
                 }
             }
+            KeyCode::Esc => self.interrupt(),
             KeyCode::Char('j') if ctrl => self.prompt.insert('\n'),
             KeyCode::Char('u') if ctrl => self.scroll.up(half, self.max_top),
             KeyCode::Char('d') if ctrl => self.scroll.down(half, self.max_top),
@@ -197,12 +205,21 @@ impl App {
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
-        self.turn = Some(tokio::spawn(async move {
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let handle = tokio::spawn(async move {
             let result = session
-                .prompt(text, provider.as_ref(), &tools, &events)
+                .prompt(text, provider.as_ref(), &tools, &events, &token)
                 .await;
             (session, result)
-        }));
+        });
+        self.turn = Some(Running { handle, cancel });
+    }
+
+    fn interrupt(&mut self) {
+        if let Some(running) = &self.turn {
+            running.cancel.cancel();
+        }
     }
 
     fn end_turn(&mut self, (session, result): (Session, Result<(), nth_session::Error>)) {
@@ -215,8 +232,13 @@ impl App {
             .busy_since
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
-        self.transcript
-            .finish_turn(result.map_err(|e| e.to_string()), &self.model, elapsed);
+        match result {
+            Err(nth_session::Error::Interrupted) => self.transcript.interrupt(elapsed),
+            result => {
+                self.transcript
+                    .finish_turn(result.map_err(|e| e.to_string()), &self.model, elapsed)
+            }
+        }
         self.session = Some(session);
         self.turn = None;
     }
@@ -225,8 +247,8 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         // Quitting mid-turn must not leave the agent running tools.
-        if let Some(turn) = &self.turn {
-            turn.abort();
+        if let Some(running) = &self.turn {
+            running.handle.abort();
         }
     }
 }
@@ -236,9 +258,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{BoxError, ModelInfo, Request, StreamEvent};
+    use nth_protocol::{BoxError, Message, ModelInfo, Request, StreamEvent};
 
     use super::*;
+    use crate::transcript::Entry;
 
     /// A provider that never answers, and records when its request is dropped.
     struct Hang(Arc<AtomicBool>);
@@ -268,6 +291,34 @@ mod tests {
             }
             .boxed()
         }
+    }
+
+    #[tokio::test]
+    async fn esc_interrupts_the_turn_and_keeps_the_session() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(
+            session,
+            Arc::new(Hang(dropped.clone())),
+            Arc::new(Vec::new()),
+        );
+        app.prompt.insert_str("go");
+        app.submit();
+        tokio::task::yield_now().await;
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        let running = app.turn.take().expect("turn was running");
+        let ended = running.handle.await.expect("turn task finished");
+        app.end_turn(ended);
+
+        assert!(!app.is_busy());
+        assert!(dropped.load(Ordering::SeqCst), "request kept running");
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.messages.last(), Some(&Message::User("go".into())));
+        assert!(matches!(
+            app.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
     }
 
     #[tokio::test]

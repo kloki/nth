@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::SystemTime};
 use nth_protocol::{Event, Message, Provider, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{Error, run_turn, system_prompt};
@@ -41,13 +42,15 @@ impl Session {
         }
     }
 
-    /// Adds a user message and runs the turn it starts.
+    /// Adds a user message and runs the turn it starts, until it ends or
+    /// `cancel` interrupts it.
     pub async fn prompt(
         &mut self,
         text: impl Into<String>,
         provider: &dyn Provider,
         tools: &[Box<dyn Tool>],
         events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
     ) -> Result<(), Error> {
         self.messages.push(Message::User(text.into()));
         let ctx = ToolContext {
@@ -60,6 +63,7 @@ impl Session {
             &ctx,
             &mut self.messages,
             events,
+            cancel,
         )
         .await
     }

@@ -83,7 +83,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     } else if app.busy_since.is_none() {
         Span::styled(format!("{} · {}", app.model, app.place), dim())
     } else {
-        return;
+        Span::styled("esc to interrupt", dim())
     };
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
 }
@@ -177,6 +177,7 @@ mod tests {
         let busy = rows(&mut app);
 
         assert!(busy[8].contains("thinking"));
+        assert!(busy[8].trim_end().ends_with("esc to interrupt"));
         assert_eq!(
             busy[9..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
             [" ▎ two", " ▎ three", " ▎ four"]

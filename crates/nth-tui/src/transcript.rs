@@ -37,6 +37,10 @@ pub enum Entry {
         tool_calls: usize,
         elapsed: Duration,
     },
+    /// Footer of a turn the user stopped with Esc.
+    Interrupted {
+        elapsed: Duration,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +162,21 @@ impl Transcript {
         self.push(entry);
     }
 
+    /// Closes a turn the user cut short. Tools still running never report
+    /// back, so they are marked as stopped here.
+    pub fn interrupt(&mut self, elapsed: Duration) {
+        self.close_reasoning();
+        for item in &mut self.items {
+            if let Entry::Tool { state, .. } = &mut item.entry
+                && *state == ToolState::Running
+            {
+                *state = ToolState::Failed("interrupted".into());
+                item.lines = None;
+            }
+        }
+        self.push(Entry::Interrupted { elapsed });
+    }
+
     pub fn activity(&self) -> Activity<'_> {
         let running = self.entries().rev().find_map(|entry| match entry {
             Entry::Tool {
@@ -243,14 +262,17 @@ fn is_live(entry: &Entry) -> bool {
 fn is_compact(entry: &Entry) -> bool {
     matches!(
         entry,
-        Entry::Reasoning { .. } | Entry::Tool { .. } | Entry::TurnDone { .. }
+        Entry::Reasoning { .. }
+            | Entry::Tool { .. }
+            | Entry::TurnDone { .. }
+            | Entry::Interrupted { .. }
     )
 }
 
 fn needs_gap(previous: Option<&Entry>, entry: &Entry) -> bool {
     match previous {
         None => false,
-        Some(_) if matches!(entry, Entry::TurnDone { .. }) => false,
+        Some(_) if matches!(entry, Entry::TurnDone { .. } | Entry::Interrupted { .. }) => false,
         Some(previous) => !(is_compact(previous) && is_compact(entry)),
     }
 }
@@ -319,6 +341,11 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 ),
             ])]
         }
+        Entry::Interrupted { elapsed } => vec![Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled("⏹ ", Style::new().fg(Color::Yellow)),
+            Span::styled(format!("interrupted · {:.1}s", elapsed.as_secs_f64()), dim),
+        ])],
     }
 }
 
@@ -399,6 +426,40 @@ mod tests {
         );
         assert_eq!(entries[3], &Entry::Answer("done".into()));
         assert!(matches!(entries[4], Entry::TurnDone { tool_calls: 1, .. }));
+    }
+
+    #[test]
+    fn interrupting_stops_running_tools_and_adds_the_footer() {
+        let mut t = transcript();
+        t.push_user("go".into());
+        t.apply(&Event::ReasoningDelta("hm".into()));
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolStarted(call("2")));
+        t.apply(&Event::ToolFinished {
+            call: call("1"),
+            result: Ok("x".into()),
+        });
+        t.interrupt(Duration::from_secs(3));
+
+        let entries: Vec<_> = t.entries().collect();
+        assert!(matches!(entries[1], Entry::Reasoning { took: Some(_), .. }));
+        assert!(matches!(
+            entries[2],
+            Entry::Tool {
+                state: ToolState::Done,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries[3],
+            &Entry::Tool {
+                call: call("2"),
+                state: ToolState::Failed("interrupted".into())
+            }
+        );
+        assert!(matches!(entries[4], Entry::Interrupted { .. }));
+        let total = t.layout(40);
+        assert_eq!(text(&t.visible(total - 1, 1)), ["  ⏹ interrupted · 3.0s"]);
     }
 
     #[test]

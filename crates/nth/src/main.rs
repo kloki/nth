@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use nth_llm::chat_completions::ChatClient;
 use nth_protocol::{ModelInfo, Provider};
-use nth_session::Session;
+use nth_session::{CancellationToken, Session};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
@@ -103,7 +103,9 @@ async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
         }
         out
     });
-    let turn = session.prompt(prompt, &provider, &tools, &tx).await;
+    let turn = session
+        .prompt(prompt, &provider, &tools, &tx, &CancellationToken::new())
+        .await;
     drop(tx);
     let printer = printer.await.context("printer task failed")?;
     printer.finish();
