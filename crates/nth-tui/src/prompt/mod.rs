@@ -26,6 +26,12 @@ impl Prompt {
         self.cursor = 0;
     }
 
+    /// Replaces the whole text, with the cursor at its end.
+    pub fn set(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.cursor = self.text.len();
+    }
+
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)

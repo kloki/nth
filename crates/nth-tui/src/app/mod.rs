@@ -25,6 +25,7 @@ use turn::{Ended, Running};
 
 use crate::{
     chat::Chat,
+    command::{self, Command, Completion},
     prompt::{self, PROMPT_ROWS, Prompt},
     status,
 };
@@ -42,6 +43,8 @@ pub struct App {
     pub place: String,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
+    /// Open while Ctrl+N cycles through commands matching the prompt.
+    completion: Option<Completion>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -74,6 +77,7 @@ impl App {
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
             busy_since: None,
+            completion: None,
             session: Some(session),
             provider,
             tools,
@@ -129,6 +133,9 @@ impl App {
 
         let banner = format!("nth · {} · {}", self.model, self.place);
         self.chat.draw(frame, chat, &banner);
+        if let Some(completion) = &self.completion {
+            command::draw(frame, chat, completion);
+        }
         status::draw(frame, status, self);
         prompt::draw(frame, prompt, &self.prompt, self.is_busy());
     }
@@ -141,10 +148,26 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) => self
-                .prompt
-                .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n")),
+            TermEvent::Paste(text) => {
+                self.completion = None;
+                self.prompt
+                    .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+            }
             _ => {}
+        }
+    }
+
+    fn run_command(&mut self, command: Command) {
+        match command {
+            // Dropping the app aborts a running turn.
+            Command::Exit => self.quit = true,
+            // Mid-turn the session is in the turn task, so there is nothing
+            // to replace yet.
+            Command::Clear if self.is_busy() => {}
+            Command::Clear => {
+                self.session = Some(Session::new(self.model.clone(), self.cwd.clone()));
+                self.chat = Chat::new(self.cwd.clone());
+            }
         }
     }
 }
@@ -213,5 +236,48 @@ pub(crate) mod tests {
             [" ▎ two", " ▎ three", " ▎ four"]
         );
         assert_eq!(busy[7].trim_end(), " ▎ message 19");
+    }
+
+    #[test]
+    fn exit_command_quits() {
+        let mut app = app();
+        app.prompt.insert_str("/exit");
+        app.submit();
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn clear_command_starts_a_fresh_session() {
+        let mut app = app();
+        let old = app.session.as_ref().expect("idle").id;
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(nth_protocol::Message::User("hi".into()));
+        app.chat.transcript.push_user("hi".into());
+
+        app.prompt.insert_str("/clear");
+        app.submit();
+
+        let session = app.session.as_ref().expect("idle");
+        assert_ne!(session.id, old);
+        assert_eq!(session.messages.len(), 1, "only the system prompt");
+        assert!(app.chat.transcript.is_empty());
+        assert!(app.prompt.is_empty());
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn completion_sits_above_the_status_row() {
+        let mut app = app();
+        app.prompt.insert('/');
+        app.apply(keys::Action::Complete);
+        let rows = rows(&mut app);
+
+        assert!(rows[6].starts_with(" ▎ /clear"));
+        assert!(rows[7].starts_with(" ▎ /exit"));
+        assert!(rows[8].trim_end().ends_with("glm · /repo"));
+        assert!(rows[9].starts_with(" ▎ /clear"));
     }
 }

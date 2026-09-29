@@ -9,6 +9,9 @@ pub struct Request<'a> {
     /// Per request rather than per provider, so a session can switch models
     /// without rebuilding its client.
     pub model: &'a str,
+    /// Per request too, so one client serves successive sessions. It must
+    /// stay stable within a conversation: Go routes and caches prompts on it.
+    pub session_id: &'a str,
     pub messages: &'a [Message],
     pub tools: &'a [ToolSpec],
 }

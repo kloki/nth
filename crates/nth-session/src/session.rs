@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Error, run_turn, system_prompt};
+use crate::{Error, Route, run_turn, system_prompt};
 
 /// One conversation: who it runs for, where, and everything said so far.
 /// Serializable so a later store can persist and resume it.
@@ -58,7 +58,10 @@ impl Session {
         };
         run_turn(
             provider,
-            &self.model,
+            Route {
+                model: &self.model,
+                session_id: &self.id.to_string(),
+            },
             tools,
             &ctx,
             &mut self.messages,
