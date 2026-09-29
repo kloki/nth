@@ -92,6 +92,9 @@ pub struct App {
     /// Where instruction files are looked for when a resumed session moves
     /// to another directory.
     paths: Paths,
+    /// The configured step limit, which every session the app moves on to
+    /// keeps; a loaded one would otherwise fall back to the default.
+    max_steps: usize,
     session_listing: Option<JoinHandle<Result<Vec<Summary>, store::Error>>>,
     /// The session chosen in the session picker, being read.
     session_loading: Option<JoinHandle<Result<Session, store::Error>>>,
@@ -206,6 +209,7 @@ impl App {
             llm_listing: None,
             store: None,
             paths: Paths::default(),
+            max_steps: session.max_steps,
             session_listing: None,
             session_loading: None,
             session: Some(session),
@@ -442,6 +446,7 @@ impl App {
                 let mut session =
                     Session::new(self.model.clone(), self.cwd.clone()).with_context(context);
                 session.effort = self.effort;
+                session.max_steps = self.max_steps;
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
                 self.usage = None;

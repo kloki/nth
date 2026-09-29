@@ -284,6 +284,7 @@ mod tests {
         let paths = Paths {
             home: Some(tree.path("home")),
             config_home: Some(tree.path("home/.config")),
+            ..Paths::default()
         };
 
         assert_eq!(
@@ -380,6 +381,7 @@ mod tests {
         let paths = Paths {
             home: Some(tree.path("home")),
             config_home: Some(tree.path("home/.config")),
+            ..Paths::default()
         };
 
         assert_eq!(

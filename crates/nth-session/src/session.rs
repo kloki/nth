@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Error, Route, run_turn, system_prompt};
+use crate::{DEFAULT_MAX_STEPS, Error, Route, run_turn, system_prompt};
 
 /// One conversation: who it runs for, where, and everything said so far.
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
@@ -33,6 +33,10 @@ pub struct Session {
     /// does not get them again.
     #[serde(default)]
     pub loaded_instructions: BTreeSet<PathBuf>,
+    /// Model requests a turn may make before it gives up. Comes from the
+    /// config, not the save, so a resumed session follows today's config.
+    #[serde(skip, default = "default_max_steps")]
+    pub max_steps: usize,
     /// Not saved: it is read afresh for the working directory, so a resumed
     /// session sees the instruction files as they are now.
     #[serde(skip)]
@@ -54,6 +58,7 @@ impl Session {
             updated_at: now,
             messages,
             loaded_instructions: BTreeSet::new(),
+            max_steps: DEFAULT_MAX_STEPS,
             context,
         }
     }
@@ -126,6 +131,7 @@ impl Session {
                 model: &self.model,
                 effort: self.effort,
                 session_id: &self.id.to_string(),
+                max_steps: self.max_steps,
             },
             tools,
             &ctx,
@@ -141,6 +147,10 @@ impl Session {
             .clone();
         result
     }
+}
+
+fn default_max_steps() -> usize {
+    DEFAULT_MAX_STEPS
 }
 
 #[cfg(test)]
@@ -222,7 +232,7 @@ mod tests {
         fn spec(&self) -> nth_protocol::ToolSpec {
             nth_protocol::ToolSpec {
                 name: "claim",
-                description: "",
+                description: String::new(),
                 parameters: serde_json::json!({}),
             }
         }

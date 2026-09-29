@@ -21,7 +21,7 @@ impl Tool for Write {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write",
-            description: include_str!("description.txt"),
+            description: include_str!("description.txt").into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

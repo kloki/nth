@@ -1,3 +1,4 @@
+mod config;
 mod render;
 
 use std::{
@@ -10,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
+use config::Config;
 use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
 use nth_protocol::Provider;
@@ -20,6 +22,9 @@ use tokio::sync::mpsc;
 #[derive(Parser)]
 #[command(name = "nth", version, about = "A coding harness, for the N-th time")]
 struct Cli {
+    /// Config file to use instead of ~/.config/nth/config.toml
+    #[arg(long, global = true, env = "NTH_CONFIG")]
+    config: Option<PathBuf>,
     /// Without a subcommand, nth opens the interactive chat.
     #[command(subcommand)]
     command: Option<Command>,
@@ -46,27 +51,45 @@ enum Command {
         #[command(flatten)]
         endpoint: Endpoint,
     },
+    /// Print the config in use, with every default filled in
+    Config,
 }
 
+/// Overrides for the `[provider]` section of the config.
 #[derive(Args)]
 struct Endpoint {
-    #[arg(long, env = "NTH_MODEL", default_value = "deepseek-v4.1-flash")]
-    model: String,
-    #[arg(
-        long,
-        env = "NTH_BASE_URL",
-        default_value = "https://opencode.ai/zen/go/v1"
-    )]
-    base_url: String,
+    #[arg(long, env = "NTH_MODEL")]
+    model: Option<String>,
+    #[arg(long, env = "NTH_BASE_URL")]
+    base_url: Option<String>,
+}
+
+impl Endpoint {
+    fn apply(self, config: &mut Config) {
+        if let Some(model) = self.model {
+            config.provider.model = model;
+        }
+        if let Some(base_url) = self.base_url {
+            config.provider.base_url = base_url;
+        }
+    }
 }
 
 /// A fresh session in the working directory, with its instruction files
 /// read, and the client it talks through.
-async fn setup(endpoint: Endpoint, paths: &Paths) -> Result<(Session, ChatClient)> {
+async fn setup(config: &Config, paths: &Paths) -> Result<(Session, ChatClient)> {
     let cwd = std::env::current_dir().context("no working directory")?;
-    let provider = ChatClient::new(endpoint.base_url, api_key()?);
-    let session = Session::new(endpoint.model, cwd.clone()).with_context(context(cwd, paths).await);
+    let provider = client(config)?;
+    let mut session = Session::new(config.provider.model.clone(), cwd.clone())
+        .with_context(context(cwd, paths).await);
+    session.max_steps = config.session.max_steps;
     Ok((session, provider))
+}
+
+fn client(config: &Config) -> Result<ChatClient> {
+    let key_env = &config.provider.api_key_env;
+    let api_key = std::env::var(key_env).with_context(|| format!("{key_env} not set"))?;
+    Ok(ChatClient::new(config.provider.base_url.clone(), api_key))
 }
 
 /// What applies to `cwd`. Problems with it are warned about, not fatal.
@@ -78,17 +101,26 @@ async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
     Arc::new(context)
 }
 
-fn api_key() -> Result<String> {
-    std::env::var("OPENCODE_GO_API_KEY").context("OPENCODE_GO_API_KEY not set")
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
-        None => chat(cli.resume, cli.endpoint).await,
-        Some(Command::Run { prompt, endpoint }) => run(prompt, endpoint).await,
-        Some(Command::Models { json, endpoint }) => models(json, endpoint).await,
+    let result = match Config::load(cli.config.as_deref()) {
+        Err(e) => Err(e),
+        Ok(mut config) => match cli.command {
+            None => {
+                cli.endpoint.apply(&mut config);
+                chat(cli.resume, config).await
+            }
+            Some(Command::Run { prompt, endpoint }) => {
+                endpoint.apply(&mut config);
+                run(prompt, config).await
+            }
+            Some(Command::Models { json, endpoint }) => {
+                endpoint.apply(&mut config);
+                models(json, config).await
+            }
+            Some(Command::Config) => show_config(cli.config, &config),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -101,9 +133,9 @@ async fn main() -> ExitCode {
 
 /// With `resume`, the last session comes back as it was: its model, effort
 /// and working directory win over the flags and where nth was started.
-async fn chat(resume: bool, endpoint: Endpoint) -> Result<()> {
-    let paths = Paths::from_env();
-    let (mut session, provider) = setup(endpoint, &paths).await?;
+async fn chat(resume: bool, config: Config) -> Result<()> {
+    let paths = config.paths();
+    let (mut session, provider) = setup(&config, &paths).await?;
     let store = Store::open()?;
     if resume {
         session = store
@@ -112,21 +144,22 @@ async fn chat(resume: bool, endpoint: Endpoint) -> Result<()> {
             .context("no saved session to continue")?;
         let context = context(session.cwd.clone(), &paths).await;
         session.set_context(context);
+        session.max_steps = config.session.max_steps;
     }
     nth_tui::run(
         session,
         Arc::new(provider),
-        Arc::new(nth_tools::all()),
+        Arc::new(nth_tools::all(&config.tools)),
         store,
         paths,
     )
     .await
 }
 
-async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
-    let (mut session, provider) = setup(endpoint, &Paths::from_env()).await?;
+async fn run(prompt: String, config: Config) -> Result<()> {
+    let (mut session, provider) = setup(&config, &config.paths()).await?;
     let cwd = session.cwd.clone();
-    let tools = nth_tools::all();
+    let tools = nth_tools::all(&config.tools);
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::channel(256);
@@ -168,8 +201,28 @@ async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
     Ok(())
 }
 
-async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
-    let provider = ChatClient::new(endpoint.base_url, api_key()?);
+fn show_config(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
+    match explicit.or_else(Config::default_path) {
+        Some(path) if path.exists() => {
+            eprintln!("{} {}", "✓".green().bold(), path.display().dimmed())
+        }
+        Some(path) => eprintln!(
+            "{} {}",
+            "→".cyan().bold(),
+            format!("no {}, using defaults", path.display()).dimmed()
+        ),
+        None => eprintln!(
+            "{} {}",
+            "→".cyan().bold(),
+            "no home dir, using defaults".dimmed()
+        ),
+    }
+    print!("{}", config.to_toml()?);
+    Ok(())
+}
+
+async fn models(json: bool, config: Config) -> Result<()> {
+    let provider = client(&config)?;
     let models = provider.models().await.map_err(|e| anyhow!(e))?;
 
     let mut out = std::io::stdout().lock();
@@ -183,7 +236,7 @@ async fn models(json: bool, endpoint: Endpoint) -> Result<()> {
     let width = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
     for model in &models {
         let limits = model.limits().dimmed().to_string();
-        if model.id == endpoint.model {
+        if model.id == config.provider.model {
             writeln!(
                 out,
                 "{} {:width$}  {limits}",
