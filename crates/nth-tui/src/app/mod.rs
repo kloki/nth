@@ -43,7 +43,7 @@ pub struct App {
     pub place: String,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
-    /// Open while Ctrl+N cycles through commands matching the prompt.
+    /// Open while the prompt starts a command; Esc closes it until the next edit.
     completion: Option<Completion>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
@@ -133,11 +133,12 @@ impl App {
 
         let banner = format!("nth · {} · {}", self.model, self.place);
         self.chat.draw(frame, chat, &banner);
-        if let Some(completion) = &self.completion {
-            command::draw(frame, chat, completion);
-        }
         status::draw(frame, status, self);
         prompt::draw(frame, prompt, &self.prompt, self.is_busy());
+        // Last, so it pops over the chat and status row.
+        if let Some(completion) = &self.completion {
+            command::draw(frame, area, prompt, completion);
+        }
     }
 
     fn on_terminal(&mut self, event: TermEvent) {
@@ -149,9 +150,9 @@ impl App {
                 _ => {}
             },
             TermEvent::Paste(text) => {
-                self.completion = None;
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                self.refresh_completion();
             }
             _ => {}
         }
@@ -269,15 +270,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn completion_sits_above_the_status_row() {
+    fn completion_pops_over_the_status_row() {
         let mut app = app();
-        app.prompt.insert('/');
-        app.apply(keys::Action::Complete);
+        app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with(" ▎ /clear"));
-        assert!(rows[7].starts_with(" ▎ /exit"));
-        assert!(rows[8].trim_end().ends_with("glm · /repo"));
-        assert!(rows[9].starts_with(" ▎ /clear"));
+        assert!(rows[7].starts_with("  /clear"));
+        assert!(rows[8].starts_with("  /exit"));
+        assert!(rows[9].starts_with(" ▎ /"));
     }
 }

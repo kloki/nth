@@ -1,4 +1,4 @@
-//! Slash commands typed into the prompt, and cycling through the ones that
+//! Slash commands typed into the prompt, and picking from the ones that
 //! match what has been typed so far.
 
 mod view;
@@ -47,8 +47,7 @@ impl Command {
     }
 }
 
-/// The commands matching the prompt when completion started, and which one
-/// the prompt currently holds.
+/// The commands matching the prompt, and which one is highlighted.
 #[derive(Debug)]
 pub struct Completion {
     matches: Vec<Command>,
@@ -69,12 +68,12 @@ impl Completion {
         self.selected = (self.selected + 1) % self.matches.len();
     }
 
-    pub fn selected(&self) -> Command {
-        self.matches[self.selected]
+    pub fn prev(&mut self) {
+        self.selected = (self.selected + self.matches.len() - 1) % self.matches.len();
     }
 
-    pub fn len(&self) -> usize {
-        self.matches.len()
+    pub fn selected(&self) -> Command {
+        self.matches[self.selected]
     }
 }
 
@@ -101,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_cycles_through_matches() {
+    fn completion_cycles_both_ways() {
         assert!(Completion::new("/x").is_none());
 
         let mut completion = Completion::new("/").expect("matches");
@@ -110,5 +109,7 @@ mod tests {
         assert_eq!(completion.selected(), Command::Exit);
         completion.next();
         assert_eq!(completion.selected(), Command::Clear);
+        completion.prev();
+        assert_eq!(completion.selected(), Command::Exit);
     }
 }

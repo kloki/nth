@@ -9,8 +9,11 @@ use crate::command::Completion;
 pub enum Action {
     Submit,
     Interrupt,
-    /// Fills the prompt with the next command matching it.
-    Complete,
+    /// Highlights the next or previous command in the completion popup.
+    SelectNext,
+    SelectPrev,
+    /// Fills the prompt with the highlighted command.
+    Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
     Insert(char),
@@ -34,11 +37,15 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
-        KeyCode::Char('n') if ctrl => Action::Complete,
+        KeyCode::Char('n') if ctrl => Action::SelectNext,
+        KeyCode::Char('p') if ctrl => Action::SelectPrev,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
         KeyCode::Enter => Action::Submit,
+        KeyCode::Tab => Action::Accept,
+        KeyCode::Down => Action::SelectNext,
+        KeyCode::Up => Action::SelectPrev,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
         KeyCode::Home if ctrl => Action::Top,
@@ -62,12 +69,29 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
-        // Any key but Ctrl+N ends the cycle, so the next one filters on
-        // whatever the prompt holds by then.
-        let completion = self.completion.take();
+        if let Some(completion) = &mut self.completion {
+            match action {
+                Action::SelectNext => return completion.next(),
+                Action::SelectPrev => return completion.prev(),
+                Action::Accept => {
+                    let name = format!("/{}", completion.selected().name());
+                    return self.prompt.set(&name);
+                }
+                Action::Submit => {
+                    let command = completion.selected();
+                    self.completion = None;
+                    self.prompt.clear();
+                    return self.run_command(command);
+                }
+                Action::Interrupt => {
+                    self.completion = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match action {
-            Action::Complete => self.complete(completion),
-            Action::Interrupt if completion.is_some() => {}
+            Action::SelectNext | Action::SelectPrev | Action::Accept => {}
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
@@ -85,29 +109,26 @@ impl App {
             Action::Top => self.chat.jump_top(),
             Action::Bottom => self.chat.jump_bottom(),
         }
+        match action {
+            Action::Insert(_) | Action::Newline | Action::Backspace | Action::Delete => {
+                self.refresh_completion()
+            }
+            // Chat scrolling leaves the popup be; anything else on the
+            // prompt closes it.
+            Action::PageUp | Action::PageDown | Action::Top | Action::Bottom => {}
+            _ => self.completion = None,
+        }
     }
 
-    fn complete(&mut self, completion: Option<Completion>) {
-        let completion = match completion {
-            Some(mut completion) => {
-                completion.next();
-                completion
-            }
-            None => match Completion::new(self.prompt.text()) {
-                Some(completion) => completion,
-                None => return,
-            },
-        };
-        self.prompt
-            .set(&format!("/{}", completion.selected().name()));
-        self.completion = Some(completion);
+    pub(super) fn refresh_completion(&mut self) {
+        self.completion = Completion::new(self.prompt.text());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::app;
+    use crate::{app::tests::app, command::Command};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         action(KeyEvent::new(code, modifiers))
@@ -126,51 +147,88 @@ mod tests {
         assert_eq!(key(KeyCode::Char('c'), none), Some(Action::Insert('c')));
         assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
-        assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Complete));
+        assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::SelectNext));
+        assert_eq!(key(KeyCode::Char('p'), ctrl), Some(Action::SelectPrev));
+        assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
+        assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
+        assert_eq!(key(KeyCode::Tab, none), Some(Action::Accept));
         assert_eq!(key(KeyCode::Char('x'), ctrl), None);
     }
 
-    #[test]
-    fn ctrl_n_cycles_matching_commands() {
+    fn typed(text: &str) -> App {
         let mut app = app();
-        app.prompt.insert('/');
+        for c in text.chars() {
+            app.apply(Action::Insert(c));
+        }
+        app
+    }
 
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "/clear");
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "/exit");
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "/clear");
+    fn selected(app: &App) -> Command {
+        app.completion.as_ref().expect("popup open").selected()
     }
 
     #[test]
-    fn editing_or_esc_ends_the_completion() {
-        let mut app = app();
-        app.prompt.insert_str("/e");
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "/exit");
+    fn slash_opens_the_popup_and_typing_filters_it() {
+        let mut app = typed("/");
+        assert_eq!(selected(&app), Command::Clear);
 
+        app.apply(Action::Insert('e'));
+        assert_eq!(selected(&app), Command::Exit);
+
+        app.apply(Action::Insert('x'));
+        app.apply(Action::Insert('x'));
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn arrows_cycle_without_touching_the_prompt() {
+        let mut app = typed("/");
+        app.apply(Action::SelectNext);
+        assert_eq!(selected(&app), Command::Exit);
+        app.apply(Action::SelectNext);
+        assert_eq!(selected(&app), Command::Clear);
+        app.apply(Action::SelectPrev);
+        assert_eq!(selected(&app), Command::Exit);
+        assert_eq!(app.prompt.text(), "/");
+    }
+
+    #[test]
+    fn tab_fills_in_the_highlighted_command() {
+        let mut app = typed("/");
+        app.apply(Action::SelectNext);
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "/exit");
+        assert!(app.completion.is_some());
+    }
+
+    #[test]
+    fn enter_runs_the_highlighted_command() {
+        let mut app = typed("/ex");
+        app.apply(Action::Submit);
+        assert!(app.quit);
+        assert!(app.prompt.is_empty());
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn esc_closes_the_popup_until_the_next_edit() {
+        let mut app = typed("/c");
         app.apply(Action::Interrupt);
         assert!(app.completion.is_none());
 
-        app.prompt.clear();
-        app.prompt.insert('/');
-        app.apply(Action::Complete);
-        app.apply(Action::Backspace);
+        app.apply(Action::SelectNext);
         assert!(app.completion.is_none());
-        assert_eq!(app.prompt.text(), "/clea");
 
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "/clear");
+        app.apply(Action::Backspace);
+        assert!(app.completion.is_some());
     }
 
     #[test]
-    fn ctrl_n_ignores_prompts_that_are_not_commands() {
-        let mut app = app();
-        app.prompt.insert_str("hello");
-        app.apply(Action::Complete);
-        assert_eq!(app.prompt.text(), "hello");
+    fn plain_prompts_never_open_the_popup() {
+        let mut app = typed("hello");
         assert!(app.completion.is_none());
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "hello");
     }
 
     #[test]
