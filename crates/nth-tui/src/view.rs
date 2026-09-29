@@ -128,7 +128,7 @@ mod tests {
     use std::{sync::Arc, time::Instant};
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{BoxError, Provider, Request, StreamEvent};
+    use nth_protocol::{BoxError, ModelInfo, Provider, Request, StreamEvent};
     use nth_session::Session;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -137,8 +137,8 @@ mod tests {
     struct Idle;
 
     impl Provider for Idle {
-        fn model(&self) -> &str {
-            "glm"
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
         }
 
         fn stream<'a>(

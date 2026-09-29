@@ -74,7 +74,7 @@ impl App {
             transcript: Transcript::new(session.cwd.clone()),
             prompt: Prompt::default(),
             scroll: Scroll::default(),
-            model: provider.model().to_string(),
+            model: session.model.clone(),
             cwd: session.cwd.clone(),
             place,
             busy_since: None,
@@ -234,7 +234,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{BoxError, Request, StreamEvent};
+    use nth_protocol::{BoxError, ModelInfo, Request, StreamEvent};
 
     use super::*;
 
@@ -250,8 +250,8 @@ mod tests {
     }
 
     impl Provider for Hang {
-        fn model(&self) -> &str {
-            "glm"
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
         }
 
         fn stream<'a>(

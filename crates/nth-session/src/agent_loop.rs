@@ -21,6 +21,7 @@ pub enum Error {
 /// Everything the model and tools produce is appended to `messages`.
 pub async fn run_turn(
     provider: &dyn Provider,
+    model: &str,
     tools: &[Box<dyn Tool>],
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
@@ -29,6 +30,7 @@ pub async fn run_turn(
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
     for _ in 0..MAX_STEPS {
         let request = Request {
+            model,
             messages,
             tools: &specs,
         };
@@ -114,24 +116,40 @@ mod tests {
         future::BoxFuture,
         stream::{self, BoxStream},
     };
-    use nth_protocol::ToolSpec;
+    use nth_protocol::{ModelInfo, ToolSpec};
 
     use super::*;
 
-    /// Replays one scripted reply per request.
-    struct Scripted(Mutex<Vec<Vec<StreamEvent>>>);
+    /// Replays one scripted reply per request and records the model asked for.
+    struct Scripted {
+        replies: Mutex<Vec<Vec<StreamEvent>>>,
+        models: Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new(replies: Vec<Vec<StreamEvent>>) -> Self {
+            Self {
+                replies: Mutex::new(replies),
+                models: Mutex::new(Vec::new()),
+            }
+        }
+    }
 
     impl Provider for Scripted {
-        fn model(&self) -> &str {
-            "scripted"
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
         }
 
         fn stream<'a>(
             &'a self,
-            _: Request<'a>,
+            request: Request<'a>,
         ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
         {
-            let reply = self.0.lock().expect("not poisoned").remove(0);
+            self.models
+                .lock()
+                .expect("not poisoned")
+                .push(request.model.to_string());
+            let reply = self.replies.lock().expect("not poisoned").remove(0);
             async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
         }
     }
@@ -166,19 +184,19 @@ mod tests {
 
     #[tokio::test]
     async fn runs_tools_until_the_model_answers() {
-        let provider = Scripted(Mutex::new(vec![
+        let provider = Scripted::new(vec![
             vec![
                 StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
                 StreamEvent::ToolCall(call("2", "nope", "")),
             ],
             vec![StreamEvent::TextDelta("done".into())],
-        ]));
+        ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext { cwd: ".".into() };
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(&provider, &tools, &ctx, &mut messages, &tx)
+        run_turn(&provider, "glm-5.3", &tools, &ctx, &mut messages, &tx)
             .await
             .expect("turn completes");
 
@@ -207,5 +225,9 @@ mod tests {
             }
         }
         assert_eq!(texts, ["done"]);
+        assert_eq!(
+            *provider.models.lock().expect("not poisoned"),
+            ["glm-5.3"; 2]
+        );
     }
 }
