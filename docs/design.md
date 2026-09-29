@@ -18,7 +18,7 @@ nth ("N-th time") is a personal, opinionated coding harness in Rust. It runs man
 
 **Non-goals**
 
-- Configurability for other users. Opinions are hardcoded; config exists only for secrets and model choice.
+- Configurability for other users. Opinions are hardcoded. `~/.config/nth/config.toml` only tunes defaults such as the provider, model and tool limits, and secrets stay in environment variables.
 - A client/server split, web UI, desktop app or IDE plugin. opencode has these; nth does not need them.
 
   The one exception is a local Unix socket on a running nth. It carries the same commands and events as JSON lines, so a CLI call or an agent acts on the sessions you see in the TUI.

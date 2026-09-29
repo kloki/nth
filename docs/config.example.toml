@@ -1,0 +1,31 @@
+# nth config: copy to ~/.config/nth/config.toml (or $XDG_CONFIG_HOME/nth/config.toml).
+# Every key is optional and shows its default. Keep only the ones you change.
+# `nth config` prints the config nth actually uses.
+
+[provider]
+# Any OpenAI-compatible chat completions endpoint. --base-url / NTH_BASE_URL override it.
+base_url = "https://opencode.ai/zen/go/v1"
+# --model / NTH_MODEL override it.
+model = "glm-5.3"
+# Name of the environment variable that holds the API key. The key itself stays out of this file.
+api_key_env = "OPENCODE_GO_API_KEY"
+
+[session]
+# Stop a turn after this many model requests without a final answer.
+max_steps = 100
+
+[tools.read]
+# Lines returned when the model gives no limit.
+default_limit = 2000
+# Longer lines are cut.
+max_line_chars = 2000
+# Output stops before this many bytes.
+max_bytes = 51200
+
+[tools.bash]
+# Timeout when the model gives none.
+default_timeout_ms = 120000
+# Cap on the timeout the model may ask for.
+max_timeout_ms = 600000
+# Longer output keeps only its last this-many characters.
+max_output_chars = 30000

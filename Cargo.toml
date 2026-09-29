@@ -23,4 +23,5 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "process", "sync", "time"] }
+toml = "1"
 uuid = { version = "1", features = ["v4"] }

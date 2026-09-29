@@ -6,14 +6,14 @@ use nth_protocol::{
 use tokio::sync::mpsc;
 
 /// Guards against a model that never stops calling tools.
-pub const MAX_STEPS: usize = 100;
+pub const DEFAULT_MAX_STEPS: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
     Provider(BoxError),
-    #[error("stopped after {MAX_STEPS} steps without a final answer")]
-    TooManySteps,
+    #[error("stopped after {0} steps without a final answer")]
+    TooManySteps(usize),
 }
 
 /// Runs one user turn: stream a reply, run its tool calls in parallel, feed
@@ -25,9 +25,10 @@ pub async fn run_turn(
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
     events: &mpsc::Sender<Event>,
+    max_steps: usize,
 ) -> Result<(), Error> {
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
-    for _ in 0..MAX_STEPS {
+    for _ in 0..max_steps {
         let request = Request {
             messages,
             tools: &specs,
@@ -64,7 +65,7 @@ pub async fn run_turn(
             });
         }
     }
-    Err(Error::TooManySteps)
+    Err(Error::TooManySteps(max_steps))
 }
 
 async fn run_tool(
@@ -142,7 +143,7 @@ mod tests {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "echo",
-                description: "",
+                description: String::new(),
                 parameters: serde_json::json!({}),
             }
         }
@@ -178,9 +179,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(&provider, &tools, &ctx, &mut messages, &tx)
-            .await
-            .expect("turn completes");
+        run_turn(
+            &provider,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            DEFAULT_MAX_STEPS,
+        )
+        .await
+        .expect("turn completes");
 
         assert_eq!(
             messages[2..],

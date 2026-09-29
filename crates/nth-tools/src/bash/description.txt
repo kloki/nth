@@ -15,9 +15,9 @@ Before executing the command, please follow these steps:
 
 Usage notes:
   - The command argument is required.
-  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will time out after 120000ms (2 minutes).
+  - You can specify an optional timeout in milliseconds (up to {max_timeout_ms}ms). If not specified, commands will time out after {default_timeout_ms}ms.
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-  - stdout and stderr are combined. If the output exceeds 30000 characters, only the last 30000 characters are returned.
+  - stdout and stderr are combined. If the output exceeds {max_output_chars} characters, only the last {max_output_chars} characters are returned.
   - When issuing multiple commands:
     - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message.
     - If the commands depend on each other and must run sequentially, use a single call with '&&' to chain them together.

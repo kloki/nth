@@ -2,14 +2,39 @@ use std::path::Path;
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const DEFAULT_LIMIT: usize = 2000;
-const MAX_LINE_CHARS: usize = 2000;
-const MAX_BYTES: usize = 50 * 1024;
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReadConfig {
+    /// Lines returned when the model gives no `limit`.
+    pub default_limit: usize,
+    pub max_line_chars: usize,
+    /// Output stops before this many bytes, whatever the `limit`.
+    pub max_bytes: usize,
+}
 
-pub struct Read;
+impl Default for ReadConfig {
+    fn default() -> Self {
+        Self {
+            default_limit: 2000,
+            max_line_chars: 2000,
+            max_bytes: 50 * 1024,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Read {
+    config: ReadConfig,
+}
+
+impl Read {
+    pub fn new(config: ReadConfig) -> Self {
+        Self { config }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,13 +48,15 @@ impl Tool for Read {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read",
-            description: include_str!("description.txt"),
+            description: include_str!("description.txt")
+                .replace("{default_limit}", &self.config.default_limit.to_string())
+                .replace("{max_line_chars}", &self.config.max_line_chars.to_string()),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "filePath": { "type": "string", "description": "The path to the file or directory to read" },
                     "offset": { "type": "integer", "minimum": 1, "description": "The line number to start reading from (1-indexed)" },
-                    "limit": { "type": "integer", "minimum": 1, "description": "The maximum number of lines to read (defaults to 2000)" }
+                    "limit": { "type": "integer", "minimum": 1, "description": format!("The maximum number of lines to read (defaults to {})", self.config.default_limit) }
                 },
                 "required": ["filePath"]
             }),
@@ -45,14 +72,14 @@ impl Tool for Read {
             let args: Args = crate::parse_args(args)?;
             let path = ctx.cwd.join(&args.file_path);
             let offset = args.offset.unwrap_or(1).max(1);
-            let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
+            let limit = args.limit.unwrap_or(self.config.default_limit);
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
             if meta.is_dir() {
                 list_dir(&path, offset, limit).await
             } else {
-                read_file(&path, offset, limit).await
+                read_file(&path, offset, limit, &self.config).await
             }
         }
         .boxed()
@@ -83,7 +110,7 @@ async fn list_dir(path: &Path, offset: usize, limit: usize) -> ToolResult {
     Ok(out)
 }
 
-async fn read_file(path: &Path, offset: usize, limit: usize) -> ToolResult {
+async fn read_file(path: &Path, offset: usize, limit: usize, config: &ReadConfig) -> ToolResult {
     let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
     if bytes.iter().take(8192).any(|&b| b == 0) {
         return Err(format!("cannot read binary file: {}", path.display()));
@@ -99,15 +126,16 @@ async fn read_file(path: &Path, offset: usize, limit: usize) -> ToolResult {
     let mut out = String::new();
     let mut last = offset - 1;
     for (i, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
-        let line = match line.char_indices().nth(MAX_LINE_CHARS) {
+        let line = match line.char_indices().nth(config.max_line_chars) {
             Some((cut, _)) => format!(
-                "{}... (line truncated to {MAX_LINE_CHARS} chars)",
-                &line[..cut]
+                "{}... (line truncated to {} chars)",
+                &line[..cut],
+                config.max_line_chars
             ),
             None => line.to_string(),
         };
         let entry = format!("{}: {line}\n", i + 1);
-        if out.len() + entry.len() > MAX_BYTES {
+        if out.len() + entry.len() > config.max_bytes {
             break;
         }
         out.push_str(&entry);
@@ -130,7 +158,7 @@ mod tests {
         let ctx = ToolContext {
             cwd: dir.to_path_buf(),
         };
-        Read.call(args, &ctx).await
+        Read::default().call(args, &ctx).await
     }
 
     #[tokio::test]
@@ -154,6 +182,25 @@ mod tests {
         assert_eq!(
             out,
             "2: 2\n3: 3\n\n(Showing lines 2-3 of 4. Use offset=4 to continue.)"
+        );
+    }
+
+    #[tokio::test]
+    async fn uses_configured_limits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), "1\n2\n3\n").expect("write");
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+        };
+        let read = Read::new(ReadConfig {
+            default_limit: 1,
+            ..ReadConfig::default()
+        });
+        assert!(read.spec().description.contains("up to 1 lines"));
+        let out = read.call(json!({ "filePath": "a.txt" }), &ctx).await;
+        assert_eq!(
+            out,
+            Ok("1: 1\n\n(Showing lines 1-1 of 3. Use offset=2 to continue.)".to_string())
         );
     }
 
