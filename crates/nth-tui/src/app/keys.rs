@@ -37,13 +37,11 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
-        KeyCode::Char('n') if ctrl => Action::SelectNext,
-        KeyCode::Char('p') if ctrl => Action::SelectPrev,
+        KeyCode::Char('n') if ctrl => Action::Accept,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
         KeyCode::Enter => Action::Submit,
-        KeyCode::Tab => Action::Accept,
         KeyCode::Down => Action::SelectNext,
         KeyCode::Up => Action::SelectPrev,
         KeyCode::PageUp => Action::PageUp,
@@ -176,11 +174,10 @@ mod tests {
         assert_eq!(key(KeyCode::Char('c'), none), Some(Action::Insert('c')));
         assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
-        assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::SelectNext));
-        assert_eq!(key(KeyCode::Char('p'), ctrl), Some(Action::SelectPrev));
+        assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
-        assert_eq!(key(KeyCode::Tab, none), Some(Action::Accept));
+        assert_eq!(key(KeyCode::Tab, none), None);
         assert_eq!(key(KeyCode::Char('x'), ctrl), None);
     }
 
@@ -241,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_fills_in_the_highlighted_command() {
+    fn ctrl_n_fills_in_the_highlighted_command() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
@@ -292,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_enter_fill_in_the_file() {
+    fn ctrl_n_and_enter_fill_in_the_file() {
         let mut app = with_files("see @ke");
         app.apply(Action::Accept);
         assert_eq!(app.prompt.text(), "see @crates/nth-tui/src/app/keys.rs ");
