@@ -32,6 +32,15 @@ impl Session {
         }
     }
 
+    /// Later turns go to `model`. The history is kept; only the system
+    /// prompt changes, since it names the model.
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
+        if let Some(first @ Message::System(_)) = self.messages.first_mut() {
+            *first = Message::System(system_prompt(&self.model, &self.cwd));
+        }
+    }
+
     /// Adds a user message and runs the turn it starts.
     pub async fn prompt(
         &mut self,
@@ -44,7 +53,15 @@ impl Session {
         let ctx = ToolContext {
             cwd: self.cwd.clone(),
         };
-        run_turn(provider, tools, &ctx, &mut self.messages, events).await
+        run_turn(
+            provider,
+            &self.model,
+            tools,
+            &ctx,
+            &mut self.messages,
+            events,
+        )
+        .await
     }
 }
 
@@ -61,6 +78,23 @@ mod tests {
 
         assert!(matches!(a.messages[..], [Message::System(_)]));
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn switching_models_rewrites_only_the_system_prompt() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        session.messages.push(Message::User("go".into()));
+
+        session.set_model("kimi-k3");
+
+        assert_eq!(session.model, "kimi-k3");
+        assert_eq!(
+            session.messages,
+            [
+                Message::System(system_prompt("kimi-k3", ".".as_ref())),
+                Message::User("go".into()),
+            ]
+        );
     }
 
     #[test]
