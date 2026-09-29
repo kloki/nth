@@ -3,8 +3,8 @@
 mod app;
 mod chat;
 mod command;
+mod llm_picker;
 mod mention;
-mod models;
 mod popup;
 mod prompt;
 mod status;

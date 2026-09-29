@@ -1,4 +1,4 @@
-//! The status row between chat and prompt: what the running turn is doing
+//! The status row above the prompt: what the running turn is doing
 //! on the left; a scroll hint, the interrupt hint, or model and place on
 //! the right.
 

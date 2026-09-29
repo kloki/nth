@@ -1,4 +1,4 @@
-//! The model picker: which model later turns go to, and how hard it
+//! The LLM picker: which LLM later turns go to, and how hard it
 //! reasons. Opened over the prompt, it waits for the list if it isn't in yet.
 
 mod view;
@@ -7,7 +7,7 @@ use nth_protocol::{Effort, ModelInfo};
 pub use view::draw;
 
 #[derive(Debug)]
-pub struct Picker {
+pub struct LlmPicker {
     /// The model in use, marked in the list.
     current: String,
     /// Kept while a non-reasoning model is highlighted, so moving back to a
@@ -26,7 +26,7 @@ enum State {
     },
 }
 
-impl Picker {
+impl LlmPicker {
     pub fn new(current: &str, effort: Effort) -> Self {
         Self {
             current: current.to_string(),
@@ -108,8 +108,8 @@ pub(crate) mod tests {
         }
     }
 
-    fn ready(current: &str) -> Picker {
-        let mut picker = Picker::new(current, Effort::Default);
+    fn ready(current: &str) -> LlmPicker {
+        let mut picker = LlmPicker::new(current, Effort::Default);
         picker.load(Ok(vec![model("glm", true), model("plain", false)]));
         picker
     }
@@ -149,7 +149,7 @@ pub(crate) mod tests {
 
     #[test]
     fn nothing_is_chosen_until_the_list_is_in() {
-        let mut picker = Picker::new("glm", Effort::High);
+        let mut picker = LlmPicker::new("glm", Effort::High);
         picker.next();
         assert_eq!(picker.chosen(), None);
 

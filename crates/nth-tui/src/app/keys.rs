@@ -16,8 +16,8 @@ pub enum Action {
     Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
-    /// Opens the model picker, or closes it.
-    Models,
+    /// Opens the LLM picker, or closes it.
+    LlmPicker,
     Insert(char),
     Newline,
     Backspace,
@@ -42,7 +42,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('n') if ctrl => Action::Accept,
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
-        KeyCode::Char('m') if ctrl => Action::Models,
+        KeyCode::Char('m') if ctrl => Action::LlmPicker,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
@@ -72,15 +72,15 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
-        if let Panel::Models(picker) = &mut self.panel {
+        if let Panel::LlmPicker(picker) = &mut self.panel {
             match action {
                 Action::SelectNext => picker.next(),
                 Action::SelectPrev => picker.prev(),
                 Action::Right => picker.more(),
                 Action::Left => picker.less(),
-                Action::Submit => self.choose_model(),
+                Action::Submit => self.choose_llm(),
                 // Closing the picker must not also interrupt a running turn.
-                Action::Interrupt | Action::ClearOrQuit | Action::Models => {
+                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.panel = Panel::Prompt
                 }
                 Action::PageUp => self.chat.page_up(),
@@ -109,7 +109,7 @@ impl App {
         }
         match action {
             Action::SelectNext | Action::SelectPrev | Action::Accept => {}
-            Action::Models => self.open_models(),
+            Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
         assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
-        assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::Models));
+        assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), None);

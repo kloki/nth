@@ -1,7 +1,6 @@
 //! The chat app: its state, the loop that drives it, and the fixed layout
-//! of chat history, one status row and the panel below it, usually the
-//! prompt. Row heights never depend on content, so nothing shifts while a
-//! turn runs.
+//! of chat history above a panel, usually the status row and prompt. Row
+//! heights never depend on content, so nothing shifts while a turn runs.
 
 mod keys;
 mod panel;
@@ -33,7 +32,7 @@ use turn::{Ended, Running};
 use crate::{
     chat::Chat,
     command::Command,
-    mention, models,
+    llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Prompt},
     status,
@@ -46,7 +45,7 @@ const TICK: Duration = Duration::from_millis(100);
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
-    /// What fills the rows under the status line.
+    /// What fills the rows under the chat.
     panel: Panel,
     /// The model and effort the next turn runs with.
     pub model: String,
@@ -65,9 +64,10 @@ pub struct App {
     /// Set when a turn ends mid-walk, so its files get picked up by one
     /// more walk rather than a second one racing the first.
     reindex: bool,
-    /// Kept once listed; after a failure the next open asks again.
-    models: Option<Vec<ModelInfo>>,
-    listing: Option<JoinHandle<Result<Vec<ModelInfo>, BoxError>>>,
+    /// The LLMs the endpoint serves, kept once listed; after a failure the
+    /// next open asks again.
+    llms: Option<Vec<ModelInfo>>,
+    llm_listing: Option<JoinHandle<Result<Vec<ModelInfo>, BoxError>>>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -130,7 +130,7 @@ enum Step {
     Session(Event),
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
-    Listed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
+    LlmsListed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
     Tick,
 }
 
@@ -155,8 +155,8 @@ impl App {
             files: Vec::new(),
             indexing: None,
             reindex: false,
-            models: None,
-            listing: None,
+            llms: None,
+            llm_listing: None,
             session: Some(session),
             provider,
             tools,
@@ -179,8 +179,8 @@ impl App {
             let turn = self.turn.as_mut().map(|running| &mut running.handle);
             let indexing = self.indexing.is_some();
             let index = self.indexing.as_mut().map(|indexing| &mut indexing.handle);
-            let listing = self.listing.is_some();
-            let list = self.listing.as_mut();
+            let llm_listing = self.llm_listing.is_some();
+            let llms = self.llm_listing.as_mut();
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
@@ -196,12 +196,12 @@ impl App {
                         None => std::future::pending().await,
                     }
                 }, if indexing => Step::Indexed(files),
-                models = async {
-                    match list {
-                        Some(list) => list.await,
+                llms = async {
+                    match llms {
+                        Some(llms) => llms.await,
                         None => std::future::pending().await,
                     }
-                }, if listing => Step::Listed(models),
+                }, if llm_listing => Step::LlmsListed(llms),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -212,7 +212,7 @@ impl App {
                 Step::Session(event) => self.chat.transcript.apply(&event),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
-                Step::Listed(models) => self.listed(models.context("listing models failed")?),
+                Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
@@ -222,25 +222,23 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, status, panel] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(1),
-            Constraint::Length(PANEL_ROWS),
-        ])
-        .areas(area);
+        let [chat, panel] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
 
         let banner = format!("nth · {} · {}", self.model, self.place);
         self.chat.draw(frame, chat, &banner);
-        status::draw(frame, status, self);
         match &self.panel {
             Panel::Prompt => {
-                prompt::draw(frame, panel, &self.prompt, self.is_busy());
+                let [status, prompt] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(panel);
+                status::draw(frame, status, self);
+                prompt::draw(frame, prompt, &self.prompt, self.is_busy());
                 // Last, so it pops over the chat and status row.
                 if let Some(completion) = &self.completion {
-                    completion.draw(frame, area, panel);
+                    completion.draw(frame, area, prompt);
                 }
             }
-            Panel::Models(picker) => models::draw(frame, panel, picker),
+            Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
         }
     }
 
@@ -298,7 +296,7 @@ impl App {
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
             }
-            Command::Models => self.open_models(),
+            Command::Models => self.open_llm_picker(),
         }
     }
 }
@@ -350,8 +348,8 @@ pub(crate) mod tests {
     fn status_and_prompt_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert!(idle[7].trim_end().ends_with("glm · /repo"));
-        assert!(idle[8].starts_with(" ▎ Ask anything."));
+        assert!(idle[8].trim_end().ends_with("glm · /repo"));
+        assert!(idle[9].starts_with(" ▎ Ask anything."));
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -361,13 +359,13 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert!(busy[7].contains("thinking"));
-        assert!(busy[7].trim_end().ends_with("esc to interrupt"));
+        assert!(busy[8].contains("thinking"));
+        assert!(busy[8].trim_end().ends_with("esc to interrupt"));
         assert_eq!(
-            busy[8..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
-            (3..=10).map(|i| format!(" ▎ line {i}")).collect::<Vec<_>>()
+            busy[9..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
+            (4..=10).map(|i| format!(" ▎ line {i}")).collect::<Vec<_>>()
         );
-        assert_eq!(busy[6].trim_end(), " ▎ message 19");
+        assert_eq!(busy[7].trim_end(), " ▎ message 19");
     }
 
     #[test]
@@ -406,10 +404,10 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[5].starts_with("  /clear"));
-        assert!(rows[6].starts_with("  /exit"));
-        assert!(rows[7].starts_with("  /models"));
-        assert!(rows[8].starts_with(" ▎ /"));
+        assert!(rows[6].starts_with("  /clear"));
+        assert!(rows[7].starts_with("  /exit"));
+        assert!(rows[8].starts_with("  /models"));
+        assert!(rows[9].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -443,47 +441,55 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[7].starts_with("  src/app/keys.rs"));
-        assert!(rows[8].starts_with(" ▎ see @ke"));
+        assert!(rows[8].starts_with("  src/app/keys.rs"));
+        assert!(rows[9].starts_with(" ▎ see @ke"));
     }
 
     /// An idle app whose model list is already in, so opening the picker
     /// asks the provider for nothing.
-    pub(crate) fn listed_app() -> App {
+    pub(crate) fn llm_listed_app() -> App {
         let mut app = app();
-        app.models = Some(vec![
-            crate::models::tests::model("glm", true),
-            crate::models::tests::model("plain", false),
+        app.llms = Some(vec![
+            crate::llm_picker::tests::model("glm", true),
+            crate::llm_picker::tests::model("plain", false),
         ]);
         app
     }
 
-    fn picker(app: &App) -> &crate::models::Picker {
+    fn picker(app: &App) -> &crate::llm_picker::LlmPicker {
         match &app.panel {
-            Panel::Models(picker) => picker,
+            Panel::LlmPicker(picker) => picker,
             Panel::Prompt => panic!("picker not open"),
         }
     }
 
     #[test]
     fn the_picker_draws_in_place_of_the_prompt() {
-        let mut app = listed_app();
+        let mut app = llm_listed_app();
         app.prompt.insert_str("/models");
         app.submit();
         let rows = rows(&mut app);
 
-        assert!(rows[7].trim_end().ends_with("glm · /repo"));
         assert!(rows[8].starts_with(" ▎ switch model"));
         assert!(rows[9].starts_with(" ▎ → glm   ✓"), "{:?}", rows[9]);
         assert!(rows[9].trim_end().ends_with("◂ default ▸"));
         assert!(rows[10].starts_with(" ▎   plain"));
-        assert!(rows.iter().all(|r| !r.contains("Ask anything")));
+        assert!(
+            rows[11..].iter().all(|r| r.trim().is_empty()),
+            "seven model rows"
+        );
+        assert!(
+            rows[8..]
+                .iter()
+                .all(|r| !r.contains("Ask anything") && !r.contains("/repo")),
+            "no prompt or status row"
+        );
     }
 
     #[test]
     fn the_picker_switches_model_and_effort() {
-        let mut app = listed_app();
-        app.apply(keys::Action::Models);
+        let mut app = llm_listed_app();
+        app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Submit);
@@ -491,12 +497,12 @@ pub(crate) mod tests {
         assert!(matches!(app.panel, Panel::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         assert!(
-            rows(&mut app)[7]
+            rows(&mut app)[8]
                 .trim_end()
                 .ends_with("glm · medium · /repo")
         );
 
-        app.apply(keys::Action::Models);
+        app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::SelectNext);
         app.apply(keys::Action::Submit);
         assert_eq!((app.model.as_str(), app.effort), ("plain", Effort::Default));
@@ -504,8 +510,8 @@ pub(crate) mod tests {
 
     #[test]
     fn esc_leaves_the_picker_unchanged() {
-        let mut app = listed_app();
-        app.apply(keys::Action::Models);
+        let mut app = llm_listed_app();
+        app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::SelectNext);
         app.apply(keys::Action::Interrupt);
 
@@ -516,8 +522,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn the_next_turn_runs_the_chosen_model() {
-        let mut app = listed_app();
-        app.apply(keys::Action::Models);
+        let mut app = llm_listed_app();
+        app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Submit);
 
@@ -536,29 +542,29 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_list_loads_into_the_open_picker() {
         let mut app = app();
-        app.apply(keys::Action::Models);
+        app.apply(keys::Action::LlmPicker);
         assert!(picker(&app).chosen().is_none(), "still loading");
 
-        let listing = app.listing.take().expect("listing");
-        app.listed(Ok(vec![crate::models::tests::model("glm", true)]));
+        let listing = app.llm_listing.take().expect("listing");
+        app.llms_listed(Ok(vec![crate::llm_picker::tests::model("glm", true)]));
         listing.abort();
 
         assert_eq!(picker(&app).chosen(), Some(("glm".into(), Effort::Default)));
-        assert!(app.models.is_some());
+        assert!(app.llms.is_some());
     }
 
     #[tokio::test]
     async fn a_failed_list_is_asked_for_again() {
         let mut app = app();
-        app.apply(keys::Action::Models);
-        let listing = app.listing.take().expect("listing");
+        app.apply(keys::Action::LlmPicker);
+        let listing = app.llm_listing.take().expect("listing");
         listing.abort();
-        app.listed(Err("offline".into()));
+        app.llms_listed(Err("offline".into()));
         assert!(rows(&mut app)[9].contains("✗ offline"));
 
         app.apply(keys::Action::Interrupt);
-        app.apply(keys::Action::Models);
-        assert!(app.listing.is_some(), "asked again");
+        app.apply(keys::Action::LlmPicker);
+        assert!(app.llm_listing.is_some(), "asked again");
     }
 
     /// A provider whose model list never arrives, and records when the
@@ -601,7 +607,7 @@ pub(crate) mod tests {
             Arc::new(SlowList(dropped.clone())),
             Arc::new(Vec::new()),
         );
-        app.apply(keys::Action::Models);
+        app.apply(keys::Action::LlmPicker);
         tokio::task::yield_now().await;
 
         drop(app);

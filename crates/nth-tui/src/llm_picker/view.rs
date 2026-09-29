@@ -10,13 +10,13 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{Picker, State};
+use super::{LlmPicker, State};
 use crate::theme::{BAR, dim};
 
 const TITLE: &str = "switch model";
 const KEYS: &str = "↑↓ model · ←→ effort · enter · esc";
 
-pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker) {
+pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
     let [header, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let bar = Style::new().fg(Color::Blue);
     frame.render_widget(
@@ -55,7 +55,7 @@ fn note(text: Span<'_>) -> Line<'_> {
 /// One row per model: id, a ✓ on the one in use, name and limits, and on
 /// the highlighted reasoning model the effort ←→ changes.
 fn rows<'a>(
-    picker: &'a Picker,
+    picker: &'a LlmPicker,
     models: &'a [ModelInfo],
     selected: usize,
     height: usize,

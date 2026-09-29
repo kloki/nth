@@ -99,7 +99,7 @@ impl Drop for App {
         if let Some(indexing) = &self.indexing {
             indexing.cancel.cancel();
         }
-        if let Some(listing) = &self.listing {
+        if let Some(listing) = &self.llm_listing {
             listing.abort();
         }
     }
@@ -188,8 +188,8 @@ mod tests {
     #[tokio::test]
     async fn closing_the_picker_leaves_the_turn_running() {
         let (mut app, _) = busy_app().await;
-        app.models = Some(Vec::new());
-        app.apply(crate::app::keys::Action::Models);
+        app.llms = Some(Vec::new());
+        app.apply(crate::app::keys::Action::LlmPicker);
 
         app.on_key(KeyEvent::from(KeyCode::Esc));
 
