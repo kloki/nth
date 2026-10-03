@@ -1,4 +1,4 @@
-//! Draws the prompt: a lighter block with the mode's bar down its left, and
+//! Draws the prompt: a black block with the mode's bar down its left, and
 //! one row of text between padding rows, scrolled to the cursor.
 
 use ratatui::{
@@ -44,7 +44,7 @@ pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner:
         bar(),
     ];
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(Color::DarkGray)),
+        Paragraph::new(lines).style(Style::new().bg(Color::Black)),
         area,
     );
 
