@@ -69,7 +69,7 @@ impl App {
         // Events sent just before the task returned may still be queued, and
         // they belong above the footer.
         while let Ok(event) = self.events_rx.try_recv() {
-            self.chat.transcript.apply(&event);
+            self.chat.apply(&event);
         }
         let elapsed = self
             .busy_since

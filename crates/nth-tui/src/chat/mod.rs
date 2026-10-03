@@ -6,6 +6,7 @@ mod transcript;
 
 use std::path::PathBuf;
 
+use nth_protocol::Event;
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -35,6 +36,10 @@ impl Chat {
             height: 0,
             max_top: 0,
         }
+    }
+
+    pub fn apply(&mut self, event: &Event) {
+        self.transcript.apply(event);
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
