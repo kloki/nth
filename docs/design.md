@@ -34,7 +34,7 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 1. **Worktrees are for parallel agents, not sandboxing.** The goal is several agents working on one machine without stepping on each other. A worktree gives each agent its own checkout, branch and build state. It does not limit what a process can do, and nth does not try to. Security sandboxing is out of scope.
 2. **Worktrees have a real cost in Rust.** Each worktree gets a cold `target/` dir, which means minutes of rebuilds and gigabytes of disk. Each one also needs its own rust-analyzer. Plan for sccache and a per-repo setup hook from day one, or the feature will feel slow.
 3. **Merging back is the hard part, not creating the worktree.** The exact mechanics can wait until M2. The constraint is fixed now: base gets a clean history of one well-described commit per task, and checkpoint commits never reach it.
-4. **A tiling TUI is a rabbit hole.** Decided: no tiling. Each tab has a fixed split, and an agents sidebar runs down the left. That covers every planned view without a layout engine.
+4. **A tiling TUI is a rabbit hole.** Decided: no tiling. The screen is three fixed bands: content, input and status (see [ui.md](ui.md)). That covers every planned view without a layout engine.
 5. **Long-run plan and review flows should come last, not first.** Their shape will be obvious after a month of daily use and a guess before that. Build them as agents, prompts and a markdown artifact on the existing loop, never as a workflow engine.
 6. **OpenCode Go speaks three wire protocols.** Its models sit behind chat completions (GLM, Kimi, DeepSeek), Anthropic messages (MiniMax and others) and OpenAI responses (Grok, GPT Luna). M1 implements only chat completions, which already covers the strongest open coding models.
 7. **LSP means diagnostics only in M1.** opencode's main LSP payoff is feeding compiler errors back after an edit. Hover, go-to-definition and symbol tools can wait.
@@ -53,7 +53,7 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 | Skills | markdown files and a skill tool |  |
 | Formatting | run formatter after each write |  |
 | LSP | rust-analyzer diagnostics | more servers, symbol tools |
-| TUI | tabs, one split, chat, diff view | agents sidebar, monitor, worktree view |
+| TUI | content panel, input panel, status bar; chat | content tabs: diff, monitor, worktrees, plan |
 | Long-run flows |  | plan/design flow, review flow |
 | Multi-agent | parallel sessions, one tab each | subagents via the task tool, agents sidebar |
 | Agent-native control | one command set, CLI with JSON output | socket to a running TUI, agent tools for every command |
@@ -224,29 +224,16 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 
 ## TUI
 
-The TUI is tabs, a fixed split in each tab, and an agents sidebar. There is no tiling engine. Views are independent widgets that render from the event stream, so a new view is a new struct, not a change to the app.
+The TUI is three bands stacked top to bottom: a content panel, an input panel and a status bar. There is no tiling engine. Views are independent widgets that render from the event stream, so a new view is a new struct, not a change to the app.
 
-**Layout**
+**Layout.** See [ui.md](ui.md) for the full design.
 
-- **Tabs** are sessions, which means worktrees. The tab bar shows each one's status: running, idle, waiting for approval, or unlanded commits.
-- **Agents sidebar** lists every agent on the machine as a tree, with a status marker and its current action. It is the answer to "what is running and what needs me".
-- **Panes.** Chat sits in the middle. A side pane on the right cycles between Diff, Worktrees, Monitor and Plan. The agents sidebar on the left can be hidden with `ctrl+x b`.
-- **Keys.** A leader key of `ctrl+x`, as in opencode. Tab switches Plan and Build, and `ctrl+x` plus a number jumps to a tab.
+- **Content panel.** Chat by default. Later it holds tabs such as Diff, Worktrees, Monitor and Plan, which replace the earlier side pane and agents sidebar.
+- **Input panel.** The 1-line prompt by default. Context swaps it for another input panel, such as the model picker, and each one declares its own height.
+- **Status bar.** Fixed at 2 lines at the bottom, always visible: what is happening now, and general state such as mode, model and place.
+- **Keys.** A leader key of `ctrl+x`, as in opencode. Tab switches Plan and Build.
 
-```
- 1 fix-auth ●  2 lsp-diag ?  3 review ✓                     glm-5.3  41%  $0.12
- AGENTS         you  add retry to the fetch client     Diff  Worktrees  Monitor
- ▾ fix-auth ●                                          M src/client.rs  +24 -3
-   build    ●   ▸ read  src/client.rs                  A src/retry.rs   +61
-   explore  ✓   ▸ task  explore: find retry callers
- ▸ lsp-diag ?   ▸ edit  src/client.rs  ✓ fmt  ✓ 0 errors
- ▸ review   ✓   Added exponential backoff with jitter …
-
-                > █
- BUILD  nth/fix-auth  3 ahead of master                              ctrl+x ?
-```
-
-Markers: ● running, ? waiting for you, ✓ done. The tab bar, sidebar, side pane and status line differ from the chat by background colour only. There are no border or divider lines.
+Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar differ from the content by background colour only. There are no border or divider lines.
 
 **Views**
 
