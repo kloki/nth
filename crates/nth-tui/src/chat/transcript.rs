@@ -42,14 +42,6 @@ pub enum ToolState {
     Failed(String),
 }
 
-/// What the running turn is doing right now, for the status bar.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Activity<'a> {
-    Thinking,
-    Writing,
-    Tool(&'a ToolCall),
-}
-
 pub struct Transcript {
     pub(super) cwd: PathBuf,
     pub(super) items: Vec<Item>,
@@ -169,21 +161,6 @@ impl Transcript {
         self.push(Entry::Interrupted { elapsed });
     }
 
-    pub fn activity(&self) -> Activity<'_> {
-        let running = self.entries().rev().find_map(|entry| match entry {
-            Entry::Tool {
-                call,
-                state: ToolState::Running,
-            } => Some(call),
-            _ => None,
-        });
-        match (running, self.last()) {
-            (Some(call), _) => Activity::Tool(call),
-            (None, Some(Entry::Answer(_))) => Activity::Writing,
-            _ => Activity::Thinking,
-        }
-    }
-
     fn push(&mut self, entry: Entry) {
         self.items.push(Item { entry, lines: None });
     }
@@ -293,22 +270,5 @@ pub(super) mod tests {
         assert!(matches!(entries[4], Entry::Interrupted { .. }));
         let total = t.layout(40);
         assert_eq!(text(&t.visible(total - 1, 1)), ["  ⏹ interrupted · 3.0s"]);
-    }
-
-    #[test]
-    fn activity_follows_the_turn() {
-        let mut t = transcript();
-        t.push_user("go".into());
-        assert_eq!(t.activity(), Activity::Thinking);
-
-        t.apply(&Event::ToolStarted(call("1")));
-        assert_eq!(t.activity(), Activity::Tool(&call("1")));
-
-        t.apply(&Event::ToolFinished {
-            call: call("1"),
-            result: Ok("x".into()),
-        });
-        t.apply(&Event::TextDelta("hi".into()));
-        assert_eq!(t.activity(), Activity::Writing);
     }
 }

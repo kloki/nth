@@ -1,4 +1,4 @@
-//! Draws the popup: a grey box sized to its rows, the selected one in bold
+//! Draws the popup: a box on the default background sized to its rows, the selected one in bold
 //! purple, sitting just above `anchor` and over whatever is there.
 
 use ratatui::{
@@ -61,7 +61,7 @@ pub fn draw(
         .collect();
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(lines).style(Style::new().fg(Color::White)),
         popup,
     );
 }

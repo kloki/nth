@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
     layout::{Position, Rect},
     style::Style,
-    text::Span,
+    text::{Line, Span},
     widgets::Paragraph,
 };
 
@@ -13,12 +13,15 @@ use super::{Mode, Prompt};
 use crate::theme::{BAR_WIDTH, dim, panel_row, panel_title};
 
 const PLACEHOLDER: &str = "Ask anything.";
+/// Right-aligned on the label row while a turn runs.
+const CANCEL_HINT: &str = "esc to cancel";
 /// The label row on top, then the text.
 pub const ROWS: u16 = 1 + TEXT_ROWS;
 const TEXT_ROWS: u16 = 3;
 
 /// `spinner` replaces the mode's label while a turn runs; the text is
-/// dimmed then too, since Enter won't submit.
+/// dimmed then too, since Enter won't submit, and the label row says how to
+/// cancel.
 pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner: Option<&str>) {
     let label = spinner.unwrap_or(mode.label());
     let wrapped = prompt.wrap(room(area));
@@ -43,6 +46,13 @@ pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner:
         (0..usize::from(TEXT_ROWS)).map(|i| panel_row(mode.colour(), text.get(i).cloned())),
     );
     frame.render_widget(Paragraph::new(lines), area);
+    if spinner.is_some() {
+        let label_row = Rect { height: 1, ..area };
+        frame.render_widget(
+            Paragraph::new(Line::styled(CANCEL_HINT, dim()).right_aligned()),
+            label_row,
+        );
+    }
 
     frame.set_cursor_position(position(area, prompt, prompt.cursor()));
 }

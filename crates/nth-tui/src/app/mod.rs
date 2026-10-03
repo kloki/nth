@@ -433,7 +433,7 @@ pub(crate) mod tests {
         assert_eq!(idle[12].trim_end(), " ▎");
         assert_eq!(idle[13].trim_end(), " ▎");
         assert_eq!(idle[14].trim_end(), " glm · /repo");
-        assert!(idle[15].trim().is_empty(), "no activity or hint when idle");
+        assert!(idle[15].trim().is_empty(), "no hint when idle");
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -450,6 +450,7 @@ pub(crate) mod tests {
             "spinner in place of the mode: {:?}",
             busy[10]
         );
+        assert!(busy[10].trim_end().ends_with("esc to cancel"));
         let text: Vec<&str> = busy[11..=13].iter().map(|r| r.trim_end()).collect();
         assert_eq!(
             text,
@@ -457,12 +458,11 @@ pub(crate) mod tests {
             "scrolled to the cursor"
         );
         assert_eq!(busy[14].trim_end(), " glm · /repo", "no git outside a repo");
-        assert!(busy[15].starts_with(" thinking"));
-        assert!(busy[15].trim_end().ends_with("esc to interrupt"));
+        assert!(busy[15].trim().is_empty(), "nothing below while busy");
     }
 
     #[test]
-    fn status_shows_git_summary_beside_the_branch() {
+    fn status_shows_the_branch_in_the_git_summary() {
         let mut app = app();
         app.git = Some(GitStatus {
             branch: Some("main".into()),
@@ -473,10 +473,8 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert!(rows[14].starts_with(" glm · /repo · main"));
-        assert!(rows[14].trim_end().ends_with("git · +2 *1"));
-        assert!(rows[15].starts_with(" thinking"));
-        assert!(rows[15].trim_end().ends_with("esc to interrupt"));
+        assert!(rows[14].starts_with(" glm · /repo "));
+        assert!(rows[14].trim_end().ends_with("git · main +2 *1"));
     }
 
     #[test]
@@ -490,7 +488,9 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert_eq!(rows[14].trim(), "glm · /repo · a-very-long-branch-name");
+        let row = rows[14].trim();
+        assert!(row.starts_with("glm · /repo git · a-very"), "{row:?}");
+        assert!(!row.ends_with("*1"), "the counts are cut: {row:?}");
     }
 
     #[tokio::test]
