@@ -116,7 +116,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 
 ## Prompt
 
-Modelled on opencode's prompt: a coloured bar down the left and a lighter background, so the input stands out from the content without a border.
+Modelled on opencode's prompt: a coloured bar down the left and a background of its own, so the input stands out from the content without a border.
 
 ```
 ▎
@@ -124,7 +124,7 @@ Modelled on opencode's prompt: a coloured bar down the left and a lighter backgr
 ▎
 ```
 
-- **Shape.** 3 rows on a bright black background: a padding row, the text row, a padding row. The bar `▎` runs down the left edge of all three rows.
+- **Shape.** 3 rows on an ANSI black background: a padding row, the text row, a padding row. The bar `▎` runs down the left edge of all three rows.
 - **Mode label.** The text row starts with the mode, then two spaces and `>`, then the text. For now the only mode is BUILD; PLAN and other modes come later.
 - **Mode colour.** The bar and the mode label share one colour per mode: BUILD is blue, and later PLAN is magenta. The typed text is the default fg.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
@@ -231,7 +231,8 @@ Every colour is one of the 16 ANSI colours, so the terminal theme decides how it
 | magenta, purple | magenta | `#FF79C6` (Dracula pink) | PLAN, modified |
 | cyan | cyan | `#8BE9FD` | tool names |
 | white | white | `#F8F8F2` | context bar, untracked, stashed |
-| grey | bright black | `#6272A4` (Dracula comment) | model answer bar, prompt background |
+| black | black | `#21222C` | prompt background |
+| grey | bright black | `#6272A4` (Dracula comment) | model answer bar |
 
 Note that in Dracula ANSI blue renders as purple and ANSI magenta as pink. Dracula's orange (`#FFB86C`) is not one of its ANSI colours, so orange in this doc means ANSI yellow.
 
