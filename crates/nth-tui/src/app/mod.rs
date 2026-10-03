@@ -34,17 +34,19 @@ use crate::{
     command::Command,
     llm_picker, mention,
     popup::{self, Popup},
-    prompt::{self, Prompt},
-    status,
+    prompt::{self, Mode, Prompt},
+    spinner, status,
 };
 
 const WHEEL_LINES: usize = 3;
-/// How often a running turn redraws, so the live reasoning timer advances.
-const TICK: Duration = Duration::from_millis(100);
+/// How often a running turn redraws, so the spinner shows every frame and
+/// the live reasoning timer advances.
+const TICK: Duration = spinner::FRAME;
 
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
+    pub mode: Mode,
     /// What fills the rows under the chat.
     panel: Panel,
     /// The model and effort the next turn runs with.
@@ -145,6 +147,7 @@ impl App {
         Self {
             chat: Chat::new(session.cwd.clone()),
             prompt: Prompt::default(),
+            mode: Mode::default(),
             panel: Panel::Prompt,
             model: session.model.clone(),
             effort: session.effort,
@@ -234,7 +237,8 @@ impl App {
         status::draw(frame, status, self);
         match &self.panel {
             Panel::Prompt => {
-                prompt::draw(frame, panel, &self.prompt, self.is_busy());
+                let spinner = self.busy_since.map(|since| spinner::frame(since.elapsed()));
+                prompt::draw(frame, panel, &self.prompt, self.mode, spinner);
                 // Last, so it pops over the chat.
                 if let Some(completion) = &self.completion {
                     completion.draw(frame, area, panel);
@@ -350,7 +354,9 @@ pub(crate) mod tests {
     fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert_eq!(idle[13].trim_end(), " ▎ Ask anything.");
+        assert_eq!(idle[11].trim_end(), " ▎");
+        assert_eq!(idle[12].trim_end(), " ▎ BUILD  > Ask anything.");
+        assert_eq!(idle[13].trim_end(), " ▎");
         assert!(idle[14].trim_end().ends_with("glm · /repo"));
         assert!(idle[15].trim().is_empty(), "no hint while idle");
 
@@ -362,8 +368,18 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert_eq!(busy[12].trim_end(), " ▎ message 19");
-        assert_eq!(busy[13].trim_end(), " ▎ line 10", "scrolled to the cursor");
+        assert_eq!(busy[10].trim_end(), " ▎ message 19");
+        let spinner = busy[12].chars().skip(3).take(4).collect::<String>();
+        assert!(
+            spinner.chars().all(|c| ('⠀'..='⣿').contains(&c)),
+            "spinner in place of the mode: {:?}",
+            busy[12]
+        );
+        assert_eq!(
+            busy[12].chars().skip(7).collect::<String>().trim_end(),
+            "   > line 10",
+            "> stays put; scrolled to the cursor"
+        );
         assert!(busy[14].starts_with(" thinking"));
         assert!(busy[14].trim_end().ends_with("glm · /repo"));
         assert!(busy[15].trim_end().ends_with("esc to interrupt"));
@@ -405,10 +421,10 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[10].starts_with("  /clear"));
-        assert!(rows[11].starts_with("  /exit"));
-        assert!(rows[12].starts_with("  /models"));
-        assert!(rows[13].starts_with(" ▎ /"));
+        assert!(rows[8].starts_with("  /clear"));
+        assert!(rows[9].starts_with("  /exit"));
+        assert!(rows[10].starts_with("  /models"));
+        assert!(rows[12].starts_with(" ▎ BUILD  > /"));
     }
 
     #[tokio::test]
@@ -442,8 +458,8 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[12].starts_with("  src/app/keys.rs"));
-        assert!(rows[13].starts_with(" ▎ see @ke"));
+        assert!(rows[10].starts_with("  src/app/keys.rs"));
+        assert!(rows[12].starts_with(" ▎ BUILD  > see @ke"));
     }
 
     /// An idle app whose model list is already in, so opening the picker

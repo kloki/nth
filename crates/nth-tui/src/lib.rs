@@ -7,6 +7,7 @@ mod llm_picker;
 mod mention;
 mod popup;
 mod prompt;
+mod spinner;
 mod status;
 mod terminal;
 mod theme;

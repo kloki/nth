@@ -17,7 +17,7 @@ impl Panel {
     /// the layout; the chat takes up the difference when panels swap.
     pub(super) fn rows(&self) -> u16 {
         match self {
-            Panel::Prompt => 1,
+            Panel::Prompt => 3,
             Panel::LlmPicker(_) => 8,
         }
     }
