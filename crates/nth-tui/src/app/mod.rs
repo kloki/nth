@@ -1,9 +1,10 @@
-//! The chat app: its state, the loop that drives it, and the layout of
-//! three bands: chat history, the input panel and the status bar. Row
+//! The app: its state, the loop that drives it, and the layout of three
+//! bands: the content panel, the input panel and the status bar. Row
 //! heights never depend on content, so nothing shifts while a turn runs.
 
+mod content;
+mod input;
 mod keys;
-mod panel;
 mod turn;
 
 use std::{
@@ -13,14 +14,15 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
+use input::Input;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
 use nth_session::{CancellationToken, Session};
-use panel::Panel;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect},
 };
 use tokio::{
     sync::mpsc,
@@ -48,8 +50,10 @@ pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
     pub mode: Mode,
-    /// What fills the rows under the chat.
-    panel: Panel,
+    /// What fills the content panel.
+    content: Content,
+    /// What fills the input panel.
+    input: Input,
     /// The model and effort the next turn runs with.
     pub model: String,
     pub effort: Effort,
@@ -119,7 +123,16 @@ impl Completion {
         }
     }
 
-    fn draw(&self, frame: &mut Frame, area: Rect, anchor: Rect) {
+    /// Where in the prompt the completed token begins; a command is always
+    /// the whole prompt.
+    fn start(&self) -> usize {
+        match self {
+            Completion::Command(_) => 0,
+            Completion::File { start, .. } => *start,
+        }
+    }
+
+    fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
             Completion::Command(popup) => (
                 popup.items().iter().map(|c| c.row()).collect(),
@@ -156,7 +169,8 @@ impl App {
             chat: Chat::new(session.cwd.clone()),
             prompt: Prompt::default(),
             mode: Mode::default(),
-            panel: Panel::Prompt,
+            content: Content::Chat,
+            input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
             cwd: session.cwd.clone(),
@@ -248,26 +262,33 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, panel, status] = Layout::vertical([
+        let [content, input, status] = Layout::vertical([
             Constraint::Min(0),
-            Constraint::Length(self.panel.rows()),
+            Constraint::Length(self.input.rows()),
             Constraint::Length(status::ROWS),
         ])
         .areas(area);
 
-        let banner = format!("nth · {} · {}", self.model, self.place);
-        self.chat.draw(frame, chat, &banner);
+        match self.content {
+            Content::Chat => {
+                let banner = format!("nth · {} · {}", self.model, self.place);
+                self.chat.draw(frame, content, &banner);
+            }
+        }
         status::draw(frame, status, self);
-        match &self.panel {
-            Panel::Prompt => {
+        match &self.input {
+            Input::Prompt => {
                 let spinner = self.busy_since.map(|since| spinner::frame(since.elapsed()));
-                prompt::draw(frame, panel, &self.prompt, self.mode, spinner);
-                // Last, so it pops over the chat.
+                prompt::draw(frame, input, &self.prompt, self.mode, spinner);
+                // Last, so it pops over the content panel; it sits right
+                // above the row being typed, lined up with the token it
+                // completes.
                 if let Some(completion) = &self.completion {
-                    completion.draw(frame, area, panel);
+                    let at = prompt::position(input, &self.prompt, completion.start());
+                    completion.draw(frame, area, at);
                 }
             }
-            Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
+            Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
         }
     }
 
@@ -279,7 +300,7 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) if matches!(self.panel, Panel::Prompt) => {
+            TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_completion();
@@ -407,8 +428,9 @@ pub(crate) mod tests {
     fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert_eq!(idle[11].trim_end(), " ▎");
-        assert_eq!(idle[12].trim_end(), " ▎ BUILD  > Ask anything.");
+        assert_eq!(idle[10].trim_end(), " ▎ build");
+        assert_eq!(idle[11].trim_end(), " ▎ Ask anything.");
+        assert_eq!(idle[12].trim_end(), " ▎");
         assert_eq!(idle[13].trim_end(), " ▎");
         assert!(idle[14].trim_end().ends_with("glm /repo"));
         assert!(idle[15].trim().is_empty(), "no hint or git outside a repo");
@@ -421,17 +443,18 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert_eq!(busy[10].trim_end(), " ▎ message 19");
-        let spinner = busy[12].chars().skip(3).take(4).collect::<String>();
+        assert_eq!(busy[9].trim_end(), " ▎ message 19");
+        let spinner = busy[10].chars().skip(3).take(4).collect::<String>();
         assert!(
             spinner.chars().all(|c| ('⠀'..='⣿').contains(&c)),
             "spinner in place of the mode: {:?}",
-            busy[12]
+            busy[10]
         );
+        let text: Vec<&str> = busy[11..=13].iter().map(|r| r.trim_end()).collect();
         assert_eq!(
-            busy[12].chars().skip(7).collect::<String>().trim_end(),
-            "   > line 10",
-            "> stays put; scrolled to the cursor"
+            text,
+            [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
+            "scrolled to the cursor"
         );
         assert!(busy[14].starts_with(" thinking"));
         assert!(busy[14].trim_end().ends_with("glm /repo"));
@@ -523,15 +546,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn completion_pops_over_the_chat() {
+    fn completion_pops_over_the_content_panel() {
         let mut app = app();
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("  /clear"));
-        assert!(rows[9].starts_with("  /exit"));
-        assert!(rows[10].starts_with("  /models"));
-        assert!(rows[12].starts_with(" ▎ BUILD  > /"));
+        assert!(rows[8].starts_with("    /clear "));
+        assert!(rows[9].starts_with("    /exit "));
+        assert!(
+            rows[10].starts_with(" ▎  /models "),
+            "right above the cursor"
+        );
+        assert!(rows[11].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -565,8 +591,28 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[10].starts_with("  src/app/keys.rs"));
-        assert!(rows[12].starts_with(" ▎ BUILD  > see @ke"));
+        assert!(rows[9].trim().is_empty());
+        assert!(
+            rows[10].starts_with(" ▎ buil src/app/keys.rs "),
+            "lined up with the @"
+        );
+        assert!(rows[11].starts_with(" ▎ see @ke"));
+    }
+
+    #[test]
+    fn popup_follows_the_cursor_down_and_shifts_left_at_the_edge() {
+        let mut app = app();
+        app.files = vec!["src/app/keys.rs".into()];
+        app.apply(keys::Action::Newline);
+        app.apply(keys::Action::Newline);
+        for c in format!("{} @ke", "x".repeat(30)).chars() {
+            app.apply(keys::Action::Insert(c));
+        }
+        let rows = rows(&mut app);
+
+        let popup = format!(" ▎{}src/app/keys.rs  ", " ".repeat(21));
+        assert_eq!(rows[12], popup, "above the third row, against the margin");
+        assert!(rows[13].starts_with(" ▎ xxx"));
     }
 
     /// An idle app whose model list is already in, so opening the picker
@@ -581,9 +627,9 @@ pub(crate) mod tests {
     }
 
     fn picker(app: &App) -> &crate::llm_picker::LlmPicker {
-        match &app.panel {
-            Panel::LlmPicker(picker) => picker,
-            Panel::Prompt => panic!("picker not open"),
+        match &app.input {
+            Input::LlmPicker(picker) => picker,
+            Input::Prompt => panic!("picker not open"),
         }
     }
 
@@ -617,7 +663,7 @@ pub(crate) mod tests {
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Submit);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         assert!(
             rows(&mut app)[14]
@@ -638,7 +684,7 @@ pub(crate) mod tests {
         app.apply(keys::Action::SelectNext);
         app.apply(keys::Action::Interrupt);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.model, "glm");
         assert!(!app.quit);
     }

@@ -3,15 +3,24 @@
 
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::{Color, Modifier, Style},
+    layout::{Position, Rect},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
 };
 
-/// `area` bounds the popup; `anchor` is the prompt it sits above. Each row
-/// is a label, drawn in blue, and a detail after it.
-pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, rows: &[(String, &str)], selected: usize) {
+use crate::theme::pick;
+
+/// `area` bounds the popup; its bottom-left corner sits just above `anchor`,
+/// shifted left if it would run off the edge. Each row is a label, drawn in
+/// blue, and a detail after it.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    anchor: Position,
+    rows: &[(String, &str)],
+    selected: usize,
+) {
     let content = rows
         .iter()
         .map(|(label, detail)| label.chars().count() + detail.chars().count())
@@ -20,12 +29,12 @@ pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, rows: &[(String, &str)]
     // One column of padding either side.
     let width = u16::try_from(content + 2)
         .unwrap_or(u16::MAX)
-        .min(area.right().saturating_sub(anchor.x));
+        .min(area.width);
     let height = u16::try_from(rows.len())
         .unwrap_or(u16::MAX)
         .min(anchor.y.saturating_sub(area.y));
     let popup = Rect {
-        x: anchor.x,
+        x: anchor.x.min(area.right() - width),
         y: anchor.y - height,
         width,
         height,
@@ -37,7 +46,7 @@ pub fn draw(frame: &mut Frame, area: Rect, anchor: Rect, rows: &[(String, &str)]
         .map(|(i, (label, detail))| {
             let pad = content - label.chars().count();
             let (row, label_style) = if i == selected {
-                let row = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+                let row = pick();
                 (row, row)
             } else {
                 (Style::new(), Style::new().fg(Color::Blue))
