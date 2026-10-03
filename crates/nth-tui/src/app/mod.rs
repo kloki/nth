@@ -20,7 +20,7 @@ use nth_session::{CancellationToken, Session};
 use panel::Panel;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect},
 };
 use tokio::{
     sync::mpsc,
@@ -112,7 +112,16 @@ impl Completion {
         }
     }
 
-    fn draw(&self, frame: &mut Frame, area: Rect, anchor: Rect) {
+    /// Where in the prompt the completed token begins; a command is always
+    /// the whole prompt.
+    fn start(&self) -> usize {
+        match self {
+            Completion::Command(_) => 0,
+            Completion::File { start, .. } => *start,
+        }
+    }
+
+    fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
             Completion::Command(popup) => (
                 popup.items().iter().map(|c| c.row()).collect(),
@@ -239,9 +248,11 @@ impl App {
             Panel::Prompt => {
                 let spinner = self.busy_since.map(|since| spinner::frame(since.elapsed()));
                 prompt::draw(frame, panel, &self.prompt, self.mode, spinner);
-                // Last, so it pops over the chat.
+                // Last, so it pops over the chat; it sits right above the
+                // row being typed, lined up with the token it completes.
                 if let Some(completion) = &self.completion {
-                    completion.draw(frame, area, panel);
+                    let at = prompt::position(panel, &self.prompt, completion.start());
+                    completion.draw(frame, area, at);
                 }
             }
             Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
@@ -354,8 +365,9 @@ pub(crate) mod tests {
     fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert_eq!(idle[11].trim_end(), " ▎");
-        assert_eq!(idle[12].trim_end(), " ▎ BUILD  > Ask anything.");
+        assert_eq!(idle[10].trim_end(), " ▎ build");
+        assert_eq!(idle[11].trim_end(), " ▎ Ask anything.");
+        assert_eq!(idle[12].trim_end(), " ▎");
         assert_eq!(idle[13].trim_end(), " ▎");
         assert!(idle[14].trim_end().ends_with("glm · /repo"));
         assert!(idle[15].trim().is_empty(), "no hint while idle");
@@ -368,17 +380,18 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert_eq!(busy[10].trim_end(), " ▎ message 19");
-        let spinner = busy[12].chars().skip(3).take(4).collect::<String>();
+        assert_eq!(busy[9].trim_end(), " ▎ message 19");
+        let spinner = busy[10].chars().skip(3).take(4).collect::<String>();
         assert!(
             spinner.chars().all(|c| ('⠀'..='⣿').contains(&c)),
             "spinner in place of the mode: {:?}",
-            busy[12]
+            busy[10]
         );
+        let text: Vec<&str> = busy[11..=13].iter().map(|r| r.trim_end()).collect();
         assert_eq!(
-            busy[12].chars().skip(7).collect::<String>().trim_end(),
-            "   > line 10",
-            "> stays put; scrolled to the cursor"
+            text,
+            [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
+            "scrolled to the cursor"
         );
         assert!(busy[14].starts_with(" thinking"));
         assert!(busy[14].trim_end().ends_with("glm · /repo"));
@@ -421,10 +434,13 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("  /clear"));
-        assert!(rows[9].starts_with("  /exit"));
-        assert!(rows[10].starts_with("  /models"));
-        assert!(rows[12].starts_with(" ▎ BUILD  > /"));
+        assert!(rows[8].starts_with("    /clear "));
+        assert!(rows[9].starts_with("    /exit "));
+        assert!(
+            rows[10].starts_with(" ▎  /models "),
+            "right above the cursor"
+        );
+        assert!(rows[11].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -458,8 +474,28 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[10].starts_with("  src/app/keys.rs"));
-        assert!(rows[12].starts_with(" ▎ BUILD  > see @ke"));
+        assert!(rows[9].trim().is_empty());
+        assert!(
+            rows[10].starts_with(" ▎ buil src/app/keys.rs "),
+            "lined up with the @"
+        );
+        assert!(rows[11].starts_with(" ▎ see @ke"));
+    }
+
+    #[test]
+    fn popup_follows_the_cursor_down_and_shifts_left_at_the_edge() {
+        let mut app = app();
+        app.files = vec!["src/app/keys.rs".into()];
+        app.apply(keys::Action::Newline);
+        app.apply(keys::Action::Newline);
+        for c in format!("{} @ke", "x".repeat(30)).chars() {
+            app.apply(keys::Action::Insert(c));
+        }
+        let rows = rows(&mut app);
+
+        let popup = format!(" ▎{}src/app/keys.rs  ", " ".repeat(21));
+        assert_eq!(rows[12], popup, "above the third row, against the margin");
+        assert!(rows[13].starts_with(" ▎ xxx"));
     }
 
     /// An idle app whose model list is already in, so opening the picker

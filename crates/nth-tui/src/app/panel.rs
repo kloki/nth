@@ -4,7 +4,7 @@
 use nth_protocol::{BoxError, ModelInfo};
 
 use super::App;
-use crate::llm_picker::LlmPicker;
+use crate::{llm_picker::LlmPicker, prompt};
 
 #[derive(Debug)]
 pub(super) enum Panel {
@@ -17,7 +17,7 @@ impl Panel {
     /// the layout; the chat takes up the difference when panels swap.
     pub(super) fn rows(&self) -> u16 {
         match self {
-            Panel::Prompt => 3,
+            Panel::Prompt => prompt::ROWS,
             Panel::LlmPicker(_) => 8,
         }
     }
