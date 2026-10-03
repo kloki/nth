@@ -64,7 +64,8 @@ fn is_compact(entry: &Entry) -> bool {
 fn needs_gap(previous: Option<&Entry>, entry: &Entry) -> bool {
     match previous {
         None => false,
-        Some(_) if matches!(entry, Entry::TurnDone { .. } | Entry::Interrupted { .. }) => false,
+        // A turn's footer stands apart from the turn it closes.
+        Some(_) if matches!(entry, Entry::TurnDone { .. } | Entry::Interrupted { .. }) => true,
         Some(previous) => !(is_compact(previous) && is_compact(entry)),
     }
 }
@@ -73,7 +74,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
     let dim = dim();
     match entry {
         Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
-        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Magenta), Style::new()),
+        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::DarkGray), Style::new()),
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
@@ -126,9 +127,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             };
             vec![Line::from(vec![
                 Span::raw(INDENT),
-                Span::styled("✓ ", Style::new().fg(Color::Green)),
+                // Closes the turn as `∴` opens its thinking; ✓ is left to
+                // tool calls, where it means success.
                 Span::styled(
-                    format!("{model}{calls} · {:.1}s", elapsed.as_secs_f64()),
+                    format!("∎ {model}{calls} · {:.1}s", elapsed.as_secs_f64()),
                     dim,
                 ),
             ])]
@@ -202,6 +204,27 @@ mod tests {
             ]
         );
         assert_eq!(text(&t.visible(3, 2)), ["  ▸ read   src/a.rs"; 2]);
+    }
+
+    #[test]
+    fn the_turn_footer_sits_apart_from_the_turn() {
+        let mut t = transcript();
+        t.push_user("go".into());
+        t.apply(&Event::ToolStarted(call("1")));
+        t.finish_turn(Ok(()), "glm", std::time::Duration::from_secs(2));
+
+        let total = t.layout(40);
+
+        assert_eq!(
+            text(&t.visible(0, total)),
+            [
+                "▎ go",
+                "",
+                "  ▸ read   src/a.rs",
+                "",
+                "  ∎ glm · 1 tool call · 2.0s",
+            ]
+        );
     }
 
     #[test]

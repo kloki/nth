@@ -1,7 +1,7 @@
-//! The status bar under the input panel. Line 1 is general state: model,
-//! place and branch on the left, git status on the right. Line 2 shows what
-//! the running turn is doing on the left and the one hint that matters now
-//! on the right. The right side is cut first when a line is too narrow.
+//! The status bar under the input panel. Line 1 is general state: model
+//! and place on the left, git branch and status on the right. Line 2 holds the
+//! one hint that matters now on the right. The right side is cut first when
+//! a line is too narrow.
 
 use std::path::Path;
 
@@ -13,50 +13,50 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{app::App, chat::Activity, git, theme::dim};
+use crate::{app::App, git};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let [state, now] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
-    let busy = app.busy_since.is_some();
 
     let mut place = vec![app.model.clone()];
     place.extend(app.effort.wire().map(String::from));
     place.push(app.place.clone());
-    place.extend(app.git.as_ref().and_then(|git| git.branch.clone()));
-    let place = vec![Span::styled(place.join(" · "), dim())];
-    let mut summary = app.git.as_ref().map(git::summary).unwrap_or_default();
-    if !summary.is_empty() {
-        summary.insert(0, Span::styled("git · ", dim()));
+    let place = vec![Span::styled(place.join(" · "), bright_white())];
+    let mut summary = Vec::new();
+    if let Some(status) = &app.git {
+        summary.push(Span::styled("git · ", bright_white()));
+        if let Some(branch) = &status.branch {
+            summary.push(Span::styled(branch.clone(), Style::new().fg(Color::Green)));
+        }
+        let counts = git::summary(status);
+        if status.branch.is_some() && !counts.is_empty() {
+            summary.push(Span::raw(" "));
+        }
+        summary.extend(counts);
+        if summary.len() == 1 {
+            summary.clear();
+        }
     }
     split_line(frame, state, place, summary);
 
-    let mut activity = Vec::new();
-    if busy {
-        match app.chat.transcript.activity() {
-            Activity::Thinking => activity.push(Span::styled("thinking", dim())),
-            Activity::Writing => activity.push(Span::styled("writing", dim())),
-            Activity::Tool(call) => activity.extend([
-                Span::styled(call.name.clone(), Style::new().fg(Color::Cyan)),
-                Span::raw("  "),
-                Span::styled(call.summary(&app.cwd), dim()),
-            ]),
-        }
-    }
     let below = app.chat.lines_below();
     let hint = if below > 0 {
         vec![Span::styled(
             format!("↓ {below} more · ctrl+End"),
             Style::new().fg(Color::Yellow),
         )]
-    } else if busy {
-        vec![Span::styled("esc to interrupt", dim())]
     } else {
         Vec::new()
     };
-    split_line(frame, now, activity, hint);
+    split_line(frame, now, Vec::new(), hint);
+}
+
+/// `Color::White` is the terminal's bright white; plain white is `Gray`.
+fn bright_white() -> Style {
+    Style::new().fg(Color::White)
 }
 
 /// Draws `left` against the left edge and `right` against the right edge

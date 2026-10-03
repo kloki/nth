@@ -36,10 +36,16 @@ impl ToolCall {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.arguments) else {
             return self.arguments.clone();
         };
-        let text = ["filePath", "description", "command"]
+        // The command itself over the model's description of it.
+        let text = ["filePath", "command", "description"]
             .iter()
             .find_map(|key| args[key].as_str())
             .unwrap_or_default();
+        let mut lines = text.trim().lines();
+        let first = lines.next().unwrap_or_default();
+        if lines.next().is_some() {
+            return format!("{first} …");
+        }
         // Matching whole components keeps `/repository` from being cut down
         // to `sitory` when cwd is `/repo`.
         match Path::new(text).strip_prefix(cwd) {
@@ -76,6 +82,14 @@ mod tests {
             "/repository/src/x.rs"
         );
         assert_eq!(call(r#"{"command":"ls"}"#).summary(cwd), "ls");
+        assert_eq!(
+            call(r#"{"command":"cargo test","description":"Run tests"}"#).summary(cwd),
+            "cargo test"
+        );
+        assert_eq!(
+            call(r#"{"command":"cd crates\ncargo test\n"}"#).summary(cwd),
+            "cd crates …"
+        );
         assert_eq!(call("not json").summary(cwd), "not json");
     }
 }

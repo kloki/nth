@@ -17,8 +17,8 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- glm-5.3 · ~/repos/nth · fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀       git · +3 *4 󰊐 2 ┐ status, 2 lines
- edit  src/client.rs                                    esc to interrupt ┘
+ glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth +3 *4 󰊐 2 ┐ status, 2 lines
+                                                  ↓ 12 more · ctrl+End ┘
 ```
 
 There are no borders or divider lines, as the styleguide in [design.md](design.md#tui) says. Bands are told apart by coloured bars and spacing.
@@ -161,43 +161,42 @@ The mode label is replaced by a braille spinner in the same mode colour. Its fra
 ```
 
 ```
-▎ ⣄⣠⡠⠖
+▎ ⣄⣠⡠⠖                                                  esc to cancel
 ▎ add retry to the fetch client
 ▎
 ▎
 ```
 
-The bar keeps the mode colour, and the text is dimmed while Enter cannot submit. When the turn ends, the mode label comes back.
+The bar keeps the mode colour, and the text is dimmed while Enter cannot submit. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
-The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing is on status line 1.
+The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are, line 2 what the running turn is doing. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are, line 2 a hint about the chat. The right side of a line is cut first when it is too narrow.
 
 ```
- glm-5.3 · ~/repos/nth · fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀           git · +3 *4 󰊐 2
- edit  src/client.rs                                     esc to interrupt
+ glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
+                                                   ↓ 12 more · ctrl+End
 ```
 
 **Line 1: where you are**
 
-Left-aligned and muted like the input panel headers: `model · effort · path · branch context`, all dim. Git status sits against the right edge.
+Left-aligned: `model · effort · path context`, all bright white. The git branch and status sit against the right edge.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
 | Part | Shows | Colour |
 | --- | --- | --- |
-| Model | The current model, and its effort unless default | dim |
-| Path | The working directory, with home written as `~` | dim |
-| Branch | The current git branch; hidden outside a git repo | dim |
+| Model | The current model, and its effort unless default | bright white |
+| Path | The working directory, with home written as `~` | bright white |
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
 
 **Line 1, right: git status**
 
-Prefixed with a dim `git · `, a reimplementation of this starship config. Each part shows only when its count is non-zero, and it is hidden when the tree is clean or outside a git repo.
+Prefixed with a bright white `git · ` and the current branch in green, then a reimplementation of this starship config. Each part shows only when its count is non-zero, and the whole section is hidden outside a git repo.
 
 ```toml
 [git_status]
@@ -232,14 +231,9 @@ Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather 
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
-**Line 2: the running turn**
+**Line 2: hints**
 
-| Side | Shows |
-| --- | --- |
-| Left | What the running turn is doing: thinking, writing, or the tool and its summary |
-| Right | The one hint that matters now, such as "↓ N more · ctrl+End" or "esc to interrupt" |
-
-Both are empty while idle, unless there is more chat below the view.
+"↓ N more · ctrl+End" against the right edge when there is more chat below the view; empty otherwise. How to cancel a running turn is on the input panel, not here.
 
 ## Colours
 
@@ -254,7 +248,7 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | magenta, purple | magenta | model picker, model answer bar, highlighted items, modified |
 | cyan | cyan | tool names |
 | white | white | context bar, untracked, stashed |
-| grey | bright black | completion popup background |
+| bright white | bright white | status line 1 text |
 
 Orange is not a standard terminal colour, so it means yellow.
 
