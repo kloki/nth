@@ -69,12 +69,14 @@ impl App {
         // Events sent just before the task returned may still be queued, and
         // they belong above the footer.
         while let Ok(event) = self.events_rx.try_recv() {
-            self.chat.transcript.apply(&event);
+            self.chat.apply(&event);
         }
         let elapsed = self
             .busy_since
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
+        // An interrupted turn never finishes its calls.
+        self.chat.live.clear();
         let transcript = &mut self.chat.transcript;
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),

@@ -295,7 +295,7 @@ impl App {
         {
             self.load_git();
         }
-        self.chat.transcript.apply(&event);
+        self.chat.apply(&event);
     }
 
     /// Reads git status in the background; git is slow on a big tree.
@@ -490,6 +490,41 @@ pub(crate) mod tests {
         drop(app);
         tokio::task::yield_now().await;
         assert!(loading.is_finished());
+    }
+
+    #[tokio::test]
+    async fn running_tools_show_under_the_chat_until_they_finish() {
+        let mut app = app();
+        app.chat.transcript.push_user("test it".into());
+        let bash = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"cargo test"}"#.into(),
+        };
+        app.on_session(Event::ToolStarted(bash.clone()));
+        app.on_session(Event::ToolOutput {
+            call_id: "1".into(),
+            text: "running 3 tests\n".into(),
+        });
+        let running = rows(&mut app);
+
+        assert_eq!(running[0].trim_end(), " ▎ test it");
+        assert_eq!(running[2].trim_end(), "   ▸ bash   cargo test");
+        assert_eq!(running[8].trim_end(), "");
+        assert_eq!(running[9].trim_end(), " ▎ ▸ bash   cargo test");
+        assert_eq!(
+            running[10].trim_end(),
+            " ▎ running 3 tests",
+            "right above the prompt"
+        );
+
+        app.on_session(Event::ToolFinished {
+            call: bash,
+            result: Ok(String::new()),
+        });
+        let finished = rows(&mut app);
+        assert!(finished[3..11].iter().all(|r| r.trim().is_empty()));
+        assert!(app.git_loading.is_some(), "bash may have changed the tree");
     }
 
     #[test]

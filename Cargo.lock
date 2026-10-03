@@ -1345,6 +1345,7 @@ dependencies = [
  "nth-session",
  "nucleo-matcher",
  "ratatui",
+ "serde_json",
  "tempfile",
  "textwrap",
  "tokio",

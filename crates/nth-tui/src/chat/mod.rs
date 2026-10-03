@@ -1,14 +1,18 @@
-//! The chat pane: the history, where it is scrolled to, and how it draws.
+//! The chat pane: the history, where it is scrolled to, the tool calls
+//! still running under it, and how it draws.
 
+mod live;
 mod render;
 mod scroll;
 mod transcript;
 
 use std::path::PathBuf;
 
+use live::Live;
+use nth_protocol::Event;
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     widgets::Paragraph,
 };
 use scroll::Scroll;
@@ -20,6 +24,7 @@ use crate::theme::dim;
 
 pub struct Chat {
     pub transcript: Transcript,
+    pub live: Live,
     scroll: Scroll,
     /// Viewport height from the last draw, for page-sized scrolling.
     height: usize,
@@ -31,10 +36,16 @@ impl Chat {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             transcript: Transcript::new(cwd),
+            live: Live::default(),
             scroll: Scroll::default(),
             height: 0,
             max_top: 0,
         }
+    }
+
+    pub fn apply(&mut self, event: &Event) {
+        self.transcript.apply(event);
+        self.live.apply(event);
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -69,8 +80,17 @@ impl Chat {
         self.max_top - self.scroll.top(self.max_top)
     }
 
-    /// Draws the visible history, or `banner` centred while there is none.
+    /// Draws the visible history, or `banner` centred while there is none,
+    /// with the running tool calls pinned under it, in at most half the area.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, banner: &str) {
+        let live = self
+            .live
+            .lines(&self.transcript.cwd, usize::from(area.height / 2));
+        let live_rows = u16::try_from(live.len()).unwrap_or(0);
+        let [area, live_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(live_rows)]).areas(area);
+        frame.render_widget(Paragraph::new(live), live_area);
+
         let total = self.transcript.layout(area.width);
         self.height = usize::from(area.height);
         self.max_top = total.saturating_sub(self.height);
