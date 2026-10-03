@@ -57,9 +57,7 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         self.messages.push(Message::User(text.into()));
-        let ctx = ToolContext {
-            cwd: self.cwd.clone(),
-        };
+        let ctx = ToolContext::new(self.cwd.clone());
         run_turn(
             provider,
             Route {

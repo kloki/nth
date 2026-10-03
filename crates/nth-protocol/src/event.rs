@@ -6,5 +6,15 @@ pub enum Event {
     TextDelta(String),
     ReasoningDelta(String),
     ToolStarted(ToolCall),
-    ToolFinished { call: ToolCall, result: ToolResult },
+    /// What a running tool has produced so far, such as a command's output,
+    /// in whole lines except for the last chunk. Arrives between the call's
+    /// `ToolStarted` and `ToolFinished`.
+    ToolOutput {
+        call_id: String,
+        text: String,
+    },
+    ToolFinished {
+        call: ToolCall,
+        result: ToolResult,
+    },
 }

@@ -137,6 +137,8 @@ impl Transcript {
                     *lines = None;
                 }
             }
+            // The transcript keeps one row per call; output shows only live.
+            Event::ToolOutput { .. } => {}
         }
     }
 

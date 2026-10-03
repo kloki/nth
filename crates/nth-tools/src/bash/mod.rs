@@ -1,7 +1,7 @@
 use std::{process::Stdio, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_protocol::{OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
@@ -68,9 +68,10 @@ impl Tool for Bash {
             let mut abandoned = KillGroupOnDrop(child.id());
 
             let mut buf = Vec::new();
+            let mut streamed = Streamed::new(&ctx.output);
             let run = tokio::time::timeout(
                 Duration::from_millis(timeout_ms),
-                wait_for_exit(&mut child, &mut stdout, &mut buf),
+                wait_for_exit(&mut child, &mut stdout, &mut buf, &mut streamed),
             )
             .await;
             abandoned.0 = None;
@@ -78,6 +79,7 @@ impl Tool for Bash {
                 Ok(status) => status.map_err(|e| e.to_string())?,
                 Err(_) => {
                     kill_group(&child);
+                    streamed.rest(&buf).await;
                     let mut out = tail(&String::from_utf8_lossy(&buf));
                     out.push_str(&format!(
                         "\n\ncommand terminated after exceeding timeout {timeout_ms} ms. If it is expected to take longer and is not waiting for input, retry with a larger timeout."
@@ -88,6 +90,7 @@ impl Tool for Bash {
             // Processes the command put in the background may hold the pipe
             // open indefinitely; take what they already wrote and move on.
             let _ = tokio::time::timeout(DRAIN, stdout.read_to_end(&mut buf)).await;
+            streamed.rest(&buf).await;
 
             let mut out = tail(&String::from_utf8_lossy(&buf));
             match status.code() {
@@ -107,6 +110,7 @@ async fn wait_for_exit(
     child: &mut Child,
     stdout: &mut (impl AsyncRead + Unpin),
     buf: &mut Vec<u8>,
+    streamed: &mut Streamed<'_>,
 ) -> std::io::Result<std::process::ExitStatus> {
     loop {
         tokio::select! {
@@ -114,9 +118,49 @@ async fn wait_for_exit(
                 if read? == 0 {
                     return child.wait().await;
                 }
+                streamed.lines(buf).await;
             }
             status = child.wait() => return status,
         }
+    }
+}
+
+/// Streams the output as it arrives, in whole lines, so a multi-byte
+/// character split across two reads is never sent in halves.
+struct Streamed<'a> {
+    sink: &'a OutputSink,
+    /// How much of the output has been sent.
+    sent: usize,
+}
+
+impl<'a> Streamed<'a> {
+    fn new(sink: &'a OutputSink) -> Self {
+        Self { sink, sent: 0 }
+    }
+
+    /// Sends the complete lines not sent yet. Awaiting a full channel pauses
+    /// reading the command's output, which is the backpressure we want.
+    async fn lines(&mut self, buf: &[u8]) {
+        let Some(newline) = buf[self.sent..].iter().rposition(|&b| b == b'\n') else {
+            return;
+        };
+        let end = self.sent + newline + 1;
+        self.send(&buf[self.sent..end]).await;
+        self.sent = end;
+    }
+
+    /// Sends whatever is left, once the command is done.
+    async fn rest(&mut self, buf: &[u8]) {
+        if self.sent < buf.len() {
+            self.send(&buf[self.sent..]).await;
+            self.sent = buf.len();
+        }
+    }
+
+    async fn send(&self, bytes: &[u8]) {
+        self.sink
+            .send(String::from_utf8_lossy(bytes).into_owned())
+            .await;
     }
 }
 
@@ -165,10 +209,43 @@ mod tests {
 
     async fn bash(args: serde_json::Value) -> ToolResult {
         let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        Bash.call(args, &ctx).await
+    }
+
+    /// Runs `command` with a sink, and returns what it streamed.
+    async fn streamed(command: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let ctx = ToolContext {
             cwd: dir.path().to_path_buf(),
+            output: OutputSink::new(tx, "1".into()),
         };
-        Bash.call(args, &ctx).await
+        let out = Bash
+            .call(json!({ "command": command, "description": "t" }), &ctx)
+            .await;
+        assert!(out.is_ok());
+        let mut texts = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let nth_protocol::Event::ToolOutput { text, .. } = event {
+                texts.push(text);
+            }
+        }
+        texts
+    }
+
+    #[tokio::test]
+    async fn streams_lines_before_the_command_exits() {
+        let texts = streamed("echo one; sleep 0.2; echo two; printf three").await;
+        assert_eq!(texts, ["one\n", "two\n", "three"]);
+    }
+
+    #[tokio::test]
+    async fn never_splits_a_character_across_sends() {
+        // The euro sign is three bytes; write them in two separate reads.
+        let texts = streamed(r"printf '\xe2\x82'; sleep 0.1; printf '\xac\n'").await;
+        assert_eq!(texts.concat(), "€\n");
+        assert!(texts.iter().all(|t| !t.contains('\u{fffd}')));
     }
 
     #[tokio::test]
@@ -211,9 +288,7 @@ mod tests {
     #[tokio::test]
     async fn timeout_kills_background_processes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-        };
+        let ctx = ToolContext::new(dir.path().to_path_buf());
         let out = Bash
             .call(
                 json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "timeout": 200, "description": "t" }),
@@ -239,9 +314,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_running_call_kills_its_processes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-        };
+        let ctx = ToolContext::new(dir.path().to_path_buf());
         let call = Bash.call(
             json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "description": "t" }),
             &ctx,

@@ -49,11 +49,13 @@ impl Tool for Read {
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            if meta.is_dir() {
+            let content = if meta.is_dir() {
                 list_dir(&path, offset, limit).await
             } else {
                 read_file(&path, offset, limit).await
-            }
+            }?;
+            ctx.output.send(content.clone()).await;
+            Ok(content)
         }
         .boxed()
     }
@@ -127,9 +129,7 @@ mod tests {
     use super::*;
 
     async fn read(dir: &Path, args: serde_json::Value) -> ToolResult {
-        let ctx = ToolContext {
-            cwd: dir.to_path_buf(),
-        };
+        let ctx = ToolContext::new(dir.to_path_buf());
         Read.call(args, &ctx).await
     }
 

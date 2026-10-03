@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Message, Provider, Request, StreamEvent, Tool,
-    ToolCall, ToolContext, ToolResult,
+    AssistantMessage, BoxError, Effort, Event, Message, OutputSink, Provider, Request, StreamEvent,
+    Tool, ToolCall, ToolContext, ToolResult,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -127,10 +127,16 @@ async fn run_tool(
     events: &mpsc::Sender<Event>,
 ) -> ToolResult {
     emit(events, Event::ToolStarted(call.clone())).await;
+    // Output goes straight onto the event channel from inside this future,
+    // so it is dropped with the call and always lands before ToolFinished.
+    let ctx = ToolContext {
+        cwd: ctx.cwd.clone(),
+        output: OutputSink::new(events.clone(), call.id.clone()),
+    };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),
         Some(tool) => match parse_arguments(&call.arguments) {
-            Ok(args) => tool.call(args, ctx).await,
+            Ok(args) => tool.call(args, &ctx).await,
             Err(e) => Err(e),
         },
     };
@@ -212,6 +218,7 @@ mod tests {
         }
     }
 
+    /// Streams what it is asked to say, then returns it.
     struct Echo;
 
     impl Tool for Echo {
@@ -226,9 +233,14 @@ mod tests {
         fn call<'a>(
             &'a self,
             args: serde_json::Value,
-            _: &'a ToolContext,
+            ctx: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
-            async move { Ok(args["say"].as_str().unwrap_or_default().to_string()) }.boxed()
+            async move {
+                let say = args["say"].as_str().unwrap_or_default().to_string();
+                ctx.output.send(say.clone()).await;
+                Ok(say)
+            }
+            .boxed()
         }
     }
 
@@ -295,7 +307,7 @@ mod tests {
             vec![StreamEvent::TextDelta("done".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
-        let ctx = ToolContext { cwd: ".".into() };
+        let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
@@ -330,12 +342,24 @@ mod tests {
         );
         drop(tx);
         let mut texts = Vec::new();
+        let mut echo = Vec::new();
         while let Some(event) = rx.recv().await {
-            if let Event::TextDelta(t) = event {
-                texts.push(t);
+            match event {
+                Event::TextDelta(t) => texts.push(t),
+                Event::ToolStarted(c) if c.id == "1" => echo.push("started".to_string()),
+                Event::ToolOutput { call_id, text } if call_id == "1" => echo.push(text),
+                Event::ToolFinished { call: c, .. } if c.id == "1" => {
+                    echo.push("finished".to_string())
+                }
+                _ => {}
             }
         }
         assert_eq!(texts, ["done"]);
+        assert_eq!(
+            echo,
+            ["started", "hi", "finished"],
+            "output between the two"
+        );
         assert_eq!(
             *provider.routes.lock().expect("not poisoned"),
             vec![("glm-5.3".to_string(), "s1".to_string()); 2]
@@ -350,7 +374,7 @@ mod tests {
         ]]);
         let cancel = CancellationToken::new();
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stall(cancel.clone())), Box::new(Echo)];
-        let ctx = ToolContext { cwd: ".".into() };
+        let ctx = ToolContext::new(".".into());
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
@@ -373,7 +397,7 @@ mod tests {
             StreamEvent::ToolCall(call("1", "echo", "")),
         ]);
         let cancel = CancellationToken::new();
-        let ctx = ToolContext { cwd: ".".into() };
+        let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 

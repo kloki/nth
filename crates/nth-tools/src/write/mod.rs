@@ -109,9 +109,7 @@ mod tests {
     use super::*;
 
     async fn write(dir: &Path, args: serde_json::Value) -> ToolResult {
-        let ctx = ToolContext {
-            cwd: dir.to_path_buf(),
-        };
+        let ctx = ToolContext::new(dir.to_path_buf());
         Write.call(args, &ctx).await
     }
 
