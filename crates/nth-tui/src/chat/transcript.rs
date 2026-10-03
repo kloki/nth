@@ -42,7 +42,7 @@ pub enum ToolState {
     Failed(String),
 }
 
-/// What the running turn is doing right now, for the status row.
+/// What the running turn is doing right now, for the status bar.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Activity<'a> {
     Thinking,

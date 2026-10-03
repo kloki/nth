@@ -1,5 +1,5 @@
-//! The chat app: its state, the loop that drives it, and the fixed layout
-//! of chat history above a panel, usually the status row and prompt. Row
+//! The chat app: its state, the loop that drives it, and the layout of
+//! three bands: chat history, the input panel and the status bar. Row
 //! heights never depend on content, so nothing shifts while a turn runs.
 
 mod keys;
@@ -17,7 +17,7 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEvent
 use futures::StreamExt;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
 use nth_session::{CancellationToken, Session};
-use panel::{PANEL_ROWS, Panel};
+use panel::Panel;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -51,7 +51,7 @@ pub struct App {
     pub model: String,
     pub effort: Effort,
     pub cwd: PathBuf,
-    /// The working directory as shown in the status row, `~` for home.
+    /// The working directory as shown in the status bar, `~` for home.
     pub place: String,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
@@ -222,20 +222,22 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, panel] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
+        let [chat, panel, status] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(self.panel.rows()),
+            Constraint::Length(status::ROWS),
+        ])
+        .areas(area);
 
         let banner = format!("nth · {} · {}", self.model, self.place);
         self.chat.draw(frame, chat, &banner);
+        status::draw(frame, status, self);
         match &self.panel {
             Panel::Prompt => {
-                let [status, prompt] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(panel);
-                status::draw(frame, status, self);
-                prompt::draw(frame, prompt, &self.prompt, self.is_busy());
-                // Last, so it pops over the chat and status row.
+                prompt::draw(frame, panel, &self.prompt, self.is_busy());
+                // Last, so it pops over the chat.
                 if let Some(completion) = &self.completion {
-                    completion.draw(frame, area, prompt);
+                    completion.draw(frame, area, panel);
                 }
             }
             Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
@@ -345,11 +347,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn status_and_prompt_rows_never_move() {
+    fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert!(idle[8].trim_end().ends_with("glm · /repo"));
-        assert!(idle[9].starts_with(" ▎ Ask anything."));
+        assert_eq!(idle[13].trim_end(), " ▎ Ask anything.");
+        assert!(idle[14].trim_end().ends_with("glm · /repo"));
+        assert!(idle[15].trim().is_empty(), "no hint while idle");
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -359,13 +362,11 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert!(busy[8].contains("thinking"));
-        assert!(busy[8].trim_end().ends_with("esc to interrupt"));
-        assert_eq!(
-            busy[9..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
-            (4..=10).map(|i| format!(" ▎ line {i}")).collect::<Vec<_>>()
-        );
-        assert_eq!(busy[7].trim_end(), " ▎ message 19");
+        assert_eq!(busy[12].trim_end(), " ▎ message 19");
+        assert_eq!(busy[13].trim_end(), " ▎ line 10", "scrolled to the cursor");
+        assert!(busy[14].starts_with(" thinking"));
+        assert!(busy[14].trim_end().ends_with("glm · /repo"));
+        assert!(busy[15].trim_end().ends_with("esc to interrupt"));
     }
 
     #[test]
@@ -399,15 +400,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn completion_pops_over_the_status_row() {
+    fn completion_pops_over_the_chat() {
         let mut app = app();
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with("  /clear"));
-        assert!(rows[7].starts_with("  /exit"));
-        assert!(rows[8].starts_with("  /models"));
-        assert!(rows[9].starts_with(" ▎ /"));
+        assert!(rows[10].starts_with("  /clear"));
+        assert!(rows[11].starts_with("  /exit"));
+        assert!(rows[12].starts_with("  /models"));
+        assert!(rows[13].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -441,8 +442,8 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("  src/app/keys.rs"));
-        assert!(rows[9].starts_with(" ▎ see @ke"));
+        assert!(rows[12].starts_with("  src/app/keys.rs"));
+        assert!(rows[13].starts_with(" ▎ see @ke"));
     }
 
     /// An idle app whose model list is already in, so opening the picker
@@ -470,20 +471,19 @@ pub(crate) mod tests {
         app.submit();
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with(" ▎ switch model"));
-        assert!(rows[9].starts_with(" ▎ → glm   ✓"), "{:?}", rows[9]);
-        assert!(rows[9].trim_end().ends_with("◂ default ▸"));
-        assert!(rows[10].starts_with(" ▎   plain"));
+        assert!(rows[6].starts_with(" ▎ switch model"), "{:?}", rows[6]);
+        assert!(rows[7].starts_with(" ▎ → glm   ✓"), "{:?}", rows[7]);
+        assert!(rows[7].trim_end().ends_with("◂ default ▸"));
+        assert!(rows[8].starts_with(" ▎   plain"));
         assert!(
-            rows[11..].iter().all(|r| r.trim().is_empty()),
+            rows[9..14].iter().all(|r| r.trim().is_empty()),
             "seven model rows"
         );
         assert!(
-            rows[8..]
-                .iter()
-                .all(|r| !r.contains("Ask anything") && !r.contains("/repo")),
-            "no prompt or status row"
+            rows.iter().all(|r| !r.contains("Ask anything")),
+            "no prompt"
         );
+        assert!(rows[14].trim_end().ends_with("glm · /repo"), "status stays");
     }
 
     #[test]
@@ -497,7 +497,7 @@ pub(crate) mod tests {
         assert!(matches!(app.panel, Panel::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         assert!(
-            rows(&mut app)[8]
+            rows(&mut app)[14]
                 .trim_end()
                 .ends_with("glm · medium · /repo")
         );
@@ -560,7 +560,7 @@ pub(crate) mod tests {
         let listing = app.llm_listing.take().expect("listing");
         listing.abort();
         app.llms_listed(Err("offline".into()));
-        assert!(rows(&mut app)[9].contains("✗ offline"));
+        assert!(rows(&mut app)[7].contains("✗ offline"));
 
         app.apply(keys::Action::Interrupt);
         app.apply(keys::Action::LlmPicker);

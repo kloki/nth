@@ -1,18 +1,26 @@
-//! The rows under the chat hold the status row and prompt, or a widget that
-//! swaps in over both and hands back to the prompt when done.
+//! The input panel between the chat and the status bar: the prompt, or a
+//! widget that swaps in for it and hands back to the prompt when done.
 
 use nth_protocol::{BoxError, ModelInfo};
 
 use super::App;
 use crate::llm_picker::LlmPicker;
 
-/// Every panel is this tall, so swapping one in moves nothing.
-pub(super) const PANEL_ROWS: u16 = 8;
-
 #[derive(Debug)]
 pub(super) enum Panel {
     Prompt,
     LlmPicker(LlmPicker),
+}
+
+impl Panel {
+    /// Fixed while the panel is open, so typing or filtering never moves
+    /// the layout; the chat takes up the difference when panels swap.
+    pub(super) fn rows(&self) -> u16 {
+        match self {
+            Panel::Prompt => 1,
+            Panel::LlmPicker(_) => 8,
+        }
+    }
 }
 
 impl App {
