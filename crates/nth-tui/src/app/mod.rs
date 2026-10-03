@@ -1,9 +1,10 @@
-//! The chat app: its state, the loop that drives it, and the fixed layout
-//! of chat history above a panel, usually the status row and prompt. Row
+//! The app: its state, the loop that drives it, and the layout of three
+//! bands: the content panel, the input panel and the status bar. Row
 //! heights never depend on content, so nothing shifts while a turn runs.
 
+mod content;
+mod input;
 mod keys;
-mod panel;
 mod turn;
 
 use std::{
@@ -13,11 +14,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
+use input::Input;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
 use nth_session::{CancellationToken, Session};
-use panel::{PANEL_ROWS, Panel};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -45,13 +47,15 @@ const TICK: Duration = Duration::from_millis(100);
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
-    /// What fills the rows under the chat.
-    panel: Panel,
+    /// What fills the content panel.
+    content: Content,
+    /// What fills the input panel.
+    input: Input,
     /// The model and effort the next turn runs with.
     pub model: String,
     pub effort: Effort,
     pub cwd: PathBuf,
-    /// The working directory as shown in the status row, `~` for home.
+    /// The working directory as shown in the status bar, `~` for home.
     pub place: String,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
@@ -145,7 +149,8 @@ impl App {
         Self {
             chat: Chat::new(session.cwd.clone()),
             prompt: Prompt::default(),
-            panel: Panel::Prompt,
+            content: Content::Chat,
+            input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
             cwd: session.cwd.clone(),
@@ -222,23 +227,29 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, panel] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(PANEL_ROWS)]).areas(area);
+        let [content, input, status] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(self.input.rows()),
+            Constraint::Length(status::ROWS),
+        ])
+        .areas(area);
 
-        let banner = format!("nth · {} · {}", self.model, self.place);
-        self.chat.draw(frame, chat, &banner);
-        match &self.panel {
-            Panel::Prompt => {
-                let [status, prompt] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(panel);
-                status::draw(frame, status, self);
-                prompt::draw(frame, prompt, &self.prompt, self.is_busy());
-                // Last, so it pops over the chat and status row.
+        match self.content {
+            Content::Chat => {
+                let banner = format!("nth · {} · {}", self.model, self.place);
+                self.chat.draw(frame, content, &banner);
+            }
+        }
+        status::draw(frame, status, self);
+        match &self.input {
+            Input::Prompt => {
+                prompt::draw(frame, input, &self.prompt, self.is_busy());
+                // Last, so it pops over the content panel.
                 if let Some(completion) = &self.completion {
-                    completion.draw(frame, area, prompt);
+                    completion.draw(frame, area, input);
                 }
             }
-            Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
+            Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
         }
     }
 
@@ -250,7 +261,7 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) if matches!(self.panel, Panel::Prompt) => {
+            TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_completion();
@@ -345,11 +356,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn status_and_prompt_rows_never_move() {
+    fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert!(idle[8].trim_end().ends_with("glm · /repo"));
-        assert!(idle[9].starts_with(" ▎ Ask anything."));
+        assert_eq!(idle[13].trim_end(), " ▎ Ask anything.");
+        assert!(idle[14].trim_end().ends_with("glm · /repo"));
+        assert!(idle[15].trim().is_empty(), "no hint while idle");
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -359,13 +371,11 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert!(busy[8].contains("thinking"));
-        assert!(busy[8].trim_end().ends_with("esc to interrupt"));
-        assert_eq!(
-            busy[9..].iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
-            (4..=10).map(|i| format!(" ▎ line {i}")).collect::<Vec<_>>()
-        );
-        assert_eq!(busy[7].trim_end(), " ▎ message 19");
+        assert_eq!(busy[12].trim_end(), " ▎ message 19");
+        assert_eq!(busy[13].trim_end(), " ▎ line 10", "scrolled to the cursor");
+        assert!(busy[14].starts_with(" thinking"));
+        assert!(busy[14].trim_end().ends_with("glm · /repo"));
+        assert!(busy[15].trim_end().ends_with("esc to interrupt"));
     }
 
     #[test]
@@ -399,15 +409,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn completion_pops_over_the_status_row() {
+    fn completion_pops_over_the_content_panel() {
         let mut app = app();
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with("  /clear"));
-        assert!(rows[7].starts_with("  /exit"));
-        assert!(rows[8].starts_with("  /models"));
-        assert!(rows[9].starts_with(" ▎ /"));
+        assert!(rows[10].starts_with("  /clear"));
+        assert!(rows[11].starts_with("  /exit"));
+        assert!(rows[12].starts_with("  /models"));
+        assert!(rows[13].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -441,8 +451,8 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("  src/app/keys.rs"));
-        assert!(rows[9].starts_with(" ▎ see @ke"));
+        assert!(rows[12].starts_with("  src/app/keys.rs"));
+        assert!(rows[13].starts_with(" ▎ see @ke"));
     }
 
     /// An idle app whose model list is already in, so opening the picker
@@ -457,9 +467,9 @@ pub(crate) mod tests {
     }
 
     fn picker(app: &App) -> &crate::llm_picker::LlmPicker {
-        match &app.panel {
-            Panel::LlmPicker(picker) => picker,
-            Panel::Prompt => panic!("picker not open"),
+        match &app.input {
+            Input::LlmPicker(picker) => picker,
+            Input::Prompt => panic!("picker not open"),
         }
     }
 
@@ -470,20 +480,19 @@ pub(crate) mod tests {
         app.submit();
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with(" ▎ switch model"));
-        assert!(rows[9].starts_with(" ▎ → glm   ✓"), "{:?}", rows[9]);
-        assert!(rows[9].trim_end().ends_with("◂ default ▸"));
-        assert!(rows[10].starts_with(" ▎   plain"));
+        assert!(rows[6].starts_with(" ▎ switch model"), "{:?}", rows[6]);
+        assert!(rows[7].starts_with(" ▎ → glm   ✓"), "{:?}", rows[7]);
+        assert!(rows[7].trim_end().ends_with("◂ default ▸"));
+        assert!(rows[8].starts_with(" ▎   plain"));
         assert!(
-            rows[11..].iter().all(|r| r.trim().is_empty()),
+            rows[9..14].iter().all(|r| r.trim().is_empty()),
             "seven model rows"
         );
         assert!(
-            rows[8..]
-                .iter()
-                .all(|r| !r.contains("Ask anything") && !r.contains("/repo")),
-            "no prompt or status row"
+            rows.iter().all(|r| !r.contains("Ask anything")),
+            "no prompt"
         );
+        assert!(rows[14].trim_end().ends_with("glm · /repo"), "status stays");
     }
 
     #[test]
@@ -494,10 +503,10 @@ pub(crate) mod tests {
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Submit);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         assert!(
-            rows(&mut app)[8]
+            rows(&mut app)[14]
                 .trim_end()
                 .ends_with("glm · medium · /repo")
         );
@@ -515,7 +524,7 @@ pub(crate) mod tests {
         app.apply(keys::Action::SelectNext);
         app.apply(keys::Action::Interrupt);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.model, "glm");
         assert!(!app.quit);
     }
@@ -560,7 +569,7 @@ pub(crate) mod tests {
         let listing = app.llm_listing.take().expect("listing");
         listing.abort();
         app.llms_listed(Err("offline".into()));
-        assert!(rows(&mut app)[9].contains("✗ offline"));
+        assert!(rows(&mut app)[7].contains("✗ offline"));
 
         app.apply(keys::Action::Interrupt);
         app.apply(keys::Action::LlmPicker);

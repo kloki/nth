@@ -116,7 +116,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 
 ## Prompt
 
-Modelled on opencode's prompt: a coloured bar down the left and a lighter background, so the input stands out from the content without a border.
+Modelled on opencode's prompt: a coloured bar down the left and a background of its own, so the input stands out from the content without a border.
 
 ```
 ▎
@@ -124,7 +124,7 @@ Modelled on opencode's prompt: a coloured bar down the left and a lighter backgr
 ▎
 ```
 
-- **Shape.** 3 rows on a bright black background: a padding row, the text row, a padding row. The bar `▎` runs down the left edge of all three rows.
+- **Shape.** 3 rows on an ANSI black background: a padding row, the text row, a padding row. The bar `▎` runs down the left edge of all three rows.
 - **Mode label.** The text row starts with the mode, then two spaces and `>`, then the text. For now the only mode is BUILD; PLAN and other modes come later.
 - **Mode colour.** The bar and the mode label share one colour per mode: BUILD is blue, and later PLAN is magenta. The typed text is the default fg.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
@@ -161,7 +161,7 @@ Fixed at 2 lines, always visible, below the input panel. It holds general state,
 
 Right-aligned, separated by single spaces: `model path branch context`.
 
-Colours here are the terminal's ANSI colours, so your terminal theme decides how they look. Purple in the starship config is ANSI magenta. See [Colours](#colours) for how they look in Dracula.
+Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
 | Part | Shows | Colour |
 | --- | --- | --- |
@@ -220,20 +220,21 @@ Both are empty while idle. When a line is too narrow for both sides, the left si
 
 ## Colours
 
-Every colour is one of the 16 ANSI colours, so the terminal theme decides how it looks. The reference theme is Dracula, which maps them like this:
+Every colour is one of the terminal's 16 standard colours, so the terminal theme decides how it looks. nth never sets a colour of its own.
 
-| Name in this doc | ANSI | Dracula | Used for |
-| --- | --- | --- | --- |
-| red | red | `#FF5555` | path, deleted, conflicted, errors |
-| green | green | `#50FA7B` | branch, your messages, success |
-| yellow, orange | yellow | `#F1FA8C` | live tool bar, ahead, behind, renamed, interrupted |
-| blue | blue | `#BD93F9` (Dracula purple) | model, BUILD, staged |
-| magenta, purple | magenta | `#FF79C6` (Dracula pink) | PLAN, modified |
-| cyan | cyan | `#8BE9FD` | tool names |
-| white | white | `#F8F8F2` | context bar, untracked, stashed |
-| grey | bright black | `#6272A4` (Dracula comment) | model answer bar, prompt background |
+| Name in this doc | Terminal colour | Used for |
+| --- | --- | --- |
+| red | red | path, deleted, conflicted, errors |
+| green | green | branch, your messages, success |
+| yellow, orange | yellow | live tool bar, ahead, behind, renamed, interrupted |
+| blue | blue | model, BUILD, staged |
+| magenta, purple | magenta | PLAN, modified |
+| cyan | cyan | tool names |
+| white | white | context bar, untracked, stashed |
+| black | black | prompt background |
+| grey | bright black | model answer bar |
 
-Note that in Dracula ANSI blue renders as purple and ANSI magenta as pink. Dracula's orange (`#FFB86C`) is not one of its ANSI colours, so orange in this doc means ANSI yellow.
+Orange is not a standard terminal colour, so it means yellow.
 
 ## Open questions
 
