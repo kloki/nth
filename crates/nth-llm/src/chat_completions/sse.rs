@@ -6,7 +6,16 @@ use super::Error;
 pub enum Event {
     Delta(Delta),
     Finish(String),
+    Usage(Usage),
     Done,
+}
+
+#[derive(Debug, Default, PartialEq, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
 }
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
@@ -47,6 +56,8 @@ struct Chunk {
     /// Gateways such as OpenRouter report rate limits and overload in-stream,
     /// after the 200 status has already been sent.
     error: Option<serde_json::Value>,
+    /// Sent in a chunk of its own, with no choices, near the end.
+    usage: Option<Usage>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +99,7 @@ fn parse_line(line: &str, events: &mut Vec<Event>) -> Result<(), Error> {
         };
         return Err(Error::Provider(message));
     }
+    events.extend(chunk.usage.map(Event::Usage));
     let Some(choice) = chunk.choices.into_iter().flatten().next() else {
         return Ok(());
     };
@@ -107,12 +119,21 @@ mod tests {
     }
 
     #[test]
-    fn ignores_comments_and_usage_chunks() {
+    fn ignores_comments_and_reads_usage_chunks() {
         let mut parser = Parser::default();
         let events = parser
-            .push(b": ping\n\ndata: {\"choices\":[],\"usage\":{}}\n\ndata: [DONE]\n")
+            .push(b": ping\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":8,\"total_tokens\":128}}\n\ndata: [DONE]\n")
             .expect("valid");
-        assert_eq!(events, vec![Event::Done]);
+        assert_eq!(
+            events,
+            vec![
+                Event::Usage(Usage {
+                    prompt_tokens: 120,
+                    completion_tokens: 8
+                }),
+                Event::Done
+            ]
+        );
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl Live {
                 }
             }
             Event::ToolFinished { call, .. } => self.calls.retain(|r| r.call.id != call.id),
-            Event::TextDelta(_) | Event::ReasoningDelta(_) => {}
+            Event::TextDelta(_) | Event::ReasoningDelta(_) | Event::Usage(_) => {}
         }
     }
 

@@ -87,6 +87,7 @@ pub async fn run_turn(
                     emit(events, Event::ReasoningDelta(text)).await;
                 }
                 StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
+                StreamEvent::Usage(usage) => emit(events, Event::Usage(usage)).await,
             }
         }
 

@@ -30,14 +30,25 @@ impl App {
         let mut picker = LlmPicker::new(&self.model, self.effort);
         match &self.llms {
             Some(llms) => picker.load(Ok(llms.clone())),
-            None if self.llm_listing.is_none() => {
-                let provider = self.provider.clone();
-                self.llm_listing = Some(tokio::spawn(async move { provider.models().await }));
-            }
-            // Already asked; the answer fills this picker when it comes.
-            None => {}
+            // The answer fills this picker when it comes.
+            None => self.list_llms(),
         }
         self.panel = Panel::LlmPicker(picker);
+    }
+
+    /// Asks for the LLMs unless they are listed or already asked for. Done
+    /// at start-up too, since the status bar needs the context window.
+    pub(super) fn list_llms(&mut self) {
+        if self.llms.is_none() && self.llm_listing.is_none() {
+            let provider = self.provider.clone();
+            self.llm_listing = Some(tokio::spawn(async move { provider.models().await }));
+        }
+    }
+
+    /// The context window of the model in use, when the provider says.
+    pub fn context_window(&self) -> Option<u64> {
+        let llms = self.llms.as_ref()?;
+        llms.iter().find(|llm| llm.id == self.model)?.context
     }
 
     /// Only a list is kept; after a failure the next open asks again.

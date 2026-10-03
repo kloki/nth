@@ -8,7 +8,7 @@ mod wire;
 use std::collections::{BTreeMap, VecDeque};
 
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use nth_protocol::{BoxError, ModelInfo, Provider, Request, StreamEvent, ToolCall};
+use nth_protocol::{BoxError, ModelInfo, Provider, Request, StreamEvent, ToolCall, Usage};
 
 const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 
@@ -155,6 +155,12 @@ where
                 match event {
                     sse::Event::Delta(delta) => s.apply(delta),
                     sse::Event::Finish(reason) => s.finish_reason = Some(reason),
+                    sse::Event::Usage(usage) => {
+                        s.pending.push_back(Ok(StreamEvent::Usage(Usage {
+                            input: usage.prompt_tokens,
+                            output: usage.completion_tokens,
+                        })))
+                    }
                     sse::Event::Done => {
                         s.finished = true;
                         // Tool calls cut off at the token limit have partial
@@ -233,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assembles_text_reasoning_and_tool_calls() {
+    async fn assembles_text_reasoning_usage_and_tool_calls() {
         let events = replay(FIXTURE.len()).await;
         assert_eq!(
             events,
@@ -241,6 +247,10 @@ mod tests {
                 StreamEvent::ReasoningDelta("Let me look.".into()),
                 StreamEvent::TextDelta("Reading wörld".into()),
                 StreamEvent::TextDelta(" files.".into()),
+                StreamEvent::Usage(Usage {
+                    input: 5,
+                    output: 3,
+                }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "call_a".into(),
                     name: "read".into(),

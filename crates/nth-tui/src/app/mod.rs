@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
-use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
+use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
 use nth_session::{CancellationToken, Session};
 use panel::Panel;
 use ratatui::{
@@ -70,6 +70,8 @@ pub struct App {
     /// The working tree's git state; `None` outside a repository or until
     /// the first load lands.
     pub git: Option<GitStatus>,
+    /// What the last model reply used; `None` until the first one.
+    pub usage: Option<Usage>,
     git_loading: Option<JoinHandle<Result<Option<GitStatus>, String>>>,
     /// Set when the tree may have changed mid-load, like `reindex`.
     reload_git: bool,
@@ -167,6 +169,7 @@ impl App {
             indexing: None,
             reindex: false,
             git: None,
+            usage: None,
             git_loading: None,
             reload_git: false,
             llms: None,
@@ -187,6 +190,7 @@ impl App {
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
         self.load_git();
+        self.list_llms();
 
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -290,10 +294,12 @@ impl App {
 
     fn on_session(&mut self, event: Event) {
         // A write or a command may have changed the tree.
-        if let Event::ToolFinished { call, .. } = &event
-            && matches!(call.name.as_str(), "write" | "bash")
-        {
-            self.load_git();
+        match &event {
+            Event::ToolFinished { call, .. } if matches!(call.name.as_str(), "write" | "bash") => {
+                self.load_git();
+            }
+            Event::Usage(usage) => self.usage = Some(*usage),
+            _ => {}
         }
         self.chat.apply(&event);
     }
@@ -354,6 +360,7 @@ impl App {
                 session.effort = self.effort;
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
+                self.usage = None;
             }
             Command::Models => self.open_llm_picker(),
         }
@@ -490,6 +497,33 @@ pub(crate) mod tests {
         drop(app);
         tokio::task::yield_now().await;
         assert!(loading.is_finished());
+    }
+
+    #[test]
+    fn the_context_bar_fills_with_usage() {
+        let mut app = app();
+        assert!(
+            rows(&mut app)[14].trim_end().ends_with("glm /repo"),
+            "no bar while the window is unknown"
+        );
+
+        let mut glm = crate::llm_picker::tests::model("glm", true);
+        glm.context = Some(1000);
+        app.llms = Some(vec![glm]);
+        // The bar is followed by the one column of margin.
+        let empty = rows(&mut app);
+        assert!(
+            empty[14].ends_with(&format!("glm /repo {} ", " ".repeat(13))),
+            "an empty bar before the first reply: {:?}",
+            empty[14]
+        );
+
+        app.on_session(Event::Usage(Usage {
+            input: 1000,
+            output: 0,
+        }));
+        let full = rows(&mut app);
+        assert!(full[14].ends_with(&format!("glm /repo {} ", "⣿".repeat(13))));
     }
 
     #[tokio::test]

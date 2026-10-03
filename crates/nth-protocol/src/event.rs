@@ -1,4 +1,4 @@
-use crate::{ToolCall, ToolResult};
+use crate::{ToolCall, ToolResult, Usage};
 
 /// What a running session reports to its front-ends.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,4 +17,6 @@ pub enum Event {
         call: ToolCall,
         result: ToolResult,
     },
+    /// After each model reply, when the provider reports it.
+    Usage(Usage),
 }

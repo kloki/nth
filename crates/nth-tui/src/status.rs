@@ -1,10 +1,11 @@
 //! The status bar under the input panel. General state is right-aligned:
-//! model, place and branch on line 1, git status on line 2. The left side
+//! model, place, branch and context used on line 1, git status on line 2. The left side
 //! shows what the running turn is doing and the one hint that matters now,
 //! and is cut first when a line is too narrow.
 
 use std::path::Path;
 
+use braille_bar::BrailleBar;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -17,6 +18,8 @@ use crate::{app::App, chat::Activity, git, theme::dim};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
+/// Characters in the context bar.
+const BAR_WIDTH: usize = 13;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let [now, hints] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
@@ -35,6 +38,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         place.extend([
             Span::raw(" "),
             Span::styled(branch, Style::new().fg(Color::Green)),
+        ]);
+    }
+    // Unknown window, no bar; no reply yet, an empty one.
+    if let Some(window) = app.context_window().filter(|&w| w > 0) {
+        let used = app.usage.map_or(0, |usage| usage.context());
+        let percent = (used as f64 / window as f64 * 100.0).min(100.0);
+        place.extend([
+            Span::raw(" "),
+            Span::styled(
+                BrailleBar::new(BAR_WIDTH).render(percent),
+                Style::new().fg(Color::Gray),
+            ),
         ]);
     }
     let mut activity = Vec::new();
