@@ -14,7 +14,7 @@ use ratatui::{
 use scroll::Scroll;
 #[cfg(test)]
 pub use transcript::Entry;
-pub use transcript::{Activity, Transcript};
+pub use transcript::Transcript;
 
 use crate::theme::dim;
 

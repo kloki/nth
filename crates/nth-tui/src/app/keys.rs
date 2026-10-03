@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, Completion, panel::Panel};
+use super::{App, Completion, input::Input};
 use crate::{command::Command, mention, popup::Popup};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,7 +72,7 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
-        if let Panel::LlmPicker(picker) = &mut self.panel {
+        if let Input::LlmPicker(picker) = &mut self.input {
             match action {
                 Action::SelectNext => picker.next(),
                 Action::SelectPrev => picker.prev(),
@@ -81,7 +81,7 @@ impl App {
                 Action::Submit => self.choose_llm(),
                 // Closing the picker must not also interrupt a running turn.
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
-                    self.panel = Panel::Prompt
+                    self.input = Input::Prompt
                 }
                 Action::PageUp => self.chat.page_up(),
                 Action::PageDown => self.chat.page_down(),

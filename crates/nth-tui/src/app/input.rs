@@ -1,24 +1,26 @@
-//! The input panel between the chat and the status bar: the prompt, or a
-//! widget that swaps in for it and hands back to the prompt when done.
+//! The input panel between the content panel and the status bar: the
+//! prompt, or a widget that swaps in for it and hands back to the prompt
+//! when done.
 
 use nth_protocol::{BoxError, ModelInfo};
 
 use super::App;
-use crate::llm_picker::LlmPicker;
+use crate::{llm_picker::LlmPicker, prompt};
 
 #[derive(Debug)]
-pub(super) enum Panel {
+pub(super) enum Input {
     Prompt,
     LlmPicker(LlmPicker),
 }
 
-impl Panel {
-    /// Fixed while the panel is open, so typing or filtering never moves
-    /// the layout; the chat takes up the difference when panels swap.
+impl Input {
+    /// Fixed while the input is open, so typing or filtering never moves
+    /// the layout; the content panel takes up the difference when inputs
+    /// swap.
     pub(super) fn rows(&self) -> u16 {
         match self {
-            Panel::Prompt => 3,
-            Panel::LlmPicker(_) => 8,
+            Input::Prompt => prompt::ROWS,
+            Input::LlmPicker(_) => 8,
         }
     }
 }
@@ -37,7 +39,7 @@ impl App {
             // Already asked; the answer fills this picker when it comes.
             None => {}
         }
-        self.panel = Panel::LlmPicker(picker);
+        self.input = Input::LlmPicker(picker);
     }
 
     /// Only a list is kept; after a failure the next open asks again.
@@ -47,7 +49,7 @@ impl App {
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
         }
-        if let Panel::LlmPicker(picker) = &mut self.panel {
+        if let Input::LlmPicker(picker) = &mut self.input {
             picker.load(llms);
         }
     }
@@ -55,13 +57,13 @@ impl App {
     /// Switches later turns to the highlighted model; the session picks it
     /// up when the next turn starts, since mid-turn it is in the turn task.
     pub(super) fn choose_llm(&mut self) {
-        let Panel::LlmPicker(picker) = &self.panel else {
+        let Input::LlmPicker(picker) = &self.input else {
             return;
         };
         if let Some((model, effort)) = picker.chosen() {
             self.model = model;
             self.effort = effort;
-            self.panel = Panel::Prompt;
+            self.input = Input::Prompt;
         }
     }
 }
