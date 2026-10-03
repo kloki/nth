@@ -1,12 +1,12 @@
-//! The status row above the prompt: what the running turn is doing
-//! on the left; a scroll hint, the interrupt hint, or model and place on
-//! the right.
+//! The status bar under the input panel. Line 1: what the running turn is
+//! doing on the left, model and place on the right. Line 2: the one hint
+//! that matters now, on the right.
 
 use std::path::Path;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -14,7 +14,11 @@ use ratatui::{
 
 use crate::{app::App, chat::Activity, theme::dim};
 
+/// Always this tall, whichever input panel is open.
+pub const ROWS: u16 = 2;
+
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    let [now, hints] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
     let busy = app.busy_since.is_some();
     if busy {
         let mut spans = Vec::new();
@@ -27,11 +31,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(call.summary(&app.cwd), dim()),
             ]),
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        frame.render_widget(Paragraph::new(Line::from(spans)), now);
     }
 
+    let model = match app.effort.wire() {
+        Some(effort) => format!("{} · {effort}", app.model),
+        None => app.model.clone(),
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(format!("{model} · {}", app.place), dim()))
+            .alignment(Alignment::Right),
+        now,
+    );
+
     let below = app.chat.lines_below();
-    let right = if below > 0 {
+    let hint = if below > 0 {
         Span::styled(
             format!("↓ {below} more · ctrl+End"),
             Style::new().fg(Color::Yellow),
@@ -39,16 +53,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else if busy {
         Span::styled("esc to interrupt", dim())
     } else {
-        let model = match app.effort.wire() {
-            Some(effort) => format!("{} · {effort}", app.model),
-            None => app.model.clone(),
-        };
-        Span::styled(format!("{model} · {}", app.place), dim())
+        return;
     };
-    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+    frame.render_widget(Paragraph::new(hint).alignment(Alignment::Right), hints);
 }
 
-/// `cwd` as shown in the status row, with `home` written as `~`.
+/// `cwd` as shown in the status bar, with `home` written as `~`.
 pub fn place(cwd: &Path, home: Option<&str>) -> String {
     match home {
         Some(home) if !home.is_empty() => match cwd.strip_prefix(home) {
