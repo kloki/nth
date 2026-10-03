@@ -432,8 +432,8 @@ pub(crate) mod tests {
         assert_eq!(idle[11].trim_end(), " ▎ Ask anything.");
         assert_eq!(idle[12].trim_end(), " ▎");
         assert_eq!(idle[13].trim_end(), " ▎");
-        assert!(idle[14].trim_end().ends_with("glm /repo"));
-        assert!(idle[15].trim().is_empty(), "no hint or git outside a repo");
+        assert_eq!(idle[14].trim_end(), " glm · /repo");
+        assert!(idle[15].trim().is_empty(), "no activity or hint when idle");
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -456,13 +456,13 @@ pub(crate) mod tests {
             [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
             "scrolled to the cursor"
         );
-        assert!(busy[14].starts_with(" thinking"));
-        assert!(busy[14].trim_end().ends_with("glm /repo"));
+        assert_eq!(busy[14].trim_end(), " glm · /repo", "no git outside a repo");
+        assert!(busy[15].starts_with(" thinking"));
         assert!(busy[15].trim_end().ends_with("esc to interrupt"));
     }
 
     #[test]
-    fn status_shows_branch_and_git_summary_on_the_right() {
+    fn status_shows_git_summary_beside_the_branch() {
         let mut app = app();
         app.git = Some(GitStatus {
             branch: Some("main".into()),
@@ -473,23 +473,24 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert!(rows[14].starts_with(" thinking"));
-        assert!(rows[14].trim_end().ends_with("glm /repo main"));
-        assert!(rows[15].starts_with(" esc to interrupt"));
-        assert!(rows[15].trim_end().ends_with("+2 *1"));
+        assert!(rows[14].starts_with(" glm · /repo · main"));
+        assert!(rows[14].trim_end().ends_with("git · +2 *1"));
+        assert!(rows[15].starts_with(" thinking"));
+        assert!(rows[15].trim_end().ends_with("esc to interrupt"));
     }
 
     #[test]
-    fn a_narrow_status_line_cuts_the_left_first() {
+    fn a_narrow_status_line_cuts_the_right_first() {
         let mut app = app();
         app.git = Some(GitStatus {
             branch: Some("a-very-long-branch-name".into()),
+            modified: 1,
             ..GitStatus::default()
         });
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert_eq!(rows[14].trim(), "thin glm /repo a-very-long-branch-name");
+        assert_eq!(rows[14].trim(), "glm · /repo · a-very-long-branch-name");
     }
 
     #[tokio::test]
@@ -652,7 +653,7 @@ pub(crate) mod tests {
             rows.iter().all(|r| !r.contains("Ask anything")),
             "no prompt"
         );
-        assert!(rows[14].trim_end().ends_with("glm /repo"), "status stays");
+        assert_eq!(rows[14].trim_end(), " glm · /repo", "status stays");
     }
 
     #[test]
@@ -665,11 +666,7 @@ pub(crate) mod tests {
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
-        assert!(
-            rows(&mut app)[14]
-                .trim_end()
-                .ends_with("glm · medium /repo")
-        );
+        assert_eq!(rows(&mut app)[14].trim_end(), " glm · medium · /repo");
 
         app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::SelectNext);
