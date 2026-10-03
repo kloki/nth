@@ -74,7 +74,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
     let dim = dim();
     match entry {
         Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
-        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::DarkGray), Style::new()),
+        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Cyan), Style::new()),
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
@@ -89,23 +89,24 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 dim,
             )]
         }
-        Entry::Tool { call, state } => {
-            let (marker, marker_style, name_style) = match state {
-                ToolState::Running => ("▸", dim, Style::new().fg(Color::Cyan)),
-                ToolState::Done => (
-                    "✓",
-                    Style::new().fg(Color::Green),
-                    Style::new().fg(Color::Cyan),
-                ),
-                ToolState::Failed(_) => (
-                    "✗",
-                    Style::new().fg(Color::Red),
-                    Style::new().fg(Color::Red),
-                ),
+        Entry::Tool {
+            call,
+            state,
+            output,
+        } => {
+            // A call is told apart by its tool's icon, not by a success
+            // mark: only a failure stands out, in red.
+            let name_style = match state {
+                ToolState::Failed(_) => Style::new().fg(Color::Red),
+                ToolState::Running | ToolState::Done => Style::new().fg(Color::Cyan),
+            };
+            let icon_style = match state {
+                ToolState::Running => dim,
+                ToolState::Done | ToolState::Failed(_) => name_style,
             };
             let mut spans = vec![
                 Span::raw(INDENT),
-                Span::styled(marker, marker_style),
+                Span::styled(icon(&call.name), icon_style),
                 Span::raw(" "),
                 Span::styled(format!("{:<6} ", call.name), name_style),
                 Span::styled(call.summary(cwd), dim),
@@ -113,7 +114,14 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             if let ToolState::Failed(e) = state {
                 spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
             }
-            vec![Line::from(spans)]
+            let bar = Style::new().fg(Color::White);
+            let mut lines = vec![Line::from(spans)];
+            lines.extend(
+                output
+                    .iter()
+                    .map(|text| Line::from(vec![Span::styled(BAR, bar), Span::raw(text.clone())])),
+            );
+            lines
         }
         Entry::TurnDone {
             model,
@@ -127,8 +135,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             };
             vec![Line::from(vec![
                 Span::raw(INDENT),
-                // Closes the turn as `∴` opens its thinking; ✓ is left to
-                // tool calls, where it means success.
+                // Closes the turn as `∴` opens its thinking.
                 Span::styled(
                     format!("∎ {model}{calls} · {:.1}s", elapsed.as_secs_f64()),
                     dim,
@@ -140,6 +147,16 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             Span::styled("⏹ ", Style::new().fg(Color::Yellow)),
             Span::styled(format!("interrupted · {:.1}s", elapsed.as_secs_f64()), dim),
         ])],
+    }
+}
+
+/// The mark a tool's row starts with, so calls can be told apart at a glance.
+fn icon(tool: &str) -> &'static str {
+    match tool {
+        "read" => "≡",
+        "write" => "✎",
+        "bash" => "$",
+        _ => "•",
     }
 }
 
@@ -194,8 +211,8 @@ mod tests {
                 "▎ one two",
                 "▎ three",
                 "",
-                "  ▸ read   src/a.rs",
-                "  ▸ read   src/a.rs",
+                "  ≡ read   src/a.rs",
+                "  ≡ read   src/a.rs",
                 "",
                 "▎ ok",
                 "▎ ",
@@ -203,7 +220,7 @@ mod tests {
                 "▎     nted",
             ]
         );
-        assert_eq!(text(&t.visible(3, 2)), ["  ▸ read   src/a.rs"; 2]);
+        assert_eq!(text(&t.visible(3, 2)), ["  ≡ read   src/a.rs"; 2]);
     }
 
     #[test]
@@ -220,9 +237,31 @@ mod tests {
             [
                 "▎ go",
                 "",
-                "  ▸ read   src/a.rs",
+                "  ≡ read   src/a.rs",
                 "",
                 "  ∎ glm · 1 tool call · 2.0s",
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_output_sits_under_its_row() {
+        let mut t = transcript();
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolOutput {
+            call_id: "1".into(),
+            text: "fn main() {}\n".into(),
+        });
+        t.apply(&Event::ToolStarted(call("2")));
+
+        let total = t.layout(40);
+
+        assert_eq!(
+            text(&t.visible(0, total)),
+            [
+                "  ≡ read   src/a.rs",
+                "▎ fn main() {}",
+                "  ≡ read   src/a.rs",
             ]
         );
     }

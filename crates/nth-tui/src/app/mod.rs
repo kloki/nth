@@ -517,7 +517,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn running_tools_show_under_the_chat_until_they_finish() {
+    async fn tool_output_stays_in_the_transcript() {
         let mut app = app();
         app.chat.transcript.push_user("test it".into());
         let bash = nth_protocol::ToolCall {
@@ -533,21 +533,16 @@ pub(crate) mod tests {
         let running = rows(&mut app);
 
         assert_eq!(running[0].trim_end(), " ▎ test it");
-        assert_eq!(running[2].trim_end(), "   ▸ bash   cargo test");
-        assert_eq!(running[8].trim_end(), "");
-        assert_eq!(running[9].trim_end(), " ▎ ▸ bash   cargo test");
-        assert_eq!(
-            running[10].trim_end(),
-            " ▎ running 3 tests",
-            "right above the prompt"
-        );
+        assert_eq!(running[2].trim_end(), "   $ bash   cargo test");
+        assert_eq!(running[3].trim_end(), " ▎ running 3 tests");
 
         app.on_session(Event::ToolFinished {
             call: bash,
             result: Ok(String::new()),
         });
         let finished = rows(&mut app);
-        assert!(finished[3..11].iter().all(|r| r.trim().is_empty()));
+        assert_eq!(finished[2].trim_end(), "   $ bash   cargo test");
+        assert_eq!(finished[3].trim_end(), " ▎ running 3 tests", "kept");
         assert!(app.git_loading.is_some(), "bash may have changed the tree");
     }
 

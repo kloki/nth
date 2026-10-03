@@ -43,23 +43,22 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 ## Chat
 
-The chat tab has two parts: the transcript, which scrolls, and the live tool section, pinned under it while tools run.
+The chat tab is the transcript, which scrolls. Each tool call keeps the output it produced right under its row.
 
 ```
-▎ add retry to the fetch client                          ┐
-                                                         │
-  ∴ thought · 2.1s                                       │
-  ✓ read   src/client.rs                                 │ transcript
-  ✓ bash   cargo test -p nth-llm                         │
-                                                         │
-▎ Added exponential backoff with jitter …                │
-                                                         │
-  ∎ glm-5.3 · 2 tool calls · 14.2s                       ┘
-                                                         
-▎ ▸ bash   cargo test -p nth-llm                         ┐
-▎    Compiling nth-llm v0.1.0                            │ live tools
-▎    Running unittests src/lib.rs                        │
-▎ test sse::parses_go_stream ... ok                      ┘
+▎ add retry to the fetch client
+
+  ∴ thought · 2.1s
+  ≡ read   src/client.rs
+▎ use std::time::Duration;
+▎ pub struct Client {
+  $ bash   cargo test -p nth-llm
+▎    Compiling nth-llm v0.1.0
+▎ test sse::parses_go_stream ... ok
+
+▎ Added exponential backoff with jitter …
+
+  ∎ glm-5.3 · 2 tool calls · 14.2s
 ```
 
 **Transcript**
@@ -67,24 +66,23 @@ The chat tab has two parts: the transcript, which scrolls, and the live tool sec
 | Entry | Bar | Shape |
 | --- | --- | --- |
 | Your message | green | Wrapped text under the bar |
-| Model answer | magenta | Wrapped text under the bar |
+| Model answer | cyan | Wrapped text under the bar |
 | Thinking | none | `∴ thinking · 1.2s`, dim, one line |
-| Tool call | none | Marker, name in cyan, summary in dim; one line |
+| Tool call | none | The tool's icon, name in cyan, summary in dim; one line |
 | Turn summary | none | `∎ model · N tool calls · 14.2s`, dim, after a blank line |
 | Interrupted | none | `⏹ interrupted · 3.0s` in yellow, after a blank line |
 | Error | red | `✗ message` in red |
 
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `$` bash, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
 - **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. A multi-line command shows its first line followed by `…`.
-- **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The check mark is kept for tool calls, where it means success. The blank line above separates the summary from the last entry of the turn.
+- **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
-**Live tool section**
+**Tool output**
 
-A section at the bottom of the chat tab shows each tool call that is still running, with its content streaming in. When a call finishes, its block disappears and the call stays in the transcript as its usual one-line row.
+Each tool call shows its output under its row as it streams in, and keeps it once the call finishes, so output that scrolls past too fast to read can be read back.
 
-- **Placement.** Pinned under the transcript, above the input panel, with one blank row above it. The transcript area shrinks to make room, and keeps its bottom anchored.
-- **Bar.** Yellow, down every row of the block, so it reads as one thing that is still moving.
-- **Header.** `▸ name  summary`, the same as the transcript row, so the block visibly turns into that row when it finishes.
-- **Body.** At most 10 lines, streamed:
+- **Bar.** Bright white, at the left edge like every other bar, so the output lines up with the messages around it.
+- **Body.** At most 10 lines:
 
 | Tool | Body |
 | --- | --- |
@@ -92,9 +90,7 @@ A section at the bottom of the chat tab shows each tool call that is still runni
 | write | The content being written, the first 10 lines, taken from the call's arguments |
 | bash | The command's output, stdout and stderr interleaved, the last 10 lines |
 
-- **Parallel calls.** The model can start several tool calls at once, and they run together. Each running call gets its own block, stacked in the order they started.
-- **Height cap.** The section takes at most half the content panel. When the blocks do not fit, the oldest blocks shrink to their header row first.
-- **Scrolling.** The section is not part of the transcript scroll. Scrolling up through history leaves it in place.
+- **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
 **What the session needs to send**
 
@@ -243,12 +239,12 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | --- | --- | --- |
 | red | red | path, deleted, conflicted, errors |
 | green | green | branch, your messages, success |
-| yellow, orange | yellow | live tool bar, ahead, behind, renamed, interrupted |
+| yellow, orange | yellow | ahead, behind, renamed, interrupted |
 | blue | blue | model, build, staged |
-| magenta, purple | magenta | model picker, model answer bar, highlighted items, modified |
-| cyan | cyan | tool names |
+| magenta, purple | magenta | model picker, highlighted items, modified |
+| cyan | cyan | tool names, model answer bar |
 | white | white | context bar, untracked, stashed |
-| bright white | bright white | status line 1 text |
+| bright white | bright white | status line 1 text, tool output bar |
 
 Orange is not a standard terminal colour, so it means yellow.
 

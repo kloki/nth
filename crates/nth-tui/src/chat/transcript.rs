@@ -21,6 +21,9 @@ pub enum Entry {
     Tool {
         call: ToolCall,
         state: ToolState,
+        /// What the call produced, at most `OUTPUT_LINES`, kept after it
+        /// finishes so it can be read back.
+        output: Vec<String>,
     },
     TurnError(String),
     TurnDone {
@@ -33,6 +36,9 @@ pub enum Entry {
         elapsed: Duration,
     },
 }
+
+/// The most output a tool row keeps.
+const OUTPUT_LINES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolState {
@@ -108,19 +114,35 @@ impl Transcript {
             }
             Event::ToolStarted(call) => {
                 self.close_reasoning();
+                let mut output = Vec::new();
+                // A write's content is in its arguments; it streams nothing.
+                if call.name == "write" {
+                    let args = serde_json::from_str::<serde_json::Value>(&call.arguments);
+                    if let Some(content) = args.ok().as_ref().and_then(|a| a["content"].as_str()) {
+                        keep_output(&call.name, &mut output, content);
+                    }
+                }
                 self.push(Entry::Tool {
                     call: call.clone(),
                     state: ToolState::Running,
+                    output,
                 });
             }
+            Event::ToolOutput { call_id, text } => {
+                if let Some(Item {
+                    entry: Entry::Tool { call, output, .. },
+                    lines,
+                }) = self.tool_mut(call_id)
+                {
+                    keep_output(&call.name, output, text);
+                    *lines = None;
+                }
+            }
             Event::ToolFinished { call, result } => {
-                let item = self.items.iter_mut().rev().find(
-                    |item| matches!(&item.entry, Entry::Tool { call: c, .. } if c.id == call.id),
-                );
                 if let Some(Item {
                     entry: Entry::Tool { state, .. },
                     lines,
-                }) = item
+                }) = self.tool_mut(&call.id)
                 {
                     *state = match result {
                         Ok(_) => ToolState::Done,
@@ -129,8 +151,6 @@ impl Transcript {
                     *lines = None;
                 }
             }
-            // The transcript keeps one row per call; output shows only live.
-            Event::ToolOutput { .. } => {}
         }
     }
 
@@ -167,6 +187,13 @@ impl Transcript {
         self.items.push(Item { entry, lines: None });
     }
 
+    fn tool_mut(&mut self, id: &str) -> Option<&mut Item> {
+        self.items
+            .iter_mut()
+            .rev()
+            .find(|item| matches!(&item.entry, Entry::Tool { call, .. } if call.id == id))
+    }
+
     fn last(&self) -> Option<&Entry> {
         self.items.last().map(|item| &item.entry)
     }
@@ -187,6 +214,21 @@ impl Transcript {
             .take_while(|entry| !matches!(entry, Entry::User(_)))
             .filter(|entry| matches!(entry, Entry::Tool { .. }))
             .count()
+    }
+}
+
+/// Adds `text` to a call's output, keeping the lines worth seeing: the end
+/// of a command's output, where it has got to, but the top of a file, where
+/// it says what it is.
+fn keep_output(tool: &str, output: &mut Vec<String>, text: &str) {
+    let lines = text.lines().map(|line| line.replace('\t', "    "));
+    if tool == "bash" {
+        output.extend(lines);
+        let extra = output.len().saturating_sub(OUTPUT_LINES);
+        output.drain(..extra);
+    } else {
+        let room = OUTPUT_LINES.saturating_sub(output.len());
+        output.extend(lines.take(room));
     }
 }
 
@@ -233,7 +275,8 @@ pub(super) mod tests {
             entries[2],
             &Entry::Tool {
                 call: call("1"),
-                state: ToolState::Failed("no such file".into())
+                state: ToolState::Failed("no such file".into()),
+                output: Vec::new(),
             }
         );
         assert_eq!(entries[3], &Entry::Answer("done".into()));
@@ -266,11 +309,78 @@ pub(super) mod tests {
             entries[3],
             &Entry::Tool {
                 call: call("2"),
-                state: ToolState::Failed("interrupted".into())
+                state: ToolState::Failed("interrupted".into()),
+                output: Vec::new(),
             }
         );
         assert!(matches!(entries[4], Entry::Interrupted { .. }));
         let total = t.layout(40);
         assert_eq!(text(&t.visible(total - 1, 1)), ["  ⏹ interrupted · 3.0s"]);
+    }
+
+    fn tool(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    fn output(id: &str, text: &str) -> Event {
+        Event::ToolOutput {
+            call_id: id.into(),
+            text: text.into(),
+        }
+    }
+
+    fn numbered(range: std::ops::RangeInclusive<usize>) -> Vec<String> {
+        range.map(|i| i.to_string()).collect()
+    }
+
+    fn outputs(t: &Transcript) -> Vec<Vec<String>> {
+        t.entries()
+            .filter_map(|entry| match entry {
+                Entry::Tool { output, .. } => Some(output.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn output_stays_with_its_call_after_it_finishes() {
+        let mut t = transcript();
+        let bash = tool("1", "bash", r#"{"command":"cargo test"}"#);
+        t.apply(&Event::ToolStarted(bash.clone()));
+        t.apply(&output("1", "compiling\n"));
+        t.apply(&output("2", "not this call\n"));
+        t.apply(&Event::ToolFinished {
+            call: bash,
+            result: Ok(String::new()),
+        });
+
+        assert_eq!(outputs(&t), [["compiling"]]);
+    }
+
+    #[test]
+    fn bash_keeps_the_last_lines_and_read_the_first() {
+        let mut t = transcript();
+        let text = |range| numbered(range).join("\n") + "\n";
+        t.apply(&Event::ToolStarted(tool("1", "bash", "{}")));
+        t.apply(&Event::ToolStarted(tool("2", "read", "{}")));
+        t.apply(&output("1", &text(1..=8)));
+        t.apply(&output("1", &text(9..=14)));
+        t.apply(&output("2", &text(1..=14)));
+
+        assert_eq!(outputs(&t), [numbered(5..=14), numbered(1..=10)]);
+    }
+
+    #[test]
+    fn write_shows_the_start_of_its_content() {
+        let mut t = transcript();
+        let content = numbered(1..=12).join("\\n");
+        let arguments = format!(r#"{{"filePath":"a.rs","content":"{content}"}}"#);
+        t.apply(&Event::ToolStarted(tool("1", "write", &arguments)));
+
+        assert_eq!(outputs(&t), [numbered(1..=10)]);
     }
 }

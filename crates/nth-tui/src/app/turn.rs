@@ -75,8 +75,6 @@ impl App {
             .busy_since
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
-        // An interrupted turn never finishes its calls.
-        self.chat.live.clear();
         let transcript = &mut self.chat.transcript;
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
