@@ -199,7 +199,7 @@ mod tests {
 
         app.on_key(KeyEvent::from(KeyCode::Esc));
 
-        assert!(matches!(app.panel, crate::app::panel::Panel::Prompt));
+        assert!(matches!(app.input, crate::app::input::Input::Prompt));
         let running = app.turn.as_ref().expect("still running");
         assert!(!running.cancel.is_cancelled());
     }
