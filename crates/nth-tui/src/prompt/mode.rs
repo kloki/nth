@@ -11,7 +11,7 @@ pub enum Mode {
 impl Mode {
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Build => "BUILD",
+            Mode::Build => "build",
         }
     }
 
@@ -22,7 +22,3 @@ impl Mode {
         }
     }
 }
-
-/// Wide enough for every mode's label and the spinner, so the text after
-/// it stays put when either changes.
-pub const LABEL_WIDTH: usize = 5;

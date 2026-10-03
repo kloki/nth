@@ -6,8 +6,8 @@ mod wrap;
 
 use std::ops::Range;
 
-pub use mode::{LABEL_WIDTH, Mode};
-pub use view::draw;
+pub use mode::Mode;
+pub use view::{ROWS, draw, position};
 
 #[derive(Debug, Default)]
 pub struct Prompt {
