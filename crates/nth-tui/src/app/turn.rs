@@ -87,6 +87,7 @@ impl App {
         self.session = Some(session);
         self.turn = None;
         self.index_files();
+        self.load_git();
     }
 }
 
@@ -101,6 +102,9 @@ impl Drop for App {
         }
         if let Some(listing) = &self.llm_listing {
             listing.abort();
+        }
+        if let Some(loading) = &self.git_loading {
+            loading.abort();
         }
     }
 }
