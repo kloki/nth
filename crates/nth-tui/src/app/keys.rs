@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, Completion};
+use super::{App, Completion, panel::Panel};
 use crate::{command::Command, mention, popup::Popup};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,6 +16,8 @@ pub enum Action {
     Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
+    /// Opens the LLM picker, or closes it.
+    LlmPicker,
     Insert(char),
     Newline,
     Backspace,
@@ -38,6 +40,9 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
         KeyCode::Char('n') if ctrl => Action::Accept,
+        // Only told apart from Enter when the terminal disambiguates escape
+        // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
+        KeyCode::Char('m') if ctrl => Action::LlmPicker,
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
@@ -67,6 +72,25 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
+        if let Panel::LlmPicker(picker) = &mut self.panel {
+            match action {
+                Action::SelectNext => picker.next(),
+                Action::SelectPrev => picker.prev(),
+                Action::Right => picker.more(),
+                Action::Left => picker.less(),
+                Action::Submit => self.choose_llm(),
+                // Closing the picker must not also interrupt a running turn.
+                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
+                    self.panel = Panel::Prompt
+                }
+                Action::PageUp => self.chat.page_up(),
+                Action::PageDown => self.chat.page_down(),
+                Action::Top => self.chat.jump_top(),
+                Action::Bottom => self.chat.jump_bottom(),
+                _ => {}
+            }
+            return;
+        }
         if let Some(completion) = &mut self.completion {
             match action {
                 Action::SelectNext => return completion.next(),
@@ -85,6 +109,7 @@ impl App {
         }
         match action {
             Action::SelectNext | Action::SelectPrev | Action::Accept => {}
+            Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
@@ -175,6 +200,7 @@ mod tests {
         assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
         assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
+        assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), None);
@@ -231,9 +257,10 @@ mod tests {
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Exit);
         app.apply(Action::SelectNext);
+        app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Clear);
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Exit);
+        assert_eq!(selected(&app), Command::Models);
         assert_eq!(app.prompt.text(), "/");
     }
 

@@ -35,6 +35,11 @@ impl App {
         let Some(mut session) = self.session.take() else {
             return;
         };
+        // Picked in the model picker since the last turn, maybe mid-turn.
+        if session.model != self.model {
+            session.set_model(self.model.clone());
+        }
+        session.effort = self.effort;
         let text = self.prompt.take();
         self.chat.transcript.push_user(text.clone());
         self.chat.jump_bottom();
@@ -74,7 +79,9 @@ impl App {
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
             result => {
-                transcript.finish_turn(result.map_err(|e| e.to_string()), &self.model, elapsed)
+                // The session's model ran the turn; `self.model` may have
+                // been switched since.
+                transcript.finish_turn(result.map_err(|e| e.to_string()), &session.model, elapsed)
             }
         }
         self.session = Some(session);
@@ -91,6 +98,9 @@ impl Drop for App {
         }
         if let Some(indexing) = &self.indexing {
             indexing.cancel.cancel();
+        }
+        if let Some(listing) = &self.llm_listing {
+            listing.abort();
         }
     }
 }
@@ -173,6 +183,19 @@ mod tests {
             app.chat.transcript.entries().last(),
             Some(Entry::Interrupted { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn closing_the_picker_leaves_the_turn_running() {
+        let (mut app, _) = busy_app().await;
+        app.llms = Some(Vec::new());
+        app.apply(crate::app::keys::Action::LlmPicker);
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+
+        assert!(matches!(app.panel, crate::app::panel::Panel::Prompt));
+        let running = app.turn.as_ref().expect("still running");
+        assert!(!running.cancel.is_cancelled());
     }
 
     #[tokio::test]

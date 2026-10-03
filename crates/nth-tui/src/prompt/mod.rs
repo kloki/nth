@@ -5,7 +5,7 @@ mod wrap;
 
 use std::ops::Range;
 
-pub use view::{PROMPT_ROWS, draw};
+pub use view::draw;
 
 #[derive(Debug, Default)]
 pub struct Prompt {

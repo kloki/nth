@@ -1,4 +1,4 @@
-//! The status row between chat and prompt: what the running turn is doing
+//! The status row above the prompt: what the running turn is doing
 //! on the left; a scroll hint, the interrupt hint, or model and place on
 //! the right.
 
@@ -39,7 +39,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else if busy {
         Span::styled("esc to interrupt", dim())
     } else {
-        Span::styled(format!("{} · {}", app.model, app.place), dim())
+        let model = match app.effort.wire() {
+            Some(effort) => format!("{} · {effort}", app.model),
+            None => app.model.clone(),
+        };
+        Span::styled(format!("{model} · {}", app.place), dim())
     };
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
 }

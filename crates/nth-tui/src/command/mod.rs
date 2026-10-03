@@ -10,15 +10,17 @@ const NAME_WIDTH: usize = 8;
 pub enum Command {
     Clear,
     Exit,
+    Models,
 }
 
 impl Command {
-    const ALL: [Command; 2] = [Command::Clear, Command::Exit];
+    const ALL: [Command; 3] = [Command::Clear, Command::Exit, Command::Models];
 
     pub fn name(self) -> &'static str {
         match self {
             Command::Clear => "clear",
             Command::Exit => "exit",
+            Command::Models => "models",
         }
     }
 
@@ -26,6 +28,7 @@ impl Command {
         match self {
             Command::Clear => "start a fresh session",
             Command::Exit => "quit nth",
+            Command::Models => "switch model and effort",
         }
     }
 
@@ -75,6 +78,7 @@ mod tests {
     fn matches_commands_by_prefix() {
         assert_eq!(Command::matching("/"), Command::ALL);
         assert_eq!(Command::matching("/c"), [Command::Clear]);
+        assert_eq!(Command::matching("/m"), [Command::Models]);
         assert_eq!(Command::matching("/x"), []);
         assert_eq!(Command::matching("/c x"), []);
         assert_eq!(Command::matching("c"), []);
