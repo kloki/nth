@@ -17,8 +17,8 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- edit  src/client.rs       glm-5.3 ~/repos/nth fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀ ┐ status, 2 lines
- esc to interrupt                                        +3 *4 󰊐 2 ┘
+ glm-5.3 · ~/repos/nth · fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀       git · +3 *4 󰊐 2 ┐ status, 2 lines
+ edit  src/client.rs                                    esc to interrupt ┘
 ```
 
 There are no borders or divider lines, as the styleguide in [design.md](design.md#tui) says. Bands are told apart by coloured bars and spacing.
@@ -173,31 +173,31 @@ The spinner runs for the whole turn: thinking, writing and tool calls. What exac
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. The state is right-aligned; the left is reserved for what the running turn is doing.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are, line 2 what the running turn is doing. The right side of a line is cut first when it is too narrow.
 
 ```
- edit  src/client.rs           glm-5.3 ~/repos/nth fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀
- esc to interrupt                                        +3 *4 󰊐 2
+ glm-5.3 · ~/repos/nth · fix-auth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀           git · +3 *4 󰊐 2
+ edit  src/client.rs                                     esc to interrupt
 ```
 
 **Line 1: where you are**
 
-Right-aligned, separated by single spaces: `model path branch context`.
+Left-aligned and muted like the input panel headers: `model · effort · path · branch context`, all dim. Git status sits against the right edge.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
 | Part | Shows | Colour |
 | --- | --- | --- |
-| Model | The current model | blue |
-| Path | The working directory, with home written as `~` | red |
-| Branch | The current git branch; hidden outside a git repo | green |
+| Model | The current model, and its effort unless default | dim |
+| Path | The working directory, with home written as `~` | dim |
+| Branch | The current git branch; hidden outside a git repo | dim |
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
 
-**Line 2: git status**
+**Line 1, right: git status**
 
-Right-aligned, a reimplementation of this starship config. Each part shows only when its count is non-zero, and the whole line is empty when the tree is clean or outside a git repo.
+Prefixed with a dim `git · `, a reimplementation of this starship config. Each part shows only when its count is non-zero, and it is hidden when the tree is clean or outside a git repo.
 
 ```toml
 [git_status]
@@ -232,14 +232,14 @@ Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather 
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
-**Left side: the running turn**
+**Line 2: the running turn**
 
-| Line | Left |
+| Side | Shows |
 | --- | --- |
-| 1 | What the running turn is doing: thinking, writing, or the tool and its summary |
-| 2 | The one hint that matters now, such as "↓ N more · ctrl+End" or "esc to interrupt" |
+| Left | What the running turn is doing: thinking, writing, or the tool and its summary |
+| Right | The one hint that matters now, such as "↓ N more · ctrl+End" or "esc to interrupt" |
 
-Both are empty while idle. When a line is too narrow for both sides, the left side is cut first.
+Both are empty while idle, unless there is more chat below the view.
 
 ## Colours
 

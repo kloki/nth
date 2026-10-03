@@ -34,6 +34,7 @@ use turn::{Ended, Running};
 use crate::{
     chat::Chat,
     command::Command,
+    git::{self, GitStatus},
     llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
@@ -70,6 +71,12 @@ pub struct App {
     /// Set when a turn ends mid-walk, so its files get picked up by one
     /// more walk rather than a second one racing the first.
     reindex: bool,
+    /// The working tree's git state; `None` outside a repository or until
+    /// the first load lands.
+    pub git: Option<GitStatus>,
+    git_loading: Option<JoinHandle<Result<Option<GitStatus>, String>>>,
+    /// Set when the tree may have changed mid-load, like `reindex`.
+    reload_git: bool,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Vec<ModelInfo>>,
@@ -145,6 +152,7 @@ enum Step {
     Session(Event),
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
+    GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
     LlmsListed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
     Tick,
 }
@@ -172,6 +180,9 @@ impl App {
             files: Vec::new(),
             indexing: None,
             reindex: false,
+            git: None,
+            git_loading: None,
+            reload_git: false,
             llms: None,
             llm_listing: None,
             session: Some(session),
@@ -189,6 +200,7 @@ impl App {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
+        self.load_git();
 
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -196,6 +208,8 @@ impl App {
             let turn = self.turn.as_mut().map(|running| &mut running.handle);
             let indexing = self.indexing.is_some();
             let index = self.indexing.as_mut().map(|indexing| &mut indexing.handle);
+            let git_loading = self.git_loading.is_some();
+            let git = self.git_loading.as_mut();
             let llm_listing = self.llm_listing.is_some();
             let llms = self.llm_listing.as_mut();
             let step = tokio::select! {
@@ -213,6 +227,12 @@ impl App {
                         None => std::future::pending().await,
                     }
                 }, if indexing => Step::Indexed(files),
+                status = async {
+                    match git {
+                        Some(git) => git.await,
+                        None => std::future::pending().await,
+                    }
+                }, if git_loading => Step::GitLoaded(status),
                 llms = async {
                     match llms {
                         Some(llms) => llms.await,
@@ -226,9 +246,12 @@ impl App {
                 Step::Terminal(Some(event)) => {
                     self.on_terminal(event.context("reading terminal input")?)
                 }
-                Step::Session(event) => self.chat.transcript.apply(&event),
+                Step::Session(event) => self.on_session(event),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
+                Step::GitLoaded(status) => {
+                    self.git_loaded(status.context("reading git status failed")?)
+                }
                 Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
@@ -283,6 +306,36 @@ impl App {
                 self.refresh_completion();
             }
             _ => {}
+        }
+    }
+
+    fn on_session(&mut self, event: Event) {
+        // A write or a command may have changed the tree.
+        if let Event::ToolFinished { call, .. } = &event
+            && matches!(call.name.as_str(), "write" | "bash")
+        {
+            self.load_git();
+        }
+        self.chat.transcript.apply(&event);
+    }
+
+    /// Reads git status in the background; git is slow on a big tree.
+    pub(super) fn load_git(&mut self) {
+        if self.git_loading.is_some() {
+            self.reload_git = true;
+            return;
+        }
+        let cwd = self.cwd.clone();
+        self.git_loading = Some(tokio::spawn(async move { git::load(&cwd).await }));
+    }
+
+    /// A failed load (no git installed, say) shows no git state rather
+    /// than stopping the app.
+    fn git_loaded(&mut self, status: Result<Option<GitStatus>, String>) {
+        self.git_loading = None;
+        self.git = status.ok().flatten();
+        if std::mem::take(&mut self.reload_git) {
+            self.load_git();
         }
     }
 
@@ -379,8 +432,8 @@ pub(crate) mod tests {
         assert_eq!(idle[11].trim_end(), " ▎ Ask anything.");
         assert_eq!(idle[12].trim_end(), " ▎");
         assert_eq!(idle[13].trim_end(), " ▎");
-        assert!(idle[14].trim_end().ends_with("glm · /repo"));
-        assert!(idle[15].trim().is_empty(), "no hint while idle");
+        assert_eq!(idle[14].trim_end(), " glm · /repo");
+        assert!(idle[15].trim().is_empty(), "no activity or hint when idle");
 
         for i in 0..20 {
             app.chat.transcript.push_user(format!("message {i}"));
@@ -403,9 +456,64 @@ pub(crate) mod tests {
             [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
             "scrolled to the cursor"
         );
-        assert!(busy[14].starts_with(" thinking"));
-        assert!(busy[14].trim_end().ends_with("glm · /repo"));
+        assert_eq!(busy[14].trim_end(), " glm · /repo", "no git outside a repo");
+        assert!(busy[15].starts_with(" thinking"));
         assert!(busy[15].trim_end().ends_with("esc to interrupt"));
+    }
+
+    #[test]
+    fn status_shows_git_summary_beside_the_branch() {
+        let mut app = app();
+        app.git = Some(GitStatus {
+            branch: Some("main".into()),
+            ahead: 2,
+            modified: 1,
+            ..GitStatus::default()
+        });
+        app.busy_since = Some(Instant::now());
+        let rows = rows(&mut app);
+
+        assert!(rows[14].starts_with(" glm · /repo · main"));
+        assert!(rows[14].trim_end().ends_with("git · +2 *1"));
+        assert!(rows[15].starts_with(" thinking"));
+        assert!(rows[15].trim_end().ends_with("esc to interrupt"));
+    }
+
+    #[test]
+    fn a_narrow_status_line_cuts_the_right_first() {
+        let mut app = app();
+        app.git = Some(GitStatus {
+            branch: Some("a-very-long-branch-name".into()),
+            modified: 1,
+            ..GitStatus::default()
+        });
+        app.busy_since = Some(Instant::now());
+        let rows = rows(&mut app);
+
+        assert_eq!(rows[14].trim(), "glm · /repo · a-very-long-branch-name");
+    }
+
+    #[tokio::test]
+    async fn a_second_git_load_waits_for_the_first() {
+        let mut app = app();
+        app.load_git();
+        app.load_git();
+        assert!(app.reload_git);
+
+        app.git_loaded(Ok(None));
+        assert!(!app.reload_git);
+        assert!(app.git_loading.is_some(), "the queued load starts");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_app_aborts_the_git_load() {
+        let mut app = app();
+        app.load_git();
+        let loading = app.git_loading.as_ref().expect("loading").abort_handle();
+
+        drop(app);
+        tokio::task::yield_now().await;
+        assert!(loading.is_finished());
     }
 
     #[test]
@@ -545,7 +653,7 @@ pub(crate) mod tests {
             rows.iter().all(|r| !r.contains("Ask anything")),
             "no prompt"
         );
-        assert!(rows[14].trim_end().ends_with("glm · /repo"), "status stays");
+        assert_eq!(rows[14].trim_end(), " glm · /repo", "status stays");
     }
 
     #[test]
@@ -558,11 +666,7 @@ pub(crate) mod tests {
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
-        assert!(
-            rows(&mut app)[14]
-                .trim_end()
-                .ends_with("glm · medium · /repo")
-        );
+        assert_eq!(rows(&mut app)[14].trim_end(), " glm · medium · /repo");
 
         app.apply(keys::Action::LlmPicker);
         app.apply(keys::Action::SelectNext);
