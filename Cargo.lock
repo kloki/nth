@@ -152,6 +152,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "braille-bar"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "447d4aab853b9b1c81da0655e3d4420b55e3800b84d709601bb0787c19a76f7a"
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1268,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "nth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1284,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "nth-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1298,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "nth-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "serde",
@@ -1308,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "nth-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "nth-protocol",
@@ -1322,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "nth-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "libc",
@@ -1335,9 +1341,10 @@ dependencies = [
 
 [[package]]
 name = "nth-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "braille-bar",
  "crossterm",
  "futures",
  "ignore",

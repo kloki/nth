@@ -8,5 +8,5 @@ mod tool;
 
 pub use event::Event;
 pub use message::{AssistantMessage, Message, ToolCall};
-pub use provider::{BoxError, Effort, ModelInfo, Provider, Request, StreamEvent};
+pub use provider::{BoxError, Effort, ModelInfo, Provider, Request, StreamEvent, Usage};
 pub use tool::{OutputSink, Tool, ToolContext, ToolResult, ToolSpec};

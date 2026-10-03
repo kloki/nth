@@ -151,6 +151,7 @@ impl Transcript {
                     *lines = None;
                 }
             }
+            Event::Usage(_) => {}
         }
     }
 

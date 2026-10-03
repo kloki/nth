@@ -68,6 +68,23 @@ pub enum StreamEvent {
     ReasoningDelta(String),
     /// Emitted once the call's arguments are complete.
     ToolCall(ToolCall),
+    Usage(Usage),
+}
+
+/// Tokens one model reply used, as the provider reports them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Everything sent: system prompt, history and tool results.
+    pub input: u64,
+    pub output: u64,
+}
+
+impl Usage {
+    /// How much of the context window the conversation now fills: the
+    /// reply becomes history for the next request.
+    pub fn context(self) -> u64 {
+        self.input + self.output
+    }
 }
 
 /// A model a provider can serve, with limits when they are known.

@@ -7,6 +7,8 @@ pub fn body(model: &str, effort: Effort, messages: &[Message], tools: &[ToolSpec
     let mut body = json!({
         "model": model,
         "stream": true,
+        // Without it the stream carries no token counts.
+        "stream_options": { "include_usage": true },
         "messages": messages.iter().map(message).collect::<Vec<_>>(),
     });
     if let Some(effort) = effort.wire() {
