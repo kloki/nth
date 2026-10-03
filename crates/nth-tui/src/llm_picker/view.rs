@@ -5,27 +5,23 @@ use nth_protocol::ModelInfo;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 use super::{LlmPicker, State};
-use crate::theme::{BAR, dim};
+use crate::theme::{BAR, dim, panel_row, panel_title, pick};
 
 const TITLE: &str = "switch model";
 const KEYS: &str = "↑↓ model · ←→ effort · enter · esc";
 
+/// The picker's bar and title; see `theme::panel_title`.
+const ACCENT: Color = Color::Magenta;
+
 pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
     let [header, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    let bar = Style::new().fg(Color::Blue);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(BAR, bar),
-            Span::styled(TITLE, Style::new().add_modifier(Modifier::BOLD)),
-        ])),
-        header,
-    );
+    frame.render_widget(Paragraph::new(panel_title(TITLE, ACCENT)), header);
     // Dropped rather than drawn over the title when the row is too narrow.
     let room = usize::from(header.width);
     if room > BAR.chars().count() + TITLE.len() + KEYS.chars().count() + 2 {
@@ -49,7 +45,7 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
 }
 
 fn note(text: Span<'_>) -> Line<'_> {
-    Line::from(vec![Span::styled(BAR, dim()), text])
+    panel_row(ACCENT, [text])
 }
 
 /// One row per model: id, a ✓ on the one in use, name and limits, and on
@@ -71,7 +67,7 @@ fn rows<'a>(
         .max()
         .unwrap_or(0);
     let first = selected.saturating_sub(height.saturating_sub(1));
-    let pick = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+    let pick = pick();
 
     models
         .iter()
@@ -80,10 +76,10 @@ fn rows<'a>(
         .take(height)
         .map(|(i, model)| {
             let here = i == selected;
-            let (bar, arrow, id) = if here {
-                (pick, "→ ", pick)
+            let (arrow, id) = if here {
+                ("→ ", pick)
             } else {
-                (dim(), "  ", Style::new().fg(Color::Blue))
+                ("  ", Style::new().fg(Color::Blue))
             };
             let active = if model.id == picker.current {
                 "✓"
@@ -92,7 +88,6 @@ fn rows<'a>(
             };
             let name = model.name.as_deref().unwrap_or("");
             let mut spans = vec![
-                Span::styled(BAR, bar),
                 Span::styled(arrow, pick),
                 Span::styled(format!("{:<id_width$} ", model.id), id),
                 Span::styled(active, Style::new().fg(Color::Green)),
@@ -104,7 +99,7 @@ fn rows<'a>(
                     pick,
                 ));
             }
-            Line::from(spans)
+            panel_row(ACCENT, spans)
         })
         .collect()
 }

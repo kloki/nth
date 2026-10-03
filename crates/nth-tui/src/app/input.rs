@@ -5,7 +5,7 @@
 use nth_protocol::{BoxError, ModelInfo};
 
 use super::App;
-use crate::llm_picker::LlmPicker;
+use crate::{llm_picker::LlmPicker, prompt};
 
 #[derive(Debug)]
 pub(super) enum Input {
@@ -19,7 +19,7 @@ impl Input {
     /// swap.
     pub(super) fn rows(&self) -> u16 {
         match self {
-            Input::Prompt => 1,
+            Input::Prompt => prompt::ROWS,
             Input::LlmPicker(_) => 8,
         }
     }
