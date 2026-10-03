@@ -1,9 +1,10 @@
-//! The chat app: its state, the loop that drives it, and the layout of
-//! three bands: chat history, the input panel and the status bar. Row
+//! The app: its state, the loop that drives it, and the layout of three
+//! bands: the content panel, the input panel and the status bar. Row
 //! heights never depend on content, so nothing shifts while a turn runs.
 
+mod content;
+mod input;
 mod keys;
-mod panel;
 mod turn;
 
 use std::{
@@ -13,11 +14,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
+use input::Input;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool};
 use nth_session::{CancellationToken, Session};
-use panel::Panel;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
@@ -47,8 +49,10 @@ pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
     pub mode: Mode,
-    /// What fills the rows under the chat.
-    panel: Panel,
+    /// What fills the content panel.
+    content: Content,
+    /// What fills the input panel.
+    input: Input,
     /// The model and effort the next turn runs with.
     pub model: String,
     pub effort: Effort,
@@ -157,7 +161,8 @@ impl App {
             chat: Chat::new(session.cwd.clone()),
             prompt: Prompt::default(),
             mode: Mode::default(),
-            panel: Panel::Prompt,
+            content: Content::Chat,
+            input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
             cwd: session.cwd.clone(),
@@ -234,28 +239,33 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [chat, panel, status] = Layout::vertical([
+        let [content, input, status] = Layout::vertical([
             Constraint::Min(0),
-            Constraint::Length(self.panel.rows()),
+            Constraint::Length(self.input.rows()),
             Constraint::Length(status::ROWS),
         ])
         .areas(area);
 
-        let banner = format!("nth · {} · {}", self.model, self.place);
-        self.chat.draw(frame, chat, &banner);
+        match self.content {
+            Content::Chat => {
+                let banner = format!("nth · {} · {}", self.model, self.place);
+                self.chat.draw(frame, content, &banner);
+            }
+        }
         status::draw(frame, status, self);
-        match &self.panel {
-            Panel::Prompt => {
+        match &self.input {
+            Input::Prompt => {
                 let spinner = self.busy_since.map(|since| spinner::frame(since.elapsed()));
-                prompt::draw(frame, panel, &self.prompt, self.mode, spinner);
-                // Last, so it pops over the chat; it sits right above the
-                // row being typed, lined up with the token it completes.
+                prompt::draw(frame, input, &self.prompt, self.mode, spinner);
+                // Last, so it pops over the content panel; it sits right
+                // above the row being typed, lined up with the token it
+                // completes.
                 if let Some(completion) = &self.completion {
-                    let at = prompt::position(panel, &self.prompt, completion.start());
+                    let at = prompt::position(input, &self.prompt, completion.start());
                     completion.draw(frame, area, at);
                 }
             }
-            Panel::LlmPicker(picker) => llm_picker::draw(frame, panel, picker),
+            Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
         }
     }
 
@@ -267,7 +277,7 @@ impl App {
                 MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
                 _ => {}
             },
-            TermEvent::Paste(text) if matches!(self.panel, Panel::Prompt) => {
+            TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.refresh_completion();
@@ -429,7 +439,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn completion_pops_over_the_chat() {
+    fn completion_pops_over_the_content_panel() {
         let mut app = app();
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
@@ -510,9 +520,9 @@ pub(crate) mod tests {
     }
 
     fn picker(app: &App) -> &crate::llm_picker::LlmPicker {
-        match &app.panel {
-            Panel::LlmPicker(picker) => picker,
-            Panel::Prompt => panic!("picker not open"),
+        match &app.input {
+            Input::LlmPicker(picker) => picker,
+            Input::Prompt => panic!("picker not open"),
         }
     }
 
@@ -546,7 +556,7 @@ pub(crate) mod tests {
         app.apply(keys::Action::Right);
         app.apply(keys::Action::Submit);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         assert!(
             rows(&mut app)[14]
@@ -567,7 +577,7 @@ pub(crate) mod tests {
         app.apply(keys::Action::SelectNext);
         app.apply(keys::Action::Interrupt);
 
-        assert!(matches!(app.panel, Panel::Prompt));
+        assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.model, "glm");
         assert!(!app.quit);
     }
