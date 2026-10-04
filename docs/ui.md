@@ -315,17 +315,16 @@ Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather 
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
-**Line 2: what checks a write**
+**Line 2: the language servers**
 
-Left-aligned. First a dot and the id of every language server the tools have started, in the order they started, then the formatters that run on writes in the working directory, dim and joined by ` · `. Either part is left out when empty, so the line is blank until a formatter is found or a server starts.
+Left-aligned. A dot and the id of every language server the tools have started, in the order they started. The line is blank until a server starts.
 
 | Part | Shows | Colour |
 | --- | --- | --- |
 | Server dot | `●`, by state: connected, starting, broken | green, yellow, red |
 | Server id | The server's id, as in opencode: `rust`, `typescript` | white |
-| Formatters | The names of the formatters whose probe passed for the working directory | dim |
 
-Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters are probed in the background at start-up and again when `/resume` moves to another directory, since a probe runs commands.
+Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters that run on writes are not shown; `nth formatters` lists them.
 
 **Line 2: empty**
 
