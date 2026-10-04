@@ -1358,9 +1358,11 @@ name = "nth-tools"
 version = "0.2.0"
 dependencies = [
  "futures",
+ "ignore",
  "libc",
  "nth-context",
  "nth-protocol",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

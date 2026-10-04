@@ -1,9 +1,11 @@
 mod bash;
+mod grep;
 mod read;
 mod skill;
 mod write;
 
 pub use bash::{Bash, BashConfig};
+pub use grep::Grep;
 use nth_protocol::Tool;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Read::new(config.read.clone())),
         Box::new(Write),
         Box::new(Bash::new(config.bash.clone())),
+        Box::new(Grep),
         Box::new(Skill),
     ]
 }
