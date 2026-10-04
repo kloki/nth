@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
+use nth_protocol::Mode;
 use nth_session::Session;
 use owo_colors::OwoColorize;
 
@@ -40,6 +41,9 @@ enum Command {
     /// Send one prompt and let the agent work until it answers
     Run {
         prompt: String,
+        /// plan only writes a plan file; act may change anything
+        #[arg(long, default_value = "act", value_parser = ["plan", "act"])]
+        mode: String,
         #[command(flatten)]
         endpoint: Endpoint,
     },
@@ -105,9 +109,16 @@ async fn main() -> ExitCode {
                 cli.endpoint.apply(&mut config);
                 chat::run(cli.resume, config).await
             }
-            Some(Command::Run { prompt, endpoint }) => {
+            Some(Command::Run {
+                prompt,
+                mode,
+                endpoint,
+            }) => {
                 endpoint.apply(&mut config);
-                run::run(prompt, config).await
+                match mode.parse() {
+                    Ok(mode) => run::run(prompt, mode, config).await,
+                    Err(e) => Err(anyhow::anyhow!(e)),
+                }
             }
             Some(Command::Models { json, endpoint }) => {
                 endpoint.apply(&mut config);
@@ -128,13 +139,15 @@ async fn main() -> ExitCode {
     }
 }
 
-/// A fresh session in the working directory, with its instruction files
-/// read, and the client it talks through.
-async fn setup(config: &Config, paths: &Paths) -> Result<(Session, ChatClient)> {
+/// A fresh session in `mode` in the working directory, on that mode's
+/// model, with its instruction files read, and the client it talks through.
+async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, ChatClient)> {
     let cwd = std::env::current_dir().context("no working directory")?;
     let provider = client(config)?;
-    let mut session = Session::new(config.provider.model.clone(), cwd.clone())
-        .with_context(context(cwd, paths).await);
+    let (model, effort) = config.llm_for(mode);
+    let mut session = Session::new(model, cwd.clone()).with_context(context(cwd, paths).await);
+    session.mode = mode;
+    session.effort = effort;
     session.max_steps = config.session.max_steps;
     Ok((session, provider))
 }

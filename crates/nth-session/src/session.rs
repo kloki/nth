@@ -1,18 +1,22 @@
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::SystemTime,
 };
 
 use nth_context::Context;
-use nth_protocol::{Effort, Event, FrontEnd, Message, Provider, Tool, ToolContext};
+use nth_protocol::{Effort, Event, FrontEnd, Message, Mode, Provider, Tool, ToolContext, Writable};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{DEFAULT_MAX_STEPS, Error, Route, run_turn, system_prompt};
+use crate::{
+    DEFAULT_MAX_STEPS, Error, Route,
+    plan::{self, Approver},
+    run_turn, system_prompt,
+};
 
 /// One conversation: who it runs for, where, and everything said so far.
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
@@ -25,6 +29,14 @@ pub struct Session {
     /// Sessions saved before effort existed load with the model's default.
     #[serde(default)]
     pub effort: Effort,
+    /// Sessions saved before modes existed load as act, which is how they
+    /// ran.
+    #[serde(default)]
+    pub mode: Mode,
+    /// The mode the last turn ran in, so the model is told when it enters
+    /// plan mode or leaves it; `None` before the first turn.
+    #[serde(default)]
+    last_turn_mode: Option<Mode>,
     pub created_at: SystemTime,
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
@@ -54,6 +66,8 @@ impl Session {
             cwd,
             model,
             effort: Effort::default(),
+            mode: Mode::default(),
+            last_turn_mode: None,
             created_at: now,
             updated_at: now,
             messages,
@@ -93,6 +107,11 @@ impl Session {
         })
     }
 
+    /// Where plan mode writes this session's plan.
+    pub fn plan_path(&self) -> PathBuf {
+        plan::plan_path(&self.cwd, &self.id)
+    }
+
     /// Later turns go to `model`. The history is kept; only the system
     /// prompt changes, since it names the model.
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -117,7 +136,15 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        self.messages.push(Message::User(text.into()));
+        let mut text = text.into();
+        let plan_path = self.plan_path();
+        if let Some(reminder) = self.reminder(&plan_path, front_end).await {
+            // On the same message, as opencode adds a synthetic part: two
+            // user messages in a row are not something every endpoint takes.
+            text = format!("{text}\n\n{reminder}");
+        }
+        self.last_turn_mode = Some(self.mode);
+        self.messages.push(Message::User(text));
         self.updated_at = SystemTime::now();
         // The system prompt's files count as loaded, so read never repeats them.
         let mut loaded = self.loaded_instructions.clone();
@@ -128,6 +155,10 @@ impl Session {
             asker: front_end.asker.clone(),
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
+            writable: match self.mode {
+                Mode::Plan => Writable::Only(plan_path),
+                Mode::Act => Writable::Any,
+            },
             ..ToolContext::new(self.cwd.clone())
         };
         let result = run_turn(
@@ -151,6 +182,31 @@ impl Session {
             .expect("only poisoned if a holder panicked")
             .clone();
         result
+    }
+}
+
+impl Session {
+    /// What the model needs to hear about the mode before this turn: that
+    /// plan mode starts, or that it ended. Nothing while the mode stays.
+    async fn reminder(&self, plan_path: &Path, front_end: &FrontEnd) -> Option<String> {
+        let entering = self.mode == Mode::Plan && self.last_turn_mode != Some(Mode::Plan);
+        let leaving = self.mode == Mode::Act && self.last_turn_mode == Some(Mode::Plan);
+        if !entering && !leaving {
+            return None;
+        }
+        // A check that fails reads as no plan yet, which only changes the
+        // wording of the reminder.
+        let exists = tokio::fs::try_exists(plan_path).await.unwrap_or(false);
+        Some(match self.mode {
+            Mode::Plan => {
+                let approver = match front_end.asker.reaches_someone() {
+                    true => Approver::User,
+                    false => Approver::Nobody,
+                };
+                plan::plan_mode_reminder(plan_path, exists, approver)
+            }
+            Mode::Act => plan::build_switch_reminder(plan_path, exists),
+        })
     }
 }
 
@@ -293,6 +349,164 @@ mod tests {
         let json = serde_json::to_string(&session).expect("serializes");
         let back: Session = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back.loaded_instructions, session.loaded_instructions);
+    }
+
+    /// Says whether the file it is asked about may be written.
+    struct Probe;
+
+    impl Tool for Probe {
+        fn spec(&self) -> nth_protocol::ToolSpec {
+            nth_protocol::ToolSpec {
+                name: "probe",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            args: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+            let path = ctx.cwd.join(args["path"].as_str().unwrap_or_default());
+            let checked = ctx.writable.check(&path).map(|()| "writable".to_string());
+            Box::pin(async move { checked })
+        }
+    }
+
+    /// Sends `text` in `session`'s mode with a model that just answers,
+    /// and returns the user message the model got.
+    async fn send(session: &mut Session, text: &str) -> String {
+        use nth_protocol::StreamEvent;
+
+        let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
+            "ok".into(),
+        )]]);
+        let (tx, _rx) = mpsc::channel(64);
+        session
+            .prompt(
+                text,
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+        session
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                Message::User(text) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("sent")
+    }
+
+    #[tokio::test]
+    async fn plan_mode_is_announced_once_and_its_end_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
+        session.mode = Mode::Plan;
+        let plan = session.plan_path();
+
+        let first = send(&mut session, "plan it").await;
+        assert!(
+            first.starts_with("plan it\n\n<system-reminder>\nPlan mode is active."),
+            "{first}"
+        );
+        assert!(first.contains(&format!("create your plan at {}", plan.display())));
+        assert!(first.contains("Nobody can approve it"), "headless: {first}");
+        assert_eq!(send(&mut session, "more").await, "more");
+        assert_eq!(session.title(), Some("plan it"));
+
+        std::fs::create_dir_all(plan.parent().expect("dir")).expect("dirs");
+        std::fs::write(&plan, "# Plan").expect("writes");
+        session.mode = Mode::Act;
+        let switched = send(&mut session, "go").await;
+        assert!(
+            switched.starts_with(
+                "go\n\n<system-reminder>\nYour operational mode has changed from plan to act."
+            ),
+            "{switched}"
+        );
+        assert!(switched.ends_with(&format!(
+            "A plan file exists at {}. You should execute on the plan defined within it",
+            plan.display()
+        )));
+        assert_eq!(send(&mut session, "next").await, "next");
+    }
+
+    #[tokio::test]
+    async fn act_mode_from_the_start_says_nothing() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        assert_eq!(send(&mut session, "go").await, "go");
+    }
+
+    #[tokio::test]
+    async fn plan_mode_lets_tools_write_only_the_plan() {
+        use nth_protocol::StreamEvent;
+
+        use crate::agent_loop::tests::{Scripted, call};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
+        session.mode = Mode::Plan;
+        let plan = format!(".nth/plans/{}.md", session.id);
+        let provider = Scripted::new(vec![
+            vec![
+                StreamEvent::ToolCall(call("1", "probe", r#"{"path":"src/main.rs"}"#)),
+                StreamEvent::ToolCall(call("2", "probe", &format!(r#"{{"path":"{plan}"}}"#))),
+            ],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
+        let (tx, _rx) = mpsc::channel(64);
+
+        session
+            .prompt(
+                "plan",
+                &provider,
+                &tools,
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+
+        let results: Vec<&str> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            results[0].starts_with("Error: plan mode is active"),
+            "{}",
+            results[0]
+        );
+        assert_eq!(results[1], "writable");
+    }
+
+    #[test]
+    fn a_save_from_before_modes_loads_as_act() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        session.mode = Mode::Plan;
+        let mut json = serde_json::to_value(&session).expect("serializes");
+        assert_eq!(json["mode"], "plan");
+        let back: Session = serde_json::from_value(json.clone()).expect("deserializes");
+        assert_eq!(back.mode, Mode::Plan);
+
+        let fields = json.as_object_mut().expect("an object");
+        fields.remove("mode");
+        fields.remove("last_turn_mode");
+        let old: Session = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(old.mode, Mode::Act);
     }
 
     #[test]

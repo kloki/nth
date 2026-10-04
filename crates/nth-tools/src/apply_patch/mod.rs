@@ -82,6 +82,13 @@ impl Tool for ApplyPatch {
                     .map_err(|e| format!("{e}\nNo files were changed."))?;
                 summary.push(line);
             }
+            // Checked before anything is written, so a refused patch
+            // changes no file at all.
+            for path in plan.files.keys() {
+                ctx.writable
+                    .check(path)
+                    .map_err(|e| format!("{e}\nNo files were changed."))?;
+            }
             let changed = plan.changed();
             plan.write().await?;
             // The formatters rewrite the files, so they run under the lock;
@@ -367,6 +374,27 @@ mod tests {
 
     fn contents(path: &Path) -> String {
         std::fs::read_to_string(path).expect("read back")
+    }
+
+    #[tokio::test]
+    async fn plan_mode_refuses_the_whole_patch_when_one_file_is_not_the_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = dir.path().join("plan.md");
+        let ctx = ToolContext {
+            writable: nth_protocol::Writable::Only(plan.clone()),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let text = "*** Begin Patch\n*** Add File: plan.md\n+# Plan\n*** Add File: b.txt\n+b\n*** End Patch";
+
+        let out = ApplyPatch::new(PostWrite::off())
+            .call(json!({ "patchText": text }), &ctx)
+            .await;
+
+        let err = out.expect_err("refused");
+        assert!(err.contains("plan mode is active"), "{err}");
+        assert!(err.ends_with("No files were changed."), "{err}");
+        assert!(!plan.exists());
+        assert!(!dir.path().join("b.txt").exists());
     }
 
     #[tokio::test]

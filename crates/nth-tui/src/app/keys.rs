@@ -20,7 +20,8 @@ pub enum Action {
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
     Insert(char),
-    /// Moves between the question panel's tabs.
+    /// Moves between the question panel's tabs; at the prompt, switches
+    /// between plan and act.
     NextTab,
     PrevTab,
     Newline,
@@ -223,7 +224,8 @@ impl App {
                     self.prompt.set(&text);
                 }
             }
-            Action::Accept | Action::NextTab | Action::PrevTab => {}
+            Action::Accept => {}
+            Action::NextTab | Action::PrevTab => self.set_mode(self.mode.toggled()),
             // Taken before any input panel sees them.
             Action::NextContent
             | Action::Content(_)

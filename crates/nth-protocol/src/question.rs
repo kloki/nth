@@ -75,6 +75,12 @@ impl Asker {
         }
     }
 
+    /// Whether anyone is there to answer, so callers can tell a headless
+    /// run before they ask.
+    pub fn reaches_someone(&self) -> bool {
+        self.front_end.is_some()
+    }
+
     /// Waits for your reply; `None` when there is nobody to ask.
     pub async fn ask(&self, questions: Vec<Question>) -> Option<Reply> {
         let front_end = self.front_end.as_ref()?;

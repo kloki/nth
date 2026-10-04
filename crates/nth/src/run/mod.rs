@@ -6,15 +6,15 @@ mod render;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use nth_protocol::FrontEnd;
+use nth_protocol::{FrontEnd, Mode};
 use nth_session::{CancellationToken, Store};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
 use crate::{config::Config, post_write, setup};
 
-pub async fn run(prompt: String, config: Config) -> Result<()> {
-    let (mut session, provider) = setup(&config, &config.paths()).await?;
+pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
+    let (mut session, provider) = setup(&config, &config.paths(), mode).await?;
     let cwd = session.cwd.clone();
     let tools = nth_tools::all(&config.tools, post_write(&config));
     // `/name args` runs a skill, as in the chat.

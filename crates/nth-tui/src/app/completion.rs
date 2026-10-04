@@ -141,7 +141,7 @@ mod tests {
 
         assert!(rows[8].trim().is_empty());
         assert!(
-            rows[9].starts_with(" ▎ buil src/app/keys.rs "),
+            rows[9].starts_with(" ▎ act  src/app/keys.rs "),
             "lined up with the @"
         );
         assert!(rows[10].starts_with(" ▎ see @ke"));

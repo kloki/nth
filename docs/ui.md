@@ -14,7 +14,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
  ▎ you  add retry to the fetch client                                 │ content
  ▎ read  src/client.rs                                                │
  ▎ Added exponential backoff with jitter …                            ┘
-▎ build                                                               ┐
+▎ plan                                                                ┐
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
@@ -194,7 +194,7 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 | Panel        | Accent                            | Title                             |
 | ------------ | --------------------------------- | --------------------------------- |
-| Prompt       | the mode's colour: blue for build | the mode label, or the spinner    |
+| Prompt       | the mode's colour: magenta for plan, blue for act | the mode label, or the spinner |
 | Model picker | magenta                           | `switch model`                    |
 | Question     | cyan                              | `question`, or a tab per question |
 
@@ -203,15 +203,17 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 
 ```
-▎ build
+▎ plan
 ▎ add retry to the fetch client, and
 ▎ back off with jitter█
 ▎
 ```
 
 - **Shape.** 4 rows: the mode label, then three rows of text. Text wraps at the full width and scrolls to keep the cursor in view.
-- **Mode label.** The top row shows the mode in lower case. For now the only mode is build; plan and other modes come later.
-- **Mode colour.** The bar and the mode label share one colour per mode: build is blue. The typed text is the default fg.
+- **Mode label.** The top row shows the mode in lower case: `plan` or `act`. A new chat starts in plan, or in `[mode] default` from the config; a resumed session in the mode it was left in.
+- **Switching modes.** Tab and shift+Tab at the prompt switch between plan and act. Each mode keeps its own model and effort, from `[mode.plan]` and `[mode.act]` in the config, and the model picker changes the current mode's. A running turn keeps its mode; the next one runs in the new one.
+- **Plan mode.** The model may write only its plan file, `.nth/plans/<session>.md`; write, edit and apply_patch refuse any other path. Bash is not restricted, as in opencode, but the reminder the model gets on entering plan mode forbids changing anything with it. Switching to act tells the model so and points it at the plan file.
+- **Mode colour.** The bar and the mode label share one colour per mode: plan is magenta, act is blue. The typed text is the default fg.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
 - **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
@@ -401,8 +403,8 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | red              | red             | path, deleted, conflicted, errors         |
 | green            | green           | branch, your messages, success            |
 | yellow, orange   | yellow          | ahead, behind, renamed, interrupted       |
-| blue             | blue            | model, build, staged                      |
-| magenta, purple  | magenta         | model picker, highlighted items, modified |
+| blue             | blue            | model, act mode, staged                   |
+| magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified |
 | cyan             | cyan            | tool names, model answer bar              |
 | white            | white           | context bar, untracked, stashed           |
 | bright white     | bright white    | status line 1 text, tool output bar       |

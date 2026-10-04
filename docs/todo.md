@@ -36,7 +36,7 @@ the opencode code to copy from.
 - [ ] **Retry with backoff** on 429, 5xx and dropped streams: start at 2 s, factor 2, and honour `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
 - [ ] **Doom-loop guard**: when the same tool is called with the same input 3 times in a row, ask the user before continuing. `session/processor.ts:29`
 - [ ] **Max-steps prompt**: on the last allowed step, tell the model to stop calling tools and summarise, instead of cutting it off. `session/prompt.ts:1281`
-- [ ] **System reminders**: inject short reminders into user turns, such as plan mode being active or a todo list existing. `session/reminders.ts`
+- [ ] **System reminders**: inject short reminders into user turns, such as plan mode being active or a todo list existing. nth has the plan-mode and plan-to-act ones; a todo list has none yet. `session/reminders.ts`
 - [ ] **Token usage and cost per turn**, from the stream's `usage` block and models.dev pricing. Show it in the status line. `session/session.ts`, `provider/`
 - [x] **Queued prompts**: typing while the agent runs queues the prompt for the next turn instead of blocking input. `tui/` `session.queued_prompts`
 
@@ -47,9 +47,9 @@ the opencode code to copy from.
 
 ### Agents and permissions
 
-- [ ] **Plan and Build agents**, switched with Tab, each with its own tool filter and colour. `agent/agent.ts`, `session/prompt/plan.txt`, `build-switch.txt`
+- [x] **Plan and Build agents**, switched with Tab, each with its own tool filter and colour. nth calls them the plan and act modes, each with its own model and effort. `agent/agent.ts`, `session/prompt/plan.txt`, `build-switch.txt`
 - [ ] **question tool**: the agent asks you one or more multiple-choice questions mid-turn, and you can always type your own answer. nth has the tool and its panel; the Plan and plan-exit uses and the subagent denial wait for those features. Plan uses it to settle open decisions before it writes the plan, and plan exit uses it to ask for approval. It is allowed for Build and Plan and denied for subagents. `tool/question.ts`, `agent/agent.ts:126`, `tui/routes/session/question.tsx`
-- [ ] **Plan file**: Plan may write only `.nth/plans/<session>.md`; switching to Build injects it. `tool/plan.ts`, `plan-enter.txt`, `plan-exit.txt`
+- [x] **Plan file**: Plan may write only `.nth/plans/<session>.md`; switching to act points the model at it. `tool/plan.ts`, `plan-enter.txt`, `plan-exit.txt`
 - [ ] **Permission prompts**: ask before paths outside the worktree and before deny-listed bash commands, with allow once, allow always, or reject. `permission/`, `tool/external-directory.ts`, `tui/routes/session/permission.tsx`
 - [ ] **Bash command arity** for "allow always" rules, so `git status` does not allow `git push`. `permission/arity.ts`
 

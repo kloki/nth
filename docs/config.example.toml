@@ -14,6 +14,21 @@ api_key_env = "OPENCODE_GO_API_KEY"
 # Stop a turn after this many model requests without a final answer.
 max_steps = 100
 
+[mode]
+# The mode a new chat starts in: "plan" or "act". Tab switches between them.
+# `nth run` starts in act; `nth run --mode plan` plans instead.
+default = "plan"
+
+[mode.plan]
+# Model and effort for plan mode. An empty model means the provider's model.
+model = ""
+# "default", "low", "medium" or "high".
+effort = "default"
+
+[mode.act]
+model = ""
+effort = "default"
+
 [tools.read]
 # Lines returned when the model gives no limit.
 default_limit = 2000

@@ -25,6 +25,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+pub use app::{Llm, ModeLlms};
 use nth_context::Paths;
 use nth_format::Formatters;
 use nth_lsp::Lsp;
@@ -41,8 +42,9 @@ pub struct Checkers {
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
-/// moves on to in `store` after every turn. The terminal is restored on
-/// every exit path, including a panic.
+/// moves on to in `store` after every turn. Each mode runs on its model in
+/// `mode_llms`. The terminal is restored on every exit path, including a
+/// panic.
 pub async fn run(
     session: Session,
     provider: Arc<dyn Provider>,
@@ -50,6 +52,7 @@ pub async fn run(
     checkers: Checkers,
     store: Store,
     paths: Paths,
+    mode_llms: ModeLlms,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
     // codes into the pipe and then fail on raw mode.
@@ -67,6 +70,7 @@ pub async fn run(
         .with_paths(paths)
         .with_history(history)
         .with_checkers(checkers)
+        .with_mode_llms(mode_llms)
         .run(&mut terminal)
         .await;
     terminal::restore();

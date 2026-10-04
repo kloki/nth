@@ -85,8 +85,12 @@ impl App {
     pub(super) fn resume(&mut self, mut session: Session) {
         session.max_steps = self.max_steps;
         self.context = session.context().clone();
+        // The session's model and effort are its mode's now; the other mode
+        // keeps what it had.
+        self.mode = session.mode;
         self.model = session.model.clone();
         self.effort = session.effort;
+        self.save_llm();
         self.cwd = session.cwd.clone();
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());

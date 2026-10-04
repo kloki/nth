@@ -45,6 +45,8 @@ pub enum Entry {
 
 /// The most output a tool row keeps.
 const OUTPUT_LINES: usize = 10;
+/// Where the session appends a reminder about the mode to what you typed.
+const REMINDER: &str = "\n\n<system-reminder>\n";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolState {
@@ -156,11 +158,19 @@ impl Transcript {
     }
 
     /// What the model got as a user message: what monitors said, shown as
-    /// one row each, then what you typed, if anything.
+    /// one row each, then what you typed, if anything. A system reminder
+    /// the session appended about the mode is for the model only.
     pub fn push_user(&mut self, text: String) {
+        let text = match text.split_once(REMINDER) {
+            Some((typed, _)) => typed.to_string(),
+            None => text,
+        };
         let (notices, typed) = split_notices(&text);
         if notices.is_empty() {
-            return self.push(Entry::User(text));
+            if !text.is_empty() {
+                self.push(Entry::User(text));
+            }
+            return;
         }
         let typed = typed.to_string();
         for notice in notices {
@@ -518,6 +528,21 @@ pub(super) mod tests {
         t.apply(&Event::ToolStarted(tool("1", "write", &arguments)));
 
         assert_eq!(outputs(&t), [numbered(1..=10)]);
+    }
+
+    #[test]
+    fn mode_reminders_are_left_out() {
+        let mut t = Transcript::new("/repo".into());
+        t.push_user(
+            "plan it\n\n<system-reminder>\nPlan mode is active.\n</system-reminder>".into(),
+        );
+        t.push_user("go\n\n<system-reminder>\nYour operational mode has changed\n</system-reminder>\n\nA plan file exists".into());
+
+        let users: Vec<_> = t.entries().collect();
+        assert_eq!(
+            users,
+            [&Entry::User("plan it".into()), &Entry::User("go".into())]
+        );
     }
 
     #[test]

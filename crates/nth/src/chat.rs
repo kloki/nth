@@ -3,15 +3,18 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use nth_protocol::{Effort, Mode};
 use nth_session::Store;
+use nth_tui::{Llm, ModeLlms};
 
 use crate::{config::Config, context, post_write, setup};
 
-/// With `resume`, the last session comes back as it was: its model, effort
-/// and working directory win over the flags and where nth was started.
+/// A new chat starts in the config's default mode. With `resume`, the last
+/// session comes back as it was: its mode, model, effort and working
+/// directory win over the flags and where nth was started.
 pub async fn run(resume: bool, config: Config) -> Result<()> {
     let paths = config.paths();
-    let (mut session, provider) = setup(&config, &paths).await?;
+    let (mut session, provider) = setup(&config, &paths, config.mode.default).await?;
     let store = Store::open()?;
     if resume {
         session = store
@@ -21,6 +24,20 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         let context = context(session.cwd.clone(), &paths).await;
         session.set_context(context);
         session.max_steps = config.session.max_steps;
+    }
+    let mut mode_llms = ModeLlms {
+        plan: llm(config.llm_for(Mode::Plan)),
+        act: llm(config.llm_for(Mode::Act)),
+    };
+    // A resumed session keeps its model; the other mode starts on the
+    // config's.
+    let current = Llm {
+        model: session.model.clone(),
+        effort: session.effort,
+    };
+    match session.mode {
+        Mode::Plan => mode_llms.plan = current,
+        Mode::Act => mode_llms.act = current,
     }
     let post_write = post_write(&config);
     // From the same servers the tools use, so the status bar shows what
@@ -36,6 +53,11 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         checkers,
         store,
         paths,
+        mode_llms,
     )
     .await
+}
+
+fn llm((model, effort): (String, Effort)) -> Llm {
+    Llm { model, effort }
 }
