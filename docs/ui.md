@@ -4,11 +4,12 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 
 | Band          | Job                    | Default                                 |
 | ------------- | ---------------------- | --------------------------------------- |
-| Content panel | What you look at       | Chat history; later one of several tabs |
+| Content panel | What you look at       | Chat history, or another open tab       |
 | Input panel   | What you type into     | The prompt                              |
 | Status bar    | What is true right now | Always 2 lines                          |
 
 ```
+ 1 chat  2 diagnostics                                     nth 0.2.0  header
  nth · glm-5.3 · ~/repos/nth                                          ┐
  ▎ you  add retry to the fetch client                                 │ content
  ▎ read  src/client.rs                                                │
@@ -36,10 +37,49 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
-- **Tabs, later.** The content panel holds a list of tabs, and chat is always the first. Examples are Plan (the plan file with its comment threads), Diff and Monitor. These replace the side pane and agents sidebar sketched in design.md.
-- **Tab strip.** One line at the top of the panel, shown only when more than one tab is open, so a plain chat session looks exactly like today.
-- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel.
-- **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics is the first other tab. Later come Plan (the plan file with its comment threads), Diff and Monitor; they replace the side pane and agents sidebar sketched in design.md.
+- **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
+- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
+- **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open.
+
+| Key              | Does                                                  |
+| ---------------- | ----------------------------------------------------- |
+| ctrl+t           | Shows the next tab, from the last back to chat        |
+| ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat             |
+
+Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
+
+- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool; in `nth run` there is nothing to switch, and the tool tells the model so.
+
+## Diagnostics
+
+Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat.
+
+```
+model
+  glm-5.3 · high · 128k context
+  25 models served
+
+language servers
+  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
+  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
+  ✗ gopls     not on PATH
+
+formatters
+  ✓ rustfmt   rustfmt $FILE
+  ✗ prettier  no package.json here
+
+instructions
+  ~/repos/nth/CLAUDE.md
+
+skills
+  ✦ research-opencode  claude
+```
+
+- **Sections.** A bold title each, and rows under it: model, language servers, formatters, instructions, skills. Context warnings follow the skills in yellow.
+- **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
+- **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 
 ## Chat
 
@@ -73,7 +113,7 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | Interrupted  | none  | `⏹ interrupted · 3.0s` in yellow, after a blank line      |
 | Error        | red   | `✗ message` in red                                        |
 
-- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `>` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, `¿` question, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `>` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, `¿` question, `▣` panel, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
 - **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. question shows the questions' headers. A multi-line command shows its first line followed by `…`.
 - **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
@@ -349,5 +389,4 @@ Orange is not a standard terminal colour, so it means yellow.
 
 ## Open questions
 
-- Which key switches content tabs: `ctrl+x <n>` with the leader, as planned, or a Tab-style cycle?
 - Does the chat banner (`nth · model · place`) stay, now that status line 2 shows the same?

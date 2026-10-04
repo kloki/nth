@@ -18,14 +18,15 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use content::Content;
+pub(crate) use content::{Content, Tab};
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use input::Input;
 use job::Job;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_lsp::ServerStatus;
-use nth_protocol::{Ask, BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
+use nth_format::FormatterStatus;
+use nth_lsp::{ServerInfo, ServerStatus};
+use nth_protocol::{Ask, BoxError, Effort, Event, ModelInfo, Panel, Provider, Tool, Usage};
 use nth_session::{Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -41,8 +42,10 @@ use tokio::{
 use turn::Ended;
 
 use crate::{
+    Checkers,
     chat::Chat,
     command::{Command, Entry},
+    diagnostics::{self, Diagnostics},
     git::{self, GitStatus},
     header,
     history::History,
@@ -73,8 +76,14 @@ pub struct App {
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
-    /// What fills the content panel.
+    /// The content panel's tabs, and which one fills it.
     content: Content,
+    diagnostics: Diagnostics,
+    /// What checks the tools' writes, for the diagnostics tab to look up;
+    /// `None` when nothing does.
+    checkers: Option<Checkers>,
+    servers_lookup: Job<Vec<ServerInfo>>,
+    formatters_lookup: Job<Vec<FormatterStatus>>,
     /// What fills the input panel.
     input: Input,
     /// The model and effort the next turn runs with.
@@ -83,6 +92,7 @@ pub struct App {
     pub cwd: PathBuf,
     /// The working directory as shown in the status bar, `~` for home.
     pub place: String,
+    home: Option<String>,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
@@ -135,6 +145,9 @@ pub struct App {
     asks_rx: mpsc::Receiver<Ask>,
     /// Questions waiting behind the ones in the input panel.
     asks: VecDeque<Ask>,
+    /// Where the running turn's tools switch the content panel.
+    screen_tx: mpsc::Sender<Panel>,
+    screen_rx: mpsc::Receiver<Panel>,
     turn: Job<Ended>,
     quit: bool,
 }
@@ -189,6 +202,7 @@ enum Step {
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),
+    Show(Panel),
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
@@ -196,6 +210,8 @@ enum Step {
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
+    ServersFound(Result<Vec<ServerInfo>, JoinError>),
+    FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
     Tick,
@@ -209,6 +225,7 @@ impl App {
     ) -> Self {
         let (events_tx, events_rx) = mpsc::channel(256);
         let (asks_tx, asks_rx) = mpsc::channel(4);
+        let (screen_tx, screen_rx) = mpsc::channel(4);
         let home = std::env::var("HOME").ok();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
@@ -220,12 +237,17 @@ impl App {
             history_saving: Job::default(),
             queue: VecDeque::new(),
             interrupted: false,
-            content: Content::Chat,
+            content: Content::default(),
+            diagnostics: Diagnostics::default(),
+            checkers: None,
+            servers_lookup: Job::default(),
+            formatters_lookup: Job::default(),
             input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
+            home,
             busy_since: None,
             completion: None,
             files: Vec::new(),
@@ -251,6 +273,8 @@ impl App {
             asks_tx,
             asks_rx,
             asks: VecDeque::new(),
+            screen_tx,
+            screen_rx,
             turn: Job::default(),
             quit: false,
         }
@@ -269,6 +293,17 @@ impl App {
     pub fn with_history(mut self, history: History) -> Self {
         self.history = history;
         self
+    }
+
+    /// Shows the servers' states on the status bar, and what applies to
+    /// the project in the diagnostics tab.
+    pub fn with_checkers(self, checkers: Checkers) -> Self {
+        let lsp = checkers.lsp.status();
+        Self {
+            checkers: Some(checkers),
+            ..self
+        }
+        .with_lsp(lsp)
     }
 
     /// Shows the states `lsp` sends on the status bar.
@@ -293,6 +328,7 @@ impl App {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
+                Some(panel) = self.screen_rx.recv() => Step::Show(panel),
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
@@ -300,6 +336,8 @@ impl App {
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
+                servers = self.servers_lookup.join() => Step::ServersFound(servers),
+                formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if busy => Step::Tick,
             };
@@ -310,6 +348,7 @@ impl App {
                 }
                 Step::Session(event) => self.on_session(event),
                 Step::Asked(ask) => self.on_ask(ask),
+                Step::Show(panel) => self.open_content(panel.into()),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
@@ -324,6 +363,13 @@ impl App {
                 }
                 Step::HistorySaved(saved) => {
                     self.history_saved(saved.context("saving prompt history failed")?)
+                }
+                Step::ServersFound(servers) => {
+                    self.diagnostics.servers = Some(servers.context("finding servers failed")?)
+                }
+                Step::FormattersFound(formatters) => {
+                    self.diagnostics.formatters =
+                        Some(formatters.context("checking formatters failed")?)
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 // Nothing changed but time: the redraw advances the reasoning timer.
@@ -344,9 +390,23 @@ impl App {
         .spacing(1)
         .areas(area);
 
-        header::draw(frame, header);
-        match self.content {
-            Content::Chat => {
+        header::draw(frame, header, &self.content);
+        match self.content.active() {
+            Tab::Diagnostics => {
+                let facts = diagnostics::Facts {
+                    model: &self.model,
+                    effort: self.effort.wire(),
+                    context_window: self.context_window(),
+                    llms: self.llms.as_ref().map(Vec::len),
+                    listing: self.llm_listing.is_running(),
+                    checks: self.checkers.is_some(),
+                    running: &self.servers,
+                    context: &self.context,
+                    home: self.home.as_deref(),
+                };
+                self.diagnostics.draw(frame, content, &facts);
+            }
+            Tab::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
                 self.chat.draw(frame, content, &banner);
                 // In the right margin, so the chat keeps its width and
@@ -390,8 +450,8 @@ impl App {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             TermEvent::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.chat.scroll_up(WHEEL_LINES),
-                MouseEventKind::ScrollDown => self.chat.scroll_down(WHEEL_LINES),
+                MouseEventKind::ScrollUp => self.scroll_up(WHEEL_LINES),
+                MouseEventKind::ScrollDown => self.scroll_down(WHEEL_LINES),
                 _ => {}
             },
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
@@ -511,6 +571,77 @@ impl App {
             }
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
+            Command::Diagnostics => self.open_content(Tab::Diagnostics),
+            Command::Close => self.content.close(),
+        }
+    }
+
+    /// Shows `tab`. The diagnostics tab looks again at what applies every
+    /// time it opens, since servers and formatters may have been installed
+    /// since.
+    pub(super) fn open_content(&mut self, tab: Tab) {
+        if self.content.open(tab) && tab == Tab::Diagnostics {
+            self.diagnose();
+        }
+    }
+
+    fn diagnose(&mut self) {
+        self.list_llms();
+        let Some(checkers) = &self.checkers else {
+            return;
+        };
+        self.diagnostics.servers = None;
+        self.diagnostics.formatters = None;
+        // Finding programs and roots walks PATH and the directory tree.
+        let (lsp, cwd) = (checkers.lsp.clone(), self.cwd.clone());
+        self.servers_lookup
+            .start(|_| tokio::task::spawn_blocking(move || lsp.servers_for(&cwd)));
+        let (formatters, cwd) = (checkers.formatters.clone(), self.cwd.clone());
+        self.formatters_lookup
+            .start(|_| tokio::spawn(async move { formatters.status(&cwd).await }));
+    }
+
+    // Scrolling moves whichever tab is showing.
+
+    fn scroll_up(&mut self, lines: usize) {
+        match self.content.active() {
+            Tab::Chat => self.chat.scroll_up(lines),
+            Tab::Diagnostics => self.diagnostics.scroll_up(lines),
+        }
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        match self.content.active() {
+            Tab::Chat => self.chat.scroll_down(lines),
+            Tab::Diagnostics => self.diagnostics.scroll_down(lines),
+        }
+    }
+
+    pub(super) fn page_up(&mut self) {
+        match self.content.active() {
+            Tab::Chat => self.chat.page_up(),
+            Tab::Diagnostics => self.diagnostics.page_up(),
+        }
+    }
+
+    pub(super) fn page_down(&mut self) {
+        match self.content.active() {
+            Tab::Chat => self.chat.page_down(),
+            Tab::Diagnostics => self.diagnostics.page_down(),
+        }
+    }
+
+    pub(super) fn jump_top(&mut self) {
+        match self.content.active() {
+            Tab::Chat => self.chat.jump_top(),
+            Tab::Diagnostics => self.diagnostics.jump_top(),
+        }
+    }
+
+    pub(super) fn jump_bottom(&mut self) {
+        match self.content.active() {
+            Tab::Chat => self.chat.jump_bottom(),
+            Tab::Diagnostics => self.diagnostics.jump_bottom(),
         }
     }
 }
@@ -588,9 +719,9 @@ pub(crate) mod tests {
     fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert_eq!(
-            idle[0].trim_start(),
-            format!("nth {} ", env!("CARGO_PKG_VERSION")),
+        assert!(idle[0].starts_with(" 1 chat "), "tabs on the left");
+        assert!(
+            idle[0].ends_with(&format!(" nth {} ", env!("CARGO_PKG_VERSION"))),
             "right-aligned inside the margin"
         );
         assert!(
@@ -898,18 +1029,72 @@ pub(crate) mod tests {
         assert!(!app.is_busy());
     }
 
+    #[tokio::test]
+    async fn tabs_open_switch_and_close() {
+        let mut app = app();
+        app.prompt.insert_str("/diagnostics");
+        app.submit();
+        let opened = rows(&mut app);
+        assert!(
+            opened[0].starts_with(" 1 chat  2 diagnostics "),
+            "{opened:#?}"
+        );
+        assert_eq!(opened[2].trim_end(), " model");
+        assert!(opened[3].trim_start().starts_with("glm"));
+
+        app.apply(keys::Action::Content(0));
+        assert_eq!(app.content.active(), Tab::Chat);
+        app.apply(keys::Action::CloseContent);
+        assert_eq!(app.content.tabs().len(), 2, "the chat stays");
+        app.apply(keys::Action::NextContent);
+        assert_eq!(app.content.active(), Tab::Diagnostics);
+
+        app.apply(keys::Action::CloseContent);
+        assert_eq!(app.content.active(), Tab::Chat);
+        assert!(rows(&mut app)[0].trim_end().starts_with(" 1 chat "));
+        assert!(!rows(&mut app)[0].contains("diagnostics"));
+
+        app.open_content(Tab::Diagnostics);
+        app.prompt.insert_str("/close");
+        app.submit();
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+    }
+
+    #[tokio::test]
+    async fn tabs_switch_with_an_input_panel_open() {
+        let mut app = app();
+        app.open_content(Tab::Diagnostics);
+        app.open_llm_picker();
+        app.apply(keys::Action::Content(0));
+        assert_eq!(app.content.active(), Tab::Chat);
+        assert!(matches!(app.input, Input::LlmPicker(_)), "the picker stays");
+    }
+
+    #[tokio::test]
+    async fn the_agent_switches_the_tab() {
+        let mut app = app();
+        let screen = nth_protocol::Screen::new(app.screen_tx.clone());
+        assert!(screen.show(Panel::Diagnostics).await);
+
+        let panel = app.screen_rx.recv().await.expect("sent");
+        app.open_content(panel.into());
+        assert_eq!(app.content.active(), Tab::Diagnostics);
+    }
+
     #[test]
     fn completion_pops_over_the_content_panel() {
         let mut app = app();
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with("    /clear "));
-        assert!(rows[7].starts_with("    /exit "));
-        assert!(rows[8].starts_with("    /models "));
+        assert!(rows[4].starts_with("  /clear "), "{rows:#?}");
+        assert!(rows[5].starts_with("  /close "));
+        assert!(rows[6].starts_with("  /diagnostics "));
+        assert!(rows[7].starts_with("  /exit "));
+        assert!(rows[8].starts_with("  /models "));
         assert!(
-            rows[9].starts_with(" ▎  /resume "),
-            "right above the cursor"
+            rows[9].starts_with("  /resume "),
+            "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));
     }

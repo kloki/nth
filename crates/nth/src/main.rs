@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::{Asker, Provider};
+use nth_protocol::{FrontEnd, Provider};
 use nth_session::{CancellationToken, Session, Store};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
@@ -183,7 +183,8 @@ async fn chat(resume: bool, config: Config) -> Result<()> {
     // From the same servers the tools use, so the status bar shows what
     // checks the writes.
     let checkers = nth_tui::Checkers {
-        lsp: post_write.lsp().status(),
+        lsp: post_write.lsp().clone(),
+        formatters: post_write.formatters().clone(),
     };
     nth_tui::run(
         session,
@@ -219,13 +220,13 @@ async fn run(prompt: String, config: Config) -> Result<()> {
         out
     });
     let turn = session
-        // Nobody is there to answer, so the question tool tells the model
-        // to decide for itself.
+        // Nobody is there to answer or to show a panel to, so the question
+        // tool tells the model to decide for itself.
         .prompt(
             prompt,
             &provider,
             &tools,
-            &Asker::default(),
+            &FrontEnd::default(),
             &tx,
             &CancellationToken::new(),
         )

@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use nth_protocol::Asker;
+use nth_protocol::{Asker, FrontEnd, Screen};
 use nth_session::{Session, store};
 
 use super::App;
@@ -64,7 +64,10 @@ impl App {
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
         let store = self.store.clone();
-        let asker = Asker::new(self.asks_tx.clone());
+        let front_end = FrontEnd {
+            asker: Asker::new(self.asks_tx.clone()),
+            screen: Screen::new(self.screen_tx.clone()),
+        };
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let text = match skill {
@@ -77,7 +80,7 @@ impl App {
                 let result = match text {
                     Ok(text) => {
                         session
-                            .prompt(text, provider.as_ref(), &tools, &asker, &events, &token)
+                            .prompt(text, provider.as_ref(), &tools, &front_end, &events, &token)
                             .await
                     }
                     Err(e) => Err(e),

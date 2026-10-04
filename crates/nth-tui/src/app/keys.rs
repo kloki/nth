@@ -35,6 +35,12 @@ pub enum Action {
     PageDown,
     Top,
     Bottom,
+    /// Shows the content panel's next tab.
+    NextContent,
+    /// Shows the content panel's tab at this index, from 0.
+    Content(usize),
+    /// Closes the content panel's tab showing, unless it is the chat.
+    CloseContent,
 }
 
 pub fn action(key: KeyEvent) -> Option<Action> {
@@ -48,6 +54,11 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
+        KeyCode::Char('t') if ctrl => Action::NextContent,
+        KeyCode::Char('q') if ctrl => Action::CloseContent,
+        // Like ctrl+m, only told apart from the bare digit where the
+        // terminal disambiguates escape codes; ctrl+t reaches every tab.
+        KeyCode::Char(c @ '1'..='4') if ctrl => Action::Content(usize::from(c as u8 - b'1')),
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
@@ -79,6 +90,14 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
+        // Tabs switch whichever input panel is open, as it never changes
+        // with them.
+        match action {
+            Action::NextContent => return self.content.next(),
+            Action::Content(index) => return self.content.select(index),
+            Action::CloseContent => return self.content.close(),
+            _ => {}
+        }
         if let Input::LlmPicker(picker) = &mut self.input {
             match action {
                 Action::SelectNext => picker.next(),
@@ -90,10 +109,10 @@ impl App {
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }
-                Action::PageUp => self.chat.page_up(),
-                Action::PageDown => self.chat.page_down(),
-                Action::Top => self.chat.jump_top(),
-                Action::Bottom => self.chat.jump_bottom(),
+                Action::PageUp => self.page_up(),
+                Action::PageDown => self.page_down(),
+                Action::Top => self.jump_top(),
+                Action::Bottom => self.jump_bottom(),
                 _ => {}
             }
             return;
@@ -106,10 +125,10 @@ impl App {
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }
-                Action::PageUp => self.chat.page_up(),
-                Action::PageDown => self.chat.page_down(),
-                Action::Top => self.chat.jump_top(),
-                Action::Bottom => self.chat.jump_bottom(),
+                Action::PageUp => self.page_up(),
+                Action::PageDown => self.page_down(),
+                Action::Top => self.jump_top(),
+                Action::Bottom => self.jump_bottom(),
                 _ => {}
             }
             return;
@@ -164,10 +183,10 @@ impl App {
                         }
                     }
                     match action {
-                        Action::PageUp => self.chat.page_up(),
-                        Action::PageDown => self.chat.page_down(),
-                        Action::Top => self.chat.jump_top(),
-                        Action::Bottom => self.chat.jump_bottom(),
+                        Action::PageUp => self.page_up(),
+                        Action::PageDown => self.page_down(),
+                        Action::Top => self.jump_top(),
+                        Action::Bottom => self.jump_bottom(),
                         _ => {}
                     }
                     None
@@ -206,6 +225,8 @@ impl App {
                 }
             }
             Action::Accept | Action::NextTab | Action::PrevTab => {}
+            // Taken before any input panel sees them.
+            Action::NextContent | Action::Content(_) | Action::CloseContent => {}
             Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
@@ -219,10 +240,10 @@ impl App {
             Action::Right => self.prompt.right(),
             Action::LineStart => self.prompt.home(),
             Action::LineEnd => self.prompt.end(),
-            Action::PageUp => self.chat.page_up(),
-            Action::PageDown => self.chat.page_down(),
-            Action::Top => self.chat.jump_top(),
-            Action::Bottom => self.chat.jump_bottom(),
+            Action::PageUp => self.page_up(),
+            Action::PageDown => self.page_down(),
+            Action::Top => self.jump_top(),
+            Action::Bottom => self.jump_bottom(),
         }
         match action {
             Action::Insert(_) | Action::Newline | Action::Backspace | Action::Delete => {
@@ -308,6 +329,12 @@ mod tests {
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), Some(Action::NextTab));
         assert_eq!(key(KeyCode::BackTab, none), Some(Action::PrevTab));
+        assert_eq!(key(KeyCode::Char('t'), ctrl), Some(Action::NextContent));
+        assert_eq!(key(KeyCode::Char('q'), ctrl), Some(Action::CloseContent));
+        assert_eq!(key(KeyCode::Char('1'), ctrl), Some(Action::Content(0)));
+        assert_eq!(key(KeyCode::Char('4'), ctrl), Some(Action::Content(3)));
+        assert_eq!(key(KeyCode::Char('5'), ctrl), None);
+        assert_eq!(key(KeyCode::Char('1'), none), Some(Action::Insert('1')));
         assert_eq!(key(KeyCode::Char('x'), ctrl), None);
     }
 
@@ -379,10 +406,10 @@ mod tests {
     fn arrows_cycle_without_touching_the_prompt() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
-        assert_eq!(selected(&app), Command::Exit);
-        app.apply(Action::SelectNext);
-        app.apply(Action::SelectNext);
-        app.apply(Action::SelectNext);
+        assert_eq!(selected(&app), Command::Close);
+        for _ in 0..5 {
+            app.apply(Action::SelectNext);
+        }
         assert_eq!(selected(&app), Command::Clear);
         app.apply(Action::SelectPrev);
         assert_eq!(selected(&app), Command::Resume);
@@ -394,7 +421,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
-        assert_eq!(app.prompt.text(), "/exit");
+        assert_eq!(app.prompt.text(), "/close");
         assert!(app.completion.is_some());
     }
 
@@ -412,7 +439,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let app = skilled(dir.path(), "/");
-        assert_eq!(names(&app), ["clear", "exit", "models", "resume", "fix"]);
+        assert_eq!(
+            names(&app),
+            [
+                "clear",
+                "close",
+                "diagnostics",
+                "exit",
+                "models",
+                "resume",
+                "fix"
+            ]
+        );
 
         let app = skilled(dir.path(), "/f");
         assert_eq!(names(&app), ["fix"]);

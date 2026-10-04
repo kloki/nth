@@ -78,11 +78,7 @@ fn queued(app: &App) -> Vec<Span<'static>> {
 fn servers(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for server in &app.servers {
-        let colour = match server.state {
-            ServerState::Connected => Color::Green,
-            ServerState::Starting => Color::Yellow,
-            ServerState::Broken(_) => Color::Red,
-        };
+        let colour = state_colour(&server.state);
         if !spans.is_empty() {
             spans.push(Span::raw("  "));
         }
@@ -95,6 +91,16 @@ fn servers(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
+/// A server's dot: green when connected, yellow while starting, red when
+/// broken.
+pub fn state_colour(state: &ServerState) -> Color {
+    match state {
+        ServerState::Connected => Color::Green,
+        ServerState::Starting => Color::Yellow,
+        ServerState::Broken(_) => Color::Red,
+    }
+}
+
 /// `Color::White` is the terminal's bright white; plain white is `Gray`.
 fn bright_white() -> Style {
     Style::new().fg(Color::White)
@@ -102,7 +108,12 @@ fn bright_white() -> Style {
 
 /// Draws `left` against the left edge and `right` against the right edge
 /// in what is left of the row, one column clear of it.
-fn split_line(frame: &mut Frame, area: Rect, left: Vec<Span<'static>>, right: Vec<Span<'static>>) {
+pub fn split_line(
+    frame: &mut Frame,
+    area: Rect,
+    left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+) {
     let left = Line::from(left);
     let width = u16::try_from(left.width())
         .unwrap_or(u16::MAX)

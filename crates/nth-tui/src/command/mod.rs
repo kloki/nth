@@ -12,14 +12,18 @@ const ABOUT_CHARS: usize = 48;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     Clear,
+    Close,
+    Diagnostics,
     Exit,
     Models,
     Resume,
 }
 
 impl Command {
-    const ALL: [Command; 4] = [
+    const ALL: [Command; 6] = [
         Command::Clear,
+        Command::Close,
+        Command::Diagnostics,
         Command::Exit,
         Command::Models,
         Command::Resume,
@@ -28,6 +32,8 @@ impl Command {
     pub fn name(self) -> &'static str {
         match self {
             Command::Clear => "clear",
+            Command::Close => "close",
+            Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
             Command::Models => "models",
             Command::Resume => "resume",
@@ -37,6 +43,8 @@ impl Command {
     pub fn about(self) -> &'static str {
         match self {
             Command::Clear => "start a fresh session",
+            Command::Close => "close the content tab",
+            Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
             Command::Resume => "reopen a past session",
@@ -161,7 +169,14 @@ mod tests {
     fn matches_commands_by_prefix() {
         let none = Skills::default();
         assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL));
-        assert_eq!(Entry::matching("/c", &none), builtins(&[Command::Clear]));
+        assert_eq!(
+            Entry::matching("/c", &none),
+            builtins(&[Command::Clear, Command::Close])
+        );
+        assert_eq!(
+            Entry::matching("/d", &none),
+            builtins(&[Command::Diagnostics])
+        );
         assert_eq!(Entry::matching("/m", &none), builtins(&[Command::Models]));
         assert_eq!(Entry::matching("/r", &none), builtins(&[Command::Resume]));
         assert_eq!(Entry::matching("/x", &none), []);
@@ -179,7 +194,16 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["clear", "exit", "models", "resume", "deploy", "review"],
+            [
+                "clear",
+                "close",
+                "diagnostics",
+                "exit",
+                "models",
+                "resume",
+                "deploy",
+                "review"
+            ],
             "the clear skill is hidden by the command"
         );
         assert_eq!(
