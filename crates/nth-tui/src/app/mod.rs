@@ -198,8 +198,9 @@ pub struct App {
     /// A word on what the last key did not do, on the status bar until the
     /// next key.
     pub hint: Option<String>,
-    /// ctrl+g asked for the editor, which the loop opens after this step.
-    pending_editor: bool,
+    /// ctrl+g asked for the editor, on this target; the loop opens it
+    /// after this step.
+    pending_editor: Option<editor::Target>,
     /// The plan copy your editor has open; the app draws nothing while it
     /// runs.
     editing: Option<editor::Editing>,
@@ -338,7 +339,7 @@ impl App {
             notices_due: None,
             hold_notices: false,
             hint: None,
-            pending_editor: false,
+            pending_editor: None,
             editing: None,
             editor: Job::default(),
             quit_armed: false,
@@ -377,7 +378,7 @@ impl App {
         self.read_plan();
 
         while !self.quit {
-            if self.pending_editor {
+            if self.pending_editor.is_some() {
                 self.open_editor(&mut input).await;
             }
             if !self.is_editing() {

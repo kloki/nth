@@ -48,7 +48,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
 | ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor, or the plan while there is one |
 | ctrl+w           | On a monitor's tab: stops it, or closes the tab once stopped |
-| ctrl+g           | Opens a copy of the plan in your editor; see [Plan](#plan) |
+| ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan) |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
@@ -96,7 +96,7 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 - **What is marked.** The changes of the latest turn that changed the plan, against the plan as it was before that turn. A turn that only talks leaves the marks as they are, so asking a question about the plan does not wipe what its last revision did. The first plan of a session is shown unmarked too, since every line of it would be new, and so is the session's plan when it is opened by starting nth or `/resume`.
 - **Reading.** The file is read after every write, edit or apply_patch, at the end of each turn, and when a session opens. A plan deleted from disk closes the tab.
 
-**ctrl+g: commenting on the plan.** You are not expected to write the plan yourself, but you can leave comments in it. ctrl+g opens a copy of the plan in `$VISUAL`, else `$EDITOR`, else vi, run through the shell so `code --wait` works. Write comments anywhere (`<!-- why not X? -->`, a `>>` line, `[which crate?]`), reword or delete lines, then save and quit.
+**ctrl+g: commenting on the plan.** You are not expected to write the plan yourself, but you can leave comments in it. On this tab, ctrl+g opens a copy of the plan in `$VISUAL`, else `$EDITOR`, else vi, run through the shell so `code --wait` works. Write comments anywhere (`<!-- why not X? -->`, a `>>` line, `[which crate?]`), reword or delete lines, then save and quit.
 
 - **What the model gets.** The diff from the plan to your copy, in a `<plan-edits>` element, then an instruction: these edits are review feedback, a plain change is carried into the plan, a question is answered, an objection is met or argued, each comment is removed once handled, and the plan file itself is edited, never your copy. The instruction is `crates/nth-session/src/plan/plan_edits.md`.
 - **In the chat.** One row, `✎ plan edits · +2 -0`, the diff and instruction being for the model only.
@@ -249,6 +249,7 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
 - **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
 - **History.** Up and Down recall sent prompts, newest first, and Down past the newest gives back what was being typed. An edited recalled prompt is never replaced: Up and Down do nothing until it is sent or cleared. The last 100 prompts are kept across runs in `$XDG_DATA_HOME/nth/prompt-history.jsonl`, one JSON string per line. Builtin commands are not recorded.
+- **External editor.** ctrl+g opens the prompt in `$VISUAL`, else `$EDITOR`, else vi, as the plan does on its tab. The text you save and quit comes back into the prompt; an empty prompt opens an empty buffer. Saving with no change or quitting with an error (vim's `:cq`) leaves the prompt as it was, the latter with a hint. While the plan tab shows, ctrl+g edits the plan, not the prompt (see [Plan](#plan)).
 
 **While a turn runs**
 

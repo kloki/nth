@@ -1,7 +1,9 @@
-//! ctrl+g: you edit a copy of the plan in your editor, and the model gets
-//! your edits as review feedback to work into the plan itself. The app
-//! keeps running while the editor has the terminal, so a turn or a
-//! monitor never stalls on a full channel; it only stops drawing.
+//! ctrl+g: your editor on a copy of what the content panel shows. On the
+//! plan tab the model gets your edits as review feedback to work into the
+//! plan itself; anywhere else you edit the prompt, and the result becomes
+//! its text again. The app keeps running while the editor has the
+//! terminal, so a turn or a monitor never stalls on a full channel; it
+//! only stops drawing.
 
 use std::{io, path::PathBuf, process::ExitStatus};
 
@@ -10,45 +12,78 @@ use nth_session::plan::edits;
 use ratatui::DefaultTerminal;
 use tokio::task::JoinError;
 
-use super::App;
+use super::{App, Tab};
 use crate::terminal;
 
-/// The copy being edited, and the plan it was copied from.
+/// What the editor is open on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Target {
+    /// The plan; the edits go to the model as review feedback.
+    Plan,
+    /// The prompt; the edits become the prompt's text again.
+    Prompt,
+}
+
+/// The copy being edited, what it was copied from, and what to do with
+/// the edits when the editor closes.
 #[derive(Debug)]
 pub(super) struct Editing {
+    target: Target,
     copy: PathBuf,
     original: String,
 }
 
 impl App {
-    /// Asks the loop to open the editor; it owns the terminal and the key
-    /// stream the editor needs.
-    pub(super) fn edit_plan(&mut self) {
-        if !self.plan.exists() {
-            self.hint = Some("no plan yet".into());
+    /// ctrl+g: the plan while its tab shows, else the prompt. Asks the
+    /// loop to open the editor; it owns the terminal and the key stream
+    /// the editor needs.
+    pub(super) fn edit(&mut self) {
+        if self.editing.is_some() {
             return;
         }
-        if self.editing.is_none() {
-            self.pending_editor = true;
-        }
+        let target = if self.content.active() == Tab::Plan {
+            if !self.plan.exists() {
+                self.hint = Some("no plan yet".into());
+                return;
+            }
+            Target::Plan
+        } else {
+            Target::Prompt
+        };
+        self.pending_editor = Some(target);
     }
 
     pub(super) fn is_editing(&self) -> bool {
         self.editing.is_some()
     }
 
-    /// Copies the plan, hands the terminal to the editor and waits for it
-    /// in the background. `input` goes, so its reader thread stops taking
-    /// the keys meant for the editor.
+    /// Copies the target, hands the terminal to the editor and waits for
+    /// it in the background. `input` goes, so its reader thread stops
+    /// taking the keys meant for the editor.
     pub(super) async fn open_editor(&mut self, input: &mut Option<EventStream>) {
-        self.pending_editor = false;
-        let Some(original) = self.plan.text().map(str::to_string) else {
+        let Some(target) = self.pending_editor.take() else {
             return;
         };
-        let name = self.plan_path.file_name().unwrap_or_default();
+        let original = match target {
+            Target::Plan => match self.plan.text() {
+                Some(text) => text.to_string(),
+                None => return,
+            },
+            Target::Prompt => self.prompt.text().to_string(),
+        };
+        // The plan is named after its session, so the prompt copy is too,
+        // and two nth instances never share one temp file.
+        let name = match target {
+            Target::Plan => self.plan_path.file_name().unwrap_or_default().to_owned(),
+            Target::Prompt => {
+                let mut name = self.plan_path.file_stem().unwrap_or_default().to_owned();
+                name.push("-prompt.md");
+                name
+            }
+        };
         let copy = std::env::temp_dir().join("nth").join(name);
         if let Err(e) = write_copy(&copy, &original).await {
-            self.hint = Some(format!("cannot copy the plan: {e}"));
+            self.hint = Some(format!("cannot open the editor: {e}"));
             return;
         }
         *input = None;
@@ -57,7 +92,11 @@ impl App {
         let path = copy.clone();
         self.editor
             .start(|_| tokio::spawn(async move { run_editor(&editor, &path).await }));
-        self.editing = Some(Editing { copy, original });
+        self.editing = Some(Editing {
+            target,
+            copy,
+            original,
+        });
     }
 
     /// Takes the terminal back however the editor ended, then sends the
@@ -70,13 +109,18 @@ impl App {
     ) -> anyhow::Result<()> {
         terminal::resume(terminal)?;
         *input = Some(EventStream::new());
-        let Some(Editing { copy, original }) = self.editing.take() else {
+        let Some(Editing {
+            target,
+            copy,
+            original,
+        }) = self.editing.take()
+        else {
             return Ok(());
         };
         let edited = match ended {
             Ok(Ok(status)) if status.success() => tokio::fs::read_to_string(&copy)
                 .await
-                .map_err(|e| format!("cannot read the edited plan: {e}")),
+                .map_err(|e| format!("cannot read the edited file: {e}")),
             // :cq in vim, say: you meant to throw the edits away.
             Ok(Ok(status)) => Err(format!("editor exited with {status} · edits dropped")),
             Ok(Err(e)) => Err(format!("editor failed: {e}")),
@@ -85,13 +129,16 @@ impl App {
         // The copy has done its job either way; a leftover in the temp
         // folder is harmless.
         let _ = tokio::fs::remove_file(&copy).await;
-        self.edited(&original, edited);
+        match target {
+            Target::Plan => self.plan_edited(&original, edited),
+            Target::Prompt => self.prompt_edited(edited),
+        }
         Ok(())
     }
 
     /// Sends `edited` as your edits of `original`, queued behind a running
     /// turn like any prompt, or says why there is nothing to send.
-    fn edited(&mut self, original: &str, edited: Result<String, String>) {
+    fn plan_edited(&mut self, original: &str, edited: Result<String, String>) {
         let edited = match edited {
             Ok(edited) if edited == original => {
                 self.hint = Some("no changes to the plan".into());
@@ -109,6 +156,15 @@ impl App {
             self.queue.push_back(text);
         } else {
             self.start_turn(text);
+        }
+    }
+
+    /// Puts the edited copy back into the prompt, or says on the status bar
+    /// why there is nothing to put back.
+    fn prompt_edited(&mut self, edited: Result<String, String>) {
+        match edited {
+            Ok(text) => self.prompt.set(&text),
+            Err(why) => self.hint = Some(why),
         }
     }
 }
@@ -150,7 +206,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        app::{keys::Action, tests::Idle},
+        app::{Tab, keys::Action, tests::Idle},
         chat::Entry,
     };
 
@@ -171,12 +227,60 @@ mod tests {
         assert!(!status.success());
     }
 
+    /// An app on a session in a temporary directory whose plan reads
+    /// `"# Plan\n"`, with its plan tab showing.
+    async fn app_with_plan() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = Session::new("glm", dir.path().to_path_buf());
+        let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+        std::fs::create_dir_all(app.plan_path.parent().expect("dir")).expect("dirs");
+        std::fs::write(&app.plan_path, "# Plan\n").expect("writes");
+        app.read_plan();
+        let text = app.plan_reading.join().await.expect("read");
+        app.plan_read(text);
+        app.content.open(Tab::Plan);
+        (app, dir)
+    }
+
     #[test]
-    fn ctrl_g_without_a_plan_only_hints() {
+    fn ctrl_g_on_the_plan_tab_without_a_plan_only_hints() {
         let mut app = crate::app::tests::app();
-        app.apply(Action::EditPlan);
+        app.content.open(Tab::Plan);
+        app.apply(Action::Edit);
         assert_eq!(app.hint.as_deref(), Some("no plan yet"));
-        assert!(!app.pending_editor);
+        assert_eq!(app.pending_editor, None);
+    }
+
+    #[test]
+    fn ctrl_g_off_the_plan_tab_edits_the_prompt() {
+        let mut app = crate::app::tests::app();
+        app.apply(Action::Edit);
+        assert_eq!(
+            app.pending_editor,
+            Some(Target::Prompt),
+            "an empty prompt opens too"
+        );
+        assert_eq!(app.hint, None);
+    }
+
+    #[tokio::test]
+    async fn ctrl_g_on_the_plan_tab_edits_the_plan() {
+        let (mut app, _dir) = app_with_plan().await;
+        app.apply(Action::Edit);
+        assert_eq!(app.pending_editor, Some(Target::Plan));
+    }
+
+    #[test]
+    fn prompt_edits_become_the_prompt() {
+        let mut app = crate::app::tests::app();
+        app.prompt.insert_str("draft");
+
+        app.prompt_edited(Ok("edited\nmore\n".into()));
+        assert_eq!(app.prompt.text(), "edited\nmore\n");
+
+        app.prompt_edited(Err("editor failed: gone".into()));
+        assert_eq!(app.hint.as_deref(), Some("editor failed: gone"));
+        assert_eq!(app.prompt.text(), "edited\nmore\n", "kept on failure");
     }
 
     #[tokio::test]
@@ -184,13 +288,13 @@ mod tests {
         let session = Session::new("glm", "/repo".into());
         let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
 
-        app.edited("# Plan\n", Ok("# Plan\n".into()));
+        app.plan_edited("# Plan\n", Ok("# Plan\n".into()));
         assert_eq!(app.hint.as_deref(), Some("no changes to the plan"));
-        app.edited("# Plan\n", Err("editor failed: gone".into()));
+        app.plan_edited("# Plan\n", Err("editor failed: gone".into()));
         assert_eq!(app.hint.as_deref(), Some("editor failed: gone"));
         assert!(!app.is_busy());
 
-        app.edited("# Plan\n", Ok("# Plan\n<!-- why? -->\n".into()));
+        app.plan_edited("# Plan\n", Ok("# Plan\n<!-- why? -->\n".into()));
         assert!(app.is_busy());
         app.interrupt();
         let ended = app.turn.join().await.expect("ends");

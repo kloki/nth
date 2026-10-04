@@ -1,132 +1,50 @@
-# nth — Missing features vs opencode
+# nth
 
-> **This is a reference, not a backlog to clear.** The goal is not to
-> reimplement opencode one to one. Use it to see what exists and how opencode
-> solved it, then pick what nth needs and skip the rest.
+Items are grouped by the milestones in [design.md](design.md). Each item names the opencode code to copy from.
 
-Compared against opencode at
-[`03e6717`](https://github.com/anomalyco/opencode/tree/03e67171ab2dc1e7f16e8cebfbc7f778f61b89f0)
-(`refs/opencode`). Paths are relative to `packages/opencode/src/` unless they
-start with `tui/`, which means `packages/tui/src/`.
+### Commands
 
-**What nth has today:** a chat-completions provider for OpenCode Go with
-reasoning effort, the read, write, edit, apply_patch, bash, glob, grep, webfetch
-and websearch tools, parallel tool calls, a 100-step cap, Esc to interrupt, the
-TUI chat with `@` file mentions, the `/clear`, `/exit` and `/models` commands, a
-model picker, `nth run` (headless), `nth models`, and `AGENTS.md` (or
-`CLAUDE.md`) instruction files in the system prompt, plus nested ones attached
-once when read touches their directory, and skills from the Claude Code,
-opencode and open-standard folders, offered in the system prompt, loaded with
-the skill tool and run as `/name args`.
+- [ ] /init Set agent.md
+- [ ] /compact compact long lines
 
-Items are grouped by the milestones in [design.md](design.md). Each item names
-the opencode code to copy from.
+### Agent loop hardening
 
-## M1: daily driver
-
-### Tools
-
-- [ ] **todowrite**: todo list kept in the session, shown in the TUI. `tool/todo.ts`, `session/todo.ts`
-- [ ] **Truncate long tool output** to a file, and tell the model the path so it can read or grep the rest (2000 lines / 50 KB, kept for 7 days). nth's bash keeps only the tail. `tool/truncate.ts`
-- [ ] **Images in read**: return png, jpeg, gif and webp as attachments instead of text. `tool/read.ts:19`
-- [ ] **Invalid tool calls**: reply with a readable error instead of failing the turn (unknown tool, bad JSON). `tool/invalid.ts`, `tool/registry.ts`
-
-### Agent loop
-
-- [ ] **Retry with backoff** on 429, 5xx and dropped streams: start at 2 s, factor 2, and honour `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
-- [ ] **Doom-loop guard**: when the same tool is called with the same input 3 times in a row, ask the user before continuing. `session/processor.ts:29`
-- [ ] **Max-steps prompt**: on the last allowed step, tell the model to stop calling tools and summarise, instead of cutting it off. `session/prompt.ts:1281`
-- [ ] **System reminders**: inject short reminders into user turns, such as plan mode being active or a todo list existing. nth has the plan-mode and plan-to-act ones; a todo list has none yet. `session/reminders.ts`
-- [ ] **Token usage and cost per turn**, from the stream's `usage` block and models.dev pricing. Show it in the status line. `session/session.ts`, `provider/`
-- [x] **Queued prompts**: typing while the agent runs queues the prompt for the next turn instead of blocking input. `tui/` `session.queued_prompts`
+- [ ] Retry with backoff on 429, 5xx and dropped streams: start at 2 s, factor 2, and honor `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
+- [ ] Doom-loop guard: when the same tool is called with the same input 3 times in a row, ask the user before continuing. `session/processor.ts:29`
+- [ ] Max-steps prompt: on the last allowed step, tell the model to stop calling tools and summarize, instead of cutting it off. `session/prompt.ts:1281`
 
 ### Context and instructions
 
-- [ ] **Environment block**: add today's date and the workspace root. `session/system.ts:80`
-- [ ] **Per-model system prompts**: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
+- [ ] Environment block: add today's date and the workspace root. `session/system.ts:80`
+- [ ] Per-model system prompts: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
 
-### Agents and permissions
+### Subagents and orchestrations
 
-- [x] **Plan and Build agents**, switched with Tab, each with its own tool filter and colour. nth calls them the plan and act modes, each with its own model and effort. `agent/agent.ts`, `session/prompt/plan.txt`, `build-switch.txt`
-- [ ] **question tool**: the agent asks you one or more multiple-choice questions mid-turn, and you can always type your own answer. nth has the tool and its panel; the Plan and plan-exit uses and the subagent denial wait for those features. Plan uses it to settle open decisions before it writes the plan, and plan exit uses it to ask for approval. It is allowed for Build and Plan and denied for subagents. `tool/question.ts`, `agent/agent.ts:126`, `tui/routes/session/question.tsx`
-- [x] **Plan file**: Plan may write only `.nth/plans/<session>.md`; switching to act points the model at it. `tool/plan.ts`, `plan-enter.txt`, `plan-exit.txt`
-- [ ] **Permission prompts**: ask before paths outside the worktree and before deny-listed bash commands, with allow once, allow always, or reject. `permission/`, `tool/external-directory.ts`, `tui/routes/session/permission.tsx`
-- [ ] **Bash command arity** for "allow always" rules, so `git status` does not allow `git push`. `permission/arity.ts`
+- [ ] Subagent
+- [ ] Subagent tabs
+- [ ] Orchestrations view
 
-### Sessions
+### Worktrees
 
-- [ ] **Persist sessions** as JSONL under `~/.local/share/nth`, and resume with `nth --continue` or `--session <id>`. `session/session.ts`, `cli/cmd/session.ts`
-- [ ] **Session list dialog** to switch, rename and delete. `tui/component/dialog-session-list.tsx`, `dialog-session-rename.tsx`
-- [ ] **Auto title** from the first prompt, generated by a cheap model. `agent/prompt/title.txt`
+An opinionated worktree flow baked into nth requires design
 
-### Worktrees, format, LSP
+### Scratchpad
 
-- [ ] **Worktree per session** on branch `nth/<slug>`, with a setup hook. `worktree/`
-- [ ] **Checkpoint commit per turn**, which also gives undo and redo. opencode uses a separate snapshot repo for this. `snapshot/`, `session/revert.ts`
-- [ ] **Diff view**: worktree against base, file list plus hunks, next and previous hunk and file. `session/summary.ts`, `tui/` `diff.*` keybinds
-- [x] **Format after write**: rustfmt, prettier or ruff by file type. nth tells the model which formatter ran rather than returning the formatted file. `format/formatter.ts`
-- [x] **LSP diagnostics**: rust-analyzer per worktree, started lazily; append errors to the write, edit and apply_patch result. `lsp/`, `lsp/diagnostic.ts`
+A more flexible todo that uses the tab view
+
+### Mouse control
+
+Allow mouse control
+
+- [ ] Switching tabs
+- [ ] Clicking to copy
 
 ### TUI
 
-- [x] **Prompt history** on Up and Down, persisted. `tui/component/prompt/history.tsx`
-- [ ] **Shell mode**: `!` at the start of the prompt runs the line as a shell command and adds its output to the chat. `tui/component/prompt/index.tsx:836`
-- [ ] **External editor** for long prompts (`$EDITOR`). nth opens the plan in it with ctrl+g (`app/editor.rs`); the prompt does not have it yet. `tui/editor.ts`
-- [ ] **Paste summary**: collapse a large paste to `[pasted N lines]`. `tui/` `app.toggle.paste_summary`
-- [ ] **Tool details toggle**: expand a collapsed tool call in place. `tui/` `session.toggle.actions`
-- [ ] **Thinking toggle**: show or hide reasoning. `tui/` `session.toggle.thinking`
-- [ ] **Copy** the last assistant message or the whole transcript to the clipboard. `tui/clipboard.ts`
-- [ ] **Message navigation**: jump to the previous or next message and the last user message. `tui/` `session.message.*`
-- [ ] **Help dialog** listing keybinds and commands. `tui/` `help.show`
-- [ ] **Suspend** with `ctrl+z`. `tui/` "Suspend terminal"
-- [ ] **Leader key** `ctrl+x`, as in opencode. `tui/keymap.tsx`
-
-## M2: parallel work
-
-- [ ] **task tool and subagents**: Explore (read-only) and general, each in a child session, reporting back through the tool result. `tool/task.ts`, `agent/prompt/explore.txt`, `agent/subagent-permissions.ts`
-- [ ] **Navigate child sessions**: go to child, next, previous and parent. `tui/routes/session/dialog-subagent.tsx`, `subagent-footer.tsx`
-- [ ] **Background subagents**. `background/`, `tui/` `session.background`
-- [ ] **Compaction**: at overflow (context minus output budget minus a 20k buffer), summarise and continue; also `/compact` by hand. `session/compaction.ts`, `session/overflow.ts:8`, `agent/prompt/compaction.txt`
-- [ ] **Prune old tool output** (keep the last 40k tokens, never prune skill output) before compacting. `session/compaction.ts:28`
-- [ ] **Undo and redo** of the last turn, files included. `session/revert.ts`, `tui/` `session.undo`
-- [ ] **Fork** a session from any message. `tui/routes/session/dialog-fork-from-timeline.tsx`
-- [ ] **Timeline dialog** to jump to any message. `tui/routes/session/dialog-timeline.tsx`
-- [ ] **Sidebar**: todo list, changed files, context use and cost. `tui/routes/session/sidebar.tsx`
-- [ ] **Status dialog**: provider, model, LSP and formatter state. `tui/component/dialog-status.tsx`
-- [ ] **Export** a transcript to markdown. `cli/cmd/export.ts`, `tui/` `session.export`
-- [ ] **Command palette** over every command. `tui/component/command-palette.tsx`
-- [ ] **Model cycling**: recent and favourite models on a key. `tui/` `model.cycle_*`
-- [ ] **Stats**: tokens and cost across sessions. `cli/cmd/stats.ts`
-
-## M3 and later
-
-- [ ] **lsp tool**: hover, definition, references and symbols. `tool/lsp.ts`
-- [ ] **Custom commands**: markdown templates in `.nth/commands/`, plus the built-in `/init` (writes AGENTS.md) and `/review`. Skills already run as `/name args` with opencode's template expansion, so a command could be a skill without a description. `command/index.ts`, `command/template/`
-- [ ] **Custom agents** from markdown files with a tool filter and model. `agent/agent.ts`, `cli/cmd/agent.ts`
-- [ ] **Anthropic messages and OpenAI responses protocols**. `provider/`, `packages/llm`
-- [ ] **Model variants**: per-model presets such as thinking budgets. `tui/component/dialog-variant.tsx`
-- [ ] **Prompt stash**: park a draft prompt and pop it later. `tui/component/prompt/stash.tsx`
-- [ ] **Recorded SSE replay tests** across providers. `packages/http-recorder`
-
-## Beyond opencode: ideas from Claude Code
-
-Claude Code has these features and opencode lacks them, or keeps them behind a flag.
-
-- [ ] **Plan exit tool**: the Plan agent calls a tool when its plan is done, the user approves, and the session switches to Build with the plan in context. opencode has `plan_exit`, but only behind `experimentalPlanMode`. nth has `/approve` for the user's side and the Plan tab with the latest changes marked; the tool the model calls is still missing. `tool/plan.ts`, `tool/registry.ts:248`
-- [ ] **Plan enter tool**: the agent can propose switching to Plan when a task turns out to be bigger than expected.
-- [ ] **Background bash**: `run_in_background` on bash returns a job id at once. The model reads the output later and can kill the job. This suits dev servers, long builds and watchers. opencode's shell is foreground only.
-- [x] **Monitor tool**: wait for a condition in a background job's output, such as a line matching a regex or the process exiting, without polling in a loop. nth's `monitor` follows Claude Code's: each stdout line of a background command reaches the model as a notice, `monitor_stop` ends it.
-- [x] **Completion notifications**: when a background job or subagent finishes, nth injects a short notice into the session so the agent wakes up and carries on. Done for monitors: notices go in between steps, or start a turn when idle.
-- [ ] **Hooks**: shell commands run on events such as before a tool runs, after a tool runs, and when a turn stops. They can block a call or add context. This fits nth better than opencode's JS plugins, because hooks are compiled-in event points and the logic stays in plain scripts.
-- [ ] **Auto memory**: one fact per file under `~/.local/share/nth/memory/<repo>/`, with an index loaded into the system prompt. The agent writes to it when you correct it or state a preference.
-- [ ] **Message a running subagent**: send a follow-up to a subagent and keep its context, instead of starting a fresh one. opencode can only resume a finished task, through `task_id` (`tool/task.ts:47`).
-- [ ] **Fork subagent**: a subagent that inherits the parent's whole context, for side work that needs what the parent already knows.
-- [ ] **Subagent worktree isolation**: the task tool with `isolation: worktree`. This matches the worker subagent in design.md.
-- [ ] **Deferred tool schemas**: list rarely used tools by name only and load their schemas on demand, so the system prompt stays small.
-- [ ] **Context breakdown** (`/context`): what fills the window, split into system prompt, tools, instructions, skills and messages.
-- [ ] **Compact with a focus**: `/compact keep the API design` steers what the summary keeps.
-- [ ] **Loop and scheduled runs**: rerun a prompt on an interval, or let the agent decide when to check back, for example to babysit CI.
-- [ ] **Status line command**: a user script whose output fills part of the status line.
+- [ ] Shell mode: `!` at the start of the prompt runs the line as a shell command and adds its output to the chat. `tui/component/prompt/index.tsx:836`
+- [ ] Paste summary: collapse a large paste to `[pasted N lines]`. `tui/` `app.toggle.paste_summary`
+- [ ] Tool details toggle: expand a collapsed tool call in place. `tui/` `session.toggle.actions`
+- [ ] Thinking toggle: show or hide reasoning. `tui/` `session.toggle.thinking`
 
 ## Deliberately skipped
 
@@ -136,4 +54,4 @@ These are non-goals in [design.md](design.md):
 - Client/server split, web, desktop, IDE and ACP (`server/`, `packages/app`, `packages/desktop`, `acp/`, `ide/`)
 - Session sharing, accounts and orgs (`share/`, `account/`, `dialog-console-org.tsx`)
 - GitHub app and PR commands (`cli/cmd/github.ts`, `cli/cmd/pr.ts`)
-- Themes (nth uses the 16 ANSI colours), self-upgrade and uninstall
+- Themes (nth uses the 16 ANSI colors), self-upgrade and uninstall
