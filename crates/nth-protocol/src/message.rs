@@ -29,6 +29,17 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// Arguments `ToolCall::summary` looks for, in order: the command itself
+/// comes before the model's description of it.
+const SUMMARY_KEYS: [&str; 6] = [
+    "filePath",
+    "command",
+    "description",
+    "name",
+    "pattern",
+    "query",
+];
+
 impl ToolCall {
     /// The one argument that best says what a call is doing, with paths
     /// shown relative to `cwd`.
@@ -39,8 +50,7 @@ impl ToolCall {
         if let Some(patch) = args["patchText"].as_str() {
             return patch_summary(patch, cwd);
         }
-        // The command itself over the model's description of it.
-        let text = ["filePath", "command", "description", "name", "pattern", "query"]
+        let text = SUMMARY_KEYS
             .iter()
             .find_map(|key| args[key].as_str())
             .unwrap_or_default();
