@@ -1,11 +1,13 @@
 mod bash;
 mod read;
+mod skill;
 mod write;
 
 pub use bash::{Bash, BashConfig};
 use nth_protocol::Tool;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
+pub use skill::Skill;
 pub use write::Write;
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -21,6 +23,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Read::new(config.read.clone())),
         Box::new(Write),
         Box::new(Bash::new(config.bash.clone())),
+        Box::new(Skill),
     ]
 }
 

@@ -68,11 +68,16 @@ impl Context {
 
     /// [`Context::discover`] off the async runtime.
     pub async fn load(cwd: PathBuf, paths: Paths) -> Self {
-        match tokio::task::spawn_blocking(move || Self::discover(&cwd, &paths)).await {
-            Ok(context) => context,
-            // Only a panic in discover gets here; pass it on as it was.
-            Err(e) => std::panic::resume_unwind(e.into_panic()),
-        }
+        blocking(move || Self::discover(&cwd, &paths)).await
+    }
+}
+
+/// Runs file system work off the async runtime.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(value) => value,
+        // Only a panic in `f` gets here; pass it on as it was.
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
     }
 }
 

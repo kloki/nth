@@ -37,7 +37,7 @@ impl ToolCall {
             return self.arguments.clone();
         };
         // The command itself over the model's description of it.
-        let text = ["filePath", "command", "description"]
+        let text = ["filePath", "command", "description", "name"]
             .iter()
             .find_map(|key| args[key].as_str())
             .unwrap_or_default();
@@ -89,6 +89,10 @@ mod tests {
         assert_eq!(
             call(r#"{"command":"cd crates\ncargo test\n"}"#).summary(cwd),
             "cd crates …"
+        );
+        assert_eq!(
+            call(r#"{"name":"research-opencode"}"#).summary(cwd),
+            "research-opencode"
         );
         assert_eq!(call("not json").summary(cwd), "not json");
     }

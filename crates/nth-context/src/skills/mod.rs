@@ -13,6 +13,11 @@ use std::{
 use crate::{Paths, project_root};
 
 const FILE: &str = "SKILL.md";
+/// What the model gets when a skill is loaded, as in opencode.
+const CONTENT: &str = include_str!("content.md");
+/// Files listed next to a skill's body, so the model knows what it can
+/// read or run without listing the folder first.
+const MAX_FILES: usize = 10;
 /// Deep enough for `skills/<group>/<skill>/SKILL.md`, shallow enough that a
 /// skill's own references are not walked for long.
 const MAX_DEPTH: usize = 4;
@@ -63,6 +68,45 @@ impl Skill {
     pub fn dir(&self) -> &Path {
         self.path.parent().unwrap_or(Path::new("."))
     }
+
+    /// The skill's body with where it lives and the files beside it, read
+    /// afresh so edits since startup count.
+    pub async fn render(&self) -> Result<String, String> {
+        let skill = self.clone();
+        crate::blocking(move || skill.render_blocking()).await
+    }
+
+    fn render_blocking(&self) -> Result<String, String> {
+        let text = std::fs::read_to_string(&self.path)
+            .map_err(|e| format!("cannot read {}: {e}", self.path.display()))?;
+        let (_, body) = frontmatter::split(&text)?;
+        let files: Vec<String> = files(self.dir())
+            .iter()
+            .map(|file| format!("<file>{}</file>", file.display()))
+            .collect();
+        let dir = self.dir().display().to_string();
+        // Body last, so placeholders inside it are left alone.
+        Ok(CONTENT
+            .replace("{name}", &self.name)
+            .replace("{dir}", &dir)
+            .replace("{files}", &files.join("\n"))
+            .replace("{body}", body.trim()))
+    }
+}
+
+/// Up to `MAX_FILES` files in `dir` other than the `SKILL.md`, nearest
+/// first.
+fn files(dir: &Path) -> Vec<PathBuf> {
+    ignore::WalkBuilder::new(dir)
+        .hidden(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .filter(|entry| entry.path() != dir.join(FILE))
+        .take(MAX_FILES)
+        .map(ignore::DirEntry::into_path)
+        .collect()
 }
 
 /// Every skill found, by name. When two share a name, the one found later
@@ -334,6 +378,33 @@ mod tests {
         assert_eq!(
             tree.discover("home", &tree.paths()).0,
             found(&[("deploy", "ship it", "home/.agents/skills/deploy")])
+        );
+    }
+
+    #[tokio::test]
+    async fn renders_the_body_with_its_folder_and_files() {
+        let tree = Tree::new();
+        tree.skill(
+            "home/.agents/skills/deploy",
+            "name: deploy\ndescription: ship it",
+        );
+        let dir = tree.path("home/.agents/skills/deploy");
+        fs::create_dir_all(dir.join("scripts")).expect("dirs");
+        fs::write(dir.join("scripts/ship.sh"), "").expect("writes");
+        let skills = discover(&tree.path("home"), &tree.paths(), &mut Vec::new());
+        let skill = skills.get("deploy").expect("found");
+
+        let content = skill.render().await.expect("renders");
+
+        assert_eq!(
+            content,
+            format!(
+                "<skill_content name=\"deploy\">\n# Skill: deploy\n\nbody\n\n\
+                 Base directory for this skill: {dir}\n\
+                 Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\n\n\
+                 <skill_files>\n<file>{dir}/scripts/ship.sh</file>\n</skill_files>\n</skill_content>\n",
+                dir = dir.display()
+            )
         );
     }
 

@@ -138,6 +138,7 @@ fn icon(tool: &str) -> &'static str {
         "read" => "≡",
         "write" => "✎",
         "bash" => "$",
+        "skill" => "✦",
         _ => "•",
     }
 }
@@ -251,6 +252,25 @@ mod tests {
                 "▎ ≡ read   src/a.rs",
             ]
         );
+    }
+
+    #[test]
+    fn a_loaded_skill_is_one_row() {
+        let mut t = transcript();
+        let skill = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "skill".into(),
+            arguments: r#"{"name":"research-opencode"}"#.into(),
+        };
+        t.apply(&Event::ToolStarted(skill.clone()));
+        t.apply(&Event::ToolFinished {
+            call: skill,
+            result: Ok("<skill_content name=\"research-opencode\">\nlots of body\n".into()),
+        });
+
+        let total = t.layout(40);
+
+        assert_eq!(text(&t.visible(0, total)), ["▎ ✦ skill  research-opencode"]);
     }
 
     #[test]

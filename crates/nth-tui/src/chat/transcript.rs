@@ -106,6 +106,8 @@ impl Transcript {
                         Some(error) => Err(error.to_string()),
                         // A write streamed nothing; its start showed its content.
                         None if call.name == "write" => Ok(content.clone()),
+                        // A skill is one row; its body is for the model.
+                        None if call.name == "skill" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
                             // only; the live view never showed them.
@@ -495,6 +497,34 @@ pub(super) mod tests {
         );
         assert_eq!(entries[5], &Entry::Answer("done".into()));
         assert_eq!(entries.len(), 6);
+    }
+
+    #[test]
+    fn replay_shows_a_skill_without_its_body() {
+        let skill = tool("1", "skill", r#"{"name":"deploy"}"#);
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![skill.clone()],
+                ..Default::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "<skill_content name=\"deploy\">\n# Skill: deploy\n</skill_content>"
+                    .into(),
+            },
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        assert_eq!(
+            t.entries().nth(1),
+            Some(&Entry::Tool {
+                call: skill,
+                state: ToolState::Done,
+                output: Vec::new(),
+            })
+        );
     }
 
     #[test]
