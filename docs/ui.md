@@ -166,13 +166,13 @@ The mode label is replaced by a braille spinner in the same mode colour. Its fra
 ▎
 ```
 
-The bar keeps the mode colour, and the text is dimmed while Enter cannot submit. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
+The bar keeps the mode colour. Enter still sends: the prompt is queued and runs as its own turn once the running one ends well. After Esc or a failed turn, queued prompts are not sent; they go back into the prompt, ahead of what is typed, separated by blank lines. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
 The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is empty for now. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 shows queued prompts and is otherwise empty. The right side of a line is cut first when it is too narrow.
 
 ```
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
@@ -191,6 +191,10 @@ Colours here are the terminal's standard colours; see [Colours](#colours). Purpl
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
+
+**Line 2: queued prompts**
+
+While prompts are queued, line 2 shows `⏵ N queued · ` and the first line of the next one, in white.
 
 **Line 1, right: git status**
 

@@ -40,7 +40,7 @@ the opencode code to copy from.
 - [ ] **Max-steps prompt**: on the last allowed step, tell the model to stop calling tools and summarise, instead of cutting it off. `session/prompt.ts:1281`
 - [ ] **System reminders**: inject short reminders into user turns, such as plan mode being active or a todo list existing. `session/reminders.ts`
 - [ ] **Token usage and cost per turn**, from the stream's `usage` block and models.dev pricing. Show it in the status line. `session/session.ts`, `provider/`
-- [ ] **Queued prompts**: typing while the agent runs queues the prompt for the next turn instead of blocking input. `tui/` `session.queued_prompts`
+- [x] **Queued prompts**: typing while the agent runs queues the prompt for the next turn instead of blocking input. `tui/` `session.queued_prompts`
 
 ### Context and instructions
 

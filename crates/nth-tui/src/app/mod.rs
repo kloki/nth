@@ -11,6 +11,7 @@ mod resume;
 mod turn;
 
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -61,6 +62,12 @@ pub struct App {
     /// after it, since an aborted task can't stop a write already on the
     /// blocking pool.
     history_saving: Job<std::io::Result<()>>,
+    /// Prompts sent while a turn runs, oldest first; each runs as its own
+    /// turn once the one before ends well. Always empty while idle.
+    pub queue: VecDeque<String>,
+    /// Esc was pressed during the running turn, which may have finished
+    /// before it saw the cancel.
+    interrupted: bool,
     /// What fills the content panel.
     content: Content,
     /// What fills the input panel.
@@ -193,6 +200,8 @@ impl App {
             mode: Mode::default(),
             history: History::default(),
             history_saving: Job::default(),
+            queue: VecDeque::new(),
+            interrupted: false,
             content: Content::Chat,
             input: Input::Prompt,
             model: session.model.clone(),
@@ -612,6 +621,16 @@ pub(crate) mod tests {
 
         assert!(rows[14].starts_with(" glm · /repo "));
         assert!(rows[14].trim_end().ends_with("git · main +2 *1"));
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_queue_on_its_second_line() {
+        let mut app = app();
+        app.queue = ["\nfix the build\nand the tests".into(), "then lint".into()].into();
+        let rows = rows(&mut app);
+
+        assert_eq!(rows[14].trim_end(), " glm · /repo", "the first line stays");
+        assert_eq!(rows[15].trim_end(), " ⏵ 2 queued · fix the build");
     }
 
     #[test]
