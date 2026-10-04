@@ -48,6 +48,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
 | ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor, or the plan while there is one |
 | ctrl+w           | On a monitor's tab: stops it, or closes the tab once stopped |
+| ctrl+g           | Opens a copy of the plan in your editor; see [Plan](#plan) |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
@@ -79,7 +80,7 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens and shows the moment the model writes the first plan, and stays while the plan exists. A revision only updates the tab and its label, so the chat keeps the focus and the model's reply stays in view; a plan already there when a session opens gets its tab without being shown.
 
 ```
-.nth/plans/6b2e….md · +3 -1 · /approve
+.nth/plans/6b2e….md · +3 -1 · ctrl+g edit · /approve
 
   # Retry for the fetch client
 - 1. Wrap every request in a retry loop.
@@ -89,11 +90,18 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 ```
 
 - **Label.** `plan` in the tab strip, or `plan +3 -1` while lines are marked.
-- **Header.** The file, what changed, and `/approve`, dim.
+- **Header.** The file, what changed, and the keys, dim.
 - **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the plan is longer than the tab.
 - **Lines.** Every line of the plan, wrapped at the tab's width. An added line is green behind `+`, a removed one red behind `-`, and an unchanged one has no mark.
 - **What is marked.** The changes of the latest turn that changed the plan, against the plan as it was before that turn. A turn that only talks leaves the marks as they are, so asking a question about the plan does not wipe what its last revision did. The first plan of a session is shown unmarked too, since every line of it would be new, and so is the session's plan when it is opened by starting nth or `/resume`.
 - **Reading.** The file is read after every write, edit or apply_patch, at the end of each turn, and when a session opens. A plan deleted from disk closes the tab.
+
+**ctrl+g: commenting on the plan.** You are not expected to write the plan yourself, but you can leave comments in it. ctrl+g opens a copy of the plan in `$VISUAL`, else `$EDITOR`, else vi, run through the shell so `code --wait` works. Write comments anywhere (`<!-- why not X? -->`, a `>>` line, `[which crate?]`), reword or delete lines, then save and quit.
+
+- **What the model gets.** The diff from the plan to your copy, in a `<plan-edits>` element, then an instruction: these edits are review feedback, a plain change is carried into the plan, a question is answered, an objection is met or argued, each comment is removed once handled, and the plan file itself is edited, never your copy. The instruction is `crates/nth-session/src/plan/plan_edits.md`.
+- **In the chat.** One row, `✎ plan edits · +2 -0`, the diff and instruction being for the model only.
+- **Nothing to send.** Saving without changes says `no changes to the plan`. Quitting the editor with an error, vim's `:cq`, drops the edits. An editor that fails to start says why on the status bar.
+- **While the editor runs.** nth keeps running but draws nothing: a turn goes on, monitors keep reporting, and their output shows when you come back. Edits made during a turn wait in the queue like any prompt.
 
 **`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits in the queue like any prompt. Without a plan file it only says `no plan to approve` on the status bar.
 

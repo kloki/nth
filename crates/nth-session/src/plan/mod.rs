@@ -2,6 +2,8 @@
 //! tell the model it entered plan mode or left it, copied from opencode's
 //! `plan-mode.txt` and `build-switch.txt`.
 
+pub mod edits;
+
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;

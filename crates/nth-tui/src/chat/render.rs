@@ -55,6 +55,14 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
     let dim = dim();
     match entry {
         Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
+        Entry::PlanEdits(edits) => vec![Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled("✎ ", Style::new().fg(Color::Magenta)),
+            Span::styled(
+                format!("plan edits · +{} -{}", edits.added, edits.removed),
+                dim,
+            ),
+        ])],
         Entry::Notice(notice) => {
             let said = match (&notice.ended, notice.lines) {
                 (Some(ended), _) => ended.clone(),

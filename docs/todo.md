@@ -71,7 +71,7 @@ the opencode code to copy from.
 
 - [x] **Prompt history** on Up and Down, persisted. `tui/component/prompt/history.tsx`
 - [ ] **Shell mode**: `!` at the start of the prompt runs the line as a shell command and adds its output to the chat. `tui/component/prompt/index.tsx:836`
-- [ ] **External editor** for long prompts (`$EDITOR`). `tui/editor.ts`
+- [ ] **External editor** for long prompts (`$EDITOR`). nth opens the plan in it with ctrl+g (`app/editor.rs`); the prompt does not have it yet. `tui/editor.ts`
 - [ ] **Paste summary**: collapse a large paste to `[pasted N lines]`. `tui/` `app.toggle.paste_summary`
 - [ ] **Tool details toggle**: expand a collapsed tool call in place. `tui/` `session.toggle.actions`
 - [ ] **Thinking toggle**: show or hide reasoning. `tui/` `session.toggle.thinking`

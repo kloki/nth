@@ -10,7 +10,7 @@ use crossterm::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::supports_keyboard_enhancement,
+    terminal::{EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement},
 };
 use ratatui::DefaultTerminal;
 
@@ -21,6 +21,30 @@ pub fn enter() -> Result<DefaultTerminal> {
         release();
         hook(info);
     }));
+    capture();
+    Ok(terminal)
+}
+
+/// Gives the terminal to another program, such as your editor, as it was
+/// before nth started. `resume` takes it back.
+pub fn suspend() {
+    restore();
+}
+
+/// Takes the terminal back after `suspend`, on the same `terminal`, whose
+/// next draw repaints everything. Not `enter` again: that would add
+/// another panic hook.
+pub fn resume(terminal: &mut DefaultTerminal) -> Result<()> {
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    capture();
+    terminal.clear()?;
+    Ok(())
+}
+
+/// The modes on top of what `ratatui::init` enables: the mouse, pasting,
+/// and keys told apart.
+fn capture() {
     let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
     // Lets shift+Enter arrive as its own key where the terminal supports it.
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
@@ -29,7 +53,6 @@ pub fn enter() -> Result<DefaultTerminal> {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    Ok(terminal)
 }
 
 pub fn restore() {
