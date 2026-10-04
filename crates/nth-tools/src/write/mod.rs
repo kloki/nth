@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 
-const BOM: &str = "\u{feff}";
+pub(crate) const BOM: &str = "\u{feff}";
 
 pub struct Write;
 
@@ -92,7 +92,7 @@ async fn has_bom(path: &Path) -> Result<bool, String> {
         .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
-async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
+pub(crate) async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
     match tokio::fs::write(path, content).await {
         Err(e) if e.kind() == ErrorKind::NotFound => {
             if let Some(parent) = path.parent() {
