@@ -15,7 +15,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use super::{App, Tab, input::Input, keys::Action};
 use crate::llm_picker::tests::model;
 
-struct Idle;
+pub(crate) struct Idle;
 
 impl Provider for Idle {
     fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
@@ -240,8 +240,8 @@ fn exit_command_quits() {
     assert!(app.quit);
 }
 
-#[test]
-fn clear_command_starts_a_fresh_session() {
+#[tokio::test]
+async fn clear_command_starts_a_fresh_session() {
     let mut app = app();
     let old = app.session.as_ref().expect("idle").id;
     app.session

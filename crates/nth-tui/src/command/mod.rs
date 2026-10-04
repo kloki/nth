@@ -11,6 +11,7 @@ const ABOUT_CHARS: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
+    Approve,
     Clear,
     Close,
     Diagnostics,
@@ -20,7 +21,8 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 6] = [
+    const ALL: [Command; 7] = [
+        Command::Approve,
         Command::Clear,
         Command::Close,
         Command::Diagnostics,
@@ -31,6 +33,7 @@ impl Command {
 
     pub fn name(self) -> &'static str {
         match self {
+            Command::Approve => "approve",
             Command::Clear => "clear",
             Command::Close => "close",
             Command::Diagnostics => "diagnostics",
@@ -42,6 +45,7 @@ impl Command {
 
     pub fn about(self) -> &'static str {
         match self {
+            Command::Approve => "act on the plan",
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
             Command::Diagnostics => "show what nth found and runs",
@@ -195,6 +199,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "approve",
                 "clear",
                 "close",
                 "diagnostics",
@@ -202,9 +207,8 @@ mod tests {
                 "models",
                 "resume",
                 "deploy",
-                "review"
             ],
-            "the clear skill is hidden by the command"
+            "the clear skill is hidden by the command, and the popup holds 8"
         );
         assert_eq!(
             Entry::matching("/re", &skills),

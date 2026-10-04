@@ -112,7 +112,7 @@ the opencode code to copy from.
 
 Claude Code has these features and opencode lacks them, or keeps them behind a flag.
 
-- [ ] **Plan exit tool**: the Plan agent calls a tool when its plan is done, the user approves, and the session switches to Build with the plan in context. opencode has `plan_exit`, but only behind `experimentalPlanMode`. `tool/plan.ts`, `tool/registry.ts:248`
+- [ ] **Plan exit tool**: the Plan agent calls a tool when its plan is done, the user approves, and the session switches to Build with the plan in context. opencode has `plan_exit`, but only behind `experimentalPlanMode`. nth has `/approve` for the user's side and the Plan tab with the latest changes marked; the tool the model calls is still missing. `tool/plan.ts`, `tool/registry.ts:248`
 - [ ] **Plan enter tool**: the agent can propose switching to Plan when a task turns out to be bigger than expected.
 - [ ] **Background bash**: `run_in_background` on bash returns a job id at once. The model reads the output later and can kill the job. This suits dev servers, long builds and watchers. opencode's shell is foreground only.
 - [x] **Monitor tool**: wait for a condition in a background job's output, such as a line matching a regex or the process exiting, without polling in a loop. nth's `monitor` follows Claude Code's: each stdout line of a background command reaches the model as a notice, `monitor_stop` ends it.

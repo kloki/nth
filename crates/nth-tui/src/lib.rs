@@ -10,6 +10,7 @@ mod history;
 mod llm_picker;
 mod mention;
 mod monitor;
+mod plan;
 mod popup;
 mod prompt;
 mod question;

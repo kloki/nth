@@ -17,6 +17,7 @@ ignore.workspace = true
 nucleo-matcher.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true
+similar.workspace = true
 textwrap.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true

@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 const PLAN_MODE: &str = include_str!("plan_mode.md");
 const BUILD_SWITCH: &str = include_str!("build_switch.md");
+const APPROVED: &str = include_str!("approved.md");
 
 /// Where the session `id` keeps its plan: `<cwd>/.nth/plans/<id>.md`.
 pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
@@ -60,6 +61,13 @@ pub fn build_switch_reminder(plan: &Path, exists: bool) -> String {
     }
 }
 
+/// What `/approve` tells the model, as opencode's plan exit does.
+pub fn approved(plan: &Path) -> String {
+    APPROVED
+        .trim_end()
+        .replace("{plan}", &plan.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +96,14 @@ mod tests {
         let again = plan_mode_reminder(plan, true, Approver::Nobody);
         assert!(again.contains("A plan file already exists at /repo/.nth/plans/1.md."));
         assert!(!again.contains("/approve"));
+    }
+
+    #[test]
+    fn approval_names_the_plan() {
+        assert_eq!(
+            approved(Path::new("/p.md")),
+            "The plan at /p.md has been approved, you can now edit files. Execute the plan"
+        );
     }
 
     #[test]
