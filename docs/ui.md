@@ -148,6 +148,7 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Mode colour.** The bar and the mode label share one colour per mode: build is blue. The typed text is the default fg.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
+- **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
 
 **While a turn runs**
 

@@ -4,11 +4,14 @@
 //! skill written for any of those works here too.
 
 mod frontmatter;
+mod template;
 
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+
+pub use template::parse;
 
 use crate::{Paths, project_root};
 
@@ -77,20 +80,30 @@ impl Skill {
     }
 
     fn render_blocking(&self) -> Result<String, String> {
+        Ok(self.render_body(&self.body()?))
+    }
+
+    /// The `SKILL.md` without its frontmatter.
+    fn body(&self) -> Result<String, String> {
         let text = std::fs::read_to_string(&self.path)
             .map_err(|e| format!("cannot read {}: {e}", self.path.display()))?;
         let (_, body) = frontmatter::split(&text)?;
+        Ok(body.to_string())
+    }
+
+    /// `body` wrapped with where the skill lives and the files beside it.
+    fn render_body(&self, body: &str) -> String {
         let files: Vec<String> = files(self.dir())
             .iter()
             .map(|file| format!("<file>{}</file>", file.display()))
             .collect();
         let dir = self.dir().display().to_string();
         // Body last, so placeholders inside it are left alone.
-        Ok(CONTENT
+        CONTENT
             .replace("{name}", &self.name)
             .replace("{dir}", &dir)
             .replace("{files}", &files.join("\n"))
-            .replace("{body}", body.trim()))
+            .replace("{body}", body.trim())
     }
 }
 

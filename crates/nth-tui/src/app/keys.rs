@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, Completion, input::Input};
-use crate::{command::Command, mention, popup::Popup};
+use crate::{command::Entry, mention, popup::Popup};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
@@ -156,7 +156,7 @@ impl App {
 
     pub(super) fn refresh_completion(&mut self) {
         let text = self.prompt.text();
-        self.completion = Command::complete(text)
+        self.completion = Entry::complete(text, &self.context.skills)
             .map(Completion::Command)
             .or_else(|| {
                 let mention = mention::find(text, self.prompt.cursor())?;
@@ -169,19 +169,25 @@ impl App {
     }
 
     /// `submit` runs a highlighted command; a file is filled in either way,
-    /// since sending a half-typed mention is never what Enter meant.
+    /// since sending a half-typed mention is never what Enter meant. A
+    /// skill is filled in with room for its arguments, and runs once its
+    /// name is typed out.
     fn accept(&mut self, completion: Completion, submit: bool) {
         match completion {
-            Completion::Command(popup) => {
-                let command = *popup.selected();
-                if submit {
+            Completion::Command(popup) => match popup.selected().clone() {
+                Entry::Builtin(command) if submit => {
                     self.prompt.clear();
                     self.run_command(command);
-                } else {
+                }
+                Entry::Builtin(command) => {
                     self.prompt.set(&format!("/{}", command.name()));
                     self.completion = Some(Completion::Command(popup));
                 }
-            }
+                Entry::Skill { name, .. } if submit && self.prompt.text() == format!("/{name}") => {
+                    self.submit()
+                }
+                Entry::Skill { name, .. } => self.prompt.set(&format!("/{name} ")),
+            },
             Completion::File { popup, start } => {
                 let end = self.prompt.cursor();
                 let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
@@ -196,7 +202,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::app;
+    use crate::{app::tests::app, command::Command};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         action(KeyEvent::new(code, modifiers))
@@ -233,9 +239,29 @@ mod tests {
 
     fn selected(app: &App) -> Command {
         match &app.completion {
-            Some(Completion::Command(popup)) => *popup.selected(),
+            Some(Completion::Command(popup)) => match popup.selected() {
+                Entry::Builtin(command) => *command,
+                skill => panic!("{skill:?} is not a command"),
+            },
             _ => panic!("command popup not open"),
         }
+    }
+
+    fn names(app: &App) -> Vec<&str> {
+        match &app.completion {
+            Some(Completion::Command(popup)) => popup.items().iter().map(Entry::name).collect(),
+            _ => panic!("command popup not open"),
+        }
+    }
+
+    /// An app whose project has the `fix` skill, with `text` typed.
+    fn skilled(dir: &std::path::Path, text: &str) -> App {
+        let mut app = app();
+        app.context = crate::app::tests::with_fix_skill(dir);
+        for c in text.chars() {
+            app.apply(Action::Insert(c));
+        }
+        app
     }
 
     fn with_files(text: &str) -> App {
@@ -297,6 +323,47 @@ mod tests {
         assert!(app.quit);
         assert!(app.prompt.is_empty());
         assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn skills_are_listed_after_the_commands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let app = skilled(dir.path(), "/");
+        assert_eq!(names(&app), ["clear", "exit", "models", "resume", "fix"]);
+
+        let app = skilled(dir.path(), "/f");
+        assert_eq!(names(&app), ["fix"]);
+    }
+
+    #[test]
+    fn a_skill_is_filled_in_ready_for_its_arguments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let mut app = skilled(dir.path(), "/f");
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "/fix ");
+        assert!(app.completion.is_none());
+
+        let mut app = skilled(dir.path(), "/f");
+        app.apply(Action::Submit);
+        assert_eq!(
+            app.prompt.text(),
+            "/fix ",
+            "Enter fills in a half-typed name"
+        );
+        assert!(!app.is_busy());
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_typed_out_skill_runs_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = skilled(dir.path(), "/fix");
+
+        app.apply(Action::Submit);
+
+        assert!(app.is_busy());
+        assert!(app.prompt.is_empty());
     }
 
     #[test]

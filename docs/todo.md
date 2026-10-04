@@ -16,7 +16,7 @@ Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
 `AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
 nested ones attached once when read touches their directory, and skills from
 the Claude Code, opencode and open-standard folders, offered in the system
-prompt and loaded with the skill tool.
+prompt, loaded with the skill tool and run as `/name args`.
 
 Items are grouped by the milestones in [design.md](design.md). Each item names
 the opencode code to copy from.
@@ -106,7 +106,7 @@ the opencode code to copy from.
 - [ ] **websearch**. `tool/websearch.ts`
 - [ ] **apply_patch** for models trained on it (GPT family). `tool/apply_patch.ts`
 - [ ] **lsp tool**: hover, definition, references and symbols. `tool/lsp.ts`
-- [ ] **Custom commands**: markdown templates in `.nth/commands/` with `$ARGUMENTS`, plus the built-in `/init` (writes AGENTS.md) and `/review`. `command/index.ts`, `command/template/`
+- [ ] **Custom commands**: markdown templates in `.nth/commands/`, plus the built-in `/init` (writes AGENTS.md) and `/review`. Skills already run as `/name args` with opencode's template expansion, so a command could be a skill without a description. `command/index.ts`, `command/template/`
 - [ ] **Custom agents** from markdown files with a tool filter and model. `agent/agent.ts`, `cli/cmd/agent.ts`
 - [ ] **Anthropic messages and OpenAI responses protocols**. `provider/`, `packages/llm`
 - [ ] **Model variants**: per-model presets such as thinking budgets. `tui/component/dialog-variant.tsx`

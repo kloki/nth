@@ -79,7 +79,11 @@ impl Transcript {
         for message in messages {
             match message {
                 Message::System(_) => {}
-                Message::User(text) => t.push_user(text.clone()),
+                // A skill run as `/name args` shows as typed, as it did live.
+                Message::User(text) => match text.split_once("\n\n<skill_content ") {
+                    Some((command, _)) => t.push_user(command.to_string()),
+                    None => t.push_user(text.clone()),
+                },
                 Message::Assistant(reply) => {
                     if !reply.reasoning.is_empty() {
                         t.push(Entry::Reasoning {
@@ -497,6 +501,20 @@ pub(super) mod tests {
         );
         assert_eq!(entries[5], &Entry::Answer("done".into()));
         assert_eq!(entries.len(), 6);
+    }
+
+    #[test]
+    fn replay_shows_a_skill_command_as_typed() {
+        let messages = [Message::User(
+            "/fix the build\n\n<skill_content name=\"fix\">\n# Skill: fix\n</skill_content>".into(),
+        )];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        assert_eq!(
+            t.entries().collect::<Vec<_>>(),
+            [&Entry::User("/fix the build".into())]
+        );
     }
 
     #[test]
