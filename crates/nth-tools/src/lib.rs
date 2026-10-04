@@ -1,3 +1,4 @@
+mod apply_patch;
 mod bash;
 mod edit;
 mod grep;
@@ -5,6 +6,7 @@ mod read;
 mod skill;
 mod write;
 
+pub use apply_patch::ApplyPatch;
 pub use bash::{Bash, BashConfig};
 pub use edit::Edit;
 pub use grep::Grep;
@@ -27,6 +29,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Read::new(config.read.clone())),
         Box::new(Write),
         Box::new(Edit),
+        Box::new(ApplyPatch),
         Box::new(Bash::new(config.bash.clone())),
         Box::new(Grep),
         Box::new(Skill),
