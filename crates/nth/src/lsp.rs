@@ -2,64 +2,28 @@
 //! file. The same touch the write tool does, from the terminal.
 
 use std::{
-    collections::BTreeMap,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use nth_lsp::{Diagnostic, Lsp, ServerState, report};
+use nth_lsp::{Lsp, ServerState, report};
 use owo_colors::OwoColorize;
-use tokio::time::Instant;
 
 use crate::config::Config;
-
-/// Pause between touches while a server loads its project.
-const RETRY: Duration = Duration::from_millis(500);
 
 #[derive(Subcommand)]
 pub enum LspCommand {
     /// Start the file's language servers and print the errors they report
-    Diagnostics {
-        file: PathBuf,
-        /// Seconds to keep asking while the file shows no errors. A server
-        /// started just now reports nothing until it has loaded the project.
-        #[arg(long, default_value_t = 10)]
-        wait: u64,
-    },
+    Diagnostics { file: PathBuf },
 }
 
 pub async fn run(command: Option<LspCommand>, json: bool, config: &Config) -> Result<()> {
     let lsp = Lsp::new(&config.lsp);
     match command {
         None => servers(lsp, json).await,
-        Some(LspCommand::Diagnostics { file, wait }) => {
-            diagnostics(lsp, &file, Duration::from_secs(wait), json).await
-        }
-    }
-}
-
-/// Every diagnostic the servers for `file` know of, once `file` has errors
-/// or `wait` is up. Each touch waits for the servers' answer, as a write
-/// does, but a cold server answers "nothing" until its project is loaded.
-async fn settled(lsp: &Lsp, file: &Path, wait: Duration) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
-    let deadline = Instant::now() + wait;
-    loop {
-        let diagnostics = lsp.touch(file, true).await;
-        let has_errors = diagnostics
-            .get(file)
-            .is_some_and(|d| d.iter().any(Diagnostic::is_error));
-        let running = lsp
-            .status()
-            .borrow()
-            .iter()
-            .any(|s| !matches!(s.state, ServerState::Broken(_)));
-        if has_errors || !running || Instant::now() >= deadline {
-            return diagnostics;
-        }
-        tokio::time::sleep(RETRY).await;
+        Some(LspCommand::Diagnostics { file }) => diagnostics(lsp, &file, json).await,
     }
 }
 
@@ -116,10 +80,10 @@ async fn servers(lsp: Lsp, json: bool) -> Result<()> {
 }
 
 /// What the write tool would append after writing `file`.
-async fn diagnostics(lsp: Lsp, file: &Path, wait: Duration, json: bool) -> Result<()> {
+async fn diagnostics(lsp: Lsp, file: &Path, json: bool) -> Result<()> {
     let file = std::path::absolute(file).context("no working directory")?;
     anyhow::ensure!(file.is_file(), "{} is not a file", file.display());
-    let diagnostics = settled(&lsp, &file, wait).await;
+    let diagnostics = lsp.touch(&file, true).await;
 
     let mut out = std::io::stdout().lock();
     if json || !out.is_terminal() {
