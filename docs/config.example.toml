@@ -55,3 +55,25 @@ enabled = true
 # command = ["taplo", "format", "$FILE"]
 # extensions = [".toml"]
 # env = { RUST_LOG = "warn" }
+
+[lsp]
+# Start the file's language servers when a tool reads or writes it, and append
+# the errors they report to the write result. false turns them all off.
+# `nth lsp` lists them and the project root each would run in.
+enabled = true
+
+# One table per server to change or add. A built-in id (rust, typescript,
+# pyright, gopls, clangd, ...) changes that server; any other id adds one, which
+# needs command and extensions. initialization is sent as initializationOptions.
+#
+# [lsp.pyright]
+# disabled = true
+#
+# [lsp.rust]
+# command = ["ra-multiplex"]
+#
+# [lsp.my-server]
+# command = ["my-server", "--stdio"]
+# extensions = [".foo"]
+# env = { RUST_LOG = "info" }
+# initialization = { someOption = true }

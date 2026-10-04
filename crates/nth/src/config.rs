@@ -17,6 +17,7 @@ pub struct Config {
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
+    pub lsp: nth_lsp::LspConfig,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -185,6 +186,28 @@ mod tests {
         assert!(config.format.enabled);
         assert!(config.format.formatters["rustfmt"].disabled);
         assert!(Config::parse("[format.mine]\nextensions = [\".x\"]").is_err());
+    }
+
+    #[test]
+    fn lsp_section_overrides_a_server_and_round_trips() {
+        let config = Config::parse(
+            r#"
+            [lsp.rust]
+            command = ["ra-multiplex"]
+
+            [lsp.pyright]
+            disabled = true
+            "#,
+        )
+        .expect("parses");
+        assert!(config.lsp.enabled);
+        assert_eq!(config.lsp.servers["rust"].command, ["ra-multiplex"]);
+        assert!(config.lsp.servers["pyright"].disabled);
+
+        let text = config.to_toml().expect("serializes");
+        assert!(text.contains("[lsp.rust]"), "{text}");
+        assert_eq!(Config::parse(&text).expect("parses"), config);
+        assert!(Config::parse("[lsp.mine]\ncommand = [\"mine\"]").is_err());
     }
 
     #[test]
