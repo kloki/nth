@@ -12,7 +12,7 @@ mod resume;
 mod turn;
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -29,8 +29,8 @@ use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, ModelInfo, MonitorEvent, Monitors, Panel, Provider, Tool, Usage,
-    monitor_log_dir,
+    Ask, BoxError, Effort, Event, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel, Provider,
+    Tool, Usage, monitor_log_dir,
 };
 use nth_session::{Session, Store, Summary, store};
 use ratatui::{
@@ -55,6 +55,7 @@ use crate::{
     header,
     history::History,
     llm_picker, mention,
+    monitor::MonitorView,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
     question, session_picker, spinner, status,
@@ -160,6 +161,8 @@ pub struct App {
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
     monitor_rx: mpsc::Receiver<MonitorEvent>,
+    /// Each monitor's tab, open from its start until you close it.
+    monitor_views: BTreeMap<MonitorId, MonitorView>,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -167,6 +170,11 @@ pub struct App {
     /// Notices wait for your next prompt rather than start a turn, after
     /// you stopped one or it failed.
     hold_notices: bool,
+    /// A word on what the last key did not do, on the status bar until the
+    /// next key.
+    pub hint: Option<String>,
+    /// ctrl+c was pressed once with monitors running; again quits.
+    quit_armed: bool,
     quit: bool,
 }
 
@@ -304,9 +312,12 @@ impl App {
             turn: Job::default(),
             monitors,
             monitor_rx,
+            monitor_views: BTreeMap::new(),
             monitor_root,
             notices_due: None,
             hold_notices: false,
+            hint: None,
+            quit_armed: false,
             quit: false,
         }
     }
@@ -416,6 +427,7 @@ impl App {
                 Step::Tick => {}
             }
         }
+        self.stop_monitors_for_exit().await;
         Ok(())
     }
 
@@ -430,8 +442,13 @@ impl App {
         .spacing(1)
         .areas(area);
 
-        header::draw(frame, header, &self.content);
+        header::draw(frame, header, &self.content, &|tab| self.tab_label(tab));
         match self.content.active() {
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.draw(frame, content, self.home.as_deref());
+                }
+            }
             Tab::Diagnostics => {
                 let facts = diagnostics::Facts {
                     model: &self.model,
@@ -595,7 +612,7 @@ impl App {
     fn run_command(&mut self, command: Command) {
         match command {
             // Dropping the app aborts a running turn.
-            Command::Exit => self.quit = true,
+            Command::Exit => self.ask_quit(),
             // Mid-turn the session is in the turn task, so there is nothing
             // to replace yet.
             Command::Clear if self.is_busy() => {}
@@ -613,7 +630,7 @@ impl App {
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
-            Command::Close => self.content.close(),
+            Command::Close => self.close_content(),
         }
     }
 
@@ -648,6 +665,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.scroll_up(lines),
             Tab::Diagnostics => self.diagnostics.scroll_up(lines),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.scroll_up(lines);
+                }
+            }
         }
     }
 
@@ -655,6 +677,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.scroll_down(lines),
             Tab::Diagnostics => self.diagnostics.scroll_down(lines),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.scroll_down(lines);
+                }
+            }
         }
     }
 
@@ -662,6 +689,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.page_up(),
             Tab::Diagnostics => self.diagnostics.page_up(),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.page_up();
+                }
+            }
         }
     }
 
@@ -669,6 +701,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.page_down(),
             Tab::Diagnostics => self.diagnostics.page_down(),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.page_down();
+                }
+            }
         }
     }
 
@@ -676,6 +713,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.jump_top(),
             Tab::Diagnostics => self.diagnostics.jump_top(),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.jump_top();
+                }
+            }
         }
     }
 
@@ -683,6 +725,11 @@ impl App {
         match self.content.active() {
             Tab::Chat => self.chat.jump_bottom(),
             Tab::Diagnostics => self.diagnostics.jump_bottom(),
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.jump_bottom();
+                }
+            }
         }
     }
 }
@@ -745,7 +792,7 @@ pub(crate) mod tests {
         terminal.backend().buffer().clone()
     }
 
-    fn rows(app: &mut App) -> Vec<String> {
+    pub(crate) fn rows(app: &mut App) -> Vec<String> {
         let buffer = buffer(app);
         (0..buffer.area.height)
             .map(|y| {
