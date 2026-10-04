@@ -98,6 +98,7 @@ impl App {
         match tab {
             Tab::Chat => "chat".into(),
             Tab::Diagnostics => "diagnostics".into(),
+            Tab::Plan => self.plan.label(),
             Tab::Monitor(id) => self
                 .monitor_views
                 .get(&id)
@@ -118,8 +119,13 @@ impl App {
         }
     }
 
-    /// Closes the tab showing, unless it is a monitor still running.
+    /// Closes the tab showing, unless it is a monitor still running or the
+    /// plan, which shows while there is one.
     pub(super) fn close_content(&mut self) {
+        if self.content.active() == Tab::Plan && self.plan.exists() {
+            self.hint = Some("the plan tab stays while there is a plan".into());
+            return;
+        }
         if let Tab::Monitor(id) = self.content.active() {
             if self
                 .monitor_views

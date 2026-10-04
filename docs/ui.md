@@ -37,7 +37,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics and a tab per monitor are the others so far. Later come Plan (the plan file with its comment threads) and Diff; they replace the side pane and agents sidebar sketched in design.md.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan and a tab per monitor are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open.
@@ -46,12 +46,12 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ---------------- | ----------------------------------------------------- |
 | ctrl+t           | Shows the next tab, from the last back to chat        |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat or a running monitor |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor, or the plan while there is one |
 | ctrl+w           | On a monitor's tab: stops it, or closes the tab once stopped |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
-- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool; in `nth run` there is nothing to switch, and the tool tells the model so.
+- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics` or `plan`); in `nth run` there is nothing to switch, and the tool tells the model so.
 
 ## Monitors
 
@@ -73,6 +73,29 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
 - **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `∿ monitor 1 · ci · 2 lines`.
 - **Status bar.** `∿ 2 monitors` on line 2's right while any run.
+
+## Plan
+
+The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens and shows the moment the model writes the first plan, and stays while the plan exists. A revision only updates the tab and its label, so the chat keeps the focus and the model's reply stays in view; a plan already there when a session opens gets its tab without being shown.
+
+```
+.nth/plans/6b2e….md · +3 -1 · /approve
+
+  # Retry for the fetch client
+- 1. Wrap every request in a retry loop.
++ 1. Wrap idempotent requests in a retry loop.
++ 2. Back off with jitter, 2 s doubling.
+  ## Verification
+```
+
+- **Label.** `plan` in the tab strip, or `plan +3 -1` while lines are marked.
+- **Header.** The file, what changed, and `/approve`, dim.
+- **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the plan is longer than the tab.
+- **Lines.** Every line of the plan, wrapped at the tab's width. An added line is green behind `+`, a removed one red behind `-`, and an unchanged one has no mark.
+- **What is marked.** The changes of the latest turn that changed the plan, against the plan as it was before that turn. A turn that only talks leaves the marks as they are, so asking a question about the plan does not wipe what its last revision did. The first plan of a session is shown unmarked too, since every line of it would be new, and so is the session's plan when it is opened by starting nth or `/resume`.
+- **Reading.** The file is read after every write, edit or apply_patch, at the end of each turn, and when a session opens. A plan deleted from disk closes the tab.
+
+**`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits in the queue like any prompt. Without a plan file it only says `no plan to approve` on the status bar.
 
 ## Diagnostics
 

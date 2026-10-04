@@ -68,7 +68,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_an_unknown_panel() {
         let out = Panel
-            .call(json!({ "panel": "plan" }), &ToolContext::new(".".into()))
+            .call(json!({ "panel": "diff" }), &ToolContext::new(".".into()))
             .await;
 
         assert!(out.expect_err("unknown").contains("invalid arguments"));

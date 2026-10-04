@@ -7,15 +7,17 @@ use tokio::sync::mpsc;
 pub enum Panel {
     Chat,
     Diagnostics,
+    Plan,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 2] = [Panel::Chat, Panel::Diagnostics];
+    pub const ALL: [Panel; 3] = [Panel::Chat, Panel::Diagnostics, Panel::Plan];
 
     pub fn name(self) -> &'static str {
         match self {
             Panel::Chat => "chat",
             Panel::Diagnostics => "diagnostics",
+            Panel::Plan => "plan",
         }
     }
 }

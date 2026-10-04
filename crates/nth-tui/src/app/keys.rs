@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn slash_opens_the_popup_and_typing_filters_it() {
         let mut app = typed("/");
-        assert_eq!(selected(&app), Command::Clear);
+        assert_eq!(selected(&app), Command::Approve);
 
         app.apply(Action::Insert('e'));
         assert_eq!(selected(&app), Command::Exit);
@@ -382,11 +382,11 @@ mod tests {
     fn arrows_cycle_without_touching_the_prompt() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
-        assert_eq!(selected(&app), Command::Close);
-        for _ in 0..5 {
+        assert_eq!(selected(&app), Command::Clear);
+        for _ in 0..6 {
             app.apply(Action::SelectNext);
         }
-        assert_eq!(selected(&app), Command::Clear);
+        assert_eq!(selected(&app), Command::Approve);
         app.apply(Action::SelectPrev);
         assert_eq!(selected(&app), Command::Resume);
         assert_eq!(app.prompt.text(), "/");
@@ -397,7 +397,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
-        assert_eq!(app.prompt.text(), "/close");
+        assert_eq!(app.prompt.text(), "/clear");
         assert!(app.completion.is_some());
     }
 
@@ -418,6 +418,7 @@ mod tests {
         assert_eq!(
             names(&app),
             [
+                "approve",
                 "clear",
                 "close",
                 "diagnostics",

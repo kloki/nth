@@ -4,7 +4,7 @@
 use nth_protocol::{MonitorId, Panel};
 
 use super::App;
-use crate::{chat::Chat, diagnostics::Diagnostics, monitor::MonitorView};
+use crate::{chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView};
 
 /// A view the content panel can show. Each view's state lives on the app,
 /// so it keeps up with the session while another view is shown.
@@ -14,6 +14,8 @@ pub(crate) enum Tab {
     Diagnostics,
     /// A background command the model started; its view is on the app.
     Monitor(MonitorId),
+    /// The plan file, open while there is one.
+    Plan,
 }
 
 impl Tab {
@@ -28,6 +30,7 @@ impl From<Panel> for Tab {
         match panel {
             Panel::Chat => Tab::Chat,
             Panel::Diagnostics => Tab::Diagnostics,
+            Panel::Plan => Tab::Plan,
         }
     }
 }
@@ -207,6 +210,32 @@ impl Scrollable for MonitorView {
     }
 }
 
+impl Scrollable for PlanView {
+    fn scroll_up(&mut self, lines: usize) {
+        PlanView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        PlanView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        PlanView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        PlanView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        PlanView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        PlanView::jump_bottom(self);
+    }
+}
+
 impl App {
     /// The view the content panel shows, to scroll it; `None` for a
     /// monitor tab whose view is gone.
@@ -215,6 +244,7 @@ impl App {
             Tab::Chat => &mut self.chat,
             Tab::Diagnostics => &mut self.diagnostics,
             Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
+            Tab::Plan => &mut self.plan,
         })
     }
 }

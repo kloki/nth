@@ -1,6 +1,7 @@
 Switch what the user sees in the content panel above their prompt. The panels:
 - chat: the conversation, which is where the user always starts.
 - diagnostics: nth's own state: the model, the language servers, the formatters, and the instruction files and skills it found.
+- plan: the plan file of plan mode, with what its latest change added in green and removed in red.
 
 Usage notes:
 - Use it when the user asks to see a panel, or when a panel shows what you are talking about better than text does, such as diagnostics when the user asks why a language server or formatter did not run.

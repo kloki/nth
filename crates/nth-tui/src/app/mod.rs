@@ -15,6 +15,7 @@ mod keys;
 mod llms;
 mod mode;
 mod monitor;
+mod plan;
 mod resume;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -49,7 +50,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style},
-    widgets::{Scrollbar, ScrollbarOrientation},
+    widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use tokio::{
     sync::{mpsc, watch},
@@ -68,6 +69,7 @@ use crate::{
     history::History,
     llm_picker,
     monitor::MonitorView,
+    plan::PlanView,
     prompt::{self, Prompt},
     question, session_picker, spinner, status,
 };
@@ -178,6 +180,13 @@ pub struct App {
     monitor_rx: mpsc::Receiver<MonitorEvent>,
     /// Each monitor's tab, open from its start until you close it.
     monitor_views: BTreeMap<MonitorId, MonitorView>,
+    /// The session's plan file and what the plan tab shows of it.
+    plan: PlanView,
+    plan_path: PathBuf,
+    plan_reading: Job<Option<String>>,
+    /// The next read is of a session just opened, so it marks nothing as
+    /// changed.
+    plan_settle: bool,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -191,6 +200,23 @@ pub struct App {
     /// ctrl+c was pressed once with monitors running; again quits.
     quit_armed: bool,
     quit: bool,
+}
+
+/// A grey thumb in the right margin of `content`, so the view keeps its
+/// width and doesn't rewrap when the bar comes and goes.
+fn draw_scrollbar(frame: &mut Frame, content: Rect, mut state: ScrollbarState) {
+    let column = Rect {
+        x: content.right(),
+        width: 1,
+        ..content
+    };
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(None)
+        .thumb_symbol("┃")
+        .thumb_style(Style::new().fg(Color::Gray));
+    frame.render_stateful_widget(bar, column, &mut state);
 }
 
 enum Step {
@@ -207,6 +233,7 @@ enum Step {
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
+    PlanRead(Result<Option<String>, JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
@@ -230,6 +257,7 @@ impl App {
             monitor_log_dir(&monitor_root, &session.id.to_string()),
         );
         let home = std::env::var("HOME").ok();
+        let plan_path = session.plan_path();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
         Self {
@@ -286,6 +314,10 @@ impl App {
             monitors,
             monitor_rx,
             monitor_views: BTreeMap::new(),
+            plan: PlanView::default(),
+            plan_path,
+            plan_reading: Job::default(),
+            plan_settle: true,
             monitor_root,
             notices_due: None,
             hold_notices: false,
@@ -322,6 +354,7 @@ impl App {
         self.index_files();
         self.load_git();
         self.list_llms();
+        self.read_plan();
 
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -340,6 +373,7 @@ impl App {
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
+                plan = self.plan_reading.join() => Step::PlanRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
@@ -370,6 +404,7 @@ impl App {
                 Step::HistorySaved(saved) => {
                     self.history_saved(saved.context("saving prompt history failed")?)
                 }
+                Step::PlanRead(plan) => self.plan_read(plan.context("reading the plan failed")?),
                 Step::ServersFound(servers) => {
                     self.diagnostics.servers = Some(servers.context("finding servers failed")?)
                 }
@@ -404,6 +439,13 @@ impl App {
                     view.draw(frame, content, self.home.as_deref());
                 }
             }
+            Tab::Plan => {
+                let place = self.plan_place();
+                self.plan.draw(frame, content, &place);
+                if let Some(state) = self.plan.scrollbar() {
+                    draw_scrollbar(frame, content, state);
+                }
+            }
             Tab::Diagnostics => {
                 let facts = diagnostics::Facts {
                     model: &self.model,
@@ -421,21 +463,8 @@ impl App {
             Tab::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
                 self.chat.draw(frame, content, &banner);
-                // In the right margin, so the chat keeps its width and
-                // doesn't rewrap when the bar comes and goes.
-                if let Some(mut state) = self.chat.scrollbar() {
-                    let column = Rect {
-                        x: content.right(),
-                        width: 1,
-                        ..content
-                    };
-                    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                        .begin_symbol(None)
-                        .end_symbol(None)
-                        .track_symbol(None)
-                        .thumb_symbol("┃")
-                        .thumb_style(Style::new().fg(Color::Gray));
-                    frame.render_stateful_widget(bar, column, &mut state);
+                if let Some(state) = self.chat.scrollbar() {
+                    draw_scrollbar(frame, content, state);
                 }
             }
         }
@@ -483,8 +512,16 @@ impl App {
     fn on_session(&mut self, event: Event) {
         // A write or a command may have changed the tree.
         match &event {
-            Event::ToolFinished { call, .. } if matches!(call.name.as_str(), "write" | "bash") => {
+            Event::ToolFinished { call, .. }
+                if matches!(
+                    call.name.as_str(),
+                    "write" | "edit" | "apply_patch" | "bash"
+                ) =>
+            {
                 self.load_git();
+                if call.name != "bash" {
+                    self.read_plan();
+                }
             }
             Event::Usage(usage) => self.usage = Some(*usage),
             _ => {}
@@ -506,14 +543,17 @@ impl App {
                 session.effort = self.effort;
                 session.mode = self.mode;
                 session.max_steps = self.max_steps;
+                let plan_path = session.plan_path();
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
                 self.usage = None;
+                self.plan_for_session(plan_path);
                 self.left_session();
             }
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
+            Command::Approve => self.approve(),
             Command::Close => self.close_content(),
         }
     }

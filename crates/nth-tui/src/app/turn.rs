@@ -72,6 +72,7 @@ impl App {
             self.chat.transcript.push_user(text.clone());
         }
         self.chat.jump_bottom();
+        self.plan.turn_started();
         self.busy_since = Some(Instant::now());
 
         let provider = self.provider.clone();
@@ -165,6 +166,7 @@ impl App {
         self.session = Some(session);
         self.index_files();
         self.load_git();
+        self.read_plan();
         // Notices that came after the model's last step go with the next
         // prompt, or wake it on their own.
         self.hold_notices = !send_next;

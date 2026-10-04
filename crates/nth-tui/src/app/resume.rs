@@ -98,6 +98,7 @@ impl App {
         self.chat.warn(&session.context().warnings);
         self.usage = None;
         self.files.clear();
+        self.plan_for_session(session.plan_path());
         self.session = Some(session);
         self.left_session();
         self.index_files();
