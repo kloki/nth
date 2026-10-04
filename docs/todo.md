@@ -14,7 +14,9 @@ effort, the read, write and bash tools, parallel tool calls, a 100-step cap,
 Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
 `/models` commands, a model picker, `nth run` (headless), `nth models`, and
 `AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
-nested ones attached once when read touches their directory.
+nested ones attached once when read touches their directory, and skills from
+the Claude Code, opencode and open-standard folders, offered in the system
+prompt and loaded with the skill tool.
 
 Items are grouped by the milestones in [design.md](design.md). Each item names
 the opencode code to copy from.
@@ -27,7 +29,6 @@ the opencode code to copy from.
 - [ ] **glob**: ripgrep file search, capped at 100 results with a "truncated" note. `tool/glob.ts:49`
 - [ ] **grep**: ripgrep with a file-pattern filter, results grouped by file. `tool/grep.ts`
 - [ ] **todowrite**: todo list kept in the session, shown in the TUI. `tool/todo.ts`, `session/todo.ts`
-- [ ] **skill**: load a `SKILL.md` body on demand, with names and descriptions in the system prompt. `tool/skill.ts`, `skill/`
 - [ ] **Truncate long tool output** to a file, and tell the model the path so it can read or grep the rest (2000 lines / 50 KB, kept for 7 days). nth's bash keeps only the tail. `tool/truncate.ts`
 - [ ] **Images in read**: return png, jpeg, gif and webp as attachments instead of text. `tool/read.ts:19`
 - [ ] **Invalid tool calls**: reply with a readable error instead of failing the turn (unknown tool, bad JSON). `tool/invalid.ts`, `tool/registry.ts`

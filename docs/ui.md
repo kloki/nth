@@ -73,8 +73,8 @@ The chat tab is the transcript, which scrolls. Each tool call keeps the output i
 | Interrupted | none | `⏹ interrupted · 3.0s` in yellow, after a blank line |
 | Error | red | `✗ message` in red |
 
-- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `$` bash, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
-- **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. A multi-line command shows its first line followed by `…`.
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `$` bash, `✦` skill, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
+- **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. A multi-line command shows its first line followed by `…`.
 - **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
 **Tool output**
@@ -89,6 +89,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | read | The file content it read, the first 10 lines |
 | write | The content being written, the first 10 lines, taken from the call's arguments |
 | bash | The command's output, stdout and stderr interleaved, the last 10 lines |
+| skill | None: the row says which skill was loaded, and its body is for the model only |
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 

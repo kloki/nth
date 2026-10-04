@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
+use nth_context::Context;
 use tokio::sync::mpsc;
 
 use crate::Event;
@@ -24,6 +25,8 @@ pub struct ToolContext {
     /// Instruction files already in the conversation. Shared by the calls
     /// of a turn, which run in parallel, so each file is attached once.
     pub instructions: LoadedInstructions,
+    /// What the session knows about its project, such as its skills.
+    pub context: Arc<Context>,
 }
 
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
@@ -35,6 +38,7 @@ impl ToolContext {
             cwd,
             output: OutputSink::default(),
             instructions: LoadedInstructions::default(),
+            context: Arc::default(),
         }
     }
 }

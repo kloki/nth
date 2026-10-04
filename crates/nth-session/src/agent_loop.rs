@@ -135,6 +135,7 @@ async fn run_tool(
         cwd: ctx.cwd.clone(),
         output: OutputSink::new(events.clone(), call.id.clone()),
         instructions: ctx.instructions.clone(),
+        context: ctx.context.clone(),
     };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),

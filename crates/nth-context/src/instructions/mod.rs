@@ -81,11 +81,7 @@ pub async fn nested(
     cwd: PathBuf,
     loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
 ) -> Vec<Instruction> {
-    let found = tokio::task::spawn_blocking(move || nested_blocking(&file, &cwd, &loaded)).await;
-    match found {
-        Ok(found) => found,
-        Err(e) => std::panic::resume_unwind(e.into_panic()),
-    }
+    crate::blocking(move || nested_blocking(&file, &cwd, &loaded)).await
 }
 
 fn nested_blocking(file: &Path, cwd: &Path, loaded: &Mutex<BTreeSet<PathBuf>>) -> Vec<Instruction> {

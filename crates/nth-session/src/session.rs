@@ -123,6 +123,7 @@ impl Session {
         loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
         let ctx = ToolContext {
             instructions: Arc::new(Mutex::new(loaded)),
+            context: self.context.clone(),
             ..ToolContext::new(self.cwd.clone())
         };
         let result = run_turn(
