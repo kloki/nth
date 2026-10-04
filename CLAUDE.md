@@ -17,6 +17,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - Single test: `cargo test -p nth-tui prompt_and_status_rows_never_move` (any substring of the test path works).
 - Run the TUI: `cargo run -p nth`. It needs `OPENCODE_GO_API_KEY`; `NTH_MODEL` and `NTH_BASE_URL` (or `--model`, `--base-url`) pick the endpoint.
 - Headless: `cargo run -p nth -- run "<prompt>"`. List models: `cargo run -p nth -- models`.
+- Config: optional `~/.config/nth/config.toml` (or `--config`, `NTH_CONFIG`); every key is in `docs/config.example.toml`, and `cargo run -p nth -- config` prints the resolved one. Flags and env vars win over it.
 
 ## Architecture
 

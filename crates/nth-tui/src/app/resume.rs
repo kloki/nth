@@ -84,7 +84,8 @@ impl App {
 
     /// Switches to `session`: its history, model and effort, and its
     /// working directory, so the paths it already talked about still hold.
-    pub(super) fn resume(&mut self, session: Session) {
+    pub(super) fn resume(&mut self, mut session: Session) {
+        session.max_steps = self.max_steps;
         self.model = session.model.clone();
         self.effort = session.effort;
         self.cwd = session.cwd.clone();

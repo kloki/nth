@@ -14,5 +14,10 @@ nth-tui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 owo-colors.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

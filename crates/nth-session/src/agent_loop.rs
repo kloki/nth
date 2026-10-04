@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Guards against a model that never stops calling tools.
-pub const MAX_STEPS: usize = 100;
+pub const DEFAULT_MAX_STEPS: usize = 100;
 
 /// What the model reads in place of a tool result the user cut short.
 const INTERRUPTED: &str = "Error: interrupted by the user";
@@ -16,19 +16,20 @@ const INTERRUPTED: &str = "Error: interrupted by the user";
 pub enum Error {
     #[error(transparent)]
     Provider(BoxError),
-    #[error("stopped after {MAX_STEPS} steps without a final answer")]
-    TooManySteps,
+    #[error("stopped after {0} steps without a final answer")]
+    TooManySteps(usize),
     #[error("interrupted")]
     Interrupted,
 }
 
 /// Where a turn's requests go: which model at what effort, on behalf of
-/// which session.
+/// which session, and how many of them the turn may make.
 #[derive(Debug, Clone, Copy)]
 pub struct Route<'a> {
     pub model: &'a str,
     pub effort: Effort,
     pub session_id: &'a str,
+    pub max_steps: usize,
 }
 
 /// Runs one user turn: stream a reply, run its tool calls in parallel, feed
@@ -48,7 +49,7 @@ pub async fn run_turn(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
-    for _ in 0..MAX_STEPS {
+    for _ in 0..route.max_steps {
         let request = Request {
             model: route.model,
             session_id: route.session_id,
@@ -118,7 +119,7 @@ pub async fn run_turn(
             });
         }
     }
-    Err(Error::TooManySteps)
+    Err(Error::TooManySteps(route.max_steps))
 }
 
 async fn run_tool(
@@ -184,6 +185,7 @@ pub(crate) mod tests {
         model: "glm-5.3",
         effort: Effort::Default,
         session_id: "s1",
+        max_steps: DEFAULT_MAX_STEPS,
     };
 
     pub(crate) struct Scripted {
@@ -227,7 +229,7 @@ pub(crate) mod tests {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "echo",
-                description: "",
+                description: String::new(),
                 parameters: serde_json::json!({}),
             }
         }
@@ -253,7 +255,7 @@ pub(crate) mod tests {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
                 name: "stall",
-                description: "",
+                description: String::new(),
                 parameters: serde_json::json!({}),
             }
         }

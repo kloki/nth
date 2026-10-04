@@ -16,6 +16,9 @@ pub struct Paths {
     /// `$XDG_CONFIG_HOME`, or `~/.config` when that is unset. nth's own
     /// files are under `nth/` in it, opencode's under `opencode/`.
     pub config_home: Option<PathBuf>,
+    /// Extra skill folders from the config. Relative ones are resolved
+    /// against the working directory.
+    pub skill_paths: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -27,7 +30,11 @@ impl Paths {
             .filter(|c| !c.is_empty())
             .map(PathBuf::from)
             .or_else(|| home.as_ref().map(|h| h.join(".config")));
-        Self { home, config_home }
+        Self {
+            home,
+            config_home,
+            skill_paths: Vec::new(),
+        }
     }
 
     /// nth's own config directory.
@@ -93,6 +100,7 @@ mod tests {
         let paths = Paths {
             home: Some("/home/k".into()),
             config_home: Some("/home/k/.config".into()),
+            ..Paths::default()
         };
 
         assert_eq!(paths.config_dir(), Some("/home/k/.config/nth".into()));
