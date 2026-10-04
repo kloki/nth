@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use nth_protocol::Asker;
 use nth_session::{Session, store};
 
 use super::App;
@@ -65,7 +66,14 @@ impl App {
                 let result = match text {
                     Ok(text) => {
                         session
-                            .prompt(text, provider.as_ref(), &tools, &events, &token)
+                            .prompt(
+                                text,
+                                provider.as_ref(),
+                                &tools,
+                                &Asker::default(),
+                                &events,
+                                &token,
+                            )
                             .await
                     }
                     Err(e) => Err(e),
