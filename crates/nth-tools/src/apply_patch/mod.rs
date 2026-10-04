@@ -7,23 +7,37 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use futures::{FutureExt, future::BoxFuture};
+use futures::{
+    FutureExt,
+    future::{BoxFuture, join_all},
+};
+use nth_lsp::report;
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use parse::{Hunk, Section};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
+    PostWrite,
     bom::BOM,
     edit::{
         EDITS,
         matcher::{self, MatchError},
         with_line_endings,
     },
+    post_write,
     write::write_with_dirs,
 };
 
-pub struct ApplyPatch;
+pub struct ApplyPatch {
+    post_write: PostWrite,
+}
+
+impl ApplyPatch {
+    pub fn new(post_write: PostWrite) -> Self {
+        Self { post_write }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +69,7 @@ impl Tool for ApplyPatch {
             let args: Args = crate::parse_args(args)?;
             let sections =
                 parse::parse(&args.patch_text).map_err(|e| format!("invalid patch: {e}"))?;
-            let _edit = EDITS.lock().await;
+            let edits = EDITS.lock().await;
             let mut plan = Plan {
                 cwd: &ctx.cwd,
                 files: BTreeMap::new(),
@@ -68,14 +82,40 @@ impl Tool for ApplyPatch {
                     .map_err(|e| format!("{e}\nNo files were changed."))?;
                 summary.push(line);
             }
+            let changed = plan.changed();
             plan.write().await?;
-            Ok(format!(
+            // The formatters rewrite the files, so they run under the lock;
+            // waiting on the language servers need not.
+            let mut notes = Vec::new();
+            for path in &changed {
+                let name = relative(path, &ctx.cwd);
+                let ran = self.post_write.format(path, &ctx.cwd).await;
+                notes.extend(ran.lines().map(|note| format!("{name}: {note}")));
+            }
+            drop(edits);
+            let diagnostics =
+                join_all(changed.iter().map(|p| self.post_write.diagnostics(p))).await;
+            let errors: Vec<String> = changed
+                .iter()
+                .zip(&diagnostics)
+                .map(|(path, d)| report::after_patch(&relative(path, &ctx.cwd), path, d))
+                .collect();
+            let done = format!(
                 "Success. Updated the following files:\n{}",
                 summary.join("\n")
-            ))
+            );
+            let notes = notes.join("\n");
+            let mut sections = vec![notes.as_str()];
+            sections.extend(errors.iter().map(String::as_str));
+            Ok(post_write::append(done, &sections))
         }
         .boxed()
     }
+}
+
+/// `path` as the model named it, relative to the working directory.
+fn relative(path: &Path, cwd: &Path) -> String {
+    path.strip_prefix(cwd).unwrap_or(path).display().to_string()
 }
 
 /// What a patch does to each file, worked out in memory before any file is
@@ -153,6 +193,12 @@ impl Plan<'_> {
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("cannot read {}: {e}", path.display())),
         }
+    }
+
+    /// The files the patch leaves in place, added, changed or moved to.
+    fn changed(&self) -> Vec<PathBuf> {
+        let kept = self.files.iter().filter(|(_, content)| content.is_some());
+        kept.map(|(path, _)| path.clone()).collect()
     }
 
     /// Deletes first, so a file may give way to a directory of its name.
@@ -308,7 +354,9 @@ mod tests {
 
     async fn patch(dir: &Path, patch: &str) -> ToolResult {
         let ctx = ToolContext::new(dir.to_path_buf());
-        ApplyPatch.call(json!({ "patchText": patch }), &ctx).await
+        ApplyPatch::new(PostWrite::off())
+            .call(json!({ "patchText": patch }), &ctx)
+            .await
     }
 
     fn file(dir: &Path, name: &str, content: &str) -> PathBuf {
@@ -606,7 +654,12 @@ mod tests {
                 .is_err()
         );
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        assert!(ApplyPatch.call(json!({}), &ctx).await.is_err());
+        assert!(
+            ApplyPatch::new(PostWrite::off())
+                .call(json!({}), &ctx)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -645,5 +698,107 @@ mod tests {
         .await
         .expect("patch");
         assert_eq!(contents(&path), format!("{BOM}a\r\nx\r\ny\r\nc\r\n"));
+    }
+
+    #[tokio::test]
+    async fn formats_each_file_it_leaves_and_names_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        file(dir.path(), "a.txt", "a\n");
+        file(dir.path(), "gone.txt", "x\n");
+        file(dir.path(), "from.txt", "m\n");
+        let tool = ApplyPatch::new(PostWrite::with_formatter(
+            "upper",
+            &[
+                "sh",
+                "-c",
+                "tr a-z A-Z < $FILE > $FILE.tmp && mv $FILE.tmp $FILE",
+            ],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                json!({ "patchText": "*** Begin Patch
+*** Update File: a.txt
+@@
+-a
++b
+*** Delete File: gone.txt
+*** Add File: sub/new.txt
++n
+*** Update File: from.txt
+*** Move to: to.txt
+@@
+-m
++t
+*** End Patch" }),
+                &ctx,
+            )
+            .await
+            .expect("patch");
+
+        assert_eq!(
+            out,
+            "Success. Updated the following files:\nM a.txt\nD gone.txt\nA sub/new.txt\nM to.txt\n\n\
+             a.txt: Formatted with upper.\n\
+             sub/new.txt: Formatted with upper.\n\
+             to.txt: Formatted with upper."
+        );
+        assert_eq!(contents(&dir.path().join("a.txt")), "B\n");
+        assert_eq!(contents(&dir.path().join("sub/new.txt")), "N\n");
+        assert_eq!(contents(&dir.path().join("to.txt")), "T\n");
+        assert!(!dir.path().join("gone.txt").exists());
+        assert!(!dir.path().join("from.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn bom_survives_the_formatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a.txt", &format!("{BOM}old\n"));
+        let tool = ApplyPatch::new(PostWrite::with_formatter(
+            "rewrite",
+            &["sh", "-c", "printf formatted > $FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        tool.call(
+            json!({ "patchText": "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch" }),
+            &ctx,
+        )
+        .await
+        .expect("patch");
+
+        assert_eq!(contents(&path), format!("{BOM}formatted"));
+    }
+
+    /// The whole path with a real rust-analyzer: run it by hand with
+    /// `cargo test -p nth-tools -- --ignored`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs rust-analyzer on PATH"]
+    async fn reports_rust_analyzer_errors_per_changed_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::post_write::broken_crate(dir.path());
+        let tool = ApplyPatch::new(PostWrite::lsp_only());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                json!({ "patchText": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-    let x: u32 = 1;\n+    let x: u32 = \"one\";\n*** End Patch" }),
+                &ctx,
+            )
+            .await
+            .expect("patch");
+
+        println!("{out}");
+        let main = dir.path().join("src/main.rs");
+        assert!(
+            out.starts_with(&format!(
+                "Success. Updated the following files:\nM src/main.rs\n\n\
+                 LSP errors detected in src/main.rs, please fix:\n<diagnostics file=\"{}\">\nERROR [4:",
+                main.display()
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("other.rs"), "{out}");
     }
 }

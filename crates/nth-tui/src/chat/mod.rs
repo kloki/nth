@@ -1,5 +1,6 @@
 //! The chat pane: the history, where it is scrolled to, and how it draws.
 
+mod after_write;
 mod render;
 mod scroll;
 mod transcript;

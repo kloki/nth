@@ -12,6 +12,7 @@ repository = "https://github.com/kloki/nth"
 nth-context = { path = "crates/nth-context" }
 nth-format = { path = "crates/nth-format" }
 nth-llm = { path = "crates/nth-llm" }
+nth-lsp = { path = "crates/nth-lsp" }
 nth-protocol = { path = "crates/nth-protocol" }
 nth-session = { path = "crates/nth-session" }
 nth-tools = { path = "crates/nth-tools" }

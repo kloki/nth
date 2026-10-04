@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use futures::{FutureExt, future::BoxFuture};
+use nth_lsp::Lsp;
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,14 +29,16 @@ impl Default for ReadConfig {
     }
 }
 
-#[derive(Default)]
 pub struct Read {
     config: ReadConfig,
+    lsp: Lsp,
 }
 
 impl Read {
-    pub fn new(config: ReadConfig) -> Self {
-        Self { config }
+    /// `lsp` is told about every file read, so its server is warm by the
+    /// time the model writes there.
+    pub fn new(config: ReadConfig, lsp: Lsp) -> Self {
+        Self { config, lsp }
     }
 }
 
@@ -86,6 +89,12 @@ impl Tool for Read {
             }
             let mut content = read_file(&path, offset, limit, &self.config).await?;
             ctx.output.send(content.clone()).await;
+            // Detached so the read never waits on a server starting, which
+            // can take seconds. Not cancelled with the turn: the touch only
+            // opens the file, and a server it starts is meant to outlive it.
+            let lsp = self.lsp.clone();
+            let file = path.clone();
+            tokio::spawn(async move { lsp.touch(&file, false).await });
             // Only the model sees these; they are not part of the file.
             let nested =
                 nth_context::instructions::nested(path, ctx.cwd.clone(), ctx.instructions.clone())
@@ -174,7 +183,13 @@ mod tests {
 
     async fn read(dir: &Path, args: serde_json::Value) -> ToolResult {
         let ctx = ToolContext::new(dir.to_path_buf());
-        Read::default().call(args, &ctx).await
+        Read::off().call(args, &ctx).await
+    }
+
+    impl Read {
+        fn off() -> Self {
+            Self::new(ReadConfig::default(), crate::post_write::lsp_off())
+        }
     }
 
     #[tokio::test]
@@ -206,10 +221,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("a.txt"), "1\n2\n3\n").expect("write");
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let read = Read::new(ReadConfig {
-            default_limit: 1,
-            ..ReadConfig::default()
-        });
+        let read = Read::new(
+            ReadConfig {
+                default_limit: 1,
+                ..ReadConfig::default()
+            },
+            crate::post_write::lsp_off(),
+        );
         assert!(read.spec().description.contains("up to 1 lines"));
         let out = read.call(json!({ "filePath": "a.txt" }), &ctx).await;
         assert_eq!(
@@ -236,10 +254,10 @@ mod tests {
         std::fs::write(dir.path().join("sub/a.txt"), "foo\n").expect("write");
         let ctx = ToolContext::new(dir.path().to_path_buf());
 
-        let first = Read::default()
+        let first = Read::off()
             .call(json!({ "filePath": "sub/a.txt" }), &ctx)
             .await;
-        let again = Read::default()
+        let again = Read::off()
             .call(json!({ "filePath": "sub/a.txt" }), &ctx)
             .await;
 

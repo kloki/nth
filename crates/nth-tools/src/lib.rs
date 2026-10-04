@@ -34,13 +34,14 @@ pub struct ToolsConfig {
 }
 
 /// Every tool nth ships. Agents filter this list by name. `post_write`
-/// runs after every tool that writes a file.
+/// runs after every tool that writes a file. Reads share its language
+/// servers, so they warm the ones a later write asks.
 pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(Read::new(config.read.clone())),
-        Box::new(Write::new(post_write)),
-        Box::new(Edit),
-        Box::new(ApplyPatch),
+        Box::new(Read::new(config.read.clone(), post_write.lsp().clone())),
+        Box::new(Write::new(post_write.clone())),
+        Box::new(Edit::new(post_write.clone())),
+        Box::new(ApplyPatch::new(post_write)),
         Box::new(Bash::new(config.bash.clone())),
         Box::new(Glob),
         Box::new(Grep),
