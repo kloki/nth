@@ -52,7 +52,10 @@ impl Printer {
                 eprintln!("  {} {} {}", "✗".red(), call.name.red(), first.red());
             }
             // The headless run prints the result's summary, not the stream.
-            Event::ToolFinished { .. } | Event::ToolOutput { .. } | Event::Usage(_) => {}
+            Event::ToolFinished { .. }
+            | Event::ToolOutput { .. }
+            | Event::Usage(_)
+            | Event::Notice(_) => {}
         }
     }
 

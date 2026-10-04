@@ -122,6 +122,12 @@ pub async fn run_turn(
                 content: content.unwrap_or_else(|e| format!("Error: {e}")),
             });
         }
+        // What monitors said while the tools ran, so a model busy on a long
+        // turn hears it at its next step rather than when the turn ends.
+        if let Some(notices) = ctx.monitors.take_notices() {
+            messages.push(Message::User(notices.clone()));
+            emit(events, Event::Notice(notices)).await;
+        }
     }
     Err(Error::TooManySteps(route.max_steps))
 }
@@ -142,6 +148,7 @@ async fn run_tool(
         context: ctx.context.clone(),
         asker: ctx.asker.for_call(call.id.clone()),
         screen: ctx.screen.clone(),
+        monitors: ctx.monitors.clone(),
     };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),
@@ -183,7 +190,9 @@ pub(crate) mod tests {
         future::BoxFuture,
         stream::{self, BoxStream},
     };
-    use nth_protocol::{Answer, Asker, ModelInfo, Question, Reply, ToolSpec};
+    use nth_protocol::{
+        Answer, Asker, ModelInfo, MonitorEvent, Monitors, Question, Reply, Stream, ToolSpec,
+    };
 
     use super::*;
 
@@ -306,6 +315,84 @@ pub(crate) mod tests {
             name: name.into(),
             arguments: arguments.into(),
         }
+    }
+
+    /// Starts a monitor that says one line straight away.
+    struct Watch;
+
+    impl Tool for Watch {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "watch",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            async move {
+                let m = ctx
+                    .monitors
+                    .register("ci", "watch")
+                    .await
+                    .ok_or("headless")?;
+                let line = MonitorEvent::Output {
+                    id: m.id,
+                    line: "build failed".into(),
+                    stream: Stream::Stdout,
+                };
+                ctx.monitors.event(line).await;
+                Ok("started".into())
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn monitor_notices_reach_the_model_at_its_next_step() {
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "watch", ""))],
+            vec![StreamEvent::TextDelta("on it".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch)];
+        let (front_end, _monitor_events) = mpsc::channel(16);
+        let ctx = ToolContext {
+            monitors: Monitors::new(front_end, "/logs".into()),
+            ..ToolContext::new(".".into())
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+
+        let notice =
+            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild failed\n</monitor>";
+        assert_eq!(
+            messages[3],
+            Message::User(notice.into()),
+            "after the result"
+        );
+        assert!(matches!(messages[4], Message::Assistant(_)));
+        drop(tx);
+        let mut shown = false;
+        while let Some(event) = rx.recv().await {
+            shown |= event == Event::Notice(notice.into());
+        }
+        assert!(shown);
     }
 
     #[tokio::test]

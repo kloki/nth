@@ -7,6 +7,7 @@ mod content;
 mod input;
 mod job;
 mod keys;
+mod monitor;
 mod resume;
 mod turn;
 
@@ -23,10 +24,14 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEvent
 use futures::StreamExt;
 use input::Input;
 use job::Job;
+use monitor::due;
 use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
-use nth_protocol::{Ask, BoxError, Effort, Event, ModelInfo, Panel, Provider, Tool, Usage};
+use nth_protocol::{
+    Ask, BoxError, Effort, Event, ModelInfo, MonitorEvent, Monitors, Panel, Provider, Tool, Usage,
+    monitor_log_dir,
+};
 use nth_session::{Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -59,6 +64,9 @@ const WHEEL_LINES: usize = 3;
 /// How often a running turn redraws, so the spinner shows every frame and
 /// the live reasoning timer advances.
 const TICK: Duration = spinner::FRAME;
+/// How long notices wait for more lines before an idle app sends them, so
+/// one burst of output reaches the model as one message.
+const NOTICE_DELAY: Duration = Duration::from_millis(200);
 
 pub struct App {
     pub chat: Chat,
@@ -149,6 +157,16 @@ pub struct App {
     screen_tx: mpsc::Sender<Panel>,
     screen_rx: mpsc::Receiver<Panel>,
     turn: Job<Ended>,
+    /// The commands the model left running, shared with every turn's tools.
+    monitors: Monitors,
+    monitor_rx: mpsc::Receiver<MonitorEvent>,
+    /// Where monitors log, one folder per session under it.
+    monitor_root: PathBuf,
+    /// When the notices waiting start a turn, if the app is idle by then.
+    notices_due: Option<tokio::time::Instant>,
+    /// Notices wait for your next prompt rather than start a turn, after
+    /// you stopped one or it failed.
+    hold_notices: bool,
     quit: bool,
 }
 
@@ -203,6 +221,8 @@ enum Step {
     Session(Event),
     Asked(Ask),
     Show(Panel),
+    Monitor(MonitorEvent),
+    NoticesDue,
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
@@ -226,6 +246,12 @@ impl App {
         let (events_tx, events_rx) = mpsc::channel(256);
         let (asks_tx, asks_rx) = mpsc::channel(4);
         let (screen_tx, screen_rx) = mpsc::channel(4);
+        let (monitor_tx, monitor_rx) = mpsc::channel(256);
+        let monitor_root = std::env::temp_dir().join("nth");
+        let monitors = Monitors::new(
+            monitor_tx,
+            monitor_log_dir(&monitor_root, &session.id.to_string()),
+        );
         let home = std::env::var("HOME").ok();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
@@ -276,12 +302,22 @@ impl App {
             screen_tx,
             screen_rx,
             turn: Job::default(),
+            monitors,
+            monitor_rx,
+            monitor_root,
+            notices_due: None,
+            hold_notices: false,
             quit: false,
         }
     }
 
+    /// Saves sessions to `store`, and logs monitors next to them.
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Some(Arc::new(store));
+        if let Ok(data) = store::data_dir() {
+            self.monitor_root = data;
+            self.log_monitors_for_session();
+        }
         self
     }
 
@@ -329,6 +365,8 @@ impl App {
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 Some(panel) = self.screen_rx.recv() => Step::Show(panel),
+                Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
+                _ = due(self.notices_due) => Step::NoticesDue,
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
@@ -349,6 +387,8 @@ impl App {
                 Step::Session(event) => self.on_session(event),
                 Step::Asked(ask) => self.on_ask(ask),
                 Step::Show(panel) => self.open_content(panel.into()),
+                Step::Monitor(event) => self.on_monitor(event),
+                Step::NoticesDue => self.notices_due(),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
@@ -568,6 +608,7 @@ impl App {
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
                 self.usage = None;
+                self.left_session();
             }
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),

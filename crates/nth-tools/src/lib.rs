@@ -4,8 +4,10 @@ mod bom;
 mod edit;
 mod glob;
 mod grep;
+mod monitor;
 mod panel;
 mod post_write;
+mod process;
 mod question;
 mod read;
 mod skill;
@@ -18,6 +20,7 @@ pub use bash::{Bash, BashConfig};
 pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
+pub use monitor::{Monitor, MonitorStop};
 use nth_protocol::Tool;
 pub use panel::Panel;
 pub use post_write::PostWrite;
@@ -47,6 +50,8 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Edit::new(post_write.clone())),
         Box::new(ApplyPatch::new(post_write)),
         Box::new(Bash::new(config.bash.clone())),
+        Box::new(Monitor),
+        Box::new(MonitorStop),
         Box::new(Glob),
         Box::new(Grep),
         Box::new(Skill),

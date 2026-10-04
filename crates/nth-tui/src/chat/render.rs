@@ -55,6 +55,21 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
     let dim = dim();
     match entry {
         Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
+        Entry::Notice(notice) => {
+            let said = match (&notice.ended, notice.lines) {
+                (Some(ended), _) => ended.clone(),
+                (None, 1) => "1 line".to_string(),
+                (None, n) => format!("{n} lines"),
+            };
+            vec![Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled("◆ ", Style::new().fg(Color::Magenta)),
+                Span::styled(
+                    format!("monitor {} · {} · {said}", notice.id, notice.description),
+                    dim,
+                ),
+            ])]
+        }
         Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Blue), Style::new()),
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
@@ -155,6 +170,7 @@ fn icon(tool: &str) -> &'static str {
         "skill" => "✦",
         "question" => "¿",
         "panel" => "▣",
+        "monitor" | "monitor_stop" => "◆",
         _ => "•",
     }
 }

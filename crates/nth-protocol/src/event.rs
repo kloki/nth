@@ -19,4 +19,7 @@ pub enum Event {
     },
     /// After each model reply, when the provider reports it.
     Usage(Usage),
+    /// What background monitors said, handed to the model between steps as
+    /// a user message.
+    Notice(String),
 }

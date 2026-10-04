@@ -1,0 +1,1 @@
+Stops a running monitor by the id the monitor tool gave, killing its command and everything it started. You get its end notice like any other.

@@ -127,6 +127,7 @@ impl Session {
             context: self.context.clone(),
             asker: front_end.asker.clone(),
             screen: front_end.screen.clone(),
+            monitors: front_end.monitors.clone(),
             ..ToolContext::new(self.cwd.clone())
         };
         let result = run_turn(
