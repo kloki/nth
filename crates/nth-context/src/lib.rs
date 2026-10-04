@@ -1,12 +1,14 @@
 //! What nth learns about a project before the first prompt: the instruction
 //! files (`AGENTS.md`, or `CLAUDE.md` where there is none) that go into the
-//! system prompt.
+//! system prompt, and the skills the model and the user can call on.
 
 pub mod instructions;
+pub mod skills;
 
 use std::path::{Path, PathBuf};
 
 pub use instructions::Instruction;
+pub use skills::{Skill, Skills};
 
 /// Where the global files live. Read from the environment once, and passed
 /// in so tests never see the real home directory.
@@ -49,6 +51,7 @@ pub struct Context {
     /// In the order they go into the system prompt: global first, then the
     /// project's from its root down, so the most specific comes last.
     pub instructions: Vec<Instruction>,
+    pub skills: Skills,
     /// Files that were found but could not be used, worth telling the user.
     pub warnings: Vec<String>,
 }
@@ -59,6 +62,7 @@ impl Context {
     pub fn discover(cwd: &Path, paths: &Paths) -> Self {
         let mut context = Self::default();
         context.instructions = instructions::discover(cwd, paths, &mut context.warnings);
+        context.skills = skills::discover(cwd, paths, &mut context.warnings);
         context
     }
 

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ignore.workspace = true
+serde_norway.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

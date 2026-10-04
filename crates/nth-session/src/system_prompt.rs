@@ -48,7 +48,7 @@ mod tests {
                     content: "Use {path} literally.".into(),
                 },
             ],
-            warnings: Vec::new(),
+            ..Context::default()
         };
 
         let prompt = system_prompt("glm", "/repo".as_ref(), &context);
