@@ -1,11 +1,13 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! place and context used on the left, git branch and status on the right.
-//! Line 2 is empty for now, kept so the bands above don't move when it
-//! gets something. The right side is cut first when a line is too narrow.
+//! Line 2 is what checks a write: a dot per language server, coloured by
+//! its state, then the formatters that run here, dim. The right side is
+//! cut first when a line is too narrow, and line 2 from its end.
 
 use std::path::Path;
 
 use braille_bar::BrailleBar;
+use nth_lsp::ServerState;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -14,7 +16,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{app::App, git};
+use crate::{app::App, git, theme::dim};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
@@ -22,7 +24,7 @@ pub const ROWS: u16 = 2;
 const BAR_WIDTH: usize = 13;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let [state, _] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
+    let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
     let mut place = vec![app.model.clone()];
     place.extend(app.effort.wire().map(String::from));
@@ -56,6 +58,34 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
     split_line(frame, state, place, summary);
+    frame.render_widget(Paragraph::new(Line::from(checkers(app))), checks);
+}
+
+/// Line 2: `● rust  ● typescript  rustfmt · shfmt`.
+fn checkers(app: &App) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for server in &app.servers {
+        let colour = match server.state {
+            ServerState::Connected => Color::Green,
+            ServerState::Starting => Color::Yellow,
+            ServerState::Broken(_) => Color::Red,
+        };
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled("● ", Style::new().fg(colour)));
+        spans.push(Span::styled(
+            server.id.clone(),
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    if !app.formatters.is_empty() {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(app.formatters.join(" · "), dim()));
+    }
+    spans
 }
 
 /// `Color::White` is the terminal's bright white; plain white is `Gray`.

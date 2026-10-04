@@ -179,10 +179,18 @@ async fn chat(resume: bool, config: Config) -> Result<()> {
         session.set_context(context);
         session.max_steps = config.session.max_steps;
     }
+    let post_write = post_write(&config);
+    // From the same servers and formatters the tools use, so the status
+    // bar shows what checks the writes.
+    let checkers = nth_tui::Checkers {
+        lsp: post_write.lsp().status(),
+        format: post_write.formatters().clone(),
+    };
     nth_tui::run(
         session,
         Arc::new(provider),
-        Arc::new(nth_tools::all(&config.tools, post_write(&config))),
+        Arc::new(nth_tools::all(&config.tools, post_write)),
+        checkers,
         store,
         paths,
     )

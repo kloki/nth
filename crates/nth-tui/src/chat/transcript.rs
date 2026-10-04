@@ -8,6 +8,8 @@ use std::{
 use nth_protocol::{Event, Message, ToolCall};
 use ratatui::text::Line;
 
+use super::after_write::{self, Note};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
@@ -24,6 +26,8 @@ pub enum Entry {
         /// What the call produced, at most `OUTPUT_LINES`, kept after it
         /// finishes so it can be read back.
         output: Vec<String>,
+        /// What a write reported once done: formatters run, errors found.
+        notes: Vec<Note>,
     },
     TurnError(String),
     TurnDone {
@@ -188,6 +192,7 @@ impl Transcript {
                     call: call.clone(),
                     state: ToolState::Running,
                     output,
+                    notes: Vec::new(),
                 });
             }
             Event::ToolOutput { call_id, text } => {
@@ -202,10 +207,15 @@ impl Transcript {
             }
             Event::ToolFinished { call, result } => {
                 if let Some(Item {
-                    entry: Entry::Tool { state, .. },
+                    entry: Entry::Tool { state, notes, .. },
                     lines,
                 }) = self.tool_mut(&call.id)
                 {
+                    if let Ok(text) = result
+                        && call.name == "write"
+                    {
+                        *notes = after_write::parse(text);
+                    }
                     *state = match result {
                         Ok(_) => ToolState::Done,
                         Err(e) => ToolState::Failed(e.lines().next().unwrap_or_default().into()),
@@ -345,6 +355,7 @@ pub(super) mod tests {
                 call: call("1"),
                 state: ToolState::Failed("no such file".into()),
                 output: Vec::new(),
+                notes: Vec::new(),
             }
         );
         assert_eq!(entries[3], &Entry::Answer("done".into()));
@@ -379,6 +390,7 @@ pub(super) mod tests {
                 call: call("2"),
                 state: ToolState::Failed("interrupted".into()),
                 output: Vec::new(),
+                notes: Vec::new(),
             }
         );
         assert!(matches!(entries[4], Entry::Interrupted { .. }));
@@ -489,6 +501,7 @@ pub(super) mod tests {
                 call: bash,
                 state: ToolState::Done,
                 output: vec!["a.rs".into(), "b.rs".into()],
+                notes: Vec::new(),
             }
         );
         assert_eq!(
@@ -497,10 +510,35 @@ pub(super) mod tests {
                 call: call("2"),
                 state: ToolState::Failed("no such file".into()),
                 output: Vec::new(),
+                notes: Vec::new(),
             }
         );
         assert_eq!(entries[5], &Entry::Answer("done".into()));
         assert_eq!(entries.len(), 6);
+    }
+
+    #[test]
+    fn replay_keeps_what_a_write_reported() {
+        let write = tool("1", "write", r#"{"filePath":"/repo/a.rs","content":"x"}"#);
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![write],
+                ..Default::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "Wrote file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
+            },
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        let Some(Entry::Tool { output, notes, .. }) = t.entries().nth(1) else {
+            panic!("no write entry");
+        };
+        assert_eq!(output, &["x"]);
+        assert_eq!(notes, &[Note::Format("Formatted with rustfmt.".into())]);
     }
 
     #[test]
@@ -541,6 +579,7 @@ pub(super) mod tests {
                 call: skill,
                 state: ToolState::Done,
                 output: Vec::new(),
+                notes: Vec::new(),
             })
         );
     }
