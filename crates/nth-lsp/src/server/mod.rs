@@ -1,6 +1,8 @@
-//! The language servers nth knows, ported from opencode's `lsp/server.ts`.
-//! Only servers already on PATH are used: nth never downloads one, so
-//! those opencode can only run from a download (eslint, razor) are left out.
+//! The language servers nth knows, ported from opencode's `lsp/server.ts` —
+//! but for ruff, which nth adds itself, so Python files get the linter's
+//! complaints next to pyright's type errors. Only servers already on PATH are
+//! used: nth never downloads one, so those opencode can only run from a
+//! download (eslint, razor) are left out.
 
 mod root;
 
@@ -143,6 +145,22 @@ const BUILTINS: &[Builtin] = &[
             &["basedpyright-langserver", "--stdio"],
         ],
         init: Init::Pyright,
+    },
+    Builtin {
+        id: "ruff",
+        extensions: &[".py", ".pyi"],
+        root: nearest(&[
+            "ruff.toml",
+            ".ruff.toml",
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+            "Pipfile",
+        ]),
+        // `ruff server` since ruff 0.5; ruff-lsp for older installs.
+        commands: &[&["ruff", "server"], &["ruff-lsp"]],
+        init: Init::None,
     },
     Builtin {
         id: "elixir-ls",
@@ -600,5 +618,16 @@ mod tests {
         let docker = find(&servers, "dockerfile").unwrap();
         assert!(docker.handles(Path::new("/p/Dockerfile")));
         assert!(!docker.handles(Path::new("/p/Makefile")));
+    }
+
+    #[test]
+    fn ruff_lints_python_alongside_pyright() {
+        let servers = registry(&LspConfig::default());
+        let ruff = find(&servers, "ruff").unwrap();
+        assert_eq!(ruff.extensions, [".py", ".pyi"]);
+        assert!(ruff.handles(Path::new("/p/a.py")));
+        assert!(!ruff.handles(Path::new("/p/a.rs")));
+        assert_eq!(ruff.commands, [vec!["ruff", "server"], vec!["ruff-lsp"]]);
+        assert!(find(&servers, "pyright").is_some());
     }
 }
