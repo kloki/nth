@@ -218,8 +218,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
             output: OutputSink::new(tx, "1".into()),
+            ..ToolContext::new(dir.path().to_path_buf())
         };
         let out = Bash
             .call(json!({ "command": command, "description": "t" }), &ctx)

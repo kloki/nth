@@ -107,9 +107,15 @@ impl Transcript {
                         // A write streamed nothing; its start showed its content.
                         None if call.name == "write" => Ok(content.clone()),
                         None => {
+                            // read appends instruction files for the model
+                            // only; the live view never showed them.
+                            let shown = match content.split_once("\n\n<system-reminder>") {
+                                Some((shown, _)) if call.name == "read" => shown,
+                                _ => content,
+                            };
                             t.apply(&Event::ToolOutput {
                                 call_id: call_id.clone(),
-                                text: content.clone(),
+                                text: shown.to_string(),
                             });
                             Ok(content.clone())
                         }
@@ -489,5 +495,24 @@ pub(super) mod tests {
         );
         assert_eq!(entries[5], &Entry::Answer("done".into()));
         assert_eq!(entries.len(), 6);
+    }
+
+    #[test]
+    fn replay_hides_instructions_attached_to_a_read() {
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![call("1")],
+                ..Default::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "1: fn main() {}\n\n<system-reminder>\nInstructions from: /repo/src/AGENTS.md\nBe brief.\n</system-reminder>\n".into(),
+            },
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        assert_eq!(outputs(&t), [vec!["1: fn main() {}".to_string()]]);
     }
 }

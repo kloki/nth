@@ -8,6 +8,8 @@ use serde_json::json;
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
+/// Wraps an instruction file attached to what was read.
+const INSTRUCTION: &str = include_str!("instruction.md");
 
 pub struct Read;
 
@@ -49,12 +51,25 @@ impl Tool for Read {
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            let content = if meta.is_dir() {
-                list_dir(&path, offset, limit).await
-            } else {
-                read_file(&path, offset, limit).await
-            }?;
+            if meta.is_dir() {
+                let content = list_dir(&path, offset, limit).await?;
+                ctx.output.send(content.clone()).await;
+                return Ok(content);
+            }
+            let mut content = read_file(&path, offset, limit).await?;
             ctx.output.send(content.clone()).await;
+            // Only the model sees these; they are not part of the file.
+            let nested =
+                nth_context::instructions::nested(path, ctx.cwd.clone(), ctx.instructions.clone())
+                    .await;
+            for instruction in nested {
+                content.push('\n');
+                content.push_str(
+                    &INSTRUCTION
+                        .replace("{path}", &instruction.path.display().to_string())
+                        .replace("{content}", instruction.content.trim_end()),
+                );
+            }
             Ok(content)
         }
         .boxed()
@@ -164,6 +179,29 @@ mod tests {
         std::fs::write(dir.path().join("b.txt"), "").expect("write");
         let out = read(dir.path(), json!({ "filePath": "." })).await;
         assert_eq!(out, Ok("b.txt\nsub/".to_string()));
+    }
+
+    #[tokio::test]
+    async fn attaches_a_nested_agents_md_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("git dir");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
+        std::fs::write(dir.path().join("sub/AGENTS.md"), "Be brief.\n").expect("write");
+        std::fs::write(dir.path().join("sub/a.txt"), "foo\n").expect("write");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let first = Read.call(json!({ "filePath": "sub/a.txt" }), &ctx).await;
+        let again = Read.call(json!({ "filePath": "sub/a.txt" }), &ctx).await;
+
+        let agents = dir.path().join("sub/AGENTS.md");
+        assert_eq!(
+            first,
+            Ok(format!(
+                "1: foo\n\n<system-reminder>\nInstructions from: {}\nBe brief.\n</system-reminder>\n",
+                agents.display()
+            ))
+        );
+        assert_eq!(again, Ok("1: foo\n".to_string()));
     }
 
     #[tokio::test]
