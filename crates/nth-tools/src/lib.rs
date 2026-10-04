@@ -5,6 +5,7 @@ mod glob;
 mod grep;
 mod read;
 mod skill;
+mod websearch;
 mod write;
 
 pub use apply_patch::ApplyPatch;
@@ -16,6 +17,7 @@ use nth_protocol::Tool;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use skill::Skill;
+pub use websearch::{Websearch, WebsearchConfig};
 pub use write::Write;
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -23,6 +25,7 @@ pub use write::Write;
 pub struct ToolsConfig {
     pub read: ReadConfig,
     pub bash: BashConfig,
+    pub websearch: WebsearchConfig,
 }
 
 /// Every tool nth ships. Agents filter this list by name.
@@ -36,6 +39,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Glob),
         Box::new(Grep),
         Box::new(Skill),
+        Box::new(Websearch::new(config.websearch.clone())),
     ]
 }
 
