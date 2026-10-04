@@ -25,7 +25,7 @@ the opencode code to copy from.
 
 ### Tools
 
-- [ ] **edit**: exact string replace with `replaceAll`, and fuzzy fallbacks for whitespace and indentation drift. `tool/edit.ts`, `tool/edit.txt`
+- [x] **edit**: exact string replace with `replaceAll`, and fuzzy fallbacks for whitespace and indentation drift. `tool/edit.ts`, `tool/edit.txt`
 - [ ] **glob**: ripgrep file search, capped at 100 results with a "truncated" note. `tool/glob.ts:49`
 - [ ] **todowrite**: todo list kept in the session, shown in the TUI. `tool/todo.ts`, `session/todo.ts`
 - [ ] **Truncate long tool output** to a file, and tell the model the path so it can read or grep the rest (2000 lines / 50 KB, kept for 7 days). nth's bash keeps only the tail. `tool/truncate.ts`

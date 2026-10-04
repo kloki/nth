@@ -1,0 +1,12 @@
+Performs exact string replacements in files.
+
+Usage:
+- The filePath parameter should be an absolute path. Relative paths are resolved against the working directory.
+- Read the file before editing it, so oldString is text you have seen.
+- When editing text from read output, keep the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The prefix is the line number, a colon and a space (e.g. `1: `). Everything after that space is the file's content. Never include any part of the prefix in oldString or newString.
+- The edit FAILS if oldString is not found in the file.
+- The edit FAILS if oldString is found more than once. Either give a larger oldString with more surrounding lines to make it unique, or set replaceAll to change every occurrence.
+- Use replaceAll to replace or rename a string across the whole file, for instance a variable.
+- An empty oldString creates a new file holding newString. It fails if the file already exists; use write to replace a whole file.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
