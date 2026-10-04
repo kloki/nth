@@ -1,9 +1,8 @@
-//! Background monitors: commands the model leaves running whose output
-//! comes back to it as notices, between steps or as a turn of their own.
+//! The front-end's monitors: which are running, who stopped them, and what
+//! the model has not heard from them yet.
 
 use std::{
     collections::HashMap,
-    fmt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -11,105 +10,7 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Numbered from 1 for as long as the front-end runs, so a monitor keeps its
-/// number across sessions.
-pub type MonitorId = u32;
-
-/// At most this many lines of one monitor go into a notice; the rest are
-/// counted, and the log has them.
-pub const NOTICE_LINES: usize = 50;
-
-/// What a monitor reports to the front-end, for its tab.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MonitorEvent {
-    Started {
-        id: MonitorId,
-        description: String,
-        command: String,
-        log: PathBuf,
-    },
-    /// One line of output. Only stdout lines are events for the model.
-    Output {
-        id: MonitorId,
-        line: String,
-        stream: Stream,
-    },
-    Ended {
-        id: MonitorId,
-        end: MonitorEnd,
-        /// How many stdout lines it produced.
-        events: usize,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stream {
-    Stdout,
-    Stderr,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MonitorEnd {
-    /// The command exited by itself; `None` when a signal killed it.
-    Exited(Option<i32>),
-    TimedOut {
-        after_ms: u64,
-    },
-    /// It printed more than the model could take in.
-    Flooded,
-    Stopped(StoppedBy),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoppedBy {
-    Model,
-    User,
-    /// nth quit, or the session it ran for was left.
-    Exit,
-}
-
-impl MonitorEnd {
-    /// Whether it ended the way a finished command should.
-    pub fn is_success(self) -> bool {
-        self == MonitorEnd::Exited(Some(0))
-    }
-}
-
-impl fmt::Display for MonitorEnd {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MonitorEnd::Exited(Some(code)) => write!(f, "exited with code {code}"),
-            MonitorEnd::Exited(None) => write!(f, "killed by a signal"),
-            MonitorEnd::TimedOut { after_ms } => {
-                write!(
-                    f,
-                    "timed out after {}s, start it again to keep watching",
-                    after_ms / 1000
-                )
-            }
-            MonitorEnd::Flooded => {
-                write!(
-                    f,
-                    "stopped: too many events, start it again with a tighter filter"
-                )
-            }
-            MonitorEnd::Stopped(StoppedBy::Model) => write!(f, "stopped with monitor_stop"),
-            MonitorEnd::Stopped(StoppedBy::User) => write!(f, "stopped by the user"),
-            MonitorEnd::Stopped(StoppedBy::Exit) => write!(f, "stopped: nth exited"),
-        }
-    }
-}
-
-/// What the monitor tool gets for a new monitor.
-#[derive(Debug)]
-pub struct Registered {
-    pub id: MonitorId,
-    /// Cancelled when someone stops it; the monitor then asks
-    /// [`Monitors::stopped_by`] who.
-    pub stop: CancellationToken,
-    /// Where it writes every line it reads, stdout and stderr.
-    pub log: PathBuf,
-}
+use super::{MonitorEnd, MonitorEvent, MonitorId, Registered, StoppedBy, Stream, notice};
 
 /// The front-end's monitors, shared by the monitor tools, the agent loop
 /// that hands their notices to the model, and the front-end that shows
@@ -147,7 +48,7 @@ struct Pending {
     description: String,
     log: PathBuf,
     lines: Vec<String>,
-    /// Lines past [`NOTICE_LINES`].
+    /// Lines past [`notice::NOTICE_LINES`].
     more: usize,
     ended: Option<(MonitorEnd, usize)>,
 }
@@ -310,7 +211,7 @@ impl State {
                 let Some(pending) = self.pending_for(*id) else {
                     return;
                 };
-                if pending.lines.len() < NOTICE_LINES {
+                if pending.lines.len() < notice::NOTICE_LINES {
                     pending.lines.push(line.clone());
                 } else {
                     pending.more += 1;
@@ -352,98 +253,16 @@ impl State {
 }
 
 impl Pending {
-    /// The lines in a `<monitor>` element, then how it ended in an empty
-    /// one, as the transcript reads them back.
     fn notice(&self) -> String {
-        let attributes = format!(
-            "id=\"{}\" description=\"{}\" log=\"{}\"",
+        notice::render(
             self.id,
-            attribute(&self.description),
-            attribute(&self.log.display().to_string()),
-        );
-        let mut out = Vec::new();
-        if !self.lines.is_empty() {
-            out.push(format!("<monitor {attributes}>"));
-            out.extend(self.lines.iter().cloned());
-            if self.more > 0 {
-                out.push(format!("… {} more lines in the log", self.more));
-            }
-            out.push("</monitor>".into());
-        }
-        if let Some((end, events)) = self.ended {
-            out.push(format!(
-                "<monitor {attributes} ended=\"{}\" events=\"{events}\"/>",
-                attribute(&end.to_string())
-            ));
-        }
-        out.join("\n")
+            &self.description,
+            &self.log,
+            &self.lines,
+            self.more,
+            self.ended,
+        )
     }
-}
-
-fn attribute(text: &str) -> String {
-    text.replace('&', "&amp;").replace('"', "&quot;")
-}
-
-/// A monitor's notice as the transcript shows it, from the text the model
-/// read: which monitor, and how many lines or how it ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoticeSummary {
-    pub id: MonitorId,
-    pub description: String,
-    pub lines: usize,
-    pub ended: Option<String>,
-}
-
-/// Splits the notices off the front of a user message: what a monitor
-/// said, then what the user typed after it, if anything.
-pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
-    let mut notices = Vec::new();
-    let mut rest = text;
-    while let Some(after) = rest.strip_prefix("<monitor ") {
-        let Some(tag_end) = after.find('>') else {
-            break;
-        };
-        let tag = &after[..tag_end];
-        let (attrs, closed) = match tag.strip_suffix('/') {
-            Some(attrs) => (attrs, true),
-            None => (tag, false),
-        };
-        let Some(id) = value(attrs, "id").and_then(|id| id.parse().ok()) else {
-            break;
-        };
-        let description = value(attrs, "description").unwrap_or_default();
-        let body = &after[tag_end + 1..];
-        let (lines, next) = if closed {
-            (0, body)
-        } else {
-            let Some(close) = body.find("\n</monitor>") else {
-                break;
-            };
-            let lines = body[..close].lines().filter(|l| !l.is_empty()).count();
-            (lines, &body[close + "\n</monitor>".len()..])
-        };
-        notices.push(NoticeSummary {
-            id,
-            description,
-            lines,
-            ended: value(attrs, "ended"),
-        });
-        rest = next.strip_prefix('\n').unwrap_or(next);
-    }
-    if notices.is_empty() {
-        return (notices, text);
-    }
-    (notices, rest.trim_start_matches('\n'))
-}
-
-fn value(attrs: &str, name: &str) -> Option<String> {
-    let start = attrs.find(&format!("{name}=\""))? + name.len() + 2;
-    let len = attrs[start..].find('"')?;
-    Some(
-        attrs[start..start + len]
-            .replace("&quot;", "\"")
-            .replace("&amp;", "&"),
-    )
 }
 
 /// Where a monitor's log goes, under nth's data folder, per session.
@@ -454,6 +273,7 @@ pub fn log_dir(data_dir: &Path, session_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::monitor::NOTICE_LINES;
 
     fn monitors() -> (Monitors, mpsc::Receiver<MonitorEvent>) {
         let (tx, rx) = mpsc::channel(64);
@@ -587,41 +407,5 @@ mod tests {
             }
         }
         panic!("the front-end never heard it ended");
-    }
-
-    #[tokio::test]
-    async fn notices_split_off_the_front_of_a_message() {
-        let (monitors, _rx) = monitors();
-        let m = monitors.register("ci \"main\"", "watch").await.unwrap();
-        line(&monitors, m.id, "step 1 ok").await;
-        line(&monitors, m.id, "step 2 ok").await;
-        let ended = MonitorEvent::Ended {
-            id: m.id,
-            end: MonitorEnd::Exited(Some(0)),
-            events: 2,
-        };
-        monitors.event(ended).await;
-        let text = format!("{}\n\nnow fix it", monitors.take_notices().unwrap());
-
-        let (notices, rest) = split_notices(&text);
-        assert_eq!(
-            notices,
-            [
-                NoticeSummary {
-                    id: 1,
-                    description: "ci \"main\"".into(),
-                    lines: 2,
-                    ended: None,
-                },
-                NoticeSummary {
-                    id: 1,
-                    description: "ci \"main\"".into(),
-                    lines: 0,
-                    ended: Some("exited with code 0".into()),
-                },
-            ]
-        );
-        assert_eq!(rest, "now fix it");
-        assert_eq!(split_notices("hi"), (vec![], "hi"));
     }
 }
