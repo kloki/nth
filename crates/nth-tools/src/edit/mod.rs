@@ -1,22 +1,31 @@
 pub(crate) mod matcher;
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, path::Path};
 
 use futures::{FutureExt, future::BoxFuture};
 use matcher::MatchError;
+use nth_lsp::report;
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use crate::{bom::BOM, write::write_with_dirs};
+use crate::{PostWrite, bom::BOM, post_write, write::write_with_dirs};
 
 /// The calls of a turn run in parallel, and two edits of one file would
 /// each read it before the other writes, losing the first. Edits are quick,
 /// so one lock for all of them, and for apply_patch, is enough.
 pub(crate) static EDITS: Mutex<()> = Mutex::const_new(());
 
-pub struct Edit;
+pub struct Edit {
+    post_write: PostWrite,
+}
+
+impl Edit {
+    pub fn new(post_write: PostWrite) -> Self {
+        Self { post_write }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,65 +66,76 @@ impl Tool for Edit {
                 return Err("no changes to apply: oldString and newString are identical".into());
             }
             let path = ctx.cwd.join(&args.file_path);
-            let _edit = EDITS.lock().await;
-            let source = match tokio::fs::read_to_string(&path).await {
-                Ok(source) => source,
-                Err(e) if e.kind() == ErrorKind::NotFound && args.old_string.is_empty() => {
-                    write_with_dirs(&path, args.new_string.as_bytes())
-                        .await
-                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-                    return Ok(format!("Created file: {}", path.display()));
-                }
-                Err(e) => return Err(format!("cannot edit {}: {e}", path.display())),
-            };
-            if args.old_string.is_empty() {
-                return Err(format!(
-                    "oldString is empty but {} already exists. Give the text to replace, or use write to replace the whole file.",
-                    path.display()
-                ));
-            }
-
-            // Matching ignores the BOM, which the model never sees, and
-            // speaks the file's line endings, which it rarely reproduces.
-            let text = source.strip_prefix(BOM).unwrap_or(&source);
-            let crlf = text.contains("\r\n");
-            let old = with_line_endings(&args.old_string, crlf);
-            let new = with_line_endings(&args.new_string, crlf);
-            let spans = if args.replace_all {
-                matcher::find_all(text, &old)
-            } else {
-                matcher::find_unique(text, &old).map(|span| vec![span])
-            }
-            .map_err(|e| match e {
-                MatchError::NotFound => format!(
-                    "oldString not found in {}. It must match the file, including whitespace and indentation; read it again if unsure.",
-                    path.display()
-                ),
-                MatchError::Ambiguous(n) => format!(
-                    "oldString matches {n} places in {}. Add surrounding lines to make it unique, or set replaceAll to change every one.",
-                    path.display()
-                ),
-            })?;
-
-            let mut edited = String::with_capacity(source.len());
-            edited.push_str(&source[..source.len() - text.len()]);
-            let mut from = 0;
-            for span in &spans {
-                edited.push_str(&text[from..span.start]);
-                edited.push_str(&new);
-                from = span.end;
-            }
-            edited.push_str(&text[from..]);
-            tokio::fs::write(&path, edited)
-                .await
-                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-            Ok(match spans.len() {
-                1 => format!("Edited file: {}", path.display()),
-                n => format!("Edited file: {} ({n} replacements)", path.display()),
-            })
+            let edits = EDITS.lock().await;
+            let done = edit(&path, &args).await?;
+            // The formatter rewrites the file, so it runs under the lock;
+            // waiting on the language servers need not.
+            let notes = self.post_write.format(&path, &ctx.cwd).await;
+            drop(edits);
+            let errors = report::after_edit(&path, &self.post_write.diagnostics(&path).await);
+            Ok(post_write::append(done, &[&notes, &errors]))
         }
         .boxed()
     }
+}
+
+/// Makes the edit `args` asks for in `path` and returns what it did.
+async fn edit(path: &Path, args: &Args) -> Result<String, String> {
+    let source = match tokio::fs::read_to_string(path).await {
+        Ok(source) => source,
+        Err(e) if e.kind() == ErrorKind::NotFound && args.old_string.is_empty() => {
+            write_with_dirs(path, args.new_string.as_bytes())
+                .await
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            return Ok(format!("Created file: {}", path.display()));
+        }
+        Err(e) => return Err(format!("cannot edit {}: {e}", path.display())),
+    };
+    if args.old_string.is_empty() {
+        return Err(format!(
+            "oldString is empty but {} already exists. Give the text to replace, or use write to replace the whole file.",
+            path.display()
+        ));
+    }
+
+    // Matching ignores the BOM, which the model never sees, and
+    // speaks the file's line endings, which it rarely reproduces.
+    let text = source.strip_prefix(BOM).unwrap_or(&source);
+    let crlf = text.contains("\r\n");
+    let old = with_line_endings(&args.old_string, crlf);
+    let new = with_line_endings(&args.new_string, crlf);
+    let spans = if args.replace_all {
+        matcher::find_all(text, &old)
+    } else {
+        matcher::find_unique(text, &old).map(|span| vec![span])
+    }
+    .map_err(|e| match e {
+        MatchError::NotFound => format!(
+            "oldString not found in {}. It must match the file, including whitespace and indentation; read it again if unsure.",
+            path.display()
+        ),
+        MatchError::Ambiguous(n) => format!(
+            "oldString matches {n} places in {}. Add surrounding lines to make it unique, or set replaceAll to change every one.",
+            path.display()
+        ),
+    })?;
+
+    let mut edited = String::with_capacity(source.len());
+    edited.push_str(&source[..source.len() - text.len()]);
+    let mut from = 0;
+    for span in &spans {
+        edited.push_str(&text[from..span.start]);
+        edited.push_str(&new);
+        from = span.end;
+    }
+    edited.push_str(&text[from..]);
+    tokio::fs::write(path, edited)
+        .await
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(match spans.len() {
+        1 => format!("Edited file: {}", path.display()),
+        n => format!("Edited file: {} ({n} replacements)", path.display()),
+    })
 }
 
 pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
@@ -131,7 +151,7 @@ mod tests {
 
     async fn edit(dir: &Path, args: serde_json::Value) -> ToolResult {
         let ctx = ToolContext::new(dir.to_path_buf());
-        Edit.call(args, &ctx).await
+        Edit::new(PostWrite::off()).call(args, &ctx).await
     }
 
     fn file(dir: &Path, content: &str) -> std::path::PathBuf {
@@ -302,8 +322,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a\nb\nc\nd\n");
         let ctx = ToolContext::new(dir.path().to_path_buf());
+        let tool = Edit::new(PostWrite::off());
         let edits = ["a", "b", "c", "d"].map(|line| {
-            Edit.call(
+            tool.call(
                 json!({ "filePath": "a.rs", "oldString": format!("{line}\n"), "newString": format!("{line}{line}\n") }),
                 &ctx,
             )
@@ -330,5 +351,108 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn output_notes_the_formatter_that_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "x = a\n").expect("write");
+        let tool = Edit::new(PostWrite::with_formatter(
+            "sed",
+            &["sed", "-i", "s/ = /=/", "$FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                json!({ "filePath": "a.txt", "oldString": "a", "newString": "b" }),
+                &ctx,
+            )
+            .await
+            .expect("edit");
+
+        assert_eq!(
+            out,
+            format!("Edited file: {}\n\nFormatted with sed.", path.display())
+        );
+        assert_eq!(contents(&path), "x=b\n");
+    }
+
+    #[tokio::test]
+    async fn a_created_file_is_formatted_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tool = Edit::new(PostWrite::with_formatter(
+            "sed",
+            &["sed", "-i", "s/a/b/", "$FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                json!({ "filePath": "new.txt", "oldString": "", "newString": "a\n" }),
+                &ctx,
+            )
+            .await
+            .expect("edit");
+
+        let path = dir.path().join("new.txt");
+        assert_eq!(
+            out,
+            format!("Created file: {}\n\nFormatted with sed.", path.display())
+        );
+        assert_eq!(contents(&path), "b\n");
+    }
+
+    #[tokio::test]
+    async fn bom_survives_the_formatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, format!("{BOM}old")).expect("write");
+        let tool = Edit::new(PostWrite::with_formatter(
+            "rewrite",
+            &["sh", "-c", "printf formatted > $FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        tool.call(
+            json!({ "filePath": "a.txt", "oldString": "old", "newString": "new" }),
+            &ctx,
+        )
+        .await
+        .expect("edit");
+
+        assert_eq!(contents(&path), format!("{BOM}formatted"));
+    }
+
+    /// The whole path with a real rust-analyzer: run it by hand with
+    /// `cargo test -p nth-tools -- --ignored`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs rust-analyzer on PATH"]
+    async fn reports_rust_analyzer_errors_in_the_edited_file_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::post_write::broken_crate(dir.path());
+        let tool = Edit::new(PostWrite::lsp_only());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                json!({ "filePath": "src/main.rs", "oldString": "= 1;", "newString": "= \"one\";" }),
+                &ctx,
+            )
+            .await
+            .expect("edit");
+
+        println!("{out}");
+        let main = dir.path().join("src/main.rs");
+        assert!(
+            out.starts_with(&format!(
+                "Edited file: {}\n\nLSP errors detected in this file, please fix:\n<diagnostics file=\"{}\">\nERROR [4:",
+                main.display(),
+                main.display()
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("other.rs"), "{out}");
     }
 }

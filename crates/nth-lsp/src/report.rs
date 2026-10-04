@@ -1,5 +1,6 @@
 //! The text the model sees, word for word as opencode writes it
-//! (`lsp/diagnostic.ts` and `tool/write.ts`).
+//! (`lsp/diagnostic.ts`, and `tool/write.ts`, `edit.ts` and
+//! `apply_patch.ts`).
 
 use std::{
     collections::BTreeMap,
@@ -64,15 +65,33 @@ pub fn after_write(path: &Path, diagnostics: &BTreeMap<PathBuf, Vec<Diagnostic>>
             continue;
         }
         if current {
-            out.push_str(&format!(
-                "\n\nLSP errors detected in this file, please fix:\n{block}"
-            ));
+            out.push_str(&after_edit(path, issues));
             continue;
         }
         others += 1;
         out.push_str(&format!("\n\nLSP errors detected in other files:\n{block}"));
     }
     out
+}
+
+/// What the edit tool appends after editing `path`: its errors and no
+/// other file's.
+pub fn after_edit(path: &Path, diagnostics: &[Diagnostic]) -> String {
+    let block = report(&path.display().to_string(), diagnostics);
+    if block.is_empty() {
+        return block;
+    }
+    format!("\n\nLSP errors detected in this file, please fix:\n{block}")
+}
+
+/// What the apply_patch tool appends for each file it changed; `name` is
+/// the file as the model knows it, relative to the working directory.
+pub fn after_patch(name: &str, path: &Path, diagnostics: &[Diagnostic]) -> String {
+    let block = report(&path.display().to_string(), diagnostics);
+    if block.is_empty() {
+        return block;
+    }
+    format!("\n\nLSP errors detected in {name}, please fix:\n{block}")
 }
 
 #[cfg(test)]
@@ -149,5 +168,32 @@ mod tests {
     #[test]
     fn after_write_is_empty_when_all_is_well() {
         assert_eq!(after_write(Path::new("/p/a.rs"), &BTreeMap::new()), "");
+    }
+
+    #[test]
+    fn after_edit_names_this_file() {
+        let text = after_edit(Path::new("/p/a.rs"), &[diag(1, 2, Some(1), "bad")]);
+        assert_eq!(
+            text,
+            "\n\nLSP errors detected in this file, please fix:\n<diagnostics file=\"/p/a.rs\">\nERROR [2:3] bad\n</diagnostics>"
+        );
+        assert_eq!(after_edit(Path::new("/p/a.rs"), &[]), "");
+    }
+
+    #[test]
+    fn after_patch_names_the_file_by_its_relative_path() {
+        let text = after_patch(
+            "src/a.rs",
+            Path::new("/p/src/a.rs"),
+            &[diag(0, 0, Some(1), "bad")],
+        );
+        assert_eq!(
+            text,
+            "\n\nLSP errors detected in src/a.rs, please fix:\n<diagnostics file=\"/p/src/a.rs\">\nERROR [1:1] bad\n</diagnostics>"
+        );
+        assert_eq!(
+            after_patch("a.rs", Path::new("/p/a.rs"), &[diag(0, 0, Some(2), "w")]),
+            ""
+        );
     }
 }

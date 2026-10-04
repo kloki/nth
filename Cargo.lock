@@ -1460,6 +1460,8 @@ dependencies = [
  "futures",
  "ignore",
  "nth-context",
+ "nth-format",
+ "nth-lsp",
  "nth-protocol",
  "nth-session",
  "nucleo-matcher",
