@@ -7,6 +7,7 @@ edition.workspace = true
 nth-context.workspace = true
 nth-protocol.workspace = true
 futures.workspace = true
+htmd.workspace = true
 ignore.workspace = true
 libc.workspace = true
 regex.workspace = true

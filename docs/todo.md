@@ -99,7 +99,7 @@ the opencode code to copy from.
 
 ## M3 and later
 
-- [ ] **webfetch** with HTML to markdown. `tool/webfetch.ts`
+- [x] **webfetch** with HTML to markdown. `tool/webfetch.ts`
 - [ ] **lsp tool**: hover, definition, references and symbols. `tool/lsp.ts`
 - [ ] **Custom commands**: markdown templates in `.nth/commands/`, plus the built-in `/init` (writes AGENTS.md) and `/review`. Skills already run as `/name args` with opencode's template expansion, so a command could be a skill without a description. `command/index.ts`, `command/template/`
 - [ ] **Custom agents** from markdown files with a tool filter and model. `agent/agent.ts`, `cli/cmd/agent.ts`

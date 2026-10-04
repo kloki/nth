@@ -5,6 +5,7 @@ mod glob;
 mod grep;
 mod read;
 mod skill;
+mod webfetch;
 mod websearch;
 mod write;
 
@@ -17,6 +18,7 @@ use nth_protocol::Tool;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use skill::Skill;
+pub use webfetch::WebFetch;
 pub use websearch::{Websearch, WebsearchConfig};
 pub use write::Write;
 
@@ -39,6 +41,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Glob),
         Box::new(Grep),
         Box::new(Skill),
+        Box::new(WebFetch),
         Box::new(Websearch::new(config.websearch.clone())),
     ]
 }
