@@ -25,6 +25,7 @@ ignore = "0.4"
 libc = "0.2"
 nucleo-matcher = "0.3"
 owo-colors = "4"
+regex = "1"
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

@@ -10,7 +10,7 @@ Compared against opencode at
 start with `tui/`, which means `packages/tui/src/`.
 
 **What nth has today:** a chat-completions provider for OpenCode Go with reasoning
-effort, the read, write and bash tools, parallel tool calls, a 100-step cap,
+effort, the read, write, bash and grep tools, parallel tool calls, a 100-step cap,
 Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
 `/models` commands, a model picker, `nth run` (headless), `nth models`, and
 `AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
@@ -27,7 +27,6 @@ the opencode code to copy from.
 
 - [ ] **edit**: exact string replace with `replaceAll`, and fuzzy fallbacks for whitespace and indentation drift. `tool/edit.ts`, `tool/edit.txt`
 - [ ] **glob**: ripgrep file search, capped at 100 results with a "truncated" note. `tool/glob.ts:49`
-- [ ] **grep**: ripgrep with a file-pattern filter, results grouped by file. `tool/grep.ts`
 - [ ] **todowrite**: todo list kept in the session, shown in the TUI. `tool/todo.ts`, `session/todo.ts`
 - [ ] **Truncate long tool output** to a file, and tell the model the path so it can read or grep the rest (2000 lines / 50 KB, kept for 7 days). nth's bash keeps only the tail. `tool/truncate.ts`
 - [ ] **Images in read**: return png, jpeg, gif and webp as attachments instead of text. `tool/read.ts:19`
