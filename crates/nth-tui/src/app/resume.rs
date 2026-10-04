@@ -1,6 +1,9 @@
 //! Resuming a saved session: listing them in the session picker, reading
 //! the chosen one, and switching the app over to it.
 
+use std::sync::Arc;
+
+use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
 use super::{App, input::Input};
@@ -53,7 +56,15 @@ impl App {
             if let Some(loading) = self.session_loading.take() {
                 loading.abort();
             }
-            self.session_loading = Some(tokio::spawn(async move { store.load(id).await }));
+            let paths = self.paths.clone();
+            self.session_loading = Some(tokio::spawn(async move {
+                let mut session = store.load(id).await?;
+                // Read for the session's own directory, which may not be
+                // the one nth started in.
+                let context = Context::load(session.cwd.clone(), paths).await;
+                session.set_context(Arc::new(context));
+                Ok(session)
+            }));
         }
     }
 
@@ -80,6 +91,7 @@ impl App {
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());
         self.chat = Chat::replay(session.cwd.clone(), &session.messages);
+        self.chat.warn(&session.context().warnings);
         self.usage = None;
         self.files.clear();
         self.session = Some(session);
@@ -134,6 +146,36 @@ mod tests {
             entries,
             [Entry::User("fix it".into()), Entry::Answer("fixed".into())]
         );
+    }
+
+    #[tokio::test]
+    async fn resuming_reads_instructions_for_the_sessions_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::write(project.join("AGENTS.md"), "Be brief.").expect("writes");
+        let store = Store::at(dir.path().join("sessions"));
+        let mut saved = Session::new("kimi", project.clone());
+        saved.messages.push(Message::User("fix it".into()));
+        store.save(&saved).await.expect("saves");
+        let mut app = app().with_store(store);
+
+        app.open_session_picker();
+        let listing = app.session_listing.take().expect("listing");
+        app.sessions_listed(listing.await.expect("lists"));
+        app.apply(Action::Submit);
+        let loading = app.session_loading.take().expect("loading");
+        app.session_loaded(loading.await.expect("loads"));
+
+        let session = app.session.as_ref().expect("resumed");
+        let Message::System(prompt) = &session.messages[0] else {
+            panic!("starts with the system prompt");
+        };
+        let expected = format!(
+            "Instructions from: {}\nBe brief.\n",
+            project.join("AGENTS.md").display()
+        );
+        assert!(prompt.ends_with(&expected), "{prompt}");
     }
 
     #[test]

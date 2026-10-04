@@ -20,6 +20,7 @@ use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use input::Input;
+use nth_context::Paths;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
 use nth_session::{CancellationToken, Session, Store, Summary, store};
 use ratatui::{
@@ -90,6 +91,9 @@ pub struct App {
     /// Where sessions are saved after every turn; `None` keeps them in
     /// memory only.
     store: Option<Arc<Store>>,
+    /// Where instruction files are looked for when a resumed session moves
+    /// to another directory.
+    paths: Paths,
     session_listing: Option<JoinHandle<Result<Vec<Summary>, store::Error>>>,
     /// The session chosen in the session picker, being read.
     session_loading: Option<JoinHandle<Result<Session, store::Error>>>,
@@ -179,8 +183,10 @@ impl App {
     ) -> Self {
         let (events_tx, events_rx) = mpsc::channel(256);
         let home = std::env::var("HOME").ok();
+        let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
+        chat.warn(&session.context().warnings);
         Self {
-            chat: Chat::replay(session.cwd.clone(), &session.messages),
+            chat,
             prompt: Prompt::default(),
             mode: Mode::default(),
             content: Content::Chat,
@@ -201,6 +207,7 @@ impl App {
             llms: None,
             llm_listing: None,
             store: None,
+            paths: Paths::default(),
             session_listing: None,
             session_loading: None,
             session: Some(session),
@@ -215,6 +222,11 @@ impl App {
 
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Some(Arc::new(store));
+        self
+    }
+
+    pub fn with_paths(mut self, paths: Paths) -> Self {
+        self.paths = paths;
         self
     }
 
@@ -439,7 +451,14 @@ impl App {
             // to replace yet.
             Command::Clear if self.is_busy() => {}
             Command::Clear => {
-                let mut session = Session::new(self.model.clone(), self.cwd.clone());
+                // Same directory, so the same instruction files.
+                let context = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.context().clone())
+                    .unwrap_or_default();
+                let mut session =
+                    Session::new(self.model.clone(), self.cwd.clone()).with_context(context);
                 session.effort = self.effort;
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());

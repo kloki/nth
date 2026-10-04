@@ -21,6 +21,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use nth_context::Paths;
 use nth_protocol::{Provider, Tool};
 use nth_session::{Session, Store};
 
@@ -32,6 +33,7 @@ pub async fn run(
     provider: Arc<dyn Provider>,
     tools: Arc<Vec<Box<dyn Tool>>>,
     store: Store,
+    paths: Paths,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
     // codes into the pipe and then fail on raw mode.
@@ -41,6 +43,7 @@ pub async fn run(
     let mut terminal = terminal::enter()?;
     let result = app::App::new(session, provider, tools)
         .with_store(store)
+        .with_paths(paths)
         .run(&mut terminal)
         .await;
     terminal::restore();

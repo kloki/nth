@@ -2,6 +2,7 @@ mod render;
 
 use std::{
     io::{IsTerminal, Write},
+    path::PathBuf,
     process::ExitCode,
     sync::Arc,
     time::Instant,
@@ -9,6 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
+use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
 use nth_protocol::Provider;
 use nth_session::{CancellationToken, Session, Store};
@@ -58,12 +60,22 @@ struct Endpoint {
     base_url: String,
 }
 
-/// A fresh session in the working directory and the client it talks through.
-fn setup(endpoint: Endpoint) -> Result<(Session, ChatClient)> {
+/// A fresh session in the working directory, with its instruction files
+/// read, and the client it talks through.
+async fn setup(endpoint: Endpoint, paths: &Paths) -> Result<(Session, ChatClient)> {
     let cwd = std::env::current_dir().context("no working directory")?;
-    let session = Session::new(endpoint.model, cwd);
     let provider = ChatClient::new(endpoint.base_url, api_key()?);
+    let session = Session::new(endpoint.model, cwd.clone()).with_context(context(cwd, paths).await);
     Ok((session, provider))
+}
+
+/// What applies to `cwd`. Problems with it are warned about, not fatal.
+async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
+    let context = nth_context::Context::load(cwd, paths.clone()).await;
+    for warning in &context.warnings {
+        eprintln!("{} {warning}", "!".yellow().bold());
+    }
+    Arc::new(context)
 }
 
 fn api_key() -> Result<String> {
@@ -90,25 +102,29 @@ async fn main() -> ExitCode {
 /// With `resume`, the last session comes back as it was: its model, effort
 /// and working directory win over the flags and where nth was started.
 async fn chat(resume: bool, endpoint: Endpoint) -> Result<()> {
-    let (mut session, provider) = setup(endpoint)?;
+    let paths = Paths::from_env();
+    let (mut session, provider) = setup(endpoint, &paths).await?;
     let store = Store::open()?;
     if resume {
         session = store
             .latest()
             .await?
             .context("no saved session to continue")?;
+        let context = context(session.cwd.clone(), &paths).await;
+        session.set_context(context);
     }
     nth_tui::run(
         session,
         Arc::new(provider),
         Arc::new(nth_tools::all()),
         store,
+        paths,
     )
     .await
 }
 
 async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
-    let (mut session, provider) = setup(endpoint)?;
+    let (mut session, provider) = setup(endpoint, &Paths::from_env()).await?;
     let cwd = session.cwd.clone();
     let tools = nth_tools::all();
 
