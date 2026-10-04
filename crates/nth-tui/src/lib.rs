@@ -24,17 +24,15 @@ use std::{
 
 use anyhow::{Result, bail};
 use nth_context::Paths;
-use nth_format::Formatters;
 use nth_lsp::ServerStatus;
 use nth_protocol::{Provider, Tool};
 use nth_session::{Session, Store};
 use tokio::sync::watch;
 
 /// What checks the tools' writes, shown on the status bar: the states of
-/// the language servers the tools start, and the formatters they run.
+/// the language servers the tools start.
 pub struct Checkers {
     pub lsp: watch::Receiver<Vec<ServerStatus>>,
-    pub format: Arc<Formatters>,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -64,7 +62,6 @@ pub async fn run(
         .with_paths(paths)
         .with_history(history)
         .with_lsp(checkers.lsp)
-        .with_formatters(checkers.format)
         .run(&mut terminal)
         .await;
     terminal::restore();

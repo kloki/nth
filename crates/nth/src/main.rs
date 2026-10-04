@@ -180,11 +180,10 @@ async fn chat(resume: bool, config: Config) -> Result<()> {
         session.max_steps = config.session.max_steps;
     }
     let post_write = post_write(&config);
-    // From the same servers and formatters the tools use, so the status
-    // bar shows what checks the writes.
+    // From the same servers the tools use, so the status bar shows what
+    // checks the writes.
     let checkers = nth_tui::Checkers {
         lsp: post_write.lsp().status(),
-        format: post_write.formatters().clone(),
     };
     nth_tui::run(
         session,

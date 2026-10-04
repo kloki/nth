@@ -24,7 +24,6 @@ use futures::StreamExt;
 use input::Input;
 use job::Job;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_format::Formatters;
 use nth_lsp::ServerStatus;
 use nth_protocol::{Ask, BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
 use nth_session::{Session, Store, Summary, store};
@@ -95,12 +94,6 @@ pub struct App {
     pub servers: Vec<ServerStatus>,
     /// Where `servers` comes from; `None` once its sender is gone.
     lsp: Option<watch::Receiver<Vec<ServerStatus>>>,
-    /// The names of the formatters that run on writes in `cwd`.
-    pub formatters: Vec<String>,
-    /// The formatters the tools run, probed for `cwd` in the background
-    /// since probing runs commands.
-    format: Option<Arc<Formatters>>,
-    format_probing: Job<Vec<String>>,
     /// What the last model reply used; `None` until the first one.
     pub usage: Option<Usage>,
     /// Queued again when the tree may have changed mid-load, like `indexing`.
@@ -199,7 +192,6 @@ enum Step {
     HistorySaved(Result<std::io::Result<()>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
-    FormattersProbed(Result<Vec<String>, JoinError>),
     Tick,
 }
 
@@ -233,9 +225,6 @@ impl App {
             git: None,
             servers: Vec::new(),
             lsp: None,
-            formatters: Vec::new(),
-            format: None,
-            format_probing: Job::default(),
             usage: None,
             git_loading: Job::default(),
             llms: None,
@@ -281,13 +270,6 @@ impl App {
         self
     }
 
-    /// Shows the formatters among `format` that run in the working
-    /// directory on the status bar.
-    pub fn with_formatters(mut self, format: Arc<Formatters>) -> Self {
-        self.format = Some(format);
-        self
-    }
-
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut input = EventStream::new();
         let mut tick = tokio::time::interval(TICK);
@@ -295,7 +277,6 @@ impl App {
         self.index_files();
         self.load_git();
         self.list_llms();
-        self.probe_formatters();
 
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -312,7 +293,6 @@ impl App {
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
-                formatters = self.format_probing.join() => Step::FormattersProbed(formatters),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -338,9 +318,6 @@ impl App {
                     self.history_saved(saved.context("saving prompt history failed")?)
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
-                Step::FormattersProbed(formatters) => {
-                    self.formatters = formatters.context("probing formatters failed")?
-                }
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
@@ -455,25 +432,6 @@ impl App {
         }
     }
 
-    /// Finds the formatters that run in `cwd`, replacing a probe of the
-    /// directory before.
-    pub(super) fn probe_formatters(&mut self) {
-        let Some(format) = self.format.clone() else {
-            return;
-        };
-        let cwd = self.cwd.clone();
-        self.format_probing.start(|_| {
-            tokio::spawn(async move {
-                let status = format.status(&cwd).await;
-                status
-                    .into_iter()
-                    .filter(|formatter| formatter.command.is_ok())
-                    .map(|formatter| formatter.name)
-                    .collect()
-            })
-        });
-    }
-
     /// Lists the files off the runtime; a big tree takes a while to walk.
     /// The walk checks its token between entries, since a blocking task
     /// can't be aborted and quitting shouldn't wait for it.
@@ -562,7 +520,7 @@ async fn lsp_changed(lsp: &mut Option<watch::Receiver<Vec<ServerStatus>>>) -> bo
 pub(crate) mod tests {
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{BoxError, ModelInfo, Request, StreamEvent};
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     use super::*;
 
@@ -739,14 +697,13 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn status_line_two_shows_servers_and_formatters() {
+    async fn status_line_two_shows_the_servers() {
         use nth_lsp::ServerState;
 
         let (tx, rx) = watch::channel(vec![server("rust", ServerState::Starting)]);
         let mut app = app().with_lsp(rx);
-        app.formatters = vec!["rustfmt".into(), "shfmt".into()];
         let starting = buffer(&mut app);
-        assert_eq!(rows(&mut app)[15].trim_end(), " ● rust  rustfmt · shfmt");
+        assert_eq!(rows(&mut app)[15].trim_end(), " ● rust");
         assert_eq!(starting[(1, 15)].fg, Color::Yellow, "starting");
 
         tx.send_replace(vec![
@@ -757,26 +714,9 @@ pub(crate) mod tests {
         app.servers_changed(changed);
         let after = buffer(&mut app);
 
-        assert_eq!(
-            rows(&mut app)[15].trim_end(),
-            " ● rust  ● bash  rustfmt · shfmt"
-        );
+        assert_eq!(rows(&mut app)[15].trim_end(), " ● rust  ● bash");
         assert_eq!(after[(1, 15)].fg, Color::Green, "connected");
         assert_eq!(after[(9, 15)].fg, Color::Red, "broken");
-        assert!(
-            after[(17, 15)].modifier.contains(Modifier::DIM),
-            "formatters are dim"
-        );
-    }
-
-    #[test]
-    fn a_narrow_status_line_two_is_cut_at_the_end() {
-        let mut app = app();
-        app.formatters = ["biome", "prettier", "rustfmt", "shfmt", "gofmt"]
-            .map(String::from)
-            .to_vec();
-        let rows = rows(&mut app);
-        assert_eq!(rows[15], " biome · prettier · rustfmt · shfmt · g ");
     }
 
     #[tokio::test]
@@ -795,26 +735,6 @@ pub(crate) mod tests {
             never.await.is_err(),
             "a closed channel never wakes the loop"
         );
-    }
-
-    #[tokio::test]
-    async fn formatters_are_probed_for_the_working_directory() {
-        let mut config = nth_format::FormatConfig::default();
-        for (name, disabled) in [("tidy", false), ("off", true)] {
-            let entry = nth_format::FormatterConfig {
-                command: Some(vec!["tidy".into(), "$FILE".into()]),
-                extensions: Some(vec![".txt".into()]),
-                disabled,
-                ..Default::default()
-            };
-            config.formatters.insert(name.into(), entry);
-        }
-        let mut app = app().with_formatters(Arc::new(Formatters::new(&config)));
-        app.probe_formatters();
-
-        let found = app.format_probing.join().await.expect("probes");
-        assert!(found.contains(&"tidy".to_string()), "{found:?}");
-        assert!(!found.contains(&"off".to_string()), "{found:?}");
     }
 
     #[tokio::test]

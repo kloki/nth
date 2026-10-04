@@ -95,10 +95,8 @@ impl App {
         self.usage = None;
         self.files.clear();
         self.session = Some(session);
-        self.formatters.clear();
         self.index_files();
         self.load_git();
-        self.probe_formatters();
     }
 
     fn session_id(&self) -> Option<uuid::Uuid> {
