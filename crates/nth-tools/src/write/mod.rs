@@ -223,6 +223,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_language_server_not_on_path_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lsp = nth_lsp::LspConfig::default();
+        lsp.servers.insert(
+            "ghost".into(),
+            nth_lsp::ServerConfig {
+                command: vec!["no-such-server-nth".into()],
+                extensions: vec![".txt".into()],
+                ..Default::default()
+            },
+        );
+        let format = nth_format::FormatConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let tool = Write::new(PostWrite::new(
+            std::sync::Arc::new(nth_format::Formatters::new(&format)),
+            nth_lsp::Lsp::new(&lsp),
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(json!({ "filePath": "a.txt", "content": "a\n" }), &ctx)
+            .await
+            .expect("write");
+
+        let path = dir.path().join("a.txt");
+        assert_eq!(out, format!("Created file: {}", path.display()));
+    }
+
+    #[tokio::test]
     async fn bom_survives_the_formatter() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.txt");

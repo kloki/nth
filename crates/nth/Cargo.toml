@@ -7,6 +7,7 @@ repository.workspace = true
 [dependencies]
 nth-context.workspace = true
 nth-format.workspace = true
+nth-lsp.workspace = true
 nth-llm.workspace = true
 nth-protocol.workspace = true
 nth-session.workspace = true

@@ -1,4 +1,5 @@
 mod config;
+mod lsp;
 mod render;
 
 use std::{
@@ -63,6 +64,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the language servers and where they would run for the working directory
+    Lsp {
+        /// Print JSON lines, the default when stdout is not a terminal
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<lsp::LspCommand>,
+    },
     /// Print the config in use, with every default filled in
     Config,
 }
@@ -104,9 +113,13 @@ fn client(config: &Config) -> Result<ChatClient> {
     Ok(ChatClient::new(config.provider.base_url.clone(), api_key))
 }
 
-/// Runs after every tool that writes a file.
+/// Runs after every tool that writes a file. Its language servers are the
+/// only ones this process starts: the read tool shares them.
 fn post_write(config: &Config) -> nth_tools::PostWrite {
-    nth_tools::PostWrite::new(Arc::new(nth_format::Formatters::new(&config.format)))
+    nth_tools::PostWrite::new(
+        Arc::new(nth_format::Formatters::new(&config.format)),
+        nth_lsp::Lsp::new(&config.lsp),
+    )
 }
 
 /// What applies to `cwd`. Problems with it are warned about, not fatal.
@@ -138,6 +151,7 @@ async fn main() -> ExitCode {
             }
             Some(Command::Skills { json }) => skills(json, &config).await,
             Some(Command::Formatters { json }) => formatters(json, &config).await,
+            Some(Command::Lsp { json, command }) => lsp::run(command, json, &config).await,
             Some(Command::Config) => show_config(cli.config, &config),
         },
     };
