@@ -9,6 +9,7 @@ license = "MIT"
 repository = "https://github.com/kloki/nth"
 
 [workspace.dependencies]
+nth-context = { path = "crates/nth-context" }
 nth-llm = { path = "crates/nth-llm" }
 nth-protocol = { path = "crates/nth-protocol" }
 nth-session = { path = "crates/nth-session" }

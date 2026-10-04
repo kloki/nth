@@ -149,7 +149,7 @@ Each subsystem copies opencode's behaviour unless the table says otherwise. The 
 | Skills | `SKILL.md` folders in `~/.config/nth/skills` and `.nth/skills`. Names and descriptions go in the system prompt, and a `skill` tool loads the body. | `skill/`, `tool/skill.ts` |
 | Formatting | After every write or edit, run the formatter for that file type: rustfmt, prettier, ruff. The model sees the formatted file. | `format/formatter.ts` |
 | LSP | Start rust-analyzer per worktree, lazily. After an edit, wait briefly for diagnostics and append errors to the tool result. | `lsp/`, diagnostics in edit tool |
-| Instructions | Load `AGENTS.md` from the repo root and `~/.config/nth/AGENTS.md`. | `session/instruction.ts` |
+| Instructions | One global file, the first of `~/.config/nth/AGENTS.md`, `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`. Then every `AGENTS.md` from the repo root down to the cwd, or every `CLAUDE.md` when there is no `AGENTS.md`. Read afresh when a session is resumed. | `session/instruction.ts` |
 | Compaction | M2. Summarise older turns once the context window is 80% full. | `session/compaction.ts` |
 
 **Plan and Build**

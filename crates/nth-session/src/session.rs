@@ -1,5 +1,6 @@
-use std::{path::PathBuf, time::SystemTime};
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
+use nth_context::Context;
 use nth_protocol::{Effort, Event, Message, Provider, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -23,12 +24,17 @@ pub struct Session {
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
     pub messages: Vec<Message>,
+    /// Not saved: it is read afresh for the working directory, so a resumed
+    /// session sees the instruction files as they are now.
+    #[serde(skip)]
+    context: Arc<Context>,
 }
 
 impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
-        let messages = vec![Message::System(system_prompt(&model, &cwd))];
+        let context = Arc::<Context>::default();
+        let messages = vec![Message::System(system_prompt(&model, &cwd, &context))];
         let now = SystemTime::now();
         Self {
             id: Uuid::new_v4(),
@@ -38,7 +44,25 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages,
+            context,
         }
+    }
+
+    /// Builder form of [`Session::set_context`].
+    pub fn with_context(mut self, context: Arc<Context>) -> Self {
+        self.set_context(context);
+        self
+    }
+
+    /// Puts `context` into the system prompt. A loaded session has none
+    /// until this is called.
+    pub fn set_context(&mut self, context: Arc<Context>) {
+        self.context = context;
+        self.rewrite_system_prompt();
+    }
+
+    pub fn context(&self) -> &Arc<Context> {
+        &self.context
     }
 
     /// Nothing has been asked yet.
@@ -58,8 +82,12 @@ impl Session {
     /// prompt changes, since it names the model.
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+        self.rewrite_system_prompt();
+    }
+
+    fn rewrite_system_prompt(&mut self) {
         if let Some(first @ Message::System(_)) = self.messages.first_mut() {
-            *first = Message::System(system_prompt(&self.model, &self.cwd));
+            *first = Message::System(system_prompt(&self.model, &self.cwd, &self.context));
         }
     }
 
@@ -132,10 +160,37 @@ mod tests {
         assert_eq!(
             session.messages,
             [
-                Message::System(system_prompt("kimi-k3", ".".as_ref())),
+                Message::System(system_prompt("kimi-k3", ".".as_ref(), &Context::default())),
                 Message::User("go".into()),
             ]
         );
+    }
+
+    #[test]
+    fn context_goes_into_the_system_prompt_but_not_the_save() {
+        let context = Arc::new(Context {
+            instructions: vec![nth_context::Instruction {
+                path: "/repo/AGENTS.md".into(),
+                content: "Be brief.".into(),
+            }],
+            warnings: Vec::new(),
+        });
+        let mut session = Session::new("glm-5.3", "/repo".into()).with_context(context.clone());
+        let Message::System(prompt) = &session.messages[0] else {
+            panic!("starts with the system prompt");
+        };
+        assert!(prompt.ends_with("Instructions from: /repo/AGENTS.md\nBe brief.\n"));
+
+        session.set_model("kimi-k3");
+        assert_eq!(
+            session.messages[0],
+            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &context)),
+            "a new model keeps the instructions"
+        );
+
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert!(back.context().instructions.is_empty());
     }
 
     #[test]

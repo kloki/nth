@@ -5,6 +5,7 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
+nth-context.workspace = true
 nth-llm.workspace = true
 nth-protocol.workspace = true
 nth-session.workspace = true

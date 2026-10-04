@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+nth-context.workspace = true
 nth-protocol.workspace = true
 futures.workspace = true
 serde.workspace = true

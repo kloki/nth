@@ -45,6 +45,13 @@ impl Chat {
         chat
     }
 
+    /// Problems found while setting up, such as an unreadable AGENTS.md.
+    pub fn warn(&mut self, warnings: &[String]) {
+        for warning in warnings {
+            self.transcript.push_error(warning.clone());
+        }
+    }
+
     pub fn apply(&mut self, event: &Event) {
         self.transcript.apply(event);
     }
