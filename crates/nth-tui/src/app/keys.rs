@@ -19,6 +19,8 @@ pub enum Action {
     ClearOrQuit,
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
+    /// Opens a copy of the plan in your editor.
+    EditPlan,
     Insert(char),
     /// Moves between the question panel's tabs; at the prompt, switches
     /// between plan and act.
@@ -58,6 +60,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
+        KeyCode::Char('g') if ctrl => Action::EditPlan,
         KeyCode::Char('t') if ctrl => Action::NextContent,
         KeyCode::Char('q') if ctrl => Action::CloseContent,
         KeyCode::Char('w') if ctrl => Action::StopContent,
@@ -236,6 +239,7 @@ impl App {
             | Action::Top
             | Action::Bottom => {}
             Action::LlmPicker => self.open_llm_picker(),
+            Action::EditPlan => self.edit_plan(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.ask_quit(),
@@ -305,6 +309,7 @@ mod tests {
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), Some(Action::NextTab));
         assert_eq!(key(KeyCode::BackTab, none), Some(Action::PrevTab));
+        assert_eq!(key(KeyCode::Char('g'), ctrl), Some(Action::EditPlan));
         assert_eq!(key(KeyCode::Char('t'), ctrl), Some(Action::NextContent));
         assert_eq!(key(KeyCode::Char('q'), ctrl), Some(Action::CloseContent));
         assert_eq!(key(KeyCode::Char('1'), ctrl), Some(Action::Content(0)));

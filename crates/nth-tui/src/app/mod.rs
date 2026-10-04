@@ -6,6 +6,7 @@
 mod checks;
 mod completion;
 mod content;
+mod editor;
 mod files;
 mod git;
 mod history;
@@ -197,6 +198,12 @@ pub struct App {
     /// A word on what the last key did not do, on the status bar until the
     /// next key.
     pub hint: Option<String>,
+    /// ctrl+g asked for the editor, which the loop opens after this step.
+    pending_editor: bool,
+    /// The plan copy your editor has open; the app draws nothing while it
+    /// runs.
+    editing: Option<editor::Editing>,
+    editor: Job<std::io::Result<std::process::ExitStatus>>,
     /// ctrl+c was pressed once with monitors running; again quits.
     quit_armed: bool,
     quit: bool,
@@ -219,6 +226,14 @@ fn draw_scrollbar(frame: &mut Frame, content: Rect, mut state: ScrollbarState) {
     frame.render_stateful_widget(bar, column, &mut state);
 }
 
+/// The next terminal event, or never while there is no stream.
+async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<TermEvent>> {
+    match input {
+        Some(input) => input.next().await,
+        None => std::future::pending().await,
+    }
+}
+
 enum Step {
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
@@ -233,6 +248,7 @@ enum Step {
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
+    EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
@@ -322,6 +338,9 @@ impl App {
             notices_due: None,
             hold_notices: false,
             hint: None,
+            pending_editor: false,
+            editing: None,
+            editor: Job::default(),
             quit_armed: false,
             quit: false,
         }
@@ -348,7 +367,8 @@ impl App {
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let mut input = EventStream::new();
+        // `None` while your editor has the terminal.
+        let mut input = Some(EventStream::new());
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
@@ -357,10 +377,16 @@ impl App {
         self.read_plan();
 
         while !self.quit {
-            terminal.draw(|frame| self.draw(frame))?;
+            if self.pending_editor {
+                self.open_editor(&mut input).await;
+            }
+            if !self.is_editing() {
+                terminal.draw(|frame| self.draw(frame))?;
+            }
             let busy = self.is_busy();
             let step = tokio::select! {
-                event = input.next() => Step::Terminal(event),
+                event = next_input(&mut input) => Step::Terminal(event),
+                ended = self.editor.join() => Step::EditorClosed(ended),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 Some(panel) = self.screen_rx.recv() => Step::Show(panel),
@@ -403,6 +429,9 @@ impl App {
                 }
                 Step::HistorySaved(saved) => {
                     self.history_saved(saved.context("saving prompt history failed")?)
+                }
+                Step::EditorClosed(ended) => {
+                    self.editor_closed(terminal, &mut input, ended).await?
                 }
                 Step::PlanRead(plan) => self.plan_read(plan.context("reading the plan failed")?),
                 Step::ServersFound(servers) => {

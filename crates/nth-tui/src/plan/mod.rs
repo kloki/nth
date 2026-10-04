@@ -39,6 +39,11 @@ impl PlanView {
         self.current.is_some()
     }
 
+    /// The plan as last read.
+    pub fn text(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+
     /// The plan now reads `text`, or is gone with `None`. Returns whether
     /// that changed it.
     pub fn update(&mut self, text: Option<String>) -> bool {
@@ -145,6 +150,7 @@ impl PlanView {
         if added + removed > 0 {
             header.push(format!("+{added} -{removed}"));
         }
+        header.push("ctrl+g edit".into());
         header.push("/approve".into());
         let mut lines = vec![
             Line::styled(header.join(" · "), theme::dim()),
@@ -257,7 +263,7 @@ mod tests {
         assert_eq!(
             text(&lines),
             [
-                ".nth/plans/1.md · +1 -1 · /approve",
+                ".nth/plans/1.md · +1 -1 · ctrl+g edit · /approve",
                 "",
                 "  keep",
                 "- gone",

@@ -6,6 +6,7 @@ use std::{
 };
 
 use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
+use nth_session::plan::edits::{self, PlanEdits};
 use ratatui::text::Line;
 
 use super::after_write::{self, Note};
@@ -15,6 +16,8 @@ pub enum Entry {
     User(String),
     /// What a background monitor said, as the model got it.
     Notice(NoticeSummary),
+    /// The plan as you edited it with ctrl+g.
+    PlanEdits(PlanEdits),
     /// Shown as one line; the reasoning text itself stays in the session,
     /// where the model needs it.
     Reasoning {
@@ -166,18 +169,17 @@ impl Transcript {
             None => text,
         };
         let (notices, typed) = split_notices(&text);
-        if notices.is_empty() {
-            if !text.is_empty() {
-                self.push(Entry::User(text));
-            }
-            return;
-        }
-        let typed = typed.to_string();
         for notice in notices {
             self.push(Entry::Notice(notice));
         }
-        if !typed.is_empty() {
-            self.push(Entry::User(typed));
+        if typed.is_empty() {
+            return;
+        }
+        // The diff and instruction ctrl+g sends are for the model; the
+        // chat says only that the plan was edited.
+        match edits::parse(typed) {
+            Some(edits) => self.push(Entry::PlanEdits(edits)),
+            None => self.push(Entry::User(typed.to_string())),
         }
     }
 
@@ -528,6 +530,21 @@ pub(super) mod tests {
         t.apply(&Event::ToolStarted(tool("1", "write", &arguments)));
 
         assert_eq!(outputs(&t), [numbered(1..=10)]);
+    }
+
+    #[test]
+    fn plan_edits_show_as_one_row() {
+        let text = edits::render("/repo/plan.md".as_ref(), "a\n", "a\n<!-- b? -->\n");
+        let mut t = Transcript::new("/repo".into());
+        t.push_user(text);
+
+        assert_eq!(
+            t.entries().collect::<Vec<_>>(),
+            [&Entry::PlanEdits(PlanEdits {
+                added: 1,
+                removed: 0
+            })]
+        );
     }
 
     #[test]
