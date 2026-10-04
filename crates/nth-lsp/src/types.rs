@@ -137,6 +137,13 @@ pub struct ConfigurationItem {
     pub section: Option<String>,
 }
 
+/// rust-analyzer's `experimental/serverStatus`. Its `health` and `message`
+/// are for people; only `quiescent` (done loading the project) matters here.
+#[derive(Debug, Deserialize)]
+pub struct ServerStatusParams {
+    pub quiescent: bool,
+}
+
 /// The answer to `textDocument/diagnostic`. An "unchanged" report has no
 /// `items`.
 #[derive(Debug, Default, Deserialize)]

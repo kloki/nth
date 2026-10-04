@@ -61,6 +61,13 @@ pub(crate) struct Store {
     registrations: HashMap<String, Registration>,
     /// Bumped on every registration change, so waiters can notice one.
     registrations_changed: u64,
+    /// The `quiescent` flag of rust-analyzer's `experimental/serverStatus`:
+    /// false while it is still loading the project, when an empty answer
+    /// means "not looked yet" rather than "no problems". `None` for servers
+    /// that never say, which count as ready.
+    quiescent: Option<bool>,
+    /// When the server last turned quiescent.
+    quiesced_at: Option<Instant>,
 }
 
 impl Store {
@@ -68,6 +75,11 @@ impl Store {
     fn merged(&self, path: &Path) -> Vec<Diagnostic> {
         let both = self.push.get(path).into_iter().chain(self.pull.get(path));
         dedup(both.flatten().cloned())
+    }
+
+    /// The server said it is still loading the project.
+    fn loading(&self) -> bool {
+        self.quiescent == Some(false)
     }
 }
 
@@ -186,6 +198,8 @@ impl Client {
             "initializationOptions": initialization.clone().unwrap_or_else(|| json!({})),
             "capabilities": {
                 "window": { "workDoneProgress": true },
+                // rust-analyzer then reports when it has loaded the project.
+                "experimental": { "serverStatusNotification": true },
                 "workspace": {
                     "configuration": true,
                     "didChangeWatchedFiles": { "dynamicRegistration": true },

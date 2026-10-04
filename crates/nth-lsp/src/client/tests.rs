@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     Client,
-    wait::{DEBOUNCE, DOCUMENT_WAIT},
+    wait::{COLD_WAIT, DEBOUNCE, DOCUMENT_WAIT},
 };
 use crate::{
     transport::{read_message, write_message},
@@ -61,6 +61,23 @@ impl Fake {
             .await;
     }
 
+    /// rust-analyzer's `experimental/serverStatus`.
+    async fn status(&mut self, quiescent: bool) {
+        let params = json!({ "health": "ok", "quiescent": quiescent });
+        self.send(
+            json!({ "jsonrpc": "2.0", "method": "experimental/serverStatus", "params": params }),
+        )
+        .await;
+    }
+
+    /// Answers the next pull with a full report of `messages`.
+    async fn answer_pull(&mut self, messages: &[&str]) {
+        let request = self.expect("textDocument/diagnostic").await;
+        let items: Vec<_> = messages.iter().map(|m| error(m)).collect();
+        self.reply(&request, json!({ "kind": "full", "items": items }))
+            .await;
+    }
+
     /// Reads a touch: the watched-files notification, then didOpen or
     /// didChange, which is returned.
     async fn touched(&mut self) -> Value {
@@ -104,6 +121,10 @@ async fn connect(capabilities: Value, initialization: Option<Value>) -> (Client,
         assert_eq!(init["params"]["rootUri"], "file:///project");
         assert_eq!(
             init["params"]["capabilities"]["textDocument"]["diagnostic"]["dynamicRegistration"],
+            true
+        );
+        assert_eq!(
+            init["params"]["capabilities"]["experimental"]["serverStatusNotification"],
             true
         );
         fake.reply(&init, json!({ "capabilities": capabilities }))
@@ -342,6 +363,113 @@ async fn a_registration_enables_pulling_with_its_identifier() {
     );
     assert_eq!(after.elapsed(), Duration::from_millis(50));
     assert_eq!(messages(&client, &path), ["checked"]);
+}
+
+/// Capabilities of a server that answers `textDocument/diagnostic`.
+fn pulls() -> Value {
+    json!({ "diagnosticProvider": { "interFileDependencies": false, "workspaceDiagnostics": false } })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_without_status_trusts_an_empty_pull() {
+    let (client, mut fake) = connect(pulls(), None).await;
+    let (_dir, path) = source_file("x");
+    let after = Instant::now();
+    let (version, _) = tokio::join!(client.open_or_change(&path), fake.touched());
+
+    let _ = tokio::join!(
+        client.wait_for_diagnostics(&path, version.unwrap(), after),
+        fake.answer_pull(&[])
+    );
+    assert!(after.elapsed() < DEBOUNCE);
+    assert!(messages(&client, &path).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_loading_server_is_pulled_again_once_quiescent() {
+    let (client, mut fake) = connect(pulls(), None).await;
+    let (_dir, path) = source_file("x");
+    let after = Instant::now();
+    let (version, _) = tokio::join!(client.open_or_change(&path), fake.touched());
+
+    // Longer than a warm wait lasts.
+    let loading = DOCUMENT_WAIT * 2;
+    let server = async {
+        fake.status(false).await;
+        fake.answer_pull(&[]).await;
+        tokio::time::sleep(loading).await;
+        fake.status(true).await;
+        fake.answer_pull(&["late"]).await;
+        fake
+    };
+    let _ = tokio::join!(
+        client.wait_for_diagnostics(&path, version.unwrap(), after),
+        server
+    );
+    assert_eq!(after.elapsed(), loading);
+    assert_eq!(messages(&client, &path), ["late"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_loading_server_is_waited_for_until_it_pushes() {
+    let (client, mut fake) = connect(json!({}), None).await;
+    let (_dir, path) = source_file("x");
+    let after = Instant::now();
+    let (version, _) = tokio::join!(client.open_or_change(&path), fake.touched());
+
+    let loading = DOCUMENT_WAIT * 2;
+    let server = async {
+        fake.status(false).await;
+        fake.publish(&path, None, &[]).await;
+        tokio::time::sleep(loading).await;
+        fake.status(true).await;
+        fake.publish(&path, None, &["late"]).await;
+        fake
+    };
+    let _ = tokio::join!(
+        client.wait_for_diagnostics(&path, version.unwrap(), after),
+        server
+    );
+    assert_eq!(after.elapsed(), loading + DEBOUNCE);
+    assert_eq!(messages(&client, &path), ["late"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_empty_push_counts_once_the_server_has_loaded() {
+    let (client, mut fake) = connect(json!({}), None).await;
+    let (_dir, path) = source_file("x");
+    let after = Instant::now();
+    let (version, _) = tokio::join!(client.open_or_change(&path), fake.touched());
+
+    let loading = Duration::from_millis(1_000);
+    let server = async {
+        fake.status(false).await;
+        fake.publish(&path, None, &[]).await;
+        tokio::time::sleep(loading).await;
+        fake.status(true).await;
+        fake
+    };
+    let _ = tokio::join!(
+        client.wait_for_diagnostics(&path, version.unwrap(), after),
+        server
+    );
+    // No second push came, so the empty one stands after a debounce.
+    assert_eq!(after.elapsed(), loading + DEBOUNCE);
+    assert!(messages(&client, &path).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn gives_up_on_a_server_that_never_loads() {
+    let (client, mut fake) = connect(json!({}), None).await;
+    let (_dir, path) = source_file("x");
+    let after = Instant::now();
+    let (version, _) = tokio::join!(client.open_or_change(&path), fake.touched());
+    fake.status(false).await;
+
+    client
+        .wait_for_diagnostics(&path, version.unwrap(), after)
+        .await;
+    assert_eq!(after.elapsed(), COLD_WAIT);
 }
 
 #[tokio::test]

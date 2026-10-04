@@ -21,7 +21,7 @@ use crate::{
     types::{
         ConfigurationParams, ContentChange, DidChangeParams, DidChangeWatchedFilesParams,
         DidOpenParams, FILE_CHANGED, FILE_CREATED, FileEvent, Position, PublishDiagnosticsParams,
-        Range, RegistrationParams, TextDocumentItem, UnregistrationParams,
+        Range, RegistrationParams, ServerStatusParams, TextDocumentItem, UnregistrationParams,
         VersionedTextDocumentIdentifier,
     },
     uri,
@@ -317,9 +317,30 @@ impl<W: AsyncWrite + Unpin> Task<W> {
     }
 
     fn notification(&mut self, method: &str, params: Value) {
-        if method != "textDocument/publishDiagnostics" {
-            return;
+        match method {
+            "textDocument/publishDiagnostics" => self.published(params),
+            "experimental/serverStatus" => self.server_status(params),
+            _ => {}
         }
+    }
+
+    fn server_status(&mut self, params: Value) {
+        let Ok(status) = serde_json::from_value::<ServerStatusParams>(params) else {
+            return;
+        };
+        self.store.send_if_modified(|store| {
+            if store.quiescent == Some(status.quiescent) {
+                return false;
+            }
+            store.quiescent = Some(status.quiescent);
+            if status.quiescent {
+                store.quiesced_at = Some(Instant::now());
+            }
+            true
+        });
+    }
+
+    fn published(&mut self, params: Value) {
         let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(params) else {
             return;
         };

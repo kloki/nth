@@ -25,6 +25,11 @@ use crate::{
 pub(crate) const DEBOUNCE: Duration = Duration::from_millis(150);
 /// The most a touch waits for one file's diagnostics.
 pub(crate) const DOCUMENT_WAIT: Duration = Duration::from_millis(5_000);
+/// The most a touch waits when the server says it is still loading the
+/// project. A cold rust-analyzer answers nothing useful until it has run
+/// `cargo metadata` and indexed the crate graph, which takes about as long
+/// as it may take to start, so it gets the initialize budget.
+pub(crate) const COLD_WAIT: Duration = super::INITIALIZE_TIMEOUT;
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(3_000);
 
 /// One `textDocument/diagnostic` answer, by file.
@@ -40,31 +45,54 @@ struct Pulled {
 impl Client {
     /// Returns once diagnostics for `version` of `path` are in, or after
     /// [`DOCUMENT_WAIT`] from `after` (the moment of the touch) with
-    /// whatever there is. Read them with [`Client::diagnostics`].
+    /// whatever there is; [`COLD_WAIT`] if the server is still loading the
+    /// project. Read them with [`Client::diagnostics`].
     pub async fn wait_for_diagnostics(&self, path: &Path, version: i32, after: Instant) {
-        let deadline = after + DOCUMENT_WAIT;
         let mut push = std::pin::pin!(fresh_push(
             self.store.clone(),
             path.to_path_buf(),
             version,
             after,
-            deadline
         ));
-        let mut registrations = self.store.clone();
-        while Instant::now() < deadline {
-            let seen = registrations.borrow_and_update().registrations_changed;
-            if self.pull_document(path).await {
-                return;
+        let mut changes = self.store.clone();
+        let mut deadline = after + DOCUMENT_WAIT;
+        let mut seen = Wake::of(&changes.borrow_and_update());
+        let mut pull = true;
+        loop {
+            if seen.loading {
+                deadline = deadline.max(after + COLD_WAIT);
+            }
+            if pull {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                if self.pull_document(path).await && self.pulled_an_answer(path) {
+                    return;
+                }
             }
             tokio::select! {
-                _ = &mut push => return,
-                changed = registration_change(&mut registrations, seen, deadline) => {
-                    if !changed {
+                () = &mut push => return,
+                () = sleep_until(deadline) => return,
+                now = woken(&mut changes, seen) => {
+                    let Some(now) = now else {
                         return;
-                    }
+                    };
+                    // A server that starts loading only extends the wait;
+                    // it is asked again once it has finished.
+                    pull = now.registrations != seen.registrations
+                        || (seen.loading && !now.loading);
+                    seen = now;
                 }
             }
         }
+    }
+
+    /// Whether a pull that covered `path` really answered: an empty report
+    /// from a server still loading the project only means it has not looked
+    /// yet, so it is pulled again once loading ends.
+    fn pulled_an_answer(&self, path: &Path) -> bool {
+        let store = self.store.borrow();
+        !store.loading() || store.pull.get(path).is_some_and(|d| !d.is_empty())
     }
 
     /// Pulls the file's diagnostics from every source the server offers,
@@ -186,15 +214,14 @@ impl Client {
     }
 }
 
-/// Resolves true once a push for `path` that belongs to this touch has
-/// been quiet for [`DEBOUNCE`], false at `deadline`.
+/// Resolves once a push for `path` that belongs to this touch has been
+/// quiet for [`DEBOUNCE`], or when the client is gone.
 async fn fresh_push(
     mut store: watch::Receiver<Store>,
     path: PathBuf,
     version: i32,
     after: Instant,
-    deadline: Instant,
-) -> bool {
+) {
     loop {
         let settled_at = {
             let store = store.borrow_and_update();
@@ -203,38 +230,57 @@ async fn fresh_push(
                 // that does not name this version, is stale.
                 let stale = published.is_some_and(|v| v != version)
                     || (at < after && published != Some(version));
-                (!stale).then_some(at + DEBOUNCE)
+                if stale {
+                    return None;
+                }
+                if store.push.get(&path).is_some_and(|d| !d.is_empty()) {
+                    return Some(at + DEBOUNCE);
+                }
+                // An empty push from a server still loading the project is
+                // no answer yet. Once it has loaded it gets a debounce to
+                // publish again before the empty one counts.
+                if store.loading() {
+                    return None;
+                }
+                let since = store.quiesced_at.map_or(at, |quiesced| quiesced.max(at));
+                Some(since + DEBOUNCE)
             })
         };
         tokio::select! {
-            _ = sleep_until(settled_at.unwrap_or(deadline)), if settled_at.is_some() => return true,
-            _ = sleep_until(deadline) => return false,
+            () = sleep_until(settled_at.unwrap_or(after)), if settled_at.is_some() => return,
             changed = store.changed() => {
                 if changed.is_err() {
-                    return false;
+                    return;
                 }
             }
         }
     }
 }
 
-/// True when the diagnostic registrations change before `deadline`.
-async fn registration_change(
-    store: &mut watch::Receiver<Store>,
-    seen: u64,
-    deadline: Instant,
-) -> bool {
+/// What in the [`Store`] makes a waiting pull worth repeating.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Wake {
+    registrations: u64,
+    loading: bool,
+}
+
+impl Wake {
+    fn of(store: &Store) -> Self {
+        Self {
+            registrations: store.registrations_changed,
+            loading: store.loading(),
+        }
+    }
+}
+
+/// The new [`Wake`] once the diagnostic registrations or the server's
+/// loading state differ from `seen`; `None` when the client is gone.
+async fn woken(store: &mut watch::Receiver<Store>, seen: Wake) -> Option<Wake> {
     loop {
-        if store.borrow_and_update().registrations_changed != seen {
-            return true;
+        let now = Wake::of(&store.borrow_and_update());
+        if now != seen {
+            return Some(now);
         }
-        tokio::select! {
-            _ = sleep_until(deadline) => return false,
-            changed = store.changed() => {
-                if changed.is_err() {
-                    return false;
-                }
-            }
-        }
+        store.changed().await.ok()?;
     }
 }
