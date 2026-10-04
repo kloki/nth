@@ -36,6 +36,9 @@ impl ToolCall {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.arguments) else {
             return self.arguments.clone();
         };
+        if let Some(patch) = args["patchText"].as_str() {
+            return patch_summary(patch, cwd);
+        }
         // The command itself over the model's description of it.
         let text = ["filePath", "command", "description", "name"]
             .iter()
@@ -46,13 +49,33 @@ impl ToolCall {
         if lines.next().is_some() {
             return format!("{first} …");
         }
-        // Matching whole components keeps `/repository` from being cut down
-        // to `sitory` when cwd is `/repo`.
-        match Path::new(text).strip_prefix(cwd) {
-            Ok(rest) if rest.as_os_str().is_empty() => ".".to_string(),
-            Ok(rest) => rest.to_string_lossy().into_owned(),
-            Err(_) => text.to_string(),
-        }
+        relative(text, cwd)
+    }
+}
+
+/// The first file an apply_patch call touches, as a patch is too long to
+/// show.
+fn patch_summary(patch: &str, cwd: &Path) -> String {
+    let mut paths = patch.lines().filter_map(|line| {
+        ["*** Add File:", "*** Update File:", "*** Delete File:"]
+            .iter()
+            .find_map(|header| line.strip_prefix(header))
+            .map(str::trim)
+    });
+    let first = relative(paths.next().unwrap_or_default(), cwd);
+    match paths.next() {
+        Some(_) => format!("{first} …"),
+        None => first,
+    }
+}
+
+fn relative(path: &str, cwd: &Path) -> String {
+    // Matching whole components keeps `/repository` from being cut down
+    // to `sitory` when cwd is `/repo`.
+    match Path::new(path).strip_prefix(cwd) {
+        Ok(rest) if rest.as_os_str().is_empty() => ".".to_string(),
+        Ok(rest) => rest.to_string_lossy().into_owned(),
+        Err(_) => path.to_string(),
     }
 }
 
@@ -95,5 +118,15 @@ mod tests {
             "research-opencode"
         );
         assert_eq!(call("not json").summary(cwd), "not json");
+        assert_eq!(
+            call(r#"{"patchText":"*** Begin Patch\n*** Update File: /repo/a.rs\n@@\n-a\n+b\n*** End Patch"}"#)
+                .summary(cwd),
+            "a.rs"
+        );
+        assert_eq!(
+            call(r#"{"patchText":"*** Begin Patch\n*** Add File: a\n+x\n*** Delete File: b\n*** End Patch"}"#)
+                .summary(cwd),
+            "a …"
+        );
     }
 }

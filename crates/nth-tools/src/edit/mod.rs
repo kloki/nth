@@ -1,4 +1,4 @@
-mod matcher;
+pub(crate) mod matcher;
 
 use std::io::ErrorKind;
 
@@ -13,8 +13,8 @@ use crate::write::{BOM, write_with_dirs};
 
 /// The calls of a turn run in parallel, and two edits of one file would
 /// each read it before the other writes, losing the first. Edits are quick,
-/// so one lock for all of them is enough.
-static EDITS: Mutex<()> = Mutex::const_new(());
+/// so one lock for all of them, and for apply_patch, is enough.
+pub(crate) static EDITS: Mutex<()> = Mutex::const_new(());
 
 pub struct Edit;
 
@@ -118,7 +118,7 @@ impl Tool for Edit {
     }
 }
 
-fn with_line_endings(text: &str, crlf: bool) -> String {
+pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
     let lf = text.replace("\r\n", "\n");
     if crlf { lf.replace('\n', "\r\n") } else { lf }
 }

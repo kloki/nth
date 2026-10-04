@@ -30,7 +30,7 @@ const STRATEGIES: [Strategy; 4] = [
 /// The one span of `content` that `needle` matches. An empty needle matches
 /// nothing.
 pub(crate) fn find_unique(content: &str, needle: &str) -> Result<Range<usize>, MatchError> {
-    match first_found(content, needle)?.as_slice() {
+    match find_where(content, needle, |_| true)?.as_slice() {
         [span] => Ok(span.clone()),
         many => Err(MatchError::Ambiguous(many.len())),
     }
@@ -40,7 +40,7 @@ pub(crate) fn find_unique(content: &str, needle: &str) -> Result<Range<usize>, M
 /// `Ambiguous`.
 pub(crate) fn find_all(content: &str, needle: &str) -> Result<Vec<Range<usize>>, MatchError> {
     let mut kept: Vec<Range<usize>> = Vec::new();
-    for span in first_found(content, needle)? {
+    for span in find_where(content, needle, |_| true)? {
         if kept.last().is_none_or(|last| last.end <= span.start) {
             kept.push(span);
         }
@@ -48,8 +48,14 @@ pub(crate) fn find_all(content: &str, needle: &str) -> Result<Vec<Range<usize>>,
     Ok(kept)
 }
 
-/// The spans of the first strategy that finds any, sorted.
-fn first_found(content: &str, needle: &str) -> Result<Vec<Range<usize>>, MatchError> {
+/// The spans `keep` accepts of the first strategy that finds any, sorted
+/// and possibly overlapping. A strategy whose every span is rejected lets
+/// the next one try.
+pub(crate) fn find_where(
+    content: &str,
+    needle: &str,
+    keep: impl Fn(&Range<usize>) -> bool,
+) -> Result<Vec<Range<usize>>, MatchError> {
     if needle.is_empty() {
         return Err(MatchError::NotFound);
     }
@@ -57,6 +63,7 @@ fn first_found(content: &str, needle: &str) -> Result<Vec<Range<usize>>, MatchEr
         .iter()
         .map(|strategy| {
             let mut found = strategy(content, needle);
+            found.retain(&keep);
             found.sort_by_key(|span| (span.start, span.end));
             found.dedup();
             found
@@ -400,6 +407,18 @@ mod tests {
     fn find_all_falls_back_to_fuzzy_strategies() {
         let content = "\tx = 1\n\ty\n\t\tx = 1\n";
         assert_eq!(find_all(content, "  x = 1\n"), Ok(vec![0..7, 10..18]));
+    }
+
+    #[test]
+    fn find_where_lets_the_next_strategy_try_when_every_span_is_rejected() {
+        // Exact finds `x = 1` only inside `max = 1`; line-trimmed finds the
+        // whole line.
+        let content = "max = 1\n  x = 1  \n";
+        let at_line_start =
+            |span: &Range<usize>| span.start == 0 || content[..span.start].ends_with('\n');
+        assert_eq!(exact(content, "x = 1"), vec![2..7, 10..15]);
+        let found = find_where(content, "x = 1", at_line_start).expect("found");
+        assert_eq!(found, vec![8..17]);
     }
 
     #[test]
