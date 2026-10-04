@@ -63,15 +63,15 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 
 **Transcript**
 
-| Entry | Bar | Shape |
-| --- | --- | --- |
-| Your message | green | Wrapped text under the bar |
-| Model answer | cyan | Wrapped text under the bar |
-| Thinking | none | `∴ thinking · 1.2s`, dim, one line |
-| Tool call | none | The tool's icon, name in cyan, summary in dim; one line |
-| Turn summary | none | `∎ model · N tool calls · 14.2s`, dim, after a blank line |
-| Interrupted | none | `⏹ interrupted · 3.0s` in yellow, after a blank line |
-| Error | red | `✗ message` in red |
+| Entry        | Bar   | Shape                                                     |
+| ------------ | ----- | --------------------------------------------------------- |
+| Your message | green | Wrapped text under the bar                                |
+| Model answer | cyan  | Wrapped text under the bar                                |
+| Thinking     | none  | `∴ thinking · 1.2s`, dim, one line                        |
+| Tool call    | none  | The tool's icon, name in cyan, summary in dim; one line   |
+| Turn summary | none  | `∎ model · N tool calls · 14.2s`, dim, after a blank line |
+| Interrupted  | none  | `⏹ interrupted · 3.0s` in yellow, after a blank line      |
+| Error        | red   | `✗ message` in red                                        |
 
 - **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, `¿` question, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
 - **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. question shows the questions' headers. A multi-line command shows its first line followed by `…`.
@@ -84,13 +84,13 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 - **Bar.** Bright white, at the left edge like every other bar, so the output lines up with the messages around it.
 - **Body.** At most 10 lines:
 
-| Tool | Body |
-| --- | --- |
-| read | The file content it read, the first 10 lines |
-| write | The content being written, the first 10 lines, taken from the call's arguments |
-| bash | The command's output, stdout and stderr interleaved, the last 10 lines |
-| skill | None: the row says which skill was loaded, and its body is for the model only |
-| question | Your answers, one line per question |
+| Tool     | Body                                                                           |
+| -------- | ------------------------------------------------------------------------------ |
+| read     | The file content it read, the first 10 lines                                   |
+| write    | The content being written, the first 10 lines, taken from the call's arguments |
+| bash     | The command's output, stdout and stderr interleaved, the last 10 lines         |
+| skill    | None: the row says which skill was loaded, and its body is for the model only  |
+| question | Your answers, one line per question                                            |
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
@@ -107,12 +107,12 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
 
-| Input panel        | Height       | Opens on              | Returns on    |
-| ------------------ | ------------ | --------------------- | ------------- |
-| Prompt             | 4            | default               | —             |
-| Model picker       | ~8           | `/model`              | enter, esc    |
-| Question           | per call     | the agent asks        | answer, esc   |
-| Permission (later) | ~4           | a tool needs approval | allow, reject |
+| Input panel        | Height   | Opens on              | Returns on    |
+| ------------------ | -------- | --------------------- | ------------- |
+| Prompt             | 4        | default               | —             |
+| Model picker       | ~8       | `/model`              | enter, esc    |
+| Question           | per call | the agent asks        | answer, esc   |
+| Permission (later) | ~4       | a tool needs approval | allow, reject |
 
 ## Input panel style
 
@@ -128,11 +128,11 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
 - **Content under the title.** Each row starts after the bar. A highlighted item is bold magenta (`theme::pick`), the same as in the completion popup.
 
-| Panel | Accent | Title |
-| --- | --- | --- |
-| Prompt | the mode's colour: blue for build | the mode label, or the spinner |
-| Model picker | magenta | `switch model` |
-| Question | cyan | `question`, or a tab per question |
+| Panel        | Accent                            | Title                             |
+| ------------ | --------------------------------- | --------------------------------- |
+| Prompt       | the mode's colour: blue for build | the mode label, or the spinner    |
+| Model picker | magenta                           | `switch model`                    |
+| Question     | cyan                              | `question`, or a tab per question |
 
 ## Prompt
 
@@ -174,7 +174,7 @@ The spinner runs for the whole turn: thinking, writing and tool calls. What exac
 
 ## Question
 
-The question tool lets the model stop mid-turn and ask you something, as Claude Code's AskUserQuestion does. One call asks 1 to 4 questions. Each has 2 to 4 options, picks one or any number of them, and can give every option a one-line description. Every question also gets an open field for your own answer, so the model never adds an "Other" option itself.
+The question tool lets the model stop mid-turn and ask you something, as Claude Code's AskUserQuestion does. One call asks 1 to 4 questions. Each has 2 to 4 options, picks one or any number of them, and can give every option a one-line description and a multi-line preview. Every question also gets an open field for your own answer, so the model never adds an "Other" option itself.
 
 The panel is cyan, the model answer's colour, because this is the model talking to you.
 
@@ -208,6 +208,26 @@ The panel is cyan, the model answer's colour, because this is the model talking 
 
 `[x]` and `[ ]` sit in front of the number. Space or the number toggles an option, the open field counts as ticked once it has text, and Enter moves on.
 
+**Previews**
+
+An option can also carry a `preview`: several lines of text, such as an ASCII mockup of a layout, a code snippet or a config, for when the choice is easier to see than to describe. When any option of the question has one, the panel splits in two, and the right side shows the highlighted option's preview, then its description under it. Moving the highlight swaps what the right side shows.
+
+```
+▎ question                                         ↑↓ · 1-3 · enter · esc
+▎ Which layout for the status bar?
+▎ → 1. Two lines     │ ┌──────────────────────────┐
+▎   2. One line      │ │ glm-5.3 · ~/repos/nth    │
+▎   3. Type your own │ │ git · main +2 *1         │
+▎                    │ └──────────────────────────┘
+▎                    │ Room for git on its own row
+```
+
+- **Left: the options.** Numbers and labels as above, without the description column, which moves to the right side. The column is as wide as the longest label, at most 40% of the panel; longer labels are cut with `…`.
+- **The rule.** A dim `│` between the sides, down every row under the question. It is the only divider line in nth: two columns of free text, one of them ASCII art, need something to keep them apart.
+- **Right: the preview.** Shown as written, in the default fg, never wrapped, so a mockup keeps its shape; lines too long for the side are cut. The description follows on the next row, dim and wrapped.
+- **Nothing to show.** An option without a preview shows only its description, and the open field shows nothing.
+- **Height.** The tallest preview plus its description counts towards the panel's height alongside the options, still within half the terminal. A preview taller than that is cut at the bottom.
+
 **Several questions**
 
 ```
@@ -225,7 +245,7 @@ The panel is cyan, the model answer's colour, because this is the model talking 
 ▎ Checks  fmt, clippy, "and a doc check"
 ```
 
-**Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
+**Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, or its tallest preview, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
 
 **In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. Once answered, its body lists the answers as the Submit tab does.
 
@@ -245,11 +265,11 @@ Left-aligned: `model · effort · path context`, all bright white. The git branc
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part | Shows | Colour |
-| --- | --- | --- |
-| Model | The current model, and its effort unless default | bright white |
-| Path | The working directory, with home written as `~` | bright white |
-| Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white |
+| Part    | Shows                                                                                                                           | Colour       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Model   | The current model, and its effort unless default                                                                                | bright white |
+| Path    | The working directory, with home written as `~`                                                                                 | bright white |
+| Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white        |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
 
@@ -273,18 +293,18 @@ deleted = ' [ $count](red)'
 untracked = ' [ $count](white)'
 ```
 
-| Part | Format | Colour |
-| --- | --- | --- |
-| Conflicted | `` (U+F071, warning) | red |
-| Ahead | `+N` | yellow |
-| Behind | `-N` | yellow |
-| Diverged, in place of ahead and behind | `󰱮` (U+F0C6E) | white |
-| Modified | `*N` | magenta |
-| Renamed | ` N` (U+F0EC, exchange) | yellow |
-| Deleted | ` N` (U+F1F8, trash) | red |
-| Staged | `󰊐 N` (U+F0290) | blue |
-| Untracked | ` N` (U+F128, question) | white |
-| Stashed | `` (U+F187, archive) | white |
+| Part                                   | Format                   | Colour  |
+| -------------------------------------- | ------------------------ | ------- |
+| Conflicted                             | `` (U+F071, warning)    | red     |
+| Ahead                                  | `+N`                     | yellow  |
+| Behind                                 | `-N`                     | yellow  |
+| Diverged, in place of ahead and behind | `󰱮` (U+F0C6E)            | white   |
+| Modified                               | `*N`                     | magenta |
+| Renamed                                | ` N` (U+F0EC, exchange) | yellow  |
+| Deleted                                | ` N` (U+F1F8, trash)    | red     |
+| Staged                                 | `󰊐 N` (U+F0290)          | blue    |
+| Untracked                              | ` N` (U+F128, question) | white   |
+| Stashed                                | `` (U+F187, archive)    | white   |
 
 Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather than the default colour, because they block a commit and should be the first thing you notice.
 
@@ -298,16 +318,16 @@ Kept so nothing above moves when it gets a job. That there is more chat below th
 
 Every colour is one of the terminal's 16 standard colours, so the terminal theme decides how it looks. nth never sets a colour of its own.
 
-| Name in this doc | Terminal colour | Used for |
-| --- | --- | --- |
-| red | red | path, deleted, conflicted, errors |
-| green | green | branch, your messages, success |
-| yellow, orange | yellow | ahead, behind, renamed, interrupted |
-| blue | blue | model, build, staged |
-| magenta, purple | magenta | model picker, highlighted items, modified |
-| cyan | cyan | tool names, model answer bar |
-| white | white | context bar, untracked, stashed |
-| bright white | bright white | status line 1 text, tool output bar |
+| Name in this doc | Terminal colour | Used for                                  |
+| ---------------- | --------------- | ----------------------------------------- |
+| red              | red             | path, deleted, conflicted, errors         |
+| green            | green           | branch, your messages, success            |
+| yellow, orange   | yellow          | ahead, behind, renamed, interrupted       |
+| blue             | blue            | model, build, staged                      |
+| magenta, purple  | magenta         | model picker, highlighted items, modified |
+| cyan             | cyan            | tool names, model answer bar              |
+| white            | white           | context bar, untracked, stashed           |
+| bright white     | bright white    | status line 1 text, tool output bar       |
 
 Orange is not a standard terminal colour, so it means yellow.
 
