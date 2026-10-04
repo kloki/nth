@@ -31,13 +31,14 @@ pub struct ToolCall {
 
 /// Arguments `ToolCall::summary` looks for, in order: the command itself
 /// comes before the model's description of it.
-const SUMMARY_KEYS: [&str; 6] = [
+const SUMMARY_KEYS: [&str; 7] = [
     "filePath",
     "command",
     "description",
     "name",
     "pattern",
     "query",
+    "url",
 ];
 
 impl ToolCall {
@@ -134,6 +135,10 @@ mod tests {
         assert_eq!(
             call(r#"{"query":"ratatui release"}"#).summary(cwd),
             "ratatui release"
+        );
+        assert_eq!(
+            call(r#"{"url":"https://example.com","format":"text"}"#).summary(cwd),
+            "https://example.com"
         );
         assert_eq!(call("not json").summary(cwd), "not json");
         assert_eq!(

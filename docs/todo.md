@@ -9,14 +9,15 @@ Compared against opencode at
 (`refs/opencode`). Paths are relative to `packages/opencode/src/` unless they
 start with `tui/`, which means `packages/tui/src/`.
 
-**What nth has today:** a chat-completions provider for OpenCode Go with reasoning
-effort, the read, write, edit, apply_patch, bash, glob, grep and websearch tools, parallel tool calls, a 100-step cap,
-Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
-`/models` commands, a model picker, `nth run` (headless), `nth models`, and
-`AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
-nested ones attached once when read touches their directory, and skills from
-the Claude Code, opencode and open-standard folders, offered in the system
-prompt, loaded with the skill tool and run as `/name args`.
+**What nth has today:** a chat-completions provider for OpenCode Go with
+reasoning effort, the read, write, edit, apply_patch, bash, glob, grep, webfetch
+and websearch tools, parallel tool calls, a 100-step cap, Esc to interrupt, the
+TUI chat with `@` file mentions, the `/clear`, `/exit` and `/models` commands, a
+model picker, `nth run` (headless), `nth models`, and `AGENTS.md` (or
+`CLAUDE.md`) instruction files in the system prompt, plus nested ones attached
+once when read touches their directory, and skills from the Claude Code,
+opencode and open-standard folders, offered in the system prompt, loaded with
+the skill tool and run as `/name args`.
 
 Items are grouped by the milestones in [design.md](design.md). Each item names
 the opencode code to copy from.
@@ -99,7 +100,6 @@ the opencode code to copy from.
 
 ## M3 and later
 
-- [ ] **webfetch** with HTML to markdown. `tool/webfetch.ts`
 - [ ] **lsp tool**: hover, definition, references and symbols. `tool/lsp.ts`
 - [ ] **Custom commands**: markdown templates in `.nth/commands/`, plus the built-in `/init` (writes AGENTS.md) and `/review`. Skills already run as `/name args` with opencode's template expansion, so a command could be a skill without a description. `command/index.ts`, `command/template/`
 - [ ] **Custom agents** from markdown files with a tool filter and model. `agent/agent.ts`, `cli/cmd/agent.ts`
