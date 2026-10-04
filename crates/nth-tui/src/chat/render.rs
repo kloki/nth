@@ -145,6 +145,7 @@ fn icon(tool: &str) -> &'static str {
         "webfetch" => "↓",
         "websearch" => "?",
         "skill" => "✦",
+        "question" => "¿",
         _ => "•",
     }
 }
@@ -277,6 +278,25 @@ mod tests {
         let total = t.layout(40);
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ✦ skill  research-opencode"]);
+    }
+
+    #[test]
+    fn an_answered_question_is_one_row() {
+        let mut t = transcript();
+        let question = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "question".into(),
+            arguments: r#"{"questions":[{"header":"Auth"}]}"#.into(),
+        };
+        t.apply(&Event::ToolStarted(question.clone()));
+        t.apply(&Event::ToolFinished {
+            call: question,
+            result: Ok("The user answered:\n\"Which auth?\" = OAuth".into()),
+        });
+
+        let total = t.layout(40);
+
+        assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
     }
 
     #[test]

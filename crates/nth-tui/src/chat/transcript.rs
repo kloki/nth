@@ -112,6 +112,8 @@ impl Transcript {
                         None if call.name == "write" => Ok(content.clone()),
                         // A skill is one row; its body is for the model.
                         None if call.name == "skill" => Ok(content.clone()),
+                        // A question is one row too; the answers are for the model.
+                        None if call.name == "question" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
                             // only; the live view never showed them.

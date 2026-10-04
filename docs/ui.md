@@ -90,7 +90,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | write    | The content being written, the first 10 lines, taken from the call's arguments |
 | bash     | The command's output, stdout and stderr interleaved, the last 10 lines         |
 | skill    | None: the row says which skill was loaded, and its body is for the model only  |
-| question | Your answers, one line per question                                            |
+| question | None: the row says what was asked, and the answers are for the model only |
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
@@ -191,8 +191,8 @@ The panel is cyan, the model answer's colour, because this is the model talking 
 
 - **Title row.** `question` in cyan, the keys dim against the right edge, dropped when the row is too narrow, as in the model picker.
 - **Question.** Default fg, wrapped, at most 3 rows.
-- **Options.** A number, then the label in blue, as model ids are in the model picker. The highlighted one has `→` and is bold magenta (`theme::pick`). The description is dim, in one column after the longest label, and is cut with `…` when it does not fit.
-- **Open field.** Always the last row. Highlighting it and typing writes straight into it, with no separate edit mode. "Type your own answer…" is the dim placeholder.
+- **Options.** A number, then the label in blue, as model ids are in the model picker. The highlighted one has `→` and is bold magenta (`theme::pick`). The description is dim, in one column after the longest label, and is cut with `…` when it does not fit. Once a one-choice question is answered, a green `✓` follows the chosen label, so it still shows when you come back to its tab.
+- **Open field.** Always the last row. Highlighting it and typing writes straight into it, with no separate edit mode; typing a letter on an option jumps there and starts your answer. "Type your own answer…" is the dim placeholder.
 - **Answering.** Enter on an option, or on an open field with text, answers. A lone one-choice question is sent right away.
 
 **Any number of choices**
@@ -217,7 +217,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 ▎ Which layout for the status bar?
 ▎ → 1. Two lines     │ ┌──────────────────────────┐
 ▎   2. One line      │ │ glm-5.3 · ~/repos/nth    │
-▎   3. Type your own │ │ git · main +2 *1         │
+▎   3. Type your…    │ │ git · main +2 *1         │
 ▎                    │ └──────────────────────────┘
 ▎                    │ Room for git on its own row
 ```
@@ -231,12 +231,12 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 **Several questions**
 
 ```
-▎ ☒ Auth   ☐ Checks   ✓ Submit                ←→ question · ↑↓ · enter · esc
+▎ ☒ Auth   ☐ Checks   ✓ Submit       tab question · ↑↓ · space toggle · enter · esc
 ▎ Which checks should run before commit?
 ▎ → [x] 1. fmt        cargo fmt --check
 ```
 
-- **Tab row.** Replaces the title: each question's short header, `☒` once it is answered and `☐` before, the current one bold magenta. Tab and ←→ move between them, and answering one moves to the next.
+- **Tab row.** Replaces the title: each question's short header, `☒` once it is answered and `☐` before, the current one bold magenta. Tab and shift+Tab move between them, and so do ←→ except while the open field is highlighted, where they move the cursor. Answering one moves to the next unanswered one.
 - **Submit.** The last tab reviews every answer before they go. Enter sends them; an unanswered question shows in yellow, and Enter waits until there are none.
 
 ```
@@ -247,7 +247,9 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 **Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, or its tallest preview, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
 
-**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. Once answered, its body lists the answers as the Submit tab does.
+**In the chat.** The call's row is `¿ question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
+
+**Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 
 **Esc.** Declines: the panel goes, the prompt comes back with its text, and the model reads that you declined and carries on. Esc at the prompt cancels the turn, as it always does.
 
