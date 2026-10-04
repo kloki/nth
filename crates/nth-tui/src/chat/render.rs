@@ -21,7 +21,8 @@ impl Transcript {
         for item in &mut self.items {
             if item.lines.is_none() || is_live(&item.entry) {
                 let mut lines = Vec::new();
-                if needs_gap(previous, &item.entry) {
+                // Every entry stands apart from the one before it.
+                if previous.is_some() {
                     lines.push(Line::default());
                 }
                 lines.extend(render(&item.entry, &self.cwd, width));
@@ -50,25 +51,9 @@ fn is_live(entry: &Entry) -> bool {
     matches!(entry, Entry::Reasoning { took: None, .. })
 }
 
-/// One-line rows that stack with no gap between them.
-fn is_compact(entry: &Entry) -> bool {
-    matches!(
-        entry,
-        Entry::Reasoning { .. }
-            | Entry::Tool { .. }
-            | Entry::TurnDone { .. }
-            | Entry::Interrupted { .. }
-    )
-}
-
-fn needs_gap(previous: Option<&Entry>, entry: &Entry) -> bool {
-    match previous {
-        None => false,
-        // A turn's footer stands apart from the turn it closes.
-        Some(_) if matches!(entry, Entry::TurnDone { .. } | Entry::Interrupted { .. }) => true,
-        Some(previous) => !(is_compact(previous) && is_compact(entry)),
-    }
-}
+/// Tool output is indented to sit under the tool's name, so it reads as
+/// coming from the row above rather than as a message of its own.
+const OUTPUT_INDENT: &str = "    ";
 
 fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>> {
     let dim = dim();
@@ -104,7 +89,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 ToolState::Done | ToolState::Failed(_) => name_style,
             };
             let mut spans = vec![
-                Span::raw(INDENT),
+                Span::styled(BAR, Style::new().fg(Color::Cyan)),
                 Span::styled(icon(&call.name), icon_style),
                 Span::raw(" "),
                 Span::styled(format!("{:<6} ", call.name), name_style),
@@ -113,13 +98,13 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             if let ToolState::Failed(e) = state {
                 spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
             }
-            let bar = Style::new().fg(Color::White);
             let mut lines = vec![Line::from(spans)];
-            lines.extend(
-                output
-                    .iter()
-                    .map(|text| Line::from(vec![Span::styled(BAR, bar), Span::raw(text.clone())])),
-            );
+            lines.extend(output.iter().map(|text| {
+                Line::styled(
+                    format!("{OUTPUT_INDENT}{text}"),
+                    Style::new().fg(Color::Gray),
+                )
+            }));
             lines
         }
         Entry::TurnDone {
@@ -210,8 +195,9 @@ mod tests {
                 "▎ one two",
                 "▎ three",
                 "",
-                "  ≡ read   src/a.rs",
-                "  ≡ read   src/a.rs",
+                "▎ ≡ read   src/a.rs",
+                "",
+                "▎ ≡ read   src/a.rs",
                 "",
                 "▎ ok",
                 "▎ ",
@@ -219,7 +205,10 @@ mod tests {
                 "▎     nted",
             ]
         );
-        assert_eq!(text(&t.visible(3, 2)), ["  ≡ read   src/a.rs"; 2]);
+        assert_eq!(
+            text(&t.visible(3, 3)),
+            ["▎ ≡ read   src/a.rs", "", "▎ ≡ read   src/a.rs"]
+        );
     }
 
     #[test]
@@ -236,7 +225,7 @@ mod tests {
             [
                 "▎ go",
                 "",
-                "  ≡ read   src/a.rs",
+                "▎ ≡ read   src/a.rs",
                 "",
                 "  ∎ glm · 1 tool call · 2.0s",
             ]
@@ -258,9 +247,10 @@ mod tests {
         assert_eq!(
             text(&t.visible(0, total)),
             [
-                "  ≡ read   src/a.rs",
-                "▎ fn main() {}",
-                "  ≡ read   src/a.rs",
+                "▎ ≡ read   src/a.rs",
+                "    fn main() {}",
+                "",
+                "▎ ≡ read   src/a.rs",
             ]
         );
     }

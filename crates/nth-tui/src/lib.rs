@@ -4,6 +4,7 @@ mod app;
 mod chat;
 mod command;
 mod git;
+mod header;
 mod llm_picker;
 mod mention;
 mod popup;

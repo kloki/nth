@@ -1,6 +1,7 @@
-//! The app: its state, the loop that drives it, and the layout of three
-//! bands: the content panel, the input panel and the status bar. Row
-//! heights never depend on content, so nothing shifts while a turn runs.
+//! The app: its state, the loop that drives it, and the layout of four
+//! bands: the header, the content panel, the input panel and the status
+//! bar. Row heights never depend on content, so nothing shifts while a turn
+//! runs.
 
 mod content;
 mod input;
@@ -36,7 +37,7 @@ use crate::{
     chat::Chat,
     command::Command,
     git::{self, GitStatus},
-    llm_picker, mention,
+    header, llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
     session_picker, spinner, status,
@@ -305,13 +306,16 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
-        let [content, input, status] = Layout::vertical([
+        let [header, content, input, status] = Layout::vertical([
+            Constraint::Length(header::ROWS),
             Constraint::Min(0),
             Constraint::Length(self.input.rows()),
             Constraint::Length(status::ROWS),
         ])
+        .spacing(1)
         .areas(area);
 
+        header::draw(frame, header);
         match self.content {
             Content::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
@@ -476,10 +480,19 @@ pub(crate) mod tests {
     fn prompt_and_status_rows_never_move() {
         let mut app = app();
         let idle = rows(&mut app);
-        assert_eq!(idle[10].trim_end(), " ▎ build");
-        assert_eq!(idle[11].trim_end(), " ▎ Ask anything.");
+        assert_eq!(
+            idle[0].trim_start(),
+            format!("nth {} ", env!("CARGO_PKG_VERSION")),
+            "right-aligned inside the margin"
+        );
+        assert!(
+            [1, 8, 13].iter().all(|&i| idle[i].trim().is_empty()),
+            "an empty line between bands"
+        );
+        assert_eq!(idle[9].trim_end(), " ▎ build");
+        assert_eq!(idle[10].trim_end(), " ▎ Ask anything.");
+        assert_eq!(idle[11].trim_end(), " ▎");
         assert_eq!(idle[12].trim_end(), " ▎");
-        assert_eq!(idle[13].trim_end(), " ▎");
         assert_eq!(idle[14].trim_end(), " glm · /repo");
         assert!(idle[15].trim().is_empty(), "no hint when idle");
 
@@ -491,15 +504,16 @@ pub(crate) mod tests {
         app.busy_since = Some(Instant::now());
         let busy = rows(&mut app);
 
-        assert_eq!(busy[9].trim_end(), " ▎ message 19");
-        let spinner = busy[10].chars().skip(3).take(4).collect::<String>();
+        assert_eq!(busy[0], idle[0], "the header stays on top");
+        assert_eq!(busy[7].trim_end(), " ▎ message 19");
+        let spinner = busy[9].chars().skip(3).take(4).collect::<String>();
         assert!(
             spinner.chars().all(|c| ('⠀'..='⣿').contains(&c)),
             "spinner in place of the mode: {:?}",
-            busy[10]
+            busy[9]
         );
-        assert!(busy[10].trim_end().ends_with("esc to cancel"));
-        let text: Vec<&str> = busy[11..=13].iter().map(|r| r.trim_end()).collect();
+        assert!(busy[9].trim_end().ends_with("esc to cancel"));
+        let text: Vec<&str> = busy[10..=12].iter().map(|r| r.trim_end()).collect();
         assert_eq!(
             text,
             [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
@@ -607,17 +621,17 @@ pub(crate) mod tests {
         });
         let running = rows(&mut app);
 
-        assert_eq!(running[0].trim_end(), " ▎ test it");
-        assert_eq!(running[2].trim_end(), "   $ bash   cargo test");
-        assert_eq!(running[3].trim_end(), " ▎ running 3 tests");
+        assert_eq!(running[2].trim_end(), " ▎ test it");
+        assert_eq!(running[4].trim_end(), " ▎ $ bash   cargo test");
+        assert_eq!(running[5].trim_end(), "     running 3 tests");
 
         app.on_session(Event::ToolFinished {
             call: bash,
             result: Ok(String::new()),
         });
         let finished = rows(&mut app);
-        assert_eq!(finished[2].trim_end(), "   $ bash   cargo test");
-        assert_eq!(finished[3].trim_end(), " ▎ running 3 tests", "kept");
+        assert_eq!(finished[4].trim_end(), " ▎ $ bash   cargo test");
+        assert_eq!(finished[5].trim_end(), "     running 3 tests", "kept");
         assert!(app.git_loading.is_some(), "bash may have changed the tree");
     }
 
@@ -657,14 +671,14 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[7].starts_with("    /clear "));
-        assert!(rows[8].starts_with("    /exit "));
-        assert!(rows[9].starts_with("    /models "));
+        assert!(rows[6].starts_with("    /clear "));
+        assert!(rows[7].starts_with("    /exit "));
+        assert!(rows[8].starts_with("    /models "));
         assert!(
-            rows[10].starts_with(" ▎  /resume "),
+            rows[9].starts_with(" ▎  /resume "),
             "right above the cursor"
         );
-        assert!(rows[11].starts_with(" ▎ /"));
+        assert!(rows[10].starts_with(" ▎ /"));
     }
 
     #[tokio::test]
@@ -698,12 +712,12 @@ pub(crate) mod tests {
         }
         let rows = rows(&mut app);
 
-        assert!(rows[9].trim().is_empty());
+        assert!(rows[8].trim().is_empty());
         assert!(
-            rows[10].starts_with(" ▎ buil src/app/keys.rs "),
+            rows[9].starts_with(" ▎ buil src/app/keys.rs "),
             "lined up with the @"
         );
-        assert!(rows[11].starts_with(" ▎ see @ke"));
+        assert!(rows[10].starts_with(" ▎ see @ke"));
     }
 
     #[test]
@@ -718,8 +732,8 @@ pub(crate) mod tests {
         let rows = rows(&mut app);
 
         let popup = format!(" ▎{}src/app/keys.rs  ", " ".repeat(21));
-        assert_eq!(rows[12], popup, "above the third row, against the margin");
-        assert!(rows[13].starts_with(" ▎ xxx"));
+        assert_eq!(rows[11], popup, "above the third row, against the margin");
+        assert!(rows[12].starts_with(" ▎ xxx"));
     }
 
     /// An idle app whose model list is already in, so opening the picker
@@ -747,12 +761,12 @@ pub(crate) mod tests {
         app.submit();
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with(" ▎ switch model"), "{:?}", rows[6]);
-        assert!(rows[7].starts_with(" ▎ → glm   ✓"), "{:?}", rows[7]);
-        assert!(rows[7].trim_end().ends_with("◂ default ▸"));
-        assert!(rows[8].starts_with(" ▎   plain"));
+        assert!(rows[5].starts_with(" ▎ switch model"), "{:?}", rows[5]);
+        assert!(rows[6].starts_with(" ▎ → glm   ✓"), "{:?}", rows[6]);
+        assert!(rows[6].trim_end().ends_with("◂ default ▸"));
+        assert!(rows[7].starts_with(" ▎   plain"));
         assert!(
-            rows[9..14].iter().all(|r| r.trim().is_empty()),
+            rows[8..13].iter().all(|r| r.trim().is_empty()),
             "seven model rows"
         );
         assert!(
@@ -832,7 +846,7 @@ pub(crate) mod tests {
         let listing = app.llm_listing.take().expect("listing");
         listing.abort();
         app.llms_listed(Err("offline".into()));
-        assert!(rows(&mut app)[7].contains("✗ offline"));
+        assert!(rows(&mut app)[6].contains("✗ offline"));
 
         app.apply(keys::Action::Interrupt);
         app.apply(keys::Action::LlmPicker);
