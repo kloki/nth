@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nth_protocol::{Event, Message, ToolCall};
+use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
 use ratatui::text::Line;
 
 use super::after_write::{self, Note};
@@ -13,6 +13,8 @@ use super::after_write::{self, Note};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
+    /// What a background monitor said, as the model got it.
+    Notice(NoticeSummary),
     /// Shown as one line; the reasoning text itself stays in the session,
     /// where the model needs it.
     Reasoning {
@@ -153,8 +155,20 @@ impl Transcript {
         self.items.iter().map(|item| &item.entry)
     }
 
+    /// What the model got as a user message: what monitors said, shown as
+    /// one row each, then what you typed, if anything.
     pub fn push_user(&mut self, text: String) {
-        self.push(Entry::User(text));
+        let (notices, typed) = split_notices(&text);
+        if notices.is_empty() {
+            return self.push(Entry::User(text));
+        }
+        let typed = typed.to_string();
+        for notice in notices {
+            self.push(Entry::Notice(notice));
+        }
+        if !typed.is_empty() {
+            self.push(Entry::User(typed));
+        }
     }
 
     pub fn apply(&mut self, event: &Event) {
@@ -232,6 +246,10 @@ impl Transcript {
                 }
             }
             Event::Usage(_) => {}
+            Event::Notice(text) => {
+                self.close_reasoning();
+                self.push_user(text.clone());
+            }
         }
     }
 
@@ -341,6 +359,31 @@ pub(super) mod tests {
 
     pub(in crate::chat) fn text(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn monitor_notices_show_as_their_own_rows() {
+        let text = "<monitor id=\"2\" description=\"ci\" log=\"/l/2.log\">\nfailed\n</monitor>\n\
+                    <monitor id=\"2\" description=\"ci\" log=\"/l/2.log\" ended=\"exited with code 1\" events=\"1\"/>\n\nfix it";
+        let t = Transcript::replay("/repo".into(), &[Message::User(text.into())]);
+
+        let entries: Vec<_> = t.entries().collect();
+        let notice = |lines, ended: Option<&str>| {
+            Entry::Notice(NoticeSummary {
+                id: 2,
+                description: "ci".into(),
+                lines,
+                ended: ended.map(Into::into),
+            })
+        };
+        assert_eq!(
+            entries,
+            [
+                &notice(1, None),
+                &notice(0, Some("exited with code 1")),
+                &Entry::User("fix it".into()),
+            ]
+        );
     }
 
     #[test]

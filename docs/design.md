@@ -247,7 +247,7 @@ Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar 
 | Chat           | Transcript, tool calls collapsed to one line each, and input                                         | M1                |
 | Diff           | Worktree diff against base, file list plus hunks                                                     | M1                |
 | Worktrees      | Every session's worktree, branch, ahead/behind count and status, with land and discard actions       | M2                |
-| Monitor        | Live tool calls: running bash output, durations, tokens and cost per turn                            | M2                |
+| Monitor        | One tab per background command the model started with `monitor`: its live output and state        | done              |
 | Plan           | The plan or design file with inline comment threads, plus the todo list                              | M2                |
 | Events         | Raw event stream, for debugging nth itself                                                           | M1, behind a flag |
 

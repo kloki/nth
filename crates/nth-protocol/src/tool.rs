@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Event, Screen};
+use crate::{Asker, Event, Monitors, Screen};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -31,21 +31,25 @@ pub struct ToolContext {
     pub asker: Asker,
     /// Where a tool switches what the content panel shows.
     pub screen: Screen,
+    /// The commands left running in the background, and what they said.
+    pub monitors: Monitors,
 }
 
-/// How tools reach the person at the front-end: to ask them questions, and
-/// to switch what they see. The default reaches nobody, as in a headless run.
+/// How tools reach the person at the front-end: to ask them questions, to
+/// switch what they see, and to leave commands running that report back
+/// later. The default reaches nobody, as in a headless run.
 #[derive(Debug, Clone, Default)]
 pub struct FrontEnd {
     pub asker: Asker,
     pub screen: Screen,
+    pub monitors: Monitors,
 }
 
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
 
 impl ToolContext {
     /// A context whose output goes nowhere, that has loaded nothing and has
-    /// nobody to ask or show anything to.
+    /// nobody to ask or show anything to, and no monitors.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
@@ -54,6 +58,7 @@ impl ToolContext {
             context: Arc::default(),
             asker: Asker::default(),
             screen: Screen::default(),
+            monitors: Monitors::default(),
         }
     }
 }

@@ -9,12 +9,16 @@ use ratatui::{
     text::Span,
 };
 
-use crate::{app::Content, status, theme};
+use crate::{
+    app::{Content, Tab},
+    status, theme,
+};
 
 /// Always this tall.
 pub const ROWS: u16 = 1;
 
-pub fn draw(frame: &mut Frame, area: Rect, content: &Content) {
+/// `label` names each tab, since a monitor's tab shows its state.
+pub fn draw(frame: &mut Frame, area: Rect, content: &Content, label: &dyn Fn(Tab) -> String) {
     let mut tabs = Vec::new();
     for (i, &tab) in content.tabs().iter().enumerate() {
         if i > 0 {
@@ -25,7 +29,7 @@ pub fn draw(frame: &mut Frame, area: Rect, content: &Content) {
         } else {
             theme::dim()
         };
-        tabs.push(Span::styled(format!("{} {}", i + 1, tab.name()), style));
+        tabs.push(Span::styled(format!("{} {}", i + 1, label(tab)), style));
     }
     let name = vec![
         Span::styled(

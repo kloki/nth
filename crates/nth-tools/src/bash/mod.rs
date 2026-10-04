@@ -9,6 +9,8 @@ use tokio::{
     process::Child,
 };
 
+use crate::process::{self, KillGroupOnDrop, kill_group};
+
 /// How long to keep reading after bash exits, for output still in the pipe.
 const DRAIN: Duration = Duration::from_millis(100);
 
@@ -90,16 +92,8 @@ impl Tool for Bash {
             let max_chars = self.config.max_output_chars;
             // `exec 2>&1` interleaves stderr into stdout in the order the
             // command wrote them, which two separate pipes cannot preserve.
-            let mut child = tokio::process::Command::new("bash")
-                .arg("-c")
-                .arg(format!("exec 2>&1\n{}", args.command))
-                .current_dir(&ctx.cwd)
-                .stdin(Stdio::null())
+            let mut child = process::shell(&format!("exec 2>&1\n{}", args.command), &ctx.cwd)
                 .stdout(Stdio::piped())
-                // Own process group, so a timeout can kill everything the
-                // command started, not just bash.
-                .process_group(0)
-                .kill_on_drop(true)
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             let mut stdout = child.stdout.take().ok_or("bash stdout is not piped")?;
@@ -201,36 +195,6 @@ impl<'a> Streamed<'a> {
         self.sink
             .send(String::from_utf8_lossy(bytes).into_owned())
             .await;
-    }
-}
-
-/// Kills the command's whole group if the call is dropped mid-run, as when
-/// a front-end quits during a turn. `kill_on_drop` alone reaches only bash,
-/// not what it started.
-struct KillGroupOnDrop(Option<u32>);
-
-impl Drop for KillGroupOnDrop {
-    fn drop(&mut self) {
-        if let Some(pid) = self.0 {
-            kill_pid_group(pid);
-        }
-    }
-}
-
-fn kill_group(child: &Child) {
-    if let Some(pid) = child.id() {
-        kill_pid_group(pid);
-    }
-}
-
-fn kill_pid_group(pid: u32) {
-    let Ok(pgid) = libc::pid_t::try_from(pid) else {
-        return;
-    };
-    // SAFETY: kill has no memory-safety preconditions. The group id is the
-    // pid of our own child, which is still unreaped and so cannot be reused.
-    unsafe {
-        libc::kill(-pgid, libc::SIGKILL);
     }
 }
 

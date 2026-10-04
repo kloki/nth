@@ -1,0 +1,39 @@
+Starts a background monitor that streams events from a long-running command. Each stdout line is an event: you keep working, and the lines reach you as notices in the conversation, between your steps or, when you are idle, as a new message. Notices arrive on their own schedule and are not replies from the user.
+
+Pick by how many notifications you need:
+- One ("tell me when the server is ready / the build finishes"): use bash with a command that exits when the condition is true, such as `until grep -q "Ready in" dev.log; do sleep 0.5; done`.
+- One per occurrence, until the monitor expires ("tell me every time an ERROR line appears"): monitor with an unbounded command (`tail -f`, `inotifywait -m`, `while true`).
+- One per occurrence, until a known end ("each CI step result, stop when the run completes"): monitor with a command that prints lines and then exits.
+
+Your command's stdout is the event stream; exiting ends the watch.
+
+  # Each matching log line is an event
+  tail -f /var/log/app.log | grep --line-buffered "ERROR"
+
+  # Each file change is an event
+  inotifywait -m --format '%e %f' /watched/dir
+
+  # Per occurrence with a natural end: each CI check as it lands, exit when the run completes
+  prev=""
+  while true; do
+    s=$(gh pr checks 123 --json name,bucket)
+    cur=$(jq -r '.[] | select(.bucket!="pending") | "\(.name): \(.bucket)"' <<<"$s" | sort)
+    comm -13 <(echo "$prev") <(echo "$cur")
+    prev=$cur
+    jq -e 'all(.bucket!="pending")' <<<"$s" >/dev/null && break
+    sleep 30
+  done
+
+Script quality:
+- Every pipe stage must flush per line or matches sit in its buffer unseen: `grep` needs `--line-buffered`, `awk` needs `fflush()`. `head` cannot flush at all.
+- In poll loops, handle transient failures (`curl ... || true`) so one failed request does not kill the monitor.
+- Poll intervals: 30s or more for remote APIs, 0.5-1s for local checks.
+- Write a specific `description`: it appears in every notice ("errors in deploy.log", not "watching logs").
+
+Coverage, because silence is not success: when watching a job for an outcome, match every terminal state, not just the happy path. A filter that only matches the success marker stays silent through a crash or a hang, and silence looks the same as "still running". Prefer `grep -E --line-buffered "ready|Traceback|Error|FAILED|Killed"` over grepping for the success line alone.
+
+Output volume: every stdout line becomes part of the conversation, so filter to the lines you would act on. Never pipe raw logs. A monitor printing more than 100 lines in 10 seconds is stopped; start it again with a tighter filter. A notice carries at most 50 lines of one monitor; the rest are in its log.
+
+The log: every line, stdout and stderr, goes to a log file whose path the result and every notice give. Read or grep it for stderr, for lines past a notice's cap, or for what happened before. Stderr does not make notices, so for a command you run directly, merge it with `2>&1` when its failures should reach your filter.
+
+The command runs in the working directory like bash. Exiting ends the watch and you hear its exit code. Every monitor expires after `timeout_ms` (default 300000, at most 1800000): it is killed and you get one notice. Start it again if you still need the watch. Stop one early with monitor_stop. The user can stop one too, and every monitor stops when nth exits.

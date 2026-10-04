@@ -95,6 +95,7 @@ impl App {
         self.usage = None;
         self.files.clear();
         self.session = Some(session);
+        self.left_session();
         self.index_files();
         self.load_git();
     }

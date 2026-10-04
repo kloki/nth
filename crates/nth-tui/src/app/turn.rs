@@ -34,6 +34,7 @@ impl App {
         let text = self.prompt.take();
         self.history.push(text.clone());
         self.save_history();
+        self.hold_notices = false;
         // Sent when the running turn ends; the chat shows it only then, so
         // the transcript keeps the order the model saw.
         if self.is_busy() {
@@ -43,10 +44,17 @@ impl App {
         }
     }
 
-    fn start_turn(&mut self, text: String) {
+    /// Starts a turn with `text` after what monitors said since the last
+    /// turn; `text` is empty when only the monitors have something to say.
+    pub(super) fn start_turn(&mut self, text: String) {
+        if self.session.is_none() || (text.is_empty() && !self.monitors.has_notices()) {
+            return;
+        }
         let Some(mut session) = self.session.take() else {
             return;
         };
+        let notices = self.monitors.take_notices();
+        self.notices_due = None;
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
@@ -56,7 +64,12 @@ impl App {
         // model gets the skill filled in.
         let skill = nth_context::skills::parse(&text, &self.context.skills)
             .map(|(skill, args)| (skill.clone(), args.to_string()));
-        self.chat.transcript.push_user(text.clone());
+        if let Some(notices) = &notices {
+            self.chat.transcript.push_user(notices.clone());
+        }
+        if !text.is_empty() {
+            self.chat.transcript.push_user(text.clone());
+        }
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
 
@@ -67,6 +80,7 @@ impl App {
         let front_end = FrontEnd {
             asker: Asker::new(self.asks_tx.clone()),
             screen: Screen::new(self.screen_tx.clone()),
+            monitors: self.monitors.clone(),
         };
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -77,6 +91,11 @@ impl App {
                         .map_err(nth_session::Error::Skill),
                     None => Ok(text),
                 };
+                let text = text.map(|text| match notices {
+                    Some(notices) if text.is_empty() => notices,
+                    Some(notices) => format!("{notices}\n\n{text}"),
+                    None => text,
+                });
                 let result = match text {
                     Ok(text) => {
                         session
@@ -145,12 +164,16 @@ impl App {
         self.session = Some(session);
         self.index_files();
         self.load_git();
+        // Notices that came after the model's last step go with the next
+        // prompt, or wake it on their own.
+        self.hold_notices = !send_next;
         match self.queue.pop_front() {
             Some(next) if send_next => self.start_turn(next),
             Some(next) => {
                 self.queue.push_front(next);
                 self.unqueue();
             }
+            None if send_next => self.start_turn(String::new()),
             None => {}
         }
     }
@@ -176,7 +199,9 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{BoxError, Message, ModelInfo, Provider, Request, StreamEvent};
+    use nth_protocol::{
+        BoxError, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+    };
 
     use super::*;
     use crate::chat::Entry;
@@ -441,6 +466,111 @@ mod tests {
         assert!(!app.is_busy());
         assert_eq!(app.prompt.text(), "two");
         assert!(!app.interrupted, "the next turn starts clean");
+    }
+
+    /// Has a new monitor print `line`, as its task would, and lets the app
+    /// hear of it.
+    async fn monitor_says(app: &mut App, line: &str) {
+        let m = app
+            .monitors
+            .register("ci", "watch")
+            .await
+            .expect("front-end");
+        let output = MonitorEvent::Output {
+            id: m.id,
+            line: line.into(),
+            stream: Stream::Stdout,
+        };
+        assert!(app.monitors.event(output).await);
+        while let Ok(event) = app.monitor_rx.try_recv() {
+            app.on_monitor(event);
+        }
+    }
+
+    fn sent(app: &App) -> Vec<&str> {
+        let session = app.session.as_ref().expect("session came back");
+        session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const NOTICE: &str =
+        "<monitor id=\"1\" description=\"ci\" log=\"/tmp/logs/1.log\">\nbuild failed\n</monitor>";
+
+    fn app_logging_to_tmp(provider: Arc<dyn Provider>) -> App {
+        let app = App::new(
+            Session::new("glm", "/repo".into()),
+            provider,
+            Arc::new(Vec::new()),
+        );
+        app.monitors.set_log_dir("/tmp/logs".into());
+        app
+    }
+
+    #[tokio::test]
+    async fn notices_wake_an_idle_agent() {
+        let mut app = app_logging_to_tmp(Arc::new(Answer));
+        monitor_says(&mut app, "build failed").await;
+        assert!(app.notices_due.is_some(), "waits for more lines first");
+
+        app.notices_due();
+        assert!(app.is_busy());
+        end(&mut app).await;
+
+        assert_eq!(sent(&app), [NOTICE]);
+        assert!(matches!(
+            app.chat.transcript.entries().next(),
+            Some(Entry::Notice(notice)) if notice.lines == 1
+        ));
+        assert_eq!(last_user(&app), None, "nothing typed");
+    }
+
+    #[tokio::test]
+    async fn notices_during_a_turn_follow_it() {
+        let mut app = app_logging_to_tmp(Arc::new(Answer));
+        send(&mut app, "one");
+        monitor_says(&mut app, "build failed").await;
+        app.notices_due();
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the notices' own turn");
+        end(&mut app).await;
+
+        assert_eq!(sent(&app), ["one", NOTICE]);
+    }
+
+    #[tokio::test]
+    async fn after_esc_notices_wait_for_the_next_prompt() {
+        let (mut app, _) = busy_app().await;
+        app.monitors.set_log_dir("/tmp/logs".into());
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        monitor_says(&mut app, "build failed").await;
+        app.notices_due();
+        assert!(!app.is_busy(), "you stopped the agent");
+
+        send(&mut app, "fix it");
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+        assert_eq!(sent(&app), ["go", &format!("{NOTICE}\n\nfix it")]);
+        assert_eq!(last_user(&app), Some("fix it"));
+    }
+
+    #[tokio::test]
+    async fn clear_stops_the_monitors() {
+        let mut app = app_logging_to_tmp(Arc::new(Answer));
+        monitor_says(&mut app, "build failed").await;
+
+        app.run_command(Command::Clear);
+
+        assert_eq!(app.monitors.running(), 0);
+        assert!(!app.monitors.has_notices());
     }
 
     #[tokio::test]
