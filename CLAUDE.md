@@ -40,7 +40,7 @@ Front-ends only consume `Event`s; they never reach into the loop. The TUI moves 
 The screen is three bands, named as in `docs/ui.md`. Use these names in code and comments:
 
 - **Content panel**: what you look at. The `Content` enum (`app/content.rs`) picks the view; only `Content::Chat` exists, and later tabs (Plan, Diff, Monitor) become new variants.
-- **Input panel**: what you type into. The `Input` enum (`app/input.rs`) picks it: `Input::Prompt` by default, or a widget such as the model picker that swaps in and hands back to the prompt.
+- **Input panel**: what you type into. The `Input` enum (`app/input.rs`) picks it: `Input::Prompt` by default, or a widget such as the model picker that swaps in and hands back to the prompt. `/` completes nth's commands and then the skills (`command/`); a skill runs by filling its template (`nth_context::skills::parse` and `Skill::invoke`), the same way `nth run "/name args"` does.
 - **Status bar**: always `status::ROWS` (2) lines at the bottom.
 
 Heights are decided bottom-up: the status bar, then the input panel's own `Input::rows()`, then the content panel takes the rest. A view's state lives on `App` (`App.chat`, `App.prompt`), not in the enum variant, so it keeps up with the session and keeps its text while hidden.

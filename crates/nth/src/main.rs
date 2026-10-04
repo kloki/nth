@@ -167,6 +167,14 @@ async fn run(prompt: String, config: Config) -> Result<()> {
     let (mut session, provider) = setup(&config, &config.paths()).await?;
     let cwd = session.cwd.clone();
     let tools = nth_tools::all(&config.tools);
+    // `/name args` runs a skill, as in the chat.
+    let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
+        Some((skill, args)) => skill
+            .invoke(args, &cwd)
+            .await
+            .map_err(|e| anyhow!("could not run the skill: {e}"))?,
+        None => prompt,
+    };
 
     let started = Instant::now();
     let (tx, mut rx) = mpsc::channel(256);

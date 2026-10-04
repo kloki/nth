@@ -1,10 +1,13 @@
 //! Slash commands typed into the prompt, and picking from the ones that
-//! match what has been typed so far.
+//! match what has been typed so far. Besides nth's own commands, every
+//! skill runs as `/<name> [args]`.
 
-use crate::popup::Popup;
+use nth_context::Skills;
 
-/// Longest command name plus its leading `/`, so descriptions line up.
-const NAME_WIDTH: usize = 8;
+use crate::{mention, popup::Popup};
+
+/// Longest skill description shown in the popup, so it stays narrow.
+const ABOUT_CHARS: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
@@ -40,38 +43,110 @@ impl Command {
         }
     }
 
-    /// How the command shows in the completion popup.
-    pub fn row(self) -> (String, &'static str) {
-        (format!("/{:<NAME_WIDTH$}", self.name()), self.about())
-    }
-
     /// Only a prompt that is exactly `/<name>` is a command. Anything else,
     /// such as `/etc/hosts what is this`, is meant for the model.
     pub fn parse(text: &str) -> Option<Command> {
         let name = text.trim().strip_prefix('/')?;
         Self::ALL.into_iter().find(|c| c.name() == name)
     }
+}
 
-    /// The popup for `stem`, or `None` when no command completes it.
-    pub fn complete(stem: &str) -> Option<Popup<Command>> {
-        Popup::new(Self::matching(stem))
+/// A row of the completion popup.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Entry {
+    Builtin(Command),
+    Skill { name: String, about: String },
+}
+
+impl Entry {
+    pub fn name(&self) -> &str {
+        match self {
+            Entry::Builtin(command) => command.name(),
+            Entry::Skill { name, .. } => name,
+        }
     }
 
-    /// Commands that complete `stem`, a `/` followed by part of a name.
-    pub fn matching(stem: &str) -> Vec<Command> {
-        match stem.strip_prefix('/') {
-            Some(part) if !part.contains(char::is_whitespace) => Self::ALL
-                .into_iter()
-                .filter(|c| c.name().starts_with(part))
-                .collect(),
-            _ => Vec::new(),
+    fn about(&self) -> &str {
+        match self {
+            Entry::Builtin(command) => command.about(),
+            Entry::Skill { about, .. } => about,
         }
+    }
+
+    /// The popup for `stem`, or `None` when nothing completes it.
+    pub fn complete(stem: &str, skills: &Skills) -> Option<Popup<Entry>> {
+        Popup::new(Self::matching(stem, skills))
+    }
+
+    /// Commands, then skills, that complete `stem`: a `/` followed by part
+    /// of a name. A skill named like a command is left out, since typing
+    /// its name runs the command. As many as the popup shows; typing more
+    /// narrows them down.
+    pub fn matching(stem: &str, skills: &Skills) -> Vec<Entry> {
+        let Some(part) = stem.strip_prefix('/') else {
+            return Vec::new();
+        };
+        if part.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        let builtins = Command::ALL.into_iter().map(Entry::Builtin);
+        let skills = skills
+            .iter()
+            .filter(|s| Command::ALL.iter().all(|c| c.name() != s.name))
+            .map(|s| Entry::Skill {
+                name: s.name.clone(),
+                about: about(s.description.as_deref().unwrap_or("skill")),
+            });
+        builtins
+            .chain(skills)
+            .filter(|e| e.name().starts_with(part))
+            .take(mention::LIMIT)
+            .collect()
+    }
+
+    /// How `entries` show in the popup, with the descriptions lined up.
+    pub fn rows(entries: &[Entry]) -> Vec<(String, &str)> {
+        let width = entries.iter().map(|e| e.name().len()).max().unwrap_or(0) + 1;
+        entries
+            .iter()
+            .map(|e| (format!("/{:<width$} ", e.name()), e.about()))
+            .collect()
+    }
+}
+
+/// The first line of a skill's description, short enough for the popup.
+fn about(description: &str) -> String {
+    let line = description.lines().next().unwrap_or_default();
+    match line.char_indices().nth(ABOUT_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nth_context::{Context, Paths};
+
     use super::*;
+
+    fn builtins(names: &[Command]) -> Vec<Entry> {
+        names.iter().map(|&c| Entry::Builtin(c)).collect()
+    }
+
+    /// Skills named `names` in a temporary project.
+    fn skills(names: &[&str]) -> Skills {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in names {
+            let skill = dir.path().join(".agents/skills").join(name);
+            std::fs::create_dir_all(&skill).expect("dirs");
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\ndescription: does {name}\n---\nbody\n"),
+            )
+            .expect("writes");
+        }
+        Context::discover(dir.path(), &Paths::default()).skills
+    }
 
     #[test]
     fn parses_only_a_bare_command() {
@@ -84,12 +159,52 @@ mod tests {
 
     #[test]
     fn matches_commands_by_prefix() {
-        assert_eq!(Command::matching("/"), Command::ALL);
-        assert_eq!(Command::matching("/c"), [Command::Clear]);
-        assert_eq!(Command::matching("/m"), [Command::Models]);
-        assert_eq!(Command::matching("/r"), [Command::Resume]);
-        assert_eq!(Command::matching("/x"), []);
-        assert_eq!(Command::matching("/c x"), []);
-        assert_eq!(Command::matching("c"), []);
+        let none = Skills::default();
+        assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL));
+        assert_eq!(Entry::matching("/c", &none), builtins(&[Command::Clear]));
+        assert_eq!(Entry::matching("/m", &none), builtins(&[Command::Models]));
+        assert_eq!(Entry::matching("/r", &none), builtins(&[Command::Resume]));
+        assert_eq!(Entry::matching("/x", &none), []);
+        assert_eq!(Entry::matching("/c x", &none), []);
+        assert_eq!(Entry::matching("c", &none), []);
+    }
+
+    #[test]
+    fn skills_follow_the_commands() {
+        let skills = skills(&["review", "clear", "deploy"]);
+
+        let names: Vec<_> = Entry::matching("/", &skills)
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["clear", "exit", "models", "resume", "deploy", "review"],
+            "the clear skill is hidden by the command"
+        );
+        assert_eq!(
+            Entry::matching("/re", &skills),
+            [
+                Entry::Builtin(Command::Resume),
+                Entry::Skill {
+                    name: "review".into(),
+                    about: "does review".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_line_up_on_the_longest_name() {
+        let skills = skills(&["research-opencode"]);
+        let entries = Entry::matching("/re", &skills);
+
+        assert_eq!(
+            Entry::rows(&entries),
+            [
+                ("/resume             ".to_string(), "reopen a past session"),
+                ("/research-opencode  ".to_string(), "does research-opencode"),
+            ]
+        );
     }
 }

@@ -20,6 +20,10 @@ pub enum Error {
     TooManySteps(usize),
     #[error("interrupted")]
     Interrupted,
+    /// A skill run as `/name` could not be filled in, so the turn never
+    /// started.
+    #[error("could not run the skill: {0}")]
+    Skill(String),
 }
 
 /// Where a turn's requests go: which model at what effort, on behalf of

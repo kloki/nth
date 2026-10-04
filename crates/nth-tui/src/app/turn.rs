@@ -47,6 +47,10 @@ impl App {
         }
         session.effort = self.effort;
         let text = self.prompt.take();
+        // `/name args` runs a skill: the chat shows it as typed, and the
+        // model gets the skill filled in.
+        let skill = nth_context::skills::parse(&text, &self.context.skills)
+            .map(|(skill, args)| (skill.clone(), args.to_string()));
         self.chat.transcript.push_user(text.clone());
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
@@ -58,9 +62,21 @@ impl App {
         let token = cancel.clone();
         let store = self.store.clone();
         let handle = tokio::spawn(async move {
-            let result = session
-                .prompt(text, provider.as_ref(), &tools, &events, &token)
-                .await;
+            let text = match skill {
+                Some((skill, args)) => skill
+                    .invoke(&args, &session.cwd)
+                    .await
+                    .map_err(nth_session::Error::Skill),
+                None => Ok(text),
+            };
+            let result = match text {
+                Ok(text) => {
+                    session
+                        .prompt(text, provider.as_ref(), &tools, &events, &token)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
             // Saved however the turn ended, interrupted included: the
             // session is always valid to continue from.
             let saved = match &store {
@@ -220,6 +236,76 @@ mod tests {
             app.chat.transcript.entries().last(),
             Some(Entry::Interrupted { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_skill_command_sends_the_filled_in_skill() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let session = Session::new("glm", dir.path().to_path_buf())
+            .with_context(crate::app::tests::with_fix_skill(dir.path()));
+        let mut app = App::new(session, Arc::new(Hang(dropped)), Arc::new(Vec::new()));
+
+        app.prompt.insert_str("/fix the build");
+        app.submit();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        let ended = app
+            .turn
+            .take()
+            .expect("running")
+            .handle
+            .await
+            .expect("ends");
+        app.end_turn(ended);
+
+        assert_eq!(
+            app.chat.transcript.entries().next(),
+            Some(&Entry::User("/fix the build".into()))
+        );
+        let session = app.session.as_ref().expect("session came back");
+        let Some(Message::User(sent)) = session.messages.last() else {
+            panic!("the prompt was sent");
+        };
+        assert!(
+            sent.starts_with(
+                "/fix the build\n\n<skill_content name=\"fix\">\n# Skill: fix\n\nFix the build.\n"
+            ),
+            "{sent}"
+        );
+        assert_eq!(session.title(), Some("/fix the build"));
+    }
+
+    #[tokio::test]
+    async fn a_skill_that_cannot_be_read_fails_the_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::app::tests::with_fix_skill(dir.path());
+        std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
+        let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
+        let mut app = App::new(
+            session,
+            Arc::new(Hang(Arc::default())),
+            Arc::new(Vec::new()),
+        );
+
+        app.prompt.insert_str("/fix it");
+        app.submit();
+        let ended = app
+            .turn
+            .take()
+            .expect("running")
+            .handle
+            .await
+            .expect("ends");
+        app.end_turn(ended);
+
+        let Some(Entry::TurnError(e)) = app.chat.transcript.entries().last() else {
+            panic!("the turn failed");
+        };
+        assert!(
+            e.starts_with("could not run the skill: cannot read "),
+            "{e}"
+        );
     }
 
     #[tokio::test]

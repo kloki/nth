@@ -86,6 +86,7 @@ impl App {
     /// working directory, so the paths it already talked about still hold.
     pub(super) fn resume(&mut self, mut session: Session) {
         session.max_steps = self.max_steps;
+        self.context = session.context().clone();
         self.model = session.model.clone();
         self.effort = session.effort;
         self.cwd = session.cwd.clone();

@@ -20,7 +20,7 @@ use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use input::Input;
-use nth_context::Paths;
+use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
 use nth_session::{CancellationToken, Session, Store, Summary, store};
 use ratatui::{
@@ -38,7 +38,7 @@ use turn::{Ended, Running};
 
 use crate::{
     chat::Chat,
-    command::Command,
+    command::{Command, Entry},
     git::{self, GitStatus},
     header, llm_picker, mention,
     popup::{self, Popup},
@@ -94,6 +94,10 @@ pub struct App {
     /// Where instruction files are looked for when a resumed session moves
     /// to another directory.
     paths: Paths,
+    /// The session's instruction files and skills; kept here too, since
+    /// the session is in the turn task while one runs and `/` still has to
+    /// list the skills.
+    context: Arc<ProjectContext>,
     /// The configured step limit, which every session the app moves on to
     /// keeps; a loaded one would otherwise fall back to the default.
     max_steps: usize,
@@ -119,7 +123,7 @@ struct Indexing {
 
 /// The open completion popup.
 enum Completion {
-    Command(Popup<Command>),
+    Command(Popup<Entry>),
     /// `start` is the byte offset of the mention's `@` in the prompt.
     File {
         popup: Popup<String>,
@@ -153,10 +157,7 @@ impl Completion {
 
     fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
-            Completion::Command(popup) => (
-                popup.items().iter().map(|c| c.row()).collect(),
-                popup.selected_index(),
-            ),
+            Completion::Command(popup) => (Entry::rows(popup.items()), popup.selected_index()),
             Completion::File { popup, .. } => (
                 popup.items().iter().map(|f| (f.clone(), "")).collect(),
                 popup.selected_index(),
@@ -211,6 +212,7 @@ impl App {
             llm_listing: None,
             store: None,
             paths: Paths::default(),
+            context: session.context().clone(),
             max_steps: session.max_steps,
             session_listing: None,
             session_loading: None,
@@ -455,14 +457,9 @@ impl App {
             // to replace yet.
             Command::Clear if self.is_busy() => {}
             Command::Clear => {
-                // Same directory, so the same instruction files.
-                let context = self
-                    .session
-                    .as_ref()
-                    .map(|s| s.context().clone())
-                    .unwrap_or_default();
-                let mut session =
-                    Session::new(self.model.clone(), self.cwd.clone()).with_context(context);
+                // Same directory, so the same instruction files and skills.
+                let mut session = Session::new(self.model.clone(), self.cwd.clone())
+                    .with_context(self.context.clone());
                 session.effort = self.effort;
                 session.max_steps = self.max_steps;
                 self.session = Some(session);
@@ -503,6 +500,19 @@ pub(crate) mod tests {
     pub(crate) fn app() -> App {
         let session = Session::new("glm", "/repo".into());
         App::new(session, Arc::new(Idle), Arc::new(Vec::new()))
+    }
+
+    /// The context of a project in `dir` with one skill, `fix`, whose body
+    /// is `Fix $ARGUMENTS.`.
+    pub(crate) fn with_fix_skill(dir: &std::path::Path) -> Arc<ProjectContext> {
+        let skill = dir.join(".agents/skills/fix");
+        std::fs::create_dir_all(&skill).expect("dirs");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: fix\ndescription: fix what is broken\n---\nFix $ARGUMENTS.\n",
+        )
+        .expect("writes");
+        Arc::new(ProjectContext::discover(dir, &Paths::default()))
     }
 
     fn rows(app: &mut App) -> Vec<String> {
