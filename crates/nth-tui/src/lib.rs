@@ -10,6 +10,7 @@ mod llm_picker;
 mod mention;
 mod popup;
 mod prompt;
+mod question;
 mod session_picker;
 mod spinner;
 mod status;

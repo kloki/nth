@@ -48,7 +48,7 @@ the opencode code to copy from.
 ### Agents and permissions
 
 - [ ] **Plan and Build agents**, switched with Tab, each with its own tool filter and colour. `agent/agent.ts`, `session/prompt/plan.txt`, `build-switch.txt`
-- [ ] **question tool**: the agent asks you one or more multiple-choice questions mid-turn, and you can always type your own answer. Plan uses it to settle open decisions before it writes the plan, and plan exit uses it to ask for approval. It is allowed for Build and Plan and denied for subagents. `tool/question.ts`, `agent/agent.ts:126`, `tui/routes/session/question.tsx`
+- [ ] **question tool**: the agent asks you one or more multiple-choice questions mid-turn, and you can always type your own answer. nth has the tool and its panel; the Plan and plan-exit uses and the subagent denial wait for those features. Plan uses it to settle open decisions before it writes the plan, and plan exit uses it to ask for approval. It is allowed for Build and Plan and denied for subagents. `tool/question.ts`, `agent/agent.ts:126`, `tui/routes/session/question.tsx`
 - [ ] **Plan file**: Plan may write only `.nth/plans/<session>.md`; switching to Build injects it. `tool/plan.ts`, `plan-enter.txt`, `plan-exit.txt`
 - [ ] **Permission prompts**: ask before paths outside the worktree and before deny-listed bash commands, with allow once, allow always, or reject. `permission/`, `tool/external-directory.ts`, `tui/routes/session/permission.tsx`
 - [ ] **Bash command arity** for "allow always" rules, so `git status` does not allow `git push`. `permission/arity.ts`

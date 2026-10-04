@@ -48,6 +48,14 @@ impl ToolCall {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.arguments) else {
             return self.arguments.clone();
         };
+        // The question tool's headers, which name what it asked.
+        if let Some(questions) = args["questions"].as_array() {
+            let headers: Vec<&str> = questions
+                .iter()
+                .filter_map(|q| q["header"].as_str())
+                .collect();
+            return headers.join(", ");
+        }
         if let Some(patch) = args["patchText"].as_str() {
             return patch_summary(patch, cwd);
         }
@@ -139,6 +147,10 @@ mod tests {
         assert_eq!(
             call(r#"{"url":"https://example.com","format":"text"}"#).summary(cwd),
             "https://example.com"
+        );
+        assert_eq!(
+            call(r#"{"questions":[{"header":"Auth"},{"header":"Checks"}]}"#).summary(cwd),
+            "Auth, Checks"
         );
         assert_eq!(call("not json").summary(cwd), "not json");
         assert_eq!(

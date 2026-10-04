@@ -11,6 +11,7 @@ mod resume;
 mod turn;
 
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -23,7 +24,7 @@ use futures::StreamExt;
 use input::Input;
 use job::Job;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
+use nth_protocol::{Ask, BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
 use nth_session::{Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -43,7 +44,7 @@ use crate::{
     llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
-    session_picker, spinner, status,
+    question, session_picker, spinner, status,
 };
 
 const WHEEL_LINES: usize = 3;
@@ -114,6 +115,11 @@ pub struct App {
     tools: Arc<Vec<Box<dyn Tool>>>,
     events_tx: mpsc::Sender<Event>,
     events_rx: mpsc::Receiver<Event>,
+    /// Where the running turn's tools send their questions.
+    asks_tx: mpsc::Sender<Ask>,
+    asks_rx: mpsc::Receiver<Ask>,
+    /// Questions waiting behind the ones in the input panel.
+    asks: VecDeque<Ask>,
     turn: Job<Ended>,
     quit: bool,
 }
@@ -167,6 +173,7 @@ impl Completion {
 enum Step {
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
+    Asked(Ask),
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
@@ -184,6 +191,7 @@ impl App {
         tools: Arc<Vec<Box<dyn Tool>>>,
     ) -> Self {
         let (events_tx, events_rx) = mpsc::channel(256);
+        let (asks_tx, asks_rx) = mpsc::channel(4);
         let home = std::env::var("HOME").ok();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
@@ -219,6 +227,9 @@ impl App {
             tools,
             events_tx,
             events_rx,
+            asks_tx,
+            asks_rx,
+            asks: VecDeque::new(),
             turn: Job::default(),
             quit: false,
         }
@@ -253,6 +264,7 @@ impl App {
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
+                Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
@@ -268,6 +280,7 @@ impl App {
                     self.on_terminal(event.context("reading terminal input")?)
                 }
                 Step::Session(event) => self.on_session(event),
+                Step::Asked(ask) => self.on_ask(ask),
                 Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
@@ -295,7 +308,7 @@ impl App {
         let [header, content, input, status] = Layout::vertical([
             Constraint::Length(header::ROWS),
             Constraint::Min(0),
-            Constraint::Length(self.input.rows()),
+            Constraint::Length(self.input.rows(frame.area())),
             Constraint::Length(status::ROWS),
         ])
         .spacing(1)
@@ -339,6 +352,7 @@ impl App {
             }
             Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
+            Input::Question(panel) => question::draw(frame, input, panel),
         }
     }
 
@@ -978,5 +992,81 @@ pub(crate) mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// An ask for `questions`, and where its reply lands.
+    fn ask(
+        questions: Vec<nth_protocol::Question>,
+    ) -> (Ask, tokio::sync::oneshot::Receiver<nth_protocol::Reply>) {
+        let (reply, replied) = tokio::sync::oneshot::channel();
+        let ask = Ask {
+            call_id: "1".into(),
+            questions,
+            reply,
+        };
+        (ask, replied)
+    }
+
+    #[test]
+    fn a_question_takes_the_prompts_place_and_answers_the_tool() {
+        use crate::question::tests::question;
+
+        let mut app = app();
+        app.prompt.insert_str("half typed");
+        let (ask, mut replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
+        app.on_ask(ask);
+        let asking = rows(&mut app);
+
+        assert_eq!(
+            asking[14].trim_end(),
+            " glm · /repo",
+            "the status bar stays"
+        );
+        let panel: Vec<&str> = asking[8..13].iter().map(|r| r.trim_end()).collect();
+        assert_eq!(
+            panel,
+            [
+                " ▎ question      ↑↓ · 1-2 · enter · esc",
+                " ▎ Which auth?",
+                " ▎ → 1. oauth",
+                " ▎   2. key",
+                " ▎   3. Type your own answer…",
+            ]
+        );
+
+        app.apply(keys::Action::SelectNext);
+        app.apply(keys::Action::Submit);
+
+        assert!(matches!(app.input, Input::Prompt));
+        assert_eq!(app.prompt.text(), "half typed", "the prompt kept its text");
+        assert_eq!(
+            replied.try_recv(),
+            Ok(nth_protocol::Reply::Answered(vec![nth_protocol::Answer {
+                picked: vec!["key".into()],
+                typed: None,
+            }]))
+        );
+    }
+
+    #[test]
+    fn esc_declines_and_the_next_question_follows() {
+        use crate::question::tests::question;
+
+        let mut app = app();
+        let (first, mut declined) = ask(vec![question("auth", false, &["a", "b"])]);
+        let (second, _) = ask(vec![question("checks", true, &["a", "b"])]);
+        app.on_ask(first);
+        app.on_ask(second);
+
+        app.apply(keys::Action::Interrupt);
+
+        assert_eq!(declined.try_recv(), Ok(nth_protocol::Reply::Declined));
+        match &app.input {
+            Input::Question(panel) => assert_eq!(panel.questions()[0].header, "checks"),
+            _ => panic!("the queued question shows"),
+        }
+
+        app.drop_asks();
+        assert!(matches!(app.input, Input::Prompt), "gone with the turn");
     }
 }
