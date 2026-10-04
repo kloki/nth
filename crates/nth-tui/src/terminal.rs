@@ -6,8 +6,8 @@ use std::io::stdout;
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::supports_keyboard_enhancement,
@@ -21,7 +21,8 @@ pub fn enter() -> Result<DefaultTerminal> {
         release();
         hook(info);
     }));
-    let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
+    // No mouse capture, so the terminal's own text selection keeps working.
+    let _ = execute!(stdout(), EnableBracketedPaste);
     // Lets shift+Enter arrive as its own key where the terminal supports it.
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
         let _ = execute!(
@@ -40,10 +41,5 @@ pub fn restore() {
 /// Undoes the modes set on top of what `ratatui::init` enables; popping
 /// keyboard flags that were never pushed is a no-op for the terminal.
 fn release() {
-    let _ = execute!(
-        stdout(),
-        PopKeyboardEnhancementFlags,
-        DisableBracketedPaste,
-        DisableMouseCapture
-    );
+    let _ = execute!(stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste);
 }

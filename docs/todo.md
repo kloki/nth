@@ -76,6 +76,7 @@ the opencode code to copy from.
 - [ ] **Tool details toggle**: expand a collapsed tool call in place. `tui/` `session.toggle.actions`
 - [ ] **Thinking toggle**: show or hide reasoning. `tui/` `session.toggle.thinking`
 - [ ] **Copy** the last assistant message or the whole transcript to the clipboard. `tui/clipboard.ts`
+- [ ] **Mouse support**: wheel scrolling, clicking tabs and picker rows, and selecting text inside the TUI with copy via OSC 52 (`wl-copy`/`xclip` fallback), behind a `mouse` config key. nth had capture on for wheel scrolling only and turned it off because it broke the terminal's own selection. `tui/app.tsx` (`useMouse`, `onMouseUp`), `tui/util/selection.ts`, `tui/clipboard.ts`
 - [ ] **Message navigation**: jump to the previous or next message and the last user message. `tui/` `session.message.*`
 - [ ] **Help dialog** listing keybinds and commands. `tui/` `help.show`
 - [ ] **Suspend** with `ctrl+z`. `tui/` "Suspend terminal"

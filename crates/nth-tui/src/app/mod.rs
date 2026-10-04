@@ -20,7 +20,7 @@ use std::{
 
 use anyhow::{Context, Result};
 pub(crate) use content::{Content, Tab};
-use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
+use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind};
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -61,7 +61,6 @@ use crate::{
     question, session_picker, spinner, status,
 };
 
-const WHEEL_LINES: usize = 3;
 /// How often a running turn redraws, so the spinner shows every frame and
 /// the live reasoning timer advances.
 const TICK: Duration = spinner::FRAME;
@@ -506,11 +505,6 @@ impl App {
     fn on_terminal(&mut self, event: TermEvent) {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-            TermEvent::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_up(WHEEL_LINES),
-                MouseEventKind::ScrollDown => self.scroll_down(WHEEL_LINES),
-                _ => {}
-            },
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -660,30 +654,6 @@ impl App {
     }
 
     // Scrolling moves whichever tab is showing.
-
-    fn scroll_up(&mut self, lines: usize) {
-        match self.content.active() {
-            Tab::Chat => self.chat.scroll_up(lines),
-            Tab::Diagnostics => self.diagnostics.scroll_up(lines),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.scroll_up(lines);
-                }
-            }
-        }
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        match self.content.active() {
-            Tab::Chat => self.chat.scroll_down(lines),
-            Tab::Diagnostics => self.diagnostics.scroll_down(lines),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.scroll_down(lines);
-                }
-            }
-        }
-    }
 
     pub(super) fn page_up(&mut self) {
         match self.content.active() {

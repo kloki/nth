@@ -39,7 +39,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
 - **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics and a tab per monitor are the others so far. Later come Plan (the plan file with its comment threads) and Diff; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
-- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
+- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys move the showing tab. The mouse is not captured, so the terminal's own text selection works.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open.
 
 | Key              | Does                                                  |
