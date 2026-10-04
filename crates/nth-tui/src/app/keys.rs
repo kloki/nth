@@ -9,7 +9,8 @@ use crate::{command::Entry, mention, popup::Popup};
 pub enum Action {
     Submit,
     Interrupt,
-    /// Highlights the next or previous entry in the completion popup.
+    /// Highlights the next or previous entry in the completion popup or a
+    /// picker; on the prompt, recalls the next or previous sent prompt.
     SelectNext,
     SelectPrev,
     /// Fills the prompt with the highlighted entry.
@@ -124,7 +125,17 @@ impl App {
             }
         }
         match action {
-            Action::SelectNext | Action::SelectPrev | Action::Accept => {}
+            Action::SelectPrev => {
+                if let Some(text) = self.history.prev(self.prompt.text()) {
+                    self.prompt.set(&text);
+                }
+            }
+            Action::SelectNext => {
+                if let Some(text) = self.history.next(self.prompt.text()) {
+                    self.prompt.set(&text);
+                }
+            }
+            Action::Accept => {}
             Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
@@ -435,6 +446,62 @@ mod tests {
         app.apply(Action::Interrupt);
         assert!(app.completion.is_none());
         assert!(!app.is_busy());
+    }
+
+    /// An app that sent `sent`, oldest first, with `draft` typed.
+    fn recalling(sent: &[&str], draft: &str) -> App {
+        let mut app = app();
+        for prompt in sent {
+            app.history.push(prompt.to_string());
+        }
+        app.prompt.insert_str(draft);
+        app
+    }
+
+    #[test]
+    fn up_and_down_recall_sent_prompts_and_give_the_draft_back() {
+        let mut app = recalling(&["first", "second"], "draft");
+
+        app.apply(Action::SelectPrev);
+        assert_eq!(app.prompt.text(), "second");
+        assert_eq!(app.prompt.cursor(), "second".len());
+        app.apply(Action::SelectPrev);
+        assert_eq!(app.prompt.text(), "first");
+        app.apply(Action::SelectPrev);
+        assert_eq!(app.prompt.text(), "first", "stops at the oldest");
+
+        app.apply(Action::SelectNext);
+        app.apply(Action::SelectNext);
+        assert_eq!(app.prompt.text(), "draft");
+    }
+
+    #[test]
+    fn up_leaves_an_edited_prompt_alone() {
+        let mut app = recalling(&["first", "second"], "");
+        app.apply(Action::SelectPrev);
+        app.apply(Action::Insert('!'));
+
+        app.apply(Action::SelectPrev);
+        assert_eq!(app.prompt.text(), "second!");
+    }
+
+    #[test]
+    fn up_moves_an_open_popup_rather_than_recalling() {
+        let mut app = recalling(&["sent"], "");
+        for c in "/".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::SelectPrev);
+        assert_eq!(selected(&app), Command::Resume);
+        assert_eq!(app.prompt.text(), "/");
+    }
+
+    #[test]
+    fn a_recalled_command_does_not_open_the_popup() {
+        let mut app = recalling(&["/models"], "");
+        app.apply(Action::SelectPrev);
+        assert_eq!(app.prompt.text(), "/models");
+        assert!(app.completion.is_none());
     }
 
     #[test]

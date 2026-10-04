@@ -13,7 +13,7 @@ use crate::Session;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("neither XDG_DATA_HOME nor HOME is set, so there is nowhere to keep sessions")]
+    #[error("neither XDG_DATA_HOME nor HOME is set, so nth has nowhere to save")]
     NoDataDir,
     #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
@@ -37,6 +37,18 @@ pub struct Summary {
     pub updated_at: SystemTime,
 }
 
+/// Where nth keeps what it saves: `$XDG_DATA_HOME/nth`, or
+/// `~/.local/share/nth` when that is unset.
+pub fn data_dir() -> Result<PathBuf, Error> {
+    let data = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(data) => PathBuf::from(data),
+        None => {
+            PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoDataDir)?).join(".local/share")
+        }
+    };
+    Ok(data.join("nth"))
+}
+
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
@@ -46,12 +58,7 @@ impl Store {
     /// The store under `$XDG_DATA_HOME/nth/sessions`, or
     /// `~/.local/share/nth/sessions` when that is unset.
     pub fn open() -> Result<Self, Error> {
-        let data = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-            Some(data) => PathBuf::from(data),
-            None => PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoDataDir)?)
-                .join(".local/share"),
-        };
-        Ok(Self::at(data.join("nth/sessions")))
+        Ok(Self::at(data_dir()?.join("sessions")))
     }
 
     pub fn at(dir: impl Into<PathBuf>) -> Self {

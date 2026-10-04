@@ -5,6 +5,7 @@ mod chat;
 mod command;
 mod git;
 mod header;
+mod history;
 mod llm_picker;
 mod mention;
 mod popup;
@@ -40,10 +41,16 @@ pub async fn run(
     if !stdin().is_terminal() || !stdout().is_terminal() {
         bail!("the interactive chat needs a terminal; use `nth run` for scripted use");
     }
+    // Without a data directory, prompts are still recalled for this run.
+    let history = match history::History::path() {
+        Ok(path) => history::History::load(path).await,
+        Err(_) => history::History::default(),
+    };
     let mut terminal = terminal::enter()?;
     let result = app::App::new(session, provider, tools)
         .with_store(store)
         .with_paths(paths)
+        .with_history(history)
         .run(&mut terminal)
         .await;
     terminal::restore();

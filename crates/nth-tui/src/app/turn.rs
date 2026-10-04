@@ -39,6 +39,8 @@ impl App {
         }
         session.effort = self.effort;
         let text = self.prompt.take();
+        self.history.push(text.clone());
+        self.save_history();
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
         let skill = nth_context::skills::parse(&text, &self.context.skills)
@@ -259,6 +261,31 @@ mod tests {
             e.starts_with("could not run the skill: cannot read "),
             "{e}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_sent_prompt_is_saved_to_the_history_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nth/prompt-history.jsonl");
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(
+            session,
+            Arc::new(Hang(Arc::default())),
+            Arc::new(Vec::new()),
+        )
+        .with_history(crate::history::History::load(path.clone()).await);
+
+        app.prompt.insert_str("two\nlines");
+        app.submit();
+        let saved = app.history_saving.join().await.expect("save finished");
+        app.history_saved(saved);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("saved"),
+            "\"two\\nlines\"\n"
+        );
+        let mut loaded = crate::history::History::load(path).await;
+        assert_eq!(loaded.prev("").as_deref(), Some("two\nlines"));
     }
 
     #[tokio::test]
