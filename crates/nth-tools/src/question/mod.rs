@@ -44,7 +44,8 @@ impl Tool for Question {
                                         "type": "object",
                                         "properties": {
                                             "label": { "type": "string", "description": "The choice, in 1 to 5 words" },
-                                            "description": { "type": "string", "description": "What the choice means or costs, in one line" }
+                                            "description": { "type": "string", "description": "What the choice means or costs, in one line" },
+                                            "preview": { "type": "string", "description": "Several lines shown beside the options while this one is highlighted, as written: an ASCII mockup, a code snippet or a config" }
                                         },
                                         "required": ["label"]
                                     }
@@ -129,7 +130,7 @@ mod tests {
     fn args() -> serde_json::Value {
         json!({ "questions": [
             { "question": "Which auth?", "header": "Auth", "options": [
-                { "label": "OAuth", "description": "works with SSO" },
+                { "label": "OAuth", "description": "works with SSO", "preview": "login → idp\n  ← token" },
                 { "label": "API key" } ] },
             { "question": "Which checks?", "header": "Checks", "multiple": true, "options": [
                 { "label": "fmt" }, { "label": "clippy" }, { "label": "test" } ] }
@@ -154,6 +155,10 @@ mod tests {
             assert_eq!(ask.call_id, "c1");
             assert_eq!(ask.questions.len(), 2);
             assert!(ask.questions[1].multiple);
+            assert_eq!(
+                ask.questions[0].options[0].preview.as_deref(),
+                Some("login → idp\n  ← token")
+            );
             let answers = vec![
                 Answer {
                     picked: vec!["OAuth".into()],

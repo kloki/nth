@@ -16,8 +16,13 @@ pub struct Question {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
+    /// One line on what the option means or costs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Several lines shown as written while the option is highlighted,
+    /// such as an ASCII mockup or a code snippet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// Your answer to one question: the labels you picked, and what you typed
