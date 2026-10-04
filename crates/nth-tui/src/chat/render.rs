@@ -145,7 +145,7 @@ fn icon(tool: &str) -> &'static str {
         "webfetch" => "↓",
         "websearch" => "?",
         "skill" => "✦",
-        "question" => "?",
+        "question" => "¿",
         _ => "•",
     }
 }
@@ -296,7 +296,7 @@ mod tests {
 
         let total = t.layout(40);
 
-        assert_eq!(text(&t.visible(0, total)), ["▎ ? question Auth"]);
+        assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
     }
 
     #[test]

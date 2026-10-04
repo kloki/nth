@@ -247,7 +247,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 **Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, or its tallest preview, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
 
-**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
+**In the chat.** The call's row is `¿ question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
 
 **Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 
