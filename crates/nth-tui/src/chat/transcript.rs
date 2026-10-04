@@ -118,6 +118,8 @@ impl Transcript {
                         None if call.name == "skill" => Ok(content.clone()),
                         // A question is one row too; the answers are for the model.
                         None if call.name == "question" => Ok(content.clone()),
+                        // The panel it switched to says what it did.
+                        None if call.name == "panel" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
                             // only; the live view never showed them. The

@@ -6,7 +6,7 @@ use std::{
 };
 
 use nth_context::Context;
-use nth_protocol::{Asker, Effort, Event, Message, Provider, Tool, ToolContext};
+use nth_protocol::{Effort, Event, FrontEnd, Message, Provider, Tool, ToolContext};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -107,13 +107,13 @@ impl Session {
     }
 
     /// Adds a user message and runs the turn it starts, until it ends or
-    /// `cancel` interrupts it. Tools ask their questions through `asker`.
+    /// `cancel` interrupts it. Tools reach you through `front_end`.
     pub async fn prompt(
         &mut self,
         text: impl Into<String>,
         provider: &dyn Provider,
         tools: &[Box<dyn Tool>],
-        asker: &Asker,
+        front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
@@ -125,7 +125,8 @@ impl Session {
         let ctx = ToolContext {
             instructions: Arc::new(Mutex::new(loaded)),
             context: self.context.clone(),
-            asker: asker.clone(),
+            asker: front_end.asker.clone(),
+            screen: front_end.screen.clone(),
             ..ToolContext::new(self.cwd.clone())
         };
         let result = run_turn(
@@ -277,7 +278,7 @@ mod tests {
                 "go",
                 &provider,
                 &tools,
-                &Asker::default(),
+                &FrontEnd::default(),
                 &tx,
                 &CancellationToken::new(),
             )

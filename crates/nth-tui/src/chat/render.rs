@@ -154,6 +154,7 @@ fn icon(tool: &str) -> &'static str {
         "websearch" => "?",
         "skill" => "✦",
         "question" => "¿",
+        "panel" => "▣",
         _ => "•",
     }
 }

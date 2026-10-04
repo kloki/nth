@@ -4,6 +4,7 @@ mod bom;
 mod edit;
 mod glob;
 mod grep;
+mod panel;
 mod post_write;
 mod question;
 mod read;
@@ -18,6 +19,7 @@ pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
 use nth_protocol::Tool;
+pub use panel::Panel;
 pub use post_write::PostWrite;
 pub use question::Question;
 pub use read::{Read, ReadConfig};
@@ -51,6 +53,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(WebFetch),
         Box::new(Websearch::new(config.websearch.clone())),
         Box::new(Question),
+        Box::new(Panel),
     ]
 }
 

@@ -31,7 +31,7 @@ pub struct ToolCall {
 
 /// Arguments `ToolCall::summary` looks for, in order: the command itself
 /// comes before the model's description of it.
-const SUMMARY_KEYS: [&str; 7] = [
+const SUMMARY_KEYS: [&str; 8] = [
     "filePath",
     "command",
     "description",
@@ -39,6 +39,7 @@ const SUMMARY_KEYS: [&str; 7] = [
     "pattern",
     "query",
     "url",
+    "panel",
 ];
 
 impl ToolCall {

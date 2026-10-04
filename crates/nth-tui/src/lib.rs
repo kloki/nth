@@ -3,6 +3,7 @@
 mod app;
 mod chat;
 mod command;
+mod diagnostics;
 mod git;
 mod header;
 mod history;
@@ -24,15 +25,18 @@ use std::{
 
 use anyhow::{Result, bail};
 use nth_context::Paths;
-use nth_lsp::ServerStatus;
+use nth_format::Formatters;
+use nth_lsp::Lsp;
 use nth_protocol::{Provider, Tool};
 use nth_session::{Session, Store};
-use tokio::sync::watch;
 
-/// What checks the tools' writes, shown on the status bar: the states of
-/// the language servers the tools start.
+/// What checks the tools' writes: the same language servers and formatters
+/// the tools use. The status bar shows the servers' states, and the
+/// diagnostics tab what applies to the project.
+#[derive(Clone)]
 pub struct Checkers {
-    pub lsp: watch::Receiver<Vec<ServerStatus>>,
+    pub lsp: Lsp,
+    pub formatters: Arc<Formatters>,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -61,7 +65,7 @@ pub async fn run(
         .with_store(store)
         .with_paths(paths)
         .with_history(history)
-        .with_lsp(checkers.lsp)
+        .with_checkers(checkers)
         .run(&mut terminal)
         .await;
     terminal::restore();

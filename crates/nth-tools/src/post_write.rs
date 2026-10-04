@@ -25,6 +25,10 @@ impl PostWrite {
         &self.lsp
     }
 
+    pub fn formatters(&self) -> &Arc<Formatters> {
+        &self.format
+    }
+
     /// What to append to the tool's output after writing `path`: a note per
     /// formatter that ran, then the errors language servers report on the
     /// formatted file (and on up to five others), a blank line apart. Empty
