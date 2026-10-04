@@ -114,6 +114,30 @@ impl Config {
     }
 }
 
+/// `nth config`: the config in use with every default filled in, and on
+/// stderr where it came from.
+pub fn show(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
+    use owo_colors::OwoColorize;
+
+    match explicit.or_else(Config::default_path) {
+        Some(path) if path.exists() => {
+            eprintln!("{} {}", "✓".green().bold(), path.display().dimmed())
+        }
+        Some(path) => eprintln!(
+            "{} {}",
+            "→".cyan().bold(),
+            format!("no {}, using defaults", path.display()).dimmed()
+        ),
+        None => eprintln!(
+            "{} {}",
+            "→".cyan().bold(),
+            "no home dir, using defaults".dimmed()
+        ),
+    }
+    print!("{}", config.to_toml()?);
+    Ok(())
+}
+
 /// `~/x` is `x` in the home directory. Everything else, relative paths
 /// included, is left for the caller to resolve.
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
