@@ -16,7 +16,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Single test: `cargo test -p nth-tui prompt_and_status_rows_never_move` (any substring of the test path works).
 - Run the TUI: `cargo run -p nth`. It needs `OPENCODE_GO_API_KEY`; `NTH_MODEL` and `NTH_BASE_URL` (or `--model`, `--base-url`) pick the endpoint.
-- Headless: `cargo run -p nth -- run "<prompt>"`. List models: `cargo run -p nth -- models`.
+- Headless: `cargo run -p nth -- run "<prompt>"`. List models: `cargo run -p nth -- models`. List skills: `cargo run -p nth -- skills`.
 - Config: optional `~/.config/nth/config.toml` (or `--config`, `NTH_CONFIG`); every key is in `docs/config.example.toml`, and `cargo run -p nth -- config` prints the resolved one. Flags and env vars win over it.
 
 ## Architecture
@@ -24,7 +24,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 Crates in `crates/`, from the bottom up:
 
 - **nth-protocol**: types every crate shares: `Message`, `Event`, and the `Provider` and `Tool` traits. Anything swappable sits behind one of these traits.
-- **nth-context**: what nth reads about a project before the first prompt: instruction files (`AGENTS.md`, or `CLAUDE.md` where a project has none), found by `Context::discover`, and the nested ones the read tool attaches (`instructions::nested`). `Paths` carries the home and config directories so tests never touch the real ones.
+- **nth-context**: what nth reads about a project before the first prompt: instruction files (`AGENTS.md`, or `CLAUDE.md` where a project has none) and skills (`SKILL.md` folders in the Claude Code, opencode, open-standard and nth places), found by `Context::discover`, and the nested ones the read tool attaches (`instructions::nested`). `Paths` carries the home and config directories so tests never touch the real ones.
 - **nth-llm**: `Provider` impls, one module per wire protocol. Only `chat_completions` exists today (OpenCode Go).
 - **nth-tools**: one module per tool (`read`, `write`, `bash`); `nth_tools::all()` lists them.
 - **nth-session**: `Session` (serializable history, model, effort, cwd, and an unsaved `Context` that goes into the system prompt), `Store` (one JSON file per session under `$XDG_DATA_HOME/nth/sessions`, saved after every turn, behind `/resume` and `nth -c`) and `run_turn`, the agent loop: stream a reply, run its tool calls in parallel, feed results back, repeat until the model answers without tools (capped at `MAX_STEPS`). Progress goes out as `Event`s over an `mpsc` channel; cancellation is a `CancellationToken` and always leaves `messages` valid to continue from.

@@ -205,7 +205,7 @@ mod tests {
                 path: "/repo/AGENTS.md".into(),
                 content: "Be brief.".into(),
             }],
-            warnings: Vec::new(),
+            ..Context::default()
         });
         let mut session = Session::new("glm-5.3", "/repo".into()).with_context(context.clone());
         let Message::System(prompt) = &session.messages[0] else {
@@ -259,7 +259,7 @@ mod tests {
                 path: "/repo/AGENTS.md".into(),
                 content: "root".into(),
             }],
-            warnings: Vec::new(),
+            ..Context::default()
         });
         let mut session = Session::new("glm-5.3", "/repo".into()).with_context(context);
         let provider = Scripted::new(vec![
