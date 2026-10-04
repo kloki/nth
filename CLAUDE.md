@@ -48,9 +48,11 @@ The screen is three bands, named as in `docs/ui.md`. Use these names in code and
 
 Heights are decided bottom-up: the status bar, then the input panel's own `Input::rows()`, then the content panel takes the rest. A view's state lives on `App` (`App.chat`, `App.prompt`), not in the enum variant, so it keeps up with the session and keeps its text while hidden.
 
+Markdown and code go through `rich.rs`, the only module that uses [hoodrich](https://github.com/kloki/hoodrich). Chat messages are concealed markdown. read, write, edit (as a diff) and webfetch output are highlighted by tool (`output_lines` in `chat/render.rs`). The plan tab renders the plan as markdown. hoodrich gives one line per source line, and `rich::wrap` wraps them with their styles kept, because every pane draws pre-wrapped lines.
+
 TUI tests render `App` into a `TestBackend` and assert on rows (`rows()` in `app/mod.rs` tests), so layout changes mean updating row indexes there.
 
-Style: no borders or divider lines; bands differ by background and spacing. Use only the 16 ANSI colours plus the terminal's default foreground and background, never hex or RGB (see `docs/design.md#tui`).
+Style: no borders or divider lines; bands differ by background and spacing. Use only the 16 ANSI colours plus the terminal's default foreground and background, never hex or RGB (see `docs/design.md#tui`). The one exception is syntax-highlighted code, which hoodrich draws in Dracula colours.
 
 ## opencode reference
 

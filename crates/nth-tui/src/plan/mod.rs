@@ -1,9 +1,10 @@
-//! The plan tab: the plan file of the session, with what its latest change
-//! did marked in colour: added lines green, removed ones red.
+//! The plan tab: the plan file of the session as rendered markdown, with
+//! what its latest change did marked in colour: added lines green, removed
+//! ones red.
 
 mod diff;
 
-use diff::Kind;
+use hoodrich::Change;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -12,7 +13,7 @@ use ratatui::{
     widgets::{Paragraph, ScrollbarState},
 };
 
-use crate::theme;
+use crate::{rich, theme};
 
 /// The plan as last read, and the version its diff is against.
 #[derive(Debug, Default)]
@@ -32,6 +33,11 @@ pub struct PlanView {
     top: usize,
     max_top: usize,
     height: usize,
+    /// Lines added and removed since the baseline.
+    counts: (usize, usize),
+    /// The plan as drawn last, and the width it was wrapped for, so a frame
+    /// renders it only after it or the width changed.
+    rendered: Option<(usize, Vec<Line<'static>>)>,
 }
 
 impl PlanView {
@@ -59,6 +65,7 @@ impl PlanView {
         if self.created_this_turn {
             self.baseline = self.current.clone().unwrap_or_default();
         }
+        self.changed();
         true
     }
 
@@ -74,6 +81,14 @@ impl PlanView {
     pub fn accept(&mut self) {
         self.baseline = self.current.clone().unwrap_or_default();
         self.changed_this_turn = false;
+        self.changed();
+    }
+
+    /// The plan or its baseline changed: count the diff again, and render
+    /// it again when next drawn.
+    fn changed(&mut self) {
+        self.counts = diff::counts(&self.baseline, self.current.as_deref().unwrap_or_default());
+        self.rendered = None;
     }
 
     /// A turn starts, so the next change to the plan starts a new diff.
@@ -83,7 +98,7 @@ impl PlanView {
 
     /// Lines added and removed since the baseline.
     pub fn counts(&self) -> (usize, usize) {
-        diff::counts(&self.diff())
+        self.counts
     }
 
     /// `plan`, then what changed while anything did: `plan +3 -1`.
@@ -92,10 +107,6 @@ impl PlanView {
             (0, 0) => "plan".into(),
             (added, removed) => format!("plan +{added} -{removed}"),
         }
-    }
-
-    fn diff(&self) -> Vec<diff::Line> {
-        diff::lines(&self.baseline, self.current.as_deref().unwrap_or_default())
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -134,12 +145,17 @@ impl PlanView {
 
     /// `path` is the plan file as the header names it.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, path: &str) {
-        let lines = self.lines(path, usize::from(area.width));
+        let width = usize::from(area.width);
+        let lines = match self.rendered.take() {
+            Some((drawn, lines)) if drawn == width => lines,
+            _ => self.lines(path, width),
+        };
         self.height = usize::from(area.height);
         self.max_top = lines.len().saturating_sub(self.height);
         self.top = self.top.min(self.max_top);
         let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines).scroll((top, 0)), area);
+        frame.render_widget(Paragraph::new(lines.clone()).scroll((top, 0)), area);
+        self.rendered = Some((width, lines));
     }
 
     /// A header naming the file and what changed, then the plan wrapped to
@@ -164,22 +180,19 @@ impl PlanView {
             return lines;
         }
         let room = width.saturating_sub(GUTTER).max(1);
-        for line in self.diff() {
-            let (mark, style) = match line.kind {
-                Kind::Same => ("  ", Style::new()),
-                Kind::Added => ("+ ", Style::new().fg(Color::Green)),
-                Kind::Removed => ("- ", Style::new().fg(Color::Red)),
+        let current = self.current.as_deref().unwrap_or_default();
+        for (change, line) in rich::markdown_diff(&self.baseline, current, room) {
+            let (mark, style) = match change {
+                Change::Same => ("  ", Style::new()),
+                Change::Added => ("+ ", Style::new().fg(Color::Green)),
+                Change::Removed => ("- ", Style::new().fg(Color::Red)),
             };
-            let rows = textwrap::wrap(&line.text, room);
-            if rows.is_empty() {
-                lines.push(Line::styled(mark, style));
-            }
-            for (i, row) in rows.into_iter().enumerate() {
+            let line = line.patch_style(style);
+            for (i, row) in rich::wrap(line, room).into_iter().enumerate() {
                 let gutter = if i == 0 { mark } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(gutter, style),
-                    Span::styled(row.into_owned(), style),
-                ]));
+                let mut spans = vec![Span::styled(gutter, style)];
+                spans.extend(row.spans);
+                lines.push(Line::from(spans));
             }
         }
         lines
@@ -191,6 +204,8 @@ const GUTTER: usize = 2;
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Modifier;
+
     use super::*;
 
     fn text(lines: &[Line]) -> Vec<String> {
@@ -273,5 +288,25 @@ mod tests {
         );
         assert_eq!(lines[3].spans[0].style.fg, Some(Color::Red));
         assert_eq!(lines[4].spans[1].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn the_plan_renders_as_markdown_and_removed_lines_as_written() {
+        let mut view = PlanView::default();
+        view.settle(Some("# Plan\n## Old\n".into()));
+        view.update(Some("# Plan\n- step\n".into()));
+
+        let lines = view.lines("p.md", 40);
+
+        assert_eq!(text(&lines[2..]), ["  Plan", "- ## Old", "+ - step"]);
+        let heading = &lines[2].spans[1].style;
+        assert!(heading.add_modifier.contains(Modifier::BOLD), "{heading:?}");
+        assert!(
+            lines[3]
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(Color::Red)),
+            "a removed line is all red"
+        );
     }
 }
