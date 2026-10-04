@@ -28,9 +28,22 @@ impl App {
             self.run_command(command);
             return;
         }
-        if self.is_busy() || self.prompt.text().trim().is_empty() {
+        if self.prompt.text().trim().is_empty() {
             return;
         }
+        let text = self.prompt.take();
+        self.history.push(text.clone());
+        self.save_history();
+        // Sent when the running turn ends; the chat shows it only then, so
+        // the transcript keeps the order the model saw.
+        if self.is_busy() {
+            self.queue.push_back(text);
+        } else {
+            self.start_turn(text);
+        }
+    }
+
+    fn start_turn(&mut self, text: String) {
         let Some(mut session) = self.session.take() else {
             return;
         };
@@ -39,9 +52,6 @@ impl App {
             session.set_model(self.model.clone());
         }
         session.effort = self.effort;
-        let text = self.prompt.take();
-        self.history.push(text.clone());
-        self.save_history();
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
         let skill = nth_context::skills::parse(&text, &self.context.skills)
@@ -90,6 +100,9 @@ impl App {
     /// Esc cancels the turn cooperatively so the session comes back;
     /// aborting the task would drop the session with it.
     pub(super) fn interrupt(&mut self) {
+        if self.is_busy() {
+            self.interrupted = true;
+        }
         self.turn.cancel();
     }
 
@@ -112,6 +125,9 @@ impl App {
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
         let transcript = &mut self.chat.transcript;
+        // Esc after the reply ended still comes back `Ok`, but it still
+        // means stop.
+        let send_next = result.is_ok() && !std::mem::take(&mut self.interrupted);
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
             result => {
@@ -126,6 +142,25 @@ impl App {
         self.session = Some(session);
         self.index_files();
         self.load_git();
+        match self.queue.pop_front() {
+            Some(next) if send_next => self.start_turn(next),
+            Some(next) => {
+                self.queue.push_front(next);
+                self.unqueue();
+            }
+            None => {}
+        }
+    }
+
+    /// After an interrupted or failed turn, the queued prompts go back into
+    /// the prompt ahead of what is typed: sent prompts were written for a
+    /// turn that went well, so they wait to be looked at again.
+    fn unqueue(&mut self) {
+        let mut parts: Vec<String> = self.queue.drain(..).collect();
+        if !self.prompt.is_empty() {
+            parts.push(self.prompt.take());
+        }
+        self.prompt.set(&parts.join("\n\n"));
     }
 }
 
@@ -289,6 +324,120 @@ mod tests {
         );
         let mut loaded = crate::history::History::load(path).await;
         assert_eq!(loaded.prev("").as_deref(), Some("two\nlines"));
+    }
+
+    /// A provider that answers every request with "ok".
+    struct Answer;
+
+    impl Provider for Answer {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let reply =
+                futures::stream::iter([Ok::<_, BoxError>(StreamEvent::TextDelta("ok".into()))]);
+            async move { Ok(futures::StreamExt::boxed(reply)) }.boxed()
+        }
+    }
+
+    fn send(app: &mut App, text: &str) {
+        app.prompt.insert_str(text);
+        app.submit();
+    }
+
+    async fn end(app: &mut App) {
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+    }
+
+    fn last_user(app: &App) -> Option<&str> {
+        app.chat
+            .transcript
+            .entries()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+    }
+
+    #[tokio::test]
+    async fn enter_while_busy_queues_the_prompt() {
+        let (mut app, _) = busy_app().await;
+
+        send(&mut app, "next");
+
+        assert!(app.prompt.is_empty());
+        assert_eq!(app.queue, ["next"]);
+        assert_eq!(last_user(&app), Some("go"), "shown only once sent");
+        let token = app.turn.token().expect("still running");
+        assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn queued_prompts_run_one_turn_each_in_order() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "one");
+        send(&mut app, "two");
+        send(&mut app, "three");
+
+        end(&mut app).await;
+        assert!(app.is_busy());
+        assert_eq!(last_user(&app), Some("two"));
+        assert_eq!(app.queue, ["three"]);
+
+        end(&mut app).await;
+        end(&mut app).await;
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        let session = app.session.as_ref().expect("session came back");
+        let sent: Vec<_> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, ["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn esc_gives_queued_prompts_back_instead_of_sending_them() {
+        let (mut app, _) = busy_app().await;
+        send(&mut app, "two");
+        send(&mut app, "three");
+        app.prompt.insert_str("typing");
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        assert_eq!(app.prompt.text(), "two\n\nthree\n\ntyping");
+    }
+
+    #[tokio::test]
+    async fn esc_after_the_reply_ended_still_holds_the_queue_back() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "one");
+        send(&mut app, "two");
+        // Lets the turn finish `Ok` before Esc reaches it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        app.interrupt();
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert_eq!(app.prompt.text(), "two");
+        assert!(!app.interrupted, "the next turn starts clean");
     }
 
     #[tokio::test]

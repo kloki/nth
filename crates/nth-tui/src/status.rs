@@ -1,8 +1,8 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! place and context used on the left, git branch and status on the right.
-//! Line 2 is the language servers that check a write: a dot per server,
-//! coloured by its state. The right side is cut first when a line is too
-//! narrow, and line 2 from its end.
+//! Line 2 shows the queued prompts on the left, and the language servers
+//! that check a write on the right: a dot per server, coloured by its
+//! state. The right side is cut first when a line is too narrow.
 
 use std::path::Path;
 
@@ -58,10 +58,23 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
     split_line(frame, state, place, summary);
-    frame.render_widget(Paragraph::new(Line::from(servers(app))), checks);
+    split_line(frame, checks, queued(app), servers(app));
 }
 
-/// Line 2: `● rust  ● typescript`.
+/// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`.
+fn queued(app: &App) -> Vec<Span<'static>> {
+    let Some(next) = app.queue.front() else {
+        return Vec::new();
+    };
+    let first = next
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    let line = format!("⏵ {} queued · {first}", app.queue.len());
+    vec![Span::styled(line, Style::new().fg(Color::Gray))]
+}
+
+/// Line 2, right: `● rust  ● typescript`.
 fn servers(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for server in &app.servers {

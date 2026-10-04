@@ -4,7 +4,6 @@
 use ratatui::{
     Frame,
     layout::{Position, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -19,25 +18,19 @@ const CANCEL_HINT: &str = "esc to cancel";
 pub const ROWS: u16 = 1 + TEXT_ROWS;
 const TEXT_ROWS: u16 = 3;
 
-/// `spinner` replaces the mode's label while a turn runs; the text is
-/// dimmed then too, since Enter won't submit, and the label row says how to
-/// cancel.
+/// `spinner` replaces the mode's label while a turn runs, and the label
+/// row says how to cancel. The text stays as it is: Enter queues it.
 pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner: Option<&str>) {
     let label = spinner.unwrap_or(mode.label());
     let wrapped = prompt.wrap(room(area));
     let top = scroll(wrapped.cursor_row);
-    let text_style = if spinner.is_some() {
-        dim()
-    } else {
-        Style::new()
-    };
     let text: Vec<Span> = if prompt.is_empty() {
         vec![Span::styled(PLACEHOLDER, dim())]
     } else {
         wrapped.rows[top..]
             .iter()
             .take(usize::from(TEXT_ROWS))
-            .map(|row| Span::styled(row.as_str(), text_style))
+            .map(|row| Span::raw(row.as_str()))
             .collect()
     };
 
