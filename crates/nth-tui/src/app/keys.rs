@@ -3,8 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nth_protocol::Reply;
 
-use super::{App, Completion, input::Input};
-use crate::{command::Entry, mention, popup::Popup};
+use super::{App, input::Input};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
@@ -270,56 +269,15 @@ impl App {
             _ => self.completion = None,
         }
     }
-
-    pub(super) fn refresh_completion(&mut self) {
-        let text = self.prompt.text();
-        self.completion = Entry::complete(text, &self.context.skills)
-            .map(Completion::Command)
-            .or_else(|| {
-                let mention = mention::find(text, self.prompt.cursor())?;
-                let files = mention::matches(&self.files, mention.query, mention::LIMIT);
-                Some(Completion::File {
-                    popup: Popup::new(files)?,
-                    start: mention.start,
-                })
-            });
-    }
-
-    /// `submit` runs a highlighted command; a file is filled in either way,
-    /// since sending a half-typed mention is never what Enter meant. A
-    /// skill is filled in with room for its arguments, and runs once its
-    /// name is typed out.
-    fn accept(&mut self, completion: Completion, submit: bool) {
-        match completion {
-            Completion::Command(popup) => match popup.selected().clone() {
-                Entry::Builtin(command) if submit => {
-                    self.prompt.clear();
-                    self.run_command(command);
-                }
-                Entry::Builtin(command) => {
-                    self.prompt.set(&format!("/{}", command.name()));
-                    self.completion = Some(Completion::Command(popup));
-                }
-                Entry::Skill { name, .. } if submit && self.prompt.text() == format!("/{name}") => {
-                    self.submit()
-                }
-                Entry::Skill { name, .. } => self.prompt.set(&format!("/{name} ")),
-            },
-            Completion::File { popup, start } => {
-                let end = self.prompt.cursor();
-                let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
-                let gap = if spaced { "" } else { " " };
-                self.prompt
-                    .replace(start..end, &format!("@{}{gap}", popup.selected()));
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::tests::app, command::Command};
+    use crate::{
+        app::{completion::Completion, tests::app},
+        command::{Command, Entry},
+    };
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         action(KeyEvent::new(code, modifiers))
