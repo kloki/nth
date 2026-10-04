@@ -14,12 +14,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
+    bom::BOM,
     edit::{
         EDITS,
         matcher::{self, MatchError},
         with_line_endings,
     },
-    write::{BOM, write_with_dirs},
+    write::write_with_dirs,
 };
 
 pub struct ApplyPatch;

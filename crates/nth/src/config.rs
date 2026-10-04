@@ -16,6 +16,7 @@ pub struct Config {
     pub session: SessionConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
+    pub format: nth_format::FormatConfig,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -166,6 +167,24 @@ mod tests {
     fn defaults_round_trip_through_toml() {
         let text = Config::default().to_toml().expect("serializes");
         assert_eq!(Config::parse(&text).expect("parses"), Config::default());
+    }
+
+    #[test]
+    fn format_section_takes_custom_formatters() {
+        let config = Config::parse(
+            r#"
+            [format.rustfmt]
+            disabled = true
+
+            [format.sed]
+            command = ["sed", "-i", "s/a/b/", "$FILE"]
+            extensions = [".txt"]
+            "#,
+        )
+        .expect("parses");
+        assert!(config.format.enabled);
+        assert!(config.format.formatters["rustfmt"].disabled);
+        assert!(Config::parse("[format.mine]\nextensions = [\".x\"]").is_err());
     }
 
     #[test]

@@ -1,8 +1,10 @@
 mod apply_patch;
 mod bash;
+mod bom;
 mod edit;
 mod glob;
 mod grep;
+mod post_write;
 mod read;
 mod skill;
 mod webfetch;
@@ -15,6 +17,7 @@ pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
 use nth_protocol::Tool;
+pub use post_write::PostWrite;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use skill::Skill;
@@ -30,11 +33,12 @@ pub struct ToolsConfig {
     pub websearch: WebsearchConfig,
 }
 
-/// Every tool nth ships. Agents filter this list by name.
-pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
+/// Every tool nth ships. Agents filter this list by name. `post_write`
+/// runs after every tool that writes a file.
+pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(Read::new(config.read.clone())),
-        Box::new(Write),
+        Box::new(Write::new(post_write)),
         Box::new(Edit),
         Box::new(ApplyPatch),
         Box::new(Bash::new(config.bash.clone())),

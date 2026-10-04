@@ -4,11 +4,21 @@ use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::AsyncReadExt;
 
-pub(crate) const BOM: &str = "\u{feff}";
+use crate::{
+    PostWrite,
+    bom::{BOM, has_bom},
+};
 
-pub struct Write;
+pub struct Write {
+    post_write: PostWrite,
+}
+
+impl Write {
+    pub fn new(post_write: PostWrite) -> Self {
+        Self { post_write }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,9 +60,8 @@ impl Tool for Write {
                 Err(e) => return Err(format!("cannot write {}: {e}", path.display())),
             };
 
-            // Editors that emit a BOM (Visual Studio, Notepad) expect to keep
-            // it, but models rarely reproduce it, so an existing BOM survives;
-            // one the model does send is kept rather than doubled.
+            // Models rarely reproduce a BOM, so an existing one survives; one
+            // the model does send is kept rather than doubled.
             let content = args.content.strip_prefix(BOM).unwrap_or(&args.content);
             let bom = existing == Some(true) || content.len() != args.content.len();
             let content = if bom {
@@ -69,27 +78,15 @@ impl Tool for Write {
             } else {
                 "Created"
             };
-            Ok(format!("{verb} file: {}", path.display()))
+            let wrote = format!("{verb} file: {}", path.display());
+            let notes = self.post_write.after_write(&path, &ctx.cwd).await;
+            Ok(match notes.is_empty() {
+                true => wrote,
+                false => format!("{wrote}\n\n{notes}"),
+            })
         }
         .boxed()
     }
-}
-
-async fn has_bom(path: &Path) -> Result<bool, String> {
-    let read = async {
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut head = [0u8; BOM.len()];
-        let mut filled = 0;
-        while filled < head.len() {
-            match file.read(&mut head[filled..]).await? {
-                0 => break,
-                n => filled += n,
-            }
-        }
-        Ok::<_, std::io::Error>(head[..filled] == *BOM.as_bytes())
-    };
-    read.await
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
 pub(crate) async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
@@ -110,7 +107,7 @@ mod tests {
 
     async fn write(dir: &Path, args: serde_json::Value) -> ToolResult {
         let ctx = ToolContext::new(dir.to_path_buf());
-        Write.call(args, &ctx).await
+        Write::new(PostWrite::off()).call(args, &ctx).await
     }
 
     fn contents(path: &Path) -> String {
@@ -201,5 +198,45 @@ mod tests {
                 .is_err()
         );
         assert!(write(dir.path(), json!({ "filePath": "a" })).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn output_notes_the_formatter_that_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tool = Write::new(PostWrite::with_formatter(
+            "sed",
+            &["sed", "-i", "s/a/b/", "$FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(json!({ "filePath": "a.txt", "content": "a\n" }), &ctx)
+            .await
+            .expect("write");
+
+        let path = dir.path().join("a.txt");
+        assert_eq!(
+            out,
+            format!("Created file: {}\n\nFormatted with sed.", path.display())
+        );
+        assert_eq!(contents(&path), "b\n");
+    }
+
+    #[tokio::test]
+    async fn bom_survives_the_formatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, format!("{BOM}old")).expect("write");
+        let tool = Write::new(PostWrite::with_formatter(
+            "rewrite",
+            &["sh", "-c", "printf formatted > $FILE"],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        tool.call(json!({ "filePath": "a.txt", "content": "new" }), &ctx)
+            .await
+            .expect("write");
+
+        assert_eq!(contents(&path), format!("{BOM}formatted"));
     }
 }

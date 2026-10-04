@@ -1,0 +1,13 @@
+[package]
+name = "nth-format"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+toml.workspace = true

@@ -38,3 +38,20 @@ url = "https://mcp.exa.ai/mcp"
 # Extra folders searched for SKILL.md files, after the standard ones.
 # ~/ is the home directory; relative paths are from the working directory.
 paths = []
+
+[format]
+# Run the file's formatters after a tool writes it. false turns them all off.
+# `nth formatters` lists them and whether they apply to the working directory.
+enabled = true
+
+# One table per formatter to change or add. A built-in name (rustfmt, prettier,
+# ruff, gofmt, ...) changes that formatter; any other name adds one, which needs
+# command and extensions. $FILE is the file to format.
+#
+# [format.prettier]
+# disabled = true
+#
+# [format.taplo]
+# command = ["taplo", "format", "$FILE"]
+# extensions = [".toml"]
+# env = { RUST_LOG = "warn" }

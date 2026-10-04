@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use crate::write::{BOM, write_with_dirs};
+use crate::{bom::BOM, write::write_with_dirs};
 
 /// The calls of a turn run in parallel, and two edits of one file would
 /// each read it before the other writes, losing the first. Edits are quick,

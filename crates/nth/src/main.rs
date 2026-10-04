@@ -57,6 +57,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the formatters and whether they apply to the working directory
+    Formatters {
+        /// Print JSON lines, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the config in use, with every default filled in
     Config,
 }
@@ -98,6 +104,11 @@ fn client(config: &Config) -> Result<ChatClient> {
     Ok(ChatClient::new(config.provider.base_url.clone(), api_key))
 }
 
+/// Runs after every tool that writes a file.
+fn post_write(config: &Config) -> nth_tools::PostWrite {
+    nth_tools::PostWrite::new(Arc::new(nth_format::Formatters::new(&config.format)))
+}
+
 /// What applies to `cwd`. Problems with it are warned about, not fatal.
 async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
     let context = nth_context::Context::load(cwd, paths.clone()).await;
@@ -126,6 +137,7 @@ async fn main() -> ExitCode {
                 models(json, config).await
             }
             Some(Command::Skills { json }) => skills(json, &config).await,
+            Some(Command::Formatters { json }) => formatters(json, &config).await,
             Some(Command::Config) => show_config(cli.config, &config),
         },
     };
@@ -156,7 +168,7 @@ async fn chat(resume: bool, config: Config) -> Result<()> {
     nth_tui::run(
         session,
         Arc::new(provider),
-        Arc::new(nth_tools::all(&config.tools)),
+        Arc::new(nth_tools::all(&config.tools, post_write(&config))),
         store,
         paths,
     )
@@ -166,7 +178,7 @@ async fn chat(resume: bool, config: Config) -> Result<()> {
 async fn run(prompt: String, config: Config) -> Result<()> {
     let (mut session, provider) = setup(&config, &config.paths()).await?;
     let cwd = session.cwd.clone();
-    let tools = nth_tools::all(&config.tools);
+    let tools = nth_tools::all(&config.tools, post_write(&config));
     // `/name args` runs a skill, as in the chat.
     let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
         Some((skill, args)) => skill
@@ -287,6 +299,56 @@ fn shorten(text: &str) -> String {
         Some((cut, _)) => format!("{}…", &line[..cut]),
         None => line.to_string(),
     }
+}
+
+async fn formatters(json: bool, config: &Config) -> Result<()> {
+    let cwd = std::env::current_dir().context("no working directory")?;
+    let status = nth_format::Formatters::new(&config.format)
+        .status(&cwd)
+        .await;
+
+    let mut out = std::io::stdout().lock();
+    if json || !out.is_terminal() {
+        for formatter in &status {
+            let line = match &formatter.command {
+                Ok(command) => serde_json::json!({
+                    "name": formatter.name,
+                    "extensions": formatter.extensions,
+                    "enabled": true,
+                    "command": command,
+                }),
+                Err(reason) => serde_json::json!({
+                    "name": formatter.name,
+                    "extensions": formatter.extensions,
+                    "enabled": false,
+                    "reason": reason,
+                }),
+            };
+            writeln!(out, "{line}")?;
+        }
+        return Ok(());
+    }
+
+    let width = status.iter().map(|f| f.name.len()).max().unwrap_or(0);
+    for formatter in &status {
+        match &formatter.command {
+            Ok(command) => writeln!(
+                out,
+                "{} {:width$}  {}",
+                "✓".green().bold(),
+                formatter.name.cyan(),
+                command.join(" ").dimmed()
+            )?,
+            Err(reason) => writeln!(
+                out,
+                "{} {:width$}  {}",
+                "✗".red(),
+                formatter.name.dimmed(),
+                reason.dimmed()
+            )?,
+        }
+    }
+    Ok(())
 }
 
 fn show_config(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
