@@ -3,6 +3,9 @@
 
 use nth_protocol::{MonitorId, Panel};
 
+use super::App;
+use crate::{chat::Chat, diagnostics::Diagnostics, monitor::MonitorView};
+
 /// A view the content panel can show. Each view's state lives on the app,
 /// so it keeps up with the session while another view is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +115,107 @@ impl Content {
             self.tabs.remove(self.active);
             self.active -= 1;
         }
+    }
+}
+
+/// What the keys and the wheel do to any view, so the app moves whichever
+/// tab is showing without knowing which.
+pub(crate) trait Scrollable {
+    fn scroll_up(&mut self, lines: usize);
+    fn scroll_down(&mut self, lines: usize);
+    fn page_up(&mut self);
+    fn page_down(&mut self);
+    fn jump_top(&mut self);
+    fn jump_bottom(&mut self);
+}
+
+impl Scrollable for Chat {
+    fn scroll_up(&mut self, lines: usize) {
+        Chat::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        Chat::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        Chat::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        Chat::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        Chat::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        Chat::jump_bottom(self);
+    }
+}
+
+impl Scrollable for Diagnostics {
+    fn scroll_up(&mut self, lines: usize) {
+        Diagnostics::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        Diagnostics::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        Diagnostics::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        Diagnostics::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        Diagnostics::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        Diagnostics::jump_bottom(self);
+    }
+}
+
+impl Scrollable for MonitorView {
+    fn scroll_up(&mut self, lines: usize) {
+        MonitorView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        MonitorView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        MonitorView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        MonitorView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        MonitorView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        MonitorView::jump_bottom(self);
+    }
+}
+
+impl App {
+    /// The view the content panel shows, to scroll it; `None` for a
+    /// monitor tab whose view is gone.
+    pub(super) fn active_view(&mut self) -> Option<&mut dyn Scrollable> {
+        Some(match self.content.active() {
+            Tab::Chat => &mut self.chat,
+            Tab::Diagnostics => &mut self.diagnostics,
+            Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
+        })
     }
 }
 

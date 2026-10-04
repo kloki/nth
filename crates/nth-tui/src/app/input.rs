@@ -2,7 +2,7 @@
 //! prompt, or a widget that swaps in for it and hands back to the prompt
 //! when done.
 
-use nth_protocol::{Ask, BoxError, ModelInfo, Reply};
+use nth_protocol::{Ask, Reply};
 use ratatui::layout::Rect;
 
 use super::App;
@@ -67,56 +67,88 @@ impl App {
             self.input = Input::Prompt;
         }
     }
+}
 
-    /// Opens the picker on the LLM in use, listing LLMs the first time.
-    pub(super) fn open_llm_picker(&mut self) {
-        self.completion = None;
-        let mut picker = LlmPicker::new(&self.model, self.effort);
-        match &self.llms {
-            Some(llms) => picker.load(Ok(llms.clone())),
-            // The answer fills this picker when it comes.
-            None => self.list_llms(),
-        }
-        self.input = Input::LlmPicker(picker);
-    }
+#[cfg(test)]
+mod tests {
+    use nth_protocol::{Answer, Question};
 
-    /// Asks for the LLMs unless they are listed or already asked for. Done
-    /// at start-up too, since the status bar needs the context window.
-    pub(super) fn list_llms(&mut self) {
-        if self.llms.is_none() && !self.llm_listing.is_running() {
-            let provider = self.provider.clone();
-            self.llm_listing
-                .start(|_| tokio::spawn(async move { provider.models().await }));
-        }
-    }
+    use super::*;
+    use crate::{
+        app::{
+            keys::Action,
+            tests::{app, rows},
+        },
+        question::tests::question,
+    };
 
-    /// The context window of the model in use, when the provider says.
-    pub fn context_window(&self) -> Option<u64> {
-        let llms = self.llms.as_ref()?;
-        llms.iter().find(|llm| llm.id == self.model)?.context
-    }
-
-    /// Only a list is kept; after a failure the next open asks again.
-    pub(super) fn llms_listed(&mut self, llms: Result<Vec<ModelInfo>, BoxError>) {
-        let llms = llms.map_err(|e| e.to_string());
-        if let Ok(llms) = &llms {
-            self.llms = Some(llms.clone());
-        }
-        if let Input::LlmPicker(picker) = &mut self.input {
-            picker.load(llms);
-        }
-    }
-
-    /// Switches later turns to the highlighted model; the session picks it
-    /// up when the next turn starts, since mid-turn it is in the turn task.
-    pub(super) fn choose_llm(&mut self) {
-        let Input::LlmPicker(picker) = &self.input else {
-            return;
+    /// An ask for `questions`, and where its reply lands.
+    fn ask(questions: Vec<Question>) -> (Ask, tokio::sync::oneshot::Receiver<Reply>) {
+        let (reply, replied) = tokio::sync::oneshot::channel();
+        let ask = Ask {
+            call_id: "1".into(),
+            questions,
+            reply,
         };
-        if let Some((model, effort)) = picker.chosen() {
-            self.model = model;
-            self.effort = effort;
-            self.input = Input::Prompt;
+        (ask, replied)
+    }
+
+    #[test]
+    fn a_question_takes_the_prompts_place_and_answers_the_tool() {
+        let mut app = app();
+        app.prompt.insert_str("half typed");
+        let (ask, mut replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
+        app.on_ask(ask);
+        let asking = rows(&mut app);
+
+        assert_eq!(
+            asking[14].trim_end(),
+            " glm · /repo",
+            "the status bar stays"
+        );
+        let panel: Vec<&str> = asking[8..13].iter().map(|r| r.trim_end()).collect();
+        assert_eq!(
+            panel,
+            [
+                " ▎ question      ↑↓ · 1-2 · enter · esc",
+                " ▎ Which auth?",
+                " ▎ → 1. oauth",
+                " ▎   2. key",
+                " ▎   3. Type your own answer…",
+            ]
+        );
+
+        app.apply(Action::SelectNext);
+        app.apply(Action::Submit);
+
+        assert!(matches!(app.input, Input::Prompt));
+        assert_eq!(app.prompt.text(), "half typed", "the prompt kept its text");
+        assert_eq!(
+            replied.try_recv(),
+            Ok(Reply::Answered(vec![Answer {
+                picked: vec!["key".into()],
+                typed: None,
+            }]))
+        );
+    }
+
+    #[test]
+    fn esc_declines_and_the_next_question_follows() {
+        let mut app = app();
+        let (first, mut declined) = ask(vec![question("auth", false, &["a", "b"])]);
+        let (second, _) = ask(vec![question("checks", true, &["a", "b"])]);
+        app.on_ask(first);
+        app.on_ask(second);
+
+        app.apply(Action::Interrupt);
+
+        assert_eq!(declined.try_recv(), Ok(Reply::Declined));
+        match &app.input {
+            Input::Question(panel) => assert_eq!(panel.questions()[0].header, "checks"),
+            _ => panic!("the queued question shows"),
         }
+
+        app.drop_asks();
+        assert!(matches!(app.input, Input::Prompt), "gone with the turn");
     }
 }
