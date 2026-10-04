@@ -91,7 +91,7 @@ mod tests {
                 .filter(|(_, c)| *c == '●')
                 .nth(n)
                 .map(|(i, _)| i as u16)
-                .unwrap()
+                .expect("a dot on the row")
         };
         let (tx, rx) = watch::channel(vec![server("rust", ServerState::Starting)]);
         let mut app = app().with_lsp(rx);
