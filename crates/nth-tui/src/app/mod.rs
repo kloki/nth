@@ -11,7 +11,7 @@ mod resume;
 mod turn;
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -38,7 +38,9 @@ use crate::{
     chat::Chat,
     command::{Command, Entry},
     git::{self, GitStatus},
-    header, llm_picker, mention,
+    header,
+    history::History,
+    llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
     session_picker, spinner, status,
@@ -53,6 +55,12 @@ pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
     pub mode: Mode,
+    /// Prompts sent before, recalled with Up and Down.
+    history: History,
+    /// Each save writes the whole history; one asked for mid-save runs
+    /// after it, since an aborted task can't stop a write already on the
+    /// blocking pool.
+    history_saving: Job<std::io::Result<()>>,
     /// What fills the content panel.
     content: Content,
     /// What fills the input panel.
@@ -165,6 +173,7 @@ enum Step {
     LlmsListed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
+    HistorySaved(Result<std::io::Result<()>, JoinError>),
     Tick,
 }
 
@@ -182,6 +191,8 @@ impl App {
             chat,
             prompt: Prompt::default(),
             mode: Mode::default(),
+            history: History::default(),
+            history_saving: Job::default(),
             content: Content::Chat,
             input: Input::Prompt,
             model: session.model.clone(),
@@ -223,6 +234,11 @@ impl App {
         self
     }
 
+    pub fn with_history(mut self, history: History) -> Self {
+        self.history = history;
+        self
+    }
+
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut input = EventStream::new();
         let mut tick = tokio::time::interval(TICK);
@@ -243,6 +259,7 @@ impl App {
                 llms = self.llm_listing.join() => Step::LlmsListed(llms),
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
+                saved = self.history_saving.join() => Step::HistorySaved(saved),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -262,6 +279,9 @@ impl App {
                 }
                 Step::SessionLoaded(session) => {
                     self.session_loaded(session.context("loading the session failed")?)
+                }
+                Step::HistorySaved(saved) => {
+                    self.history_saved(saved.context("saving prompt history failed")?)
                 }
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
@@ -384,6 +404,38 @@ impl App {
         }
         if matches!(self.completion, Some(Completion::File { .. })) {
             self.refresh_completion();
+        }
+    }
+
+    /// Writes the whole history in the background; recalling never waits
+    /// on it.
+    fn save_history(&mut self) {
+        let Some(path) = self.history.saved_at().map(Path::to_path_buf) else {
+            return;
+        };
+        let jsonl = self.history.to_jsonl();
+        self.history_saving.start_or_queue(|_| {
+            tokio::spawn(async move {
+                if let Some(dir) = path.parent() {
+                    tokio::fs::create_dir_all(dir).await?;
+                }
+                tokio::fs::write(&path, jsonl).await
+            })
+        });
+    }
+
+    /// A failed save is told once; the history stays in memory for this run.
+    pub(super) fn history_saved(&mut self, saved: std::io::Result<()>) {
+        if self.history_saving.take_again() {
+            self.save_history();
+        }
+        if let Err(e) = saved {
+            let path = self.history.saved_at().map(|p| p.display().to_string());
+            self.chat.transcript.push_error(format!(
+                "prompt history not saved to {}: {e}",
+                path.unwrap_or_default()
+            ));
+            self.history.forget_path();
         }
     }
 

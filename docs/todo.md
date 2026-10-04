@@ -71,7 +71,7 @@ the opencode code to copy from.
 
 ### TUI
 
-- [ ] **Prompt history** on Up and Down, persisted. `tui/component/prompt/history.tsx`
+- [x] **Prompt history** on Up and Down, persisted. `tui/component/prompt/history.tsx`
 - [ ] **Shell mode**: `!` at the start of the prompt runs the line as a shell command and adds its output to the chat. `tui/component/prompt/index.tsx:836`
 - [ ] **External editor** for long prompts (`$EDITOR`). `tui/editor.ts`
 - [ ] **Paste summary**: collapse a large paste to `[pasted N lines]`. `tui/` `app.toggle.paste_summary`
