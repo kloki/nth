@@ -39,8 +39,12 @@ pub enum Action {
     NextContent,
     /// Shows the content panel's tab at this index, from 0.
     Content(usize),
-    /// Closes the content panel's tab showing, unless it is the chat.
+    /// Closes the content panel's tab showing, unless it is the chat or a
+    /// monitor still running.
     CloseContent,
+    /// Stops the monitor whose tab is showing, or closes its tab once it
+    /// has stopped.
+    StopContent,
 }
 
 pub fn action(key: KeyEvent) -> Option<Action> {
@@ -56,6 +60,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
         KeyCode::Char('t') if ctrl => Action::NextContent,
         KeyCode::Char('q') if ctrl => Action::CloseContent,
+        KeyCode::Char('w') if ctrl => Action::StopContent,
         // Like ctrl+m, only told apart from the bare digit where the
         // terminal disambiguates escape codes; ctrl+t reaches every tab.
         KeyCode::Char(c @ '1'..='4') if ctrl => Action::Content(usize::from(c as u8 - b'1')),
@@ -90,12 +95,19 @@ impl App {
     }
 
     pub(super) fn apply(&mut self, action: Action) {
+        // A hint is for the key that caused it; quitting needs ctrl+c twice
+        // in a row.
+        self.hint = None;
+        if action != Action::ClearOrQuit {
+            self.quit_armed = false;
+        }
         // Tabs switch whichever input panel is open, as it never changes
         // with them.
         match action {
             Action::NextContent => return self.content.next(),
             Action::Content(index) => return self.content.select(index),
-            Action::CloseContent => return self.content.close(),
+            Action::CloseContent => return self.close_content(),
+            Action::StopContent => return self.stop_content(),
             _ => {}
         }
         if let Input::LlmPicker(picker) = &mut self.input {
@@ -226,11 +238,14 @@ impl App {
             }
             Action::Accept | Action::NextTab | Action::PrevTab => {}
             // Taken before any input panel sees them.
-            Action::NextContent | Action::Content(_) | Action::CloseContent => {}
+            Action::NextContent
+            | Action::Content(_)
+            | Action::CloseContent
+            | Action::StopContent => {}
             Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
-            Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
+            Action::ClearOrQuit if self.prompt.is_empty() => self.ask_quit(),
             Action::ClearOrQuit => self.prompt.clear(),
             Action::Insert(c) => self.prompt.insert(c),
             Action::Newline => self.prompt.insert('\n'),

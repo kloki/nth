@@ -1,7 +1,7 @@
 //! The content panel above the input panel: what you look at. It holds a
 //! list of tabs, the chat always first, and shows one of them.
 
-use nth_protocol::Panel;
+use nth_protocol::{MonitorId, Panel};
 
 /// A view the content panel can show. Each view's state lives on the app,
 /// so it keeps up with the session while another view is shown.
@@ -9,16 +9,11 @@ use nth_protocol::Panel;
 pub(crate) enum Tab {
     Chat,
     Diagnostics,
+    /// A background command the model started; its view is on the app.
+    Monitor(MonitorId),
 }
 
 impl Tab {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Tab::Chat => "chat",
-            Tab::Diagnostics => "diagnostics",
-        }
-    }
-
     /// The chat is where the session lives, so it is always there.
     fn closable(self) -> bool {
         self != Tab::Chat
@@ -75,6 +70,29 @@ impl Content {
         }
     }
 
+    /// Opens `tab` after the others without showing it, so whatever you are
+    /// looking at stays.
+    pub(super) fn add(&mut self, tab: Tab) {
+        if !self.tabs.contains(&tab) {
+            self.tabs.push(tab);
+        }
+    }
+
+    /// Closes `tab` wherever it is, keeping the one showing if it is
+    /// another, or showing the one before it.
+    pub(super) fn remove(&mut self, tab: Tab) {
+        let Some(i) = self.tabs.iter().position(|&t| t == tab) else {
+            return;
+        };
+        if !tab.closable() {
+            return;
+        }
+        self.tabs.remove(i);
+        if i <= self.active {
+            self.active = self.active.saturating_sub(1);
+        }
+    }
+
     /// Shows the next tab, from the last back to the chat.
     pub(super) fn next(&mut self) {
         self.active = (self.active + 1) % self.tabs.len();
@@ -119,6 +137,24 @@ mod tests {
 
         content.open(Tab::Diagnostics);
         content.close();
+        assert_eq!(content.tabs(), [Tab::Chat]);
+        assert_eq!(content.active(), Tab::Chat);
+    }
+
+    #[test]
+    fn adding_keeps_the_tab_showing_and_removing_keeps_it_too() {
+        let mut content = Content::default();
+        content.open(Tab::Diagnostics);
+        content.add(Tab::Monitor(1));
+        content.add(Tab::Monitor(2));
+        assert_eq!(content.active(), Tab::Diagnostics);
+
+        content.remove(Tab::Monitor(1));
+        assert_eq!(content.active(), Tab::Diagnostics);
+        content.select(2);
+        content.remove(Tab::Diagnostics);
+        assert_eq!(content.active(), Tab::Monitor(2), "shifted with its tab");
+        content.remove(Tab::Monitor(2));
         assert_eq!(content.tabs(), [Tab::Chat]);
         assert_eq!(content.active(), Tab::Chat);
     }

@@ -41,7 +41,7 @@ Front-ends only consume `Event`s; they never reach into the loop. The TUI moves 
 
 The screen is three bands, named as in `docs/ui.md`. Use these names in code and comments:
 
-- **Content panel**: what you look at. `Content` (`app/content.rs`) holds the open tabs, shown in the header, and which one shows; a `Tab` is `Chat` (always first, never closed) or `Diagnostics` (`diagnostics.rs`), and later ones (Plan, Diff, Monitor) become new variants. The `panel` tool switches tabs through the `Screen` on `ToolContext`.
+- **Content panel**: what you look at. `Content` (`app/content.rs`) holds the open tabs, shown in the header, and which one shows; a `Tab` is `Chat` (always first, never closed), `Diagnostics` (`diagnostics.rs`) or `Monitor(id)` (`monitor.rs`, one per running command, closable only once stopped; `app/monitor.rs` wires them), and later ones (Plan, Diff) become new variants. The `panel` tool switches tabs through the `Screen` on `ToolContext`.
 - **Input panel**: what you type into. The `Input` enum (`app/input.rs`) picks it: `Input::Prompt` by default, or a widget such as the model picker that swaps in and hands back to the prompt. `/` completes nth's commands and then the skills (`command/`); a skill runs by filling its template (`nth_context::skills::parse` and `Skill::invoke`), the same way `nth run "/name args"` does.
 - **Status bar**: always `status::ROWS` (2) lines at the bottom.
 

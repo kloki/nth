@@ -9,6 +9,7 @@ mod header;
 mod history;
 mod llm_picker;
 mod mention;
+mod monitor;
 mod popup;
 mod prompt;
 mod question;

@@ -37,7 +37,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics is the first other tab. Later come Plan (the plan file with its comment threads), Diff and Monitor; they replace the side pane and agents sidebar sketched in design.md.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics and a tab per monitor are the others so far. Later come Plan (the plan file with its comment threads) and Diff; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open.
@@ -46,11 +46,33 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ---------------- | ----------------------------------------------------- |
 | ctrl+t           | Shows the next tab, from the last back to chat        |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat             |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat or a running monitor |
+| ctrl+w           | On a monitor's tab: stops it, or closes the tab once stopped |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
 - **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool; in `nth run` there is nothing to switch, and the tool tells the model so.
+
+## Monitors
+
+The `monitor` tool leaves a command running; each one gets its own tab, opened without being shown so the chat keeps the focus. The label is the monitor's description behind its state: `● ci` while running, `✓ ci` after exiting 0, `✗ ci` otherwise.
+
+```
+$ tail -f deploy.log | grep --line-buffered ERROR
+running · 42s · 3 events · ~/.local/share/nth/monitors/<session>/1.log
+
+ERROR db timeout
+warning: slow query        (stderr, dim)
+```
+
+The tab follows the newest line unless scrolled up, and keeps the last 2000 lines; the log has all of them.
+
+- **Stopping.** ctrl+w stops the showing monitor; the tab stays, marked ✗, so its output can still be read. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
+- **Closing.** A monitor's tab only closes once its process has stopped. On a running one, ctrl+q and `/close` leave it open and say on the status bar to stop it first; ctrl+w again, ctrl+q or `/close` close it after.
+- **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
+- **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
+- **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `∿ monitor 1 · ci · 2 lines`.
+- **Status bar.** `∿ 2 monitors` on line 2's right while any run.
 
 ## Diagnostics
 

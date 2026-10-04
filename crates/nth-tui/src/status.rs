@@ -1,8 +1,9 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! place and context used on the left, git branch and status on the right.
-//! Line 2 shows the queued prompts on the left, and the language servers
-//! that check a write on the right: a dot per server, coloured by its
-//! state. The right side is cut first when a line is too narrow.
+//! Line 2 shows a hint about the last key or the queued prompts on the
+//! left, and the running monitors and the language servers that check a
+//! write on the right: a dot per server, coloured by its state. The right
+//! side is cut first when a line is too narrow.
 
 use std::path::Path;
 
@@ -58,7 +59,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
     split_line(frame, state, place, summary);
-    split_line(frame, checks, queued(app), servers(app));
+    let left = match &app.hint {
+        Some(hint) => vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))],
+        None => queued(app),
+    };
+    let mut right = monitors(app);
+    let servers = servers(app);
+    if !right.is_empty() && !servers.is_empty() {
+        right.push(Span::raw("  "));
+    }
+    right.extend(servers);
+    split_line(frame, checks, left, right);
 }
 
 /// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`.
@@ -72,6 +83,19 @@ fn queued(app: &App) -> Vec<Span<'static>> {
         .unwrap_or_default();
     let line = format!("⏵ {} queued · {first}", app.queue.len());
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
+}
+
+/// Line 2, right, first: `∿ 2 monitors`, while any run.
+fn monitors(app: &App) -> Vec<Span<'static>> {
+    let running = app.running_monitors();
+    if running == 0 {
+        return Vec::new();
+    }
+    let noun = if running == 1 { "monitor" } else { "monitors" };
+    vec![
+        Span::styled("∿ ", Style::new().fg(Color::Magenta)),
+        Span::styled(format!("{running} {noun}"), Style::new().fg(Color::Gray)),
+    ]
 }
 
 /// Line 2, right: `● rust  ● typescript`.
