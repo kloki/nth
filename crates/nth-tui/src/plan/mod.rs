@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, ScrollbarState},
 };
 
 use crate::theme;
@@ -117,6 +117,16 @@ impl PlanView {
         self.top = self.max_top;
     }
 
+    /// Where the view sits in the plan, while the plan is longer than the
+    /// tab; `None` while it all fits.
+    pub fn scrollbar(&self) -> Option<ScrollbarState> {
+        (self.max_top > 0).then(|| {
+            ScrollbarState::new(self.max_top + 1)
+                .position(self.top)
+                .viewport_content_length(self.height)
+        })
+    }
+
     /// `path` is the plan file as the header names it.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, path: &str) {
         let lines = self.lines(path, usize::from(area.width));
@@ -216,6 +226,24 @@ mod tests {
 
         view.accept();
         assert_eq!(view.label(), "plan");
+    }
+
+    #[test]
+    fn the_scrollbar_shows_only_when_the_plan_overflows() {
+        let mut view = PlanView::default();
+        view.settle(Some("one\ntwo\n".into()));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).expect("backend");
+        terminal
+            .draw(|frame| view.draw(frame, frame.area(), "p.md"))
+            .expect("draws");
+        assert!(view.scrollbar().is_none());
+
+        view.settle(Some("line\n".repeat(30)));
+        terminal
+            .draw(|frame| view.draw(frame, frame.area(), "p.md"))
+            .expect("draws");
+        assert!(view.scrollbar().is_some());
     }
 
     #[test]

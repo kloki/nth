@@ -76,7 +76,7 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 
 ## Plan
 
-The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens on its own, without being shown, the first time the plan exists, and stays while it does; the chat keeps the focus so the model's reply stays in view.
+The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens and shows the moment the model writes the first plan, and stays while the plan exists. A revision only updates the tab and its label, so the chat keeps the focus and the model's reply stays in view; a plan already there when a session opens gets its tab without being shown.
 
 ```
 .nth/plans/6b2e….md · +3 -1 · /approve
@@ -90,11 +90,12 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 
 - **Label.** `plan` in the tab strip, or `plan +3 -1` while lines are marked.
 - **Header.** The file, what changed, and `/approve`, dim.
+- **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the plan is longer than the tab.
 - **Lines.** Every line of the plan, wrapped at the tab's width. An added line is green behind `+`, a removed one red behind `-`, and an unchanged one has no mark.
 - **What is marked.** The changes of the latest turn that changed the plan, against the plan as it was before that turn. A turn that only talks leaves the marks as they are, so asking a question about the plan does not wipe what its last revision did. The first plan of a session is shown unmarked too, since every line of it would be new, and so is the session's plan when it is opened by starting nth or `/resume`.
 - **Reading.** The file is read after every write, edit or apply_patch, at the end of each turn, and when a session opens. A plan deleted from disk closes the tab.
 
-**`/approve`.** Approves the plan: the mode switches to act, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits in the queue like any prompt. Without a plan file it only says `no plan to approve` on the status bar.
+**`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits in the queue like any prompt. Without a plan file it only says `no plan to approve` on the status bar.
 
 ## Diagnostics
 

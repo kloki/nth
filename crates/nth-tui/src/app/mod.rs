@@ -50,7 +50,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style},
-    widgets::{Scrollbar, ScrollbarOrientation},
+    widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use tokio::{
     sync::{mpsc, watch},
@@ -200,6 +200,23 @@ pub struct App {
     /// ctrl+c was pressed once with monitors running; again quits.
     quit_armed: bool,
     quit: bool,
+}
+
+/// A grey thumb in the right margin of `content`, so the view keeps its
+/// width and doesn't rewrap when the bar comes and goes.
+fn draw_scrollbar(frame: &mut Frame, content: Rect, mut state: ScrollbarState) {
+    let column = Rect {
+        x: content.right(),
+        width: 1,
+        ..content
+    };
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(None)
+        .thumb_symbol("┃")
+        .thumb_style(Style::new().fg(Color::Gray));
+    frame.render_stateful_widget(bar, column, &mut state);
 }
 
 enum Step {
@@ -425,6 +442,9 @@ impl App {
             Tab::Plan => {
                 let place = self.plan_place();
                 self.plan.draw(frame, content, &place);
+                if let Some(state) = self.plan.scrollbar() {
+                    draw_scrollbar(frame, content, state);
+                }
             }
             Tab::Diagnostics => {
                 let facts = diagnostics::Facts {
@@ -443,21 +463,8 @@ impl App {
             Tab::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
                 self.chat.draw(frame, content, &banner);
-                // In the right margin, so the chat keeps its width and
-                // doesn't rewrap when the bar comes and goes.
-                if let Some(mut state) = self.chat.scrollbar() {
-                    let column = Rect {
-                        x: content.right(),
-                        width: 1,
-                        ..content
-                    };
-                    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                        .begin_symbol(None)
-                        .end_symbol(None)
-                        .track_symbol(None)
-                        .thumb_symbol("┃")
-                        .thumb_style(Style::new().fg(Color::Gray));
-                    frame.render_stateful_widget(bar, column, &mut state);
+                if let Some(state) = self.chat.scrollbar() {
+                    draw_scrollbar(frame, content, state);
                 }
             }
         }

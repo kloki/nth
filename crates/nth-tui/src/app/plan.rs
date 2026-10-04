@@ -30,14 +30,19 @@ impl App {
     }
 
     pub(super) fn plan_read(&mut self, text: Option<String>) {
-        if std::mem::take(&mut self.plan_settle) {
+        let settle = std::mem::take(&mut self.plan_settle);
+        let created = !settle && !self.plan.exists() && text.is_some();
+        if settle {
             self.plan.settle(text);
         } else {
             self.plan.update(text);
         }
-        if self.plan.exists() {
-            // Unfocused, so the reply the model is writing stays in view;
-            // the tab's label says what changed.
+        if created {
+            // The first plan is what you will want to read.
+            self.content.open(Tab::Plan);
+        } else if self.plan.exists() {
+            // A revision opens the tab unfocused, so the reply the model is
+            // writing stays in view; the tab's label says what changed.
             self.content.add(Tab::Plan);
         } else {
             self.content.remove(Tab::Plan);
@@ -57,8 +62,9 @@ impl App {
             .to_string()
     }
 
-    /// `/approve`: act on the plan. The mode switches now; the approval
-    /// runs as its own turn, queued behind one that is running.
+    /// `/approve`: act on the plan. The mode switches now and the chat
+    /// shows; the approval runs as its own turn, queued behind one that is
+    /// running.
     pub(super) fn approve(&mut self) {
         if !self.plan.exists() {
             self.hint = Some("no plan to approve".into());
@@ -66,6 +72,8 @@ impl App {
         }
         self.set_mode(Mode::Act);
         self.plan.accept();
+        // Acting happens in the chat.
+        self.content.select(0);
         let text = format!(
             "/approve{}{}\n</system-reminder>",
             REMINDER_OPEN,
@@ -116,7 +124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_written_plan_opens_its_tab_without_showing_it() {
+    async fn the_first_plan_shows_and_a_revision_only_opens_the_tab() {
         let (mut app, _dir) = app_with_plan_dir();
         app.read_plan();
         read(&mut app).await;
@@ -125,14 +133,36 @@ mod tests {
         write_plan(&app, "# Plan\nstep\n");
         app.read_plan();
         read(&mut app).await;
-
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
-        assert_eq!(app.content.active(), Tab::Chat);
+        assert_eq!(app.content.active(), Tab::Plan, "the first plan shows");
         assert_eq!(
             app.tab_label(Tab::Plan),
             "plan",
             "a first plan has no marks"
         );
+
+        app.content.select(0);
+        app.plan.turn_started();
+        write_plan(&app, "# Plan\nstep 1\n");
+        app.read_plan();
+        read(&mut app).await;
+        assert_eq!(
+            app.content.active(),
+            Tab::Chat,
+            "a revision leaves the chat"
+        );
+        assert_eq!(app.tab_label(Tab::Plan), "plan +1 -1");
+    }
+
+    #[tokio::test]
+    async fn a_plan_there_on_start_opens_its_tab_unfocused() {
+        let (mut app, _dir) = app_with_plan_dir();
+        write_plan(&app, "# Plan\n");
+        app.read_plan();
+        read(&mut app).await;
+
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
+        assert_eq!(app.content.active(), Tab::Chat);
     }
 
     #[tokio::test]
@@ -147,7 +177,6 @@ mod tests {
         write_plan(&app, "# Plan\nstep 1\n");
         app.read_plan();
         read(&mut app).await;
-        app.apply(Action::NextContent);
 
         let rows = crate::app::tests::rows(&mut app);
 
@@ -182,13 +211,17 @@ mod tests {
     async fn approve_acts_on_the_plan_and_clears_its_marks() {
         let (mut app, _dir) = app_with_plan_dir();
         app.set_mode(Mode::Plan);
+        app.read_plan();
+        read(&mut app).await;
         write_plan(&app, "# Plan\n");
         app.read_plan();
         read(&mut app).await;
+        assert_eq!(app.content.active(), Tab::Plan);
 
         app.prompt.insert_str("/approve");
         app.apply(Action::Submit);
 
+        assert_eq!(app.content.active(), Tab::Chat, "acting shows in the chat");
         assert_eq!(app.mode, Mode::Act);
         assert_eq!(app.tab_label(Tab::Plan), "plan");
         assert!(app.is_busy());
