@@ -5,12 +5,13 @@
 use nth_protocol::{BoxError, ModelInfo};
 
 use super::App;
-use crate::{llm_picker::LlmPicker, prompt};
+use crate::{llm_picker::LlmPicker, prompt, session_picker::SessionPicker};
 
 #[derive(Debug)]
 pub(super) enum Input {
     Prompt,
     LlmPicker(LlmPicker),
+    SessionPicker(SessionPicker),
 }
 
 impl Input {
@@ -20,7 +21,7 @@ impl Input {
     pub(super) fn rows(&self) -> u16 {
         match self {
             Input::Prompt => prompt::ROWS,
-            Input::LlmPicker(_) => 8,
+            Input::LlmPicker(_) | Input::SessionPicker(_) => 8,
         }
     }
 }

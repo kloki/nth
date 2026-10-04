@@ -6,7 +6,7 @@ mod transcript;
 
 use std::path::PathBuf;
 
-use nth_protocol::Event;
+use nth_protocol::{Event, Message};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -36,6 +36,13 @@ impl Chat {
             height: 0,
             max_top: 0,
         }
+    }
+
+    /// A chat showing the history in `messages`, scrolled to its end.
+    pub fn replay(cwd: PathBuf, messages: &[Message]) -> Self {
+        let mut chat = Self::new(cwd.clone());
+        chat.transcript = Transcript::replay(cwd, messages);
+        chat
     }
 
     pub fn apply(&mut self, event: &Event) {

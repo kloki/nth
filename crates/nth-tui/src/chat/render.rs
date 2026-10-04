@@ -80,14 +80,13 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             barred(&format!("✗ {e}"), width, red, red)
         }
         Entry::Reasoning { started, took } => {
-            let (label, secs) = match took {
-                None => ("thinking", started.elapsed()),
-                Some(took) => ("thought", *took),
+            let text = match took {
+                None => format!("thinking · {:.1}s", started.elapsed().as_secs_f64()),
+                // A resumed session's reasoning; how long it took isn't saved.
+                Some(took) if took.is_zero() => "thought".to_string(),
+                Some(took) => format!("thought · {:.1}s", took.as_secs_f64()),
             };
-            vec![Line::styled(
-                format!("{INDENT}∴ {label} · {:.1}s", secs.as_secs_f64()),
-                dim,
-            )]
+            vec![Line::styled(format!("{INDENT}∴ {text}"), dim)]
         }
         Entry::Tool {
             call,

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nth_protocol::{Event, ToolCall};
+use nth_protocol::{Event, Message, ToolCall};
 use ratatui::text::Line;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +69,56 @@ impl Transcript {
             items: Vec::new(),
             width: 0,
         }
+    }
+
+    /// The history of a resumed session, rebuilt by replaying its messages
+    /// as the events they once streamed as. Timings are not saved, so turns
+    /// get no footers and reasoning shows no duration.
+    pub fn replay(cwd: PathBuf, messages: &[Message]) -> Self {
+        let mut t = Self::new(cwd);
+        for message in messages {
+            match message {
+                Message::System(_) => {}
+                Message::User(text) => t.push_user(text.clone()),
+                Message::Assistant(reply) => {
+                    if !reply.reasoning.is_empty() {
+                        t.push(Entry::Reasoning {
+                            started: Instant::now(),
+                            took: Some(Duration::ZERO),
+                        });
+                    }
+                    t.apply(&Event::TextDelta(reply.text.clone()));
+                    for call in &reply.tool_calls {
+                        t.apply(&Event::ToolStarted(call.clone()));
+                    }
+                }
+                Message::ToolResult { call_id, content } => {
+                    let Some(Item {
+                        entry: Entry::Tool { call, .. },
+                        ..
+                    }) = t.tool_mut(call_id)
+                    else {
+                        continue;
+                    };
+                    let call = call.clone();
+                    // The agent loop saves a failed call's error this way.
+                    let result = match content.strip_prefix("Error: ") {
+                        Some(error) => Err(error.to_string()),
+                        // A write streamed nothing; its start showed its content.
+                        None if call.name == "write" => Ok(content.clone()),
+                        None => {
+                            t.apply(&Event::ToolOutput {
+                                call_id: call_id.clone(),
+                                text: content.clone(),
+                            });
+                            Ok(content.clone())
+                        }
+                    };
+                    t.apply(&Event::ToolFinished { call, result });
+                }
+            }
+        }
+        t
     }
 
     pub fn is_empty(&self) -> bool {
@@ -153,6 +203,11 @@ impl Transcript {
             }
             Event::Usage(_) => {}
         }
+    }
+
+    /// A problem outside the turn itself, such as the session not saving.
+    pub fn push_error(&mut self, error: String) {
+        self.push(Entry::TurnError(error));
     }
 
     /// Closes the turn with its footer, or with the error that ended it.
@@ -383,5 +438,56 @@ pub(super) mod tests {
         t.apply(&Event::ToolStarted(tool("1", "write", &arguments)));
 
         assert_eq!(outputs(&t), [numbered(1..=10)]);
+    }
+
+    #[test]
+    fn replays_a_saved_session() {
+        let bash = tool("1", "bash", r#"{"command":"ls"}"#);
+        let messages = [
+            Message::System("you are nth".into()),
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                text: "looking".into(),
+                reasoning: "hm".into(),
+                tool_calls: vec![bash.clone(), call("2")],
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "a.rs\nb.rs".into(),
+            },
+            Message::ToolResult {
+                call_id: "2".into(),
+                content: "Error: no such file".into(),
+            },
+            Message::Assistant(nth_protocol::AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            }),
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        let entries: Vec<_> = t.entries().collect();
+        assert_eq!(entries[0], &Entry::User("go".into()));
+        assert!(matches!(entries[1], Entry::Reasoning { took: Some(_), .. }));
+        assert_eq!(entries[2], &Entry::Answer("looking".into()));
+        assert_eq!(
+            entries[3],
+            &Entry::Tool {
+                call: bash,
+                state: ToolState::Done,
+                output: vec!["a.rs".into(), "b.rs".into()],
+            }
+        );
+        assert_eq!(
+            entries[4],
+            &Entry::Tool {
+                call: call("2"),
+                state: ToolState::Failed("no such file".into()),
+                output: Vec::new(),
+            }
+        );
+        assert_eq!(entries[5], &Entry::Answer("done".into()));
+        assert_eq!(entries.len(), 6);
     }
 }

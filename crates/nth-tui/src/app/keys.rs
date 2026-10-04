@@ -16,7 +16,7 @@ pub enum Action {
     Accept,
     /// Clears a non-empty prompt; quits on an empty one.
     ClearOrQuit,
-    /// Opens the LLM picker, or closes it.
+    /// Opens the LLM picker, or closes any picker.
     LlmPicker,
     Insert(char),
     Newline,
@@ -80,6 +80,22 @@ impl App {
                 Action::Left => picker.less(),
                 Action::Submit => self.choose_llm(),
                 // Closing the picker must not also interrupt a running turn.
+                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
+                    self.input = Input::Prompt
+                }
+                Action::PageUp => self.chat.page_up(),
+                Action::PageDown => self.chat.page_down(),
+                Action::Top => self.chat.jump_top(),
+                Action::Bottom => self.chat.jump_bottom(),
+                _ => {}
+            }
+            return;
+        }
+        if let Input::SessionPicker(picker) = &mut self.input {
+            match action {
+                Action::SelectNext => picker.next(),
+                Action::SelectPrev => picker.prev(),
+                Action::Submit => self.choose_session(),
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }
@@ -258,9 +274,10 @@ mod tests {
         assert_eq!(selected(&app), Command::Exit);
         app.apply(Action::SelectNext);
         app.apply(Action::SelectNext);
+        app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Clear);
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Models);
+        assert_eq!(selected(&app), Command::Resume);
         assert_eq!(app.prompt.text(), "/");
     }
 
