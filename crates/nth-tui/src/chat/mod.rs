@@ -10,7 +10,7 @@ use nth_protocol::{Event, Message};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    widgets::Paragraph,
+    widgets::{Paragraph, ScrollbarState},
 };
 use scroll::Scroll;
 #[cfg(test)]
@@ -73,12 +73,17 @@ impl Chat {
         self.scroll.jump_bottom();
     }
 
-    /// Lines hidden below the viewport while scrolled up; zero while following.
-    pub fn lines_below(&self) -> usize {
+    /// Where the view sits in the history while scrolled up; `None` while
+    /// following the bottom, so the bar only shows when you have moved.
+    pub fn scrollbar(&self) -> Option<ScrollbarState> {
         if self.scroll.is_following() {
-            return 0;
+            return None;
         }
-        self.max_top - self.scroll.top(self.max_top)
+        Some(
+            ScrollbarState::new(self.max_top + 1)
+                .position(self.scroll.top(self.max_top))
+                .viewport_content_length(self.height),
+        )
     }
 
     /// Draws the visible history, or `banner` centred while there is none.

@@ -18,7 +18,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎                                                                     │
 ▎                                                                     ┘
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth +3 *4 󰊐 2 ┐ status, 2 lines
-                                                  ↓ 12 more · ctrl+End ┘
+                                                                       ┘
 ```
 
 There are no borders or divider lines, as the styleguide in [design.md](design.md#tui) says. Bands are told apart by coloured bars and spacing.
@@ -43,7 +43,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 ## Chat
 
-The chat tab is the transcript, which scrolls. Each tool call keeps the output it produced right under its row.
+The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollbar thumb in the right margin shows where the view is; it goes away once you are back at the bottom and following again. Each tool call keeps the output it produced right under its row.
 
 ```
 ▎ add retry to the fetch client
@@ -169,11 +169,10 @@ The spinner runs for the whole turn: thinking, writing and tool calls. What exac
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are, line 2 a hint about the chat. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is empty for now. The right side of a line is cut first when it is too narrow.
 
 ```
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
-                                                   ↓ 12 more · ctrl+End
 ```
 
 **Line 1: where you are**
@@ -227,9 +226,9 @@ Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather 
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
-**Line 2: hints**
+**Line 2: empty**
 
-"↓ N more · ctrl+End" against the right edge when there is more chat below the view; empty otherwise. How to cancel a running turn is on the input panel, not here.
+Kept so nothing above moves when it gets a job. That there is more chat below the view is shown by the chat's scrollbar, and how to cancel a running turn is on the input panel.
 
 ## Colours
 
