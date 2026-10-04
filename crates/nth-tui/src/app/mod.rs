@@ -37,11 +37,12 @@ use turn::Ended;
 use crate::{
     chat::Chat,
     command::{Command, Entry},
+    editor,
     git::{self, GitStatus},
     header, llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
-    session_picker, spinner, status,
+    session_picker, spinner, status, terminal,
 };
 
 const WHEEL_LINES: usize = 3;
@@ -107,6 +108,9 @@ pub struct App {
     events_tx: mpsc::Sender<Event>,
     events_rx: mpsc::Receiver<Event>,
     turn: Job<Ended>,
+    /// Set by ctrl+g; the run loop opens the editor, since it holds the
+    /// terminal the editor takes over.
+    editing: bool,
     quit: bool,
 }
 
@@ -209,6 +213,7 @@ impl App {
             events_tx,
             events_rx,
             turn: Job::default(),
+            editing: false,
             quit: false,
         }
     }
@@ -266,6 +271,30 @@ impl App {
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
+            if std::mem::take(&mut self.editing) {
+                // The stream reads stdin from a thread of its own, so it is
+                // dropped to leave the keys to the editor.
+                drop(input);
+                self.edit_prompt(terminal).await?;
+                input = EventStream::new();
+            }
+        }
+        Ok(())
+    }
+
+    /// Hands the terminal to the user's editor with the prompt in it, and
+    /// takes back what was saved. A failed editor leaves the prompt as it was.
+    async fn edit_prompt(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        terminal::suspend();
+        let edited = editor::edit(self.prompt.text()).await;
+        terminal::resume().context("taking the terminal back from the editor")?;
+        terminal.clear()?;
+        match edited {
+            Ok(text) => {
+                self.prompt.set(&text);
+                self.refresh_completion();
+            }
+            Err(e) => self.chat.warn(&[format!("{e:#}")]),
         }
         Ok(())
     }
