@@ -47,7 +47,7 @@ pub enum Entry {
 }
 
 /// The most output a tool row keeps.
-const OUTPUT_LINES: usize = 10;
+pub(super) const OUTPUT_LINES: usize = 10;
 /// Where the session appends a reminder about the mode to what you typed.
 const REMINDER: &str = "\n\n<system-reminder>\n";
 
@@ -127,6 +127,11 @@ impl Transcript {
                         None if call.name == "question" => Ok(content.clone()),
                         // The panel it switched to says what it did.
                         None if call.name == "panel" => Ok(content.clone()),
+                        // Its page shows once finished, as it did live.
+                        None if call.name == "webfetch" => Ok(content.clone()),
+                        // An edit shows its diff, from its arguments; what
+                        // it reported after writing shows as notes.
+                        None if call.name == "edit" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
                             // only; the live view never showed them. The
@@ -241,7 +246,13 @@ impl Transcript {
             }
             Event::ToolFinished { call, result } => {
                 if let Some(Item {
-                    entry: Entry::Tool { state, notes, .. },
+                    entry:
+                        Entry::Tool {
+                            state,
+                            output,
+                            notes,
+                            ..
+                        },
                     lines,
                 }) = self.tool_mut(&call.id)
                 {
@@ -249,6 +260,12 @@ impl Transcript {
                         && writes_files(&call.name)
                     {
                         *notes = after_write::parse(text);
+                    }
+                    // A fetch streams nothing; its page is its result.
+                    if let Ok(text) = result
+                        && call.name == "webfetch"
+                    {
+                        keep_output(&call.name, output, text);
                     }
                     *state = match result {
                         Ok(_) => ToolState::Done,
@@ -640,7 +657,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn replay_keeps_what_an_edit_reported_apart_from_its_output() {
+    fn replay_keeps_what_an_edit_reported_as_notes() {
         let edit = tool("1", "edit", r#"{"filePath":"/repo/a.rs"}"#);
         let messages = [
             Message::User("go".into()),
@@ -659,7 +676,7 @@ pub(super) mod tests {
         let Some(Entry::Tool { output, notes, .. }) = t.entries().nth(1) else {
             panic!("no edit entry");
         };
-        assert_eq!(output, &["Edited file: /repo/a.rs"]);
+        assert!(output.is_empty(), "its diff comes from its arguments");
         assert_eq!(notes, &[Note::Format("Formatted with rustfmt.".into())]);
     }
 

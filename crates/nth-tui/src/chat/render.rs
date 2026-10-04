@@ -1,13 +1,18 @@
 //! Wraps transcript entries into styled lines for the current width, and
 //! caches them so only what changed is wrapped again.
 
+use hoodrich::Change;
+use nth_protocol::ToolCall;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
 
-use super::transcript::{Entry, ToolState, Transcript};
-use crate::theme::{BAR, BAR_WIDTH, INDENT, dim};
+use super::transcript::{Entry, OUTPUT_LINES, ToolState, Transcript};
+use crate::{
+    rich,
+    theme::{BAR, BAR_WIDTH, INDENT, dim},
+};
 
 impl Transcript {
     /// Wraps whatever changed for `width` and returns the total line count.
@@ -54,7 +59,7 @@ fn is_live(entry: &Entry) -> bool {
 fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>> {
     let dim = dim();
     match entry {
-        Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
+        Entry::User(text) => barred_markdown(text, width, Style::new().fg(Color::Green)),
         Entry::PlanEdits(edits) => vec![Line::from(vec![
             Span::raw(INDENT),
             Span::styled("✎ ", Style::new().fg(Color::Magenta)),
@@ -78,7 +83,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 ),
             ])]
         }
-        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Blue), Style::new()),
+        Entry::Answer(text) => barred_markdown(text, width, Style::new().fg(Color::Blue)),
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
@@ -121,11 +126,11 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
             }
             let mut lines = vec![Line::from(spans)];
-            lines.extend(output.iter().map(|text| {
-                Line::from(vec![
-                    Span::styled(BAR, bar),
-                    Span::styled(format!("{INDENT}{text}"), Style::new().fg(Color::Gray)),
-                ])
+            let room = usize::from(width.saturating_sub(BAR_WIDTH)).saturating_sub(INDENT.len());
+            lines.extend(output_lines(call, output, room).into_iter().map(|line| {
+                let mut spans = vec![Span::styled(BAR, bar), Span::raw(INDENT)];
+                spans.extend(line.spans);
+                Line::from(spans)
             }));
             lines.extend(notes.iter().map(|note| {
                 Line::from(vec![
@@ -183,6 +188,96 @@ fn icon(tool: &str) -> &'static str {
     }
 }
 
+/// What a call produced, as fits its tool: files highlighted by their
+/// language, an edit as a diff, a fetched page as markdown, anything else
+/// as it came. Lines are not wrapped, except a page's prose: a row shows
+/// the start of each.
+fn output_lines(call: &ToolCall, output: &[String], room: usize) -> Vec<Line<'static>> {
+    let args = serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default();
+    let arg = |key: &str| args[key].as_str().unwrap_or_default();
+    match call.name.as_str() {
+        "read" => read_lines(output, arg("filePath"), room),
+        "write" => rich::code(&output.join("\n"), arg("filePath"), room),
+        "edit" => edit_lines(arg("oldString"), arg("newString"), arg("filePath"), room),
+        "webfetch" if matches!(arg("format"), "" | "markdown") => {
+            let mut lines = rich::markdown(&output.join("\n"), room);
+            lines.truncate(OUTPUT_LINES);
+            lines
+        }
+        _ => plain(output),
+    }
+}
+
+fn plain(output: &[String]) -> Vec<Line<'static>> {
+    output
+        .iter()
+        .map(|text| Line::styled(text.clone(), Style::new().fg(Color::Gray)))
+        .collect()
+}
+
+/// The file's numbered lines highlighted behind a dim gutter of their
+/// numbers. What is not a numbered line, a directory listing or the note
+/// on where to read on, shows as it came.
+fn read_lines(output: &[String], path: &str, room: usize) -> Vec<Line<'static>> {
+    let numbered: Vec<(&str, &str)> = output
+        .iter()
+        .map_while(|line| {
+            let (number, text) = line.split_once(": ").unwrap_or((line, ""));
+            let numbered = !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit());
+            numbered.then_some((number, text))
+        })
+        .collect();
+    let digits = numbered.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let source: Vec<&str> = numbered.iter().map(|(_, text)| *text).collect();
+    let code = rich::code(&source.join("\n"), path, room.saturating_sub(digits + 1));
+    let mut lines: Vec<Line<'static>> = numbered
+        .iter()
+        .zip(code)
+        .map(|((number, _), line)| {
+            let mut spans = vec![Span::styled(format!("{number:>digits$} "), dim())];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect();
+    lines.extend(plain(&output[numbered.len()..]));
+    lines
+}
+
+/// The edit as a diff of what it replaced, behind a `+` or `-` gutter.
+fn edit_lines(old: &str, new: &str, path: &str, room: usize) -> Vec<Line<'static>> {
+    rich::code_diff(old, new, path, room.saturating_sub(GUTTER.len()))
+        .into_iter()
+        .take(OUTPUT_LINES)
+        .map(|(change, line)| {
+            let (mark, style) = match change {
+                Change::Same => (GUTTER, Style::new()),
+                Change::Added => ("+ ", Style::new().fg(Color::Green)),
+                Change::Removed => ("- ", Style::new().fg(Color::Red)),
+            };
+            let mut spans = vec![Span::styled(mark, style)];
+            spans.extend(line.spans.into_iter().map(|span| span.patch_style(style)));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The gutter in front of an unchanged line of a diff.
+const GUTTER: &str = "  ";
+
+/// Markdown beside the message bar, wrapped to fit, the bar repeated on
+/// every row, blank ones too, so a block reads as one.
+fn barred_markdown(text: &str, width: u16, bar: Style) -> Vec<Line<'static>> {
+    let room = usize::from(width.saturating_sub(BAR_WIDTH).max(1));
+    rich::markdown(text.trim_matches('\n'), room)
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(BAR, bar)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// Wraps `text` to fit beside the message bar, repeating the bar on every
 /// line. Blank lines inside the text keep the bar so a block reads as one.
 fn barred(text: &str, width: u16, bar: Style, body: Style) -> Vec<Line<'static>> {
@@ -225,7 +320,7 @@ mod tests {
         t.push_user("one two three".into());
         t.apply(&Event::ToolStarted(call("1")));
         t.apply(&Event::ToolStarted(call("2")));
-        t.apply(&Event::TextDelta("ok\n\n    indented".into()));
+        t.apply(&Event::TextDelta("ok\n\n*leaning* tower".into()));
 
         let total = t.layout(10);
 
@@ -241,9 +336,16 @@ mod tests {
                 "",
                 "▎ ok",
                 "▎ ",
-                "▎     inde",
-                "▎     nted",
+                "▎ leaning",
+                "▎ tower",
             ]
+        );
+        let lines = t.visible(0, total);
+        assert!(
+            lines[9].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
         );
         assert_eq!(
             text(&t.visible(3, 3)),
@@ -339,7 +441,7 @@ mod tests {
         let lines = t.visible(0, total);
 
         assert_eq!(
-            text(&lines),
+            trimmed(&lines),
             [
                 "▎ > write  src/a.rs",
                 "▎   fn main() {",
@@ -349,6 +451,13 @@ mod tests {
                 "▎   src/a.rs",
                 "▎     ERROR [2:18] mismatched types",
             ]
+        );
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|s| s.content == "fn" && matches!(s.style.fg, Some(Color::Rgb(..)))),
+            "highlighted"
         );
         let note = lines[4].spans.last().expect("note");
         assert!(note.style.add_modifier.contains(Modifier::DIM), "dim");
@@ -375,6 +484,109 @@ mod tests {
         let total = t.layout(40);
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
+    }
+
+    fn trimmed(lines: &[ratatui::text::Line]) -> Vec<String> {
+        text(lines)
+            .iter()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_message_renders_its_markdown() {
+        let mut t = transcript();
+        t.push_user("make it **bold**".into());
+
+        let total = t.layout(40);
+        let lines = t.visible(0, total);
+
+        assert_eq!(text(&lines), ["▎ make it bold"]);
+        let bold = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "bold")
+            .expect("bold");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_read_is_highlighted_behind_its_line_numbers() {
+        let mut t = transcript();
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolOutput {
+            call_id: "1".into(),
+            text: "9: fn a() {}\n10: fn b() {}\n\n(Showing lines 9-10 of 20.)".into(),
+        });
+
+        let total = t.layout(40);
+        let lines = t.visible(0, total);
+
+        assert_eq!(
+            trimmed(&lines),
+            [
+                "▎ ≡ read   src/a.rs",
+                "▎    9 fn a() {}",
+                "▎   10 fn b() {}",
+                "▎",
+                "▎   (Showing lines 9-10 of 20.)",
+            ]
+        );
+        assert!(lines[1].spans[2].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn an_edit_shows_what_it_changed() {
+        let mut t = transcript();
+        let edit = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "edit".into(),
+            arguments: r#"{"filePath":"/repo/src/a.rs","oldString":"let a = 1;\nlet b = 2;","newString":"let a = 1;\nlet b = 3;"}"#
+                .into(),
+        };
+        t.apply(&Event::ToolStarted(edit));
+
+        let total = t.layout(40);
+        let lines = t.visible(0, total);
+
+        assert_eq!(
+            trimmed(&lines),
+            [
+                "▎ ± edit   src/a.rs",
+                "▎     let a = 1;",
+                "▎   - let b = 2;",
+                "▎   + let b = 3;",
+            ]
+        );
+        assert_eq!(lines[2].spans[2].style.fg, Some(Color::Red));
+        assert_eq!(lines[3].spans[3].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn a_fetched_page_shows_as_markdown() {
+        let mut t = transcript();
+        let fetch = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "webfetch".into(),
+            arguments: r#"{"url":"https://example.com"}"#.into(),
+        };
+        t.apply(&Event::ToolStarted(fetch.clone()));
+        t.apply(&Event::ToolFinished {
+            call: fetch,
+            result: Ok("# Example\n\nSome text.".into()),
+        });
+
+        let total = t.layout(40);
+
+        assert_eq!(
+            trimmed(&t.visible(0, total)),
+            [
+                "▎ ↓ webfetch https://example.com",
+                "▎   Example",
+                "▎",
+                "▎   Some text.",
+            ]
+        );
     }
 
     #[test]

@@ -256,6 +256,7 @@ Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar 
 **Styleguide**
 
 - Only the 16 ANSI colours, 8 standard plus 8 bright, and the terminal's default foreground and background. Your terminal theme drives the look.
+- One exception: syntax-highlighted code (code blocks, file contents, edit diffs) is drawn in Dracula colours on Dracula's background, through [hoodrich](https://github.com/kloki/hoodrich). Sixteen colours are too few to tell keywords, strings, types and comments apart. The code background marks the block off, so the fixed palette never clashes with the theme. Markdown itself (headings, emphasis, lists, quotes, tables) stays within the 16.
 - Hierarchy comes from modifiers, not more colours: bold for names, dim for secondary text, reversed for selection and the active tab.
 - No borders or divider lines. Panes are separated by background colour and one column of padding.
 - One line per tool call by default. Details expand in place on Enter.

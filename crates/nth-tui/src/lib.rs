@@ -14,6 +14,7 @@ mod plan;
 mod popup;
 mod prompt;
 mod question;
+mod rich;
 mod session_picker;
 mod spinner;
 mod status;

@@ -182,7 +182,7 @@ mod tests {
 
         assert!(rows[0].starts_with(" 1 chat  2 plan +1 -1 "), "{rows:#?}");
         assert!(rows[2].starts_with(" .nth/plans/"));
-        assert_eq!(rows[4].trim_end(), "   # Plan");
+        assert_eq!(rows[4].trim_end(), "   Plan");
         assert_eq!(rows[5].trim_end(), " - step");
         assert_eq!(rows[6].trim_end(), " + step 1");
     }
