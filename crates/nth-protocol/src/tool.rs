@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::Event;
+use crate::{Asker, Event};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -27,18 +27,22 @@ pub struct ToolContext {
     pub instructions: LoadedInstructions,
     /// What the session knows about its project, such as its skills.
     pub context: Arc<Context>,
+    /// Where a tool asks you questions while it runs.
+    pub asker: Asker,
 }
 
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
 
 impl ToolContext {
-    /// A context whose output goes nowhere and that has loaded nothing.
+    /// A context whose output goes nowhere, that has loaded nothing and has
+    /// nobody to ask.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
             output: OutputSink::default(),
             instructions: LoadedInstructions::default(),
             context: Arc::default(),
+            asker: Asker::default(),
         }
     }
 }

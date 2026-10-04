@@ -3,6 +3,7 @@ mod bash;
 mod edit;
 mod glob;
 mod grep;
+mod question;
 mod read;
 mod skill;
 mod webfetch;
@@ -15,6 +16,7 @@ pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
 use nth_protocol::Tool;
+pub use question::Question;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use skill::Skill;
@@ -43,6 +45,7 @@ pub fn all(config: &ToolsConfig) -> Vec<Box<dyn Tool>> {
         Box::new(Skill),
         Box::new(WebFetch),
         Box::new(Websearch::new(config.websearch.clone())),
+        Box::new(Question),
     ]
 }
 
