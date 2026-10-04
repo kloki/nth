@@ -1,8 +1,14 @@
 //! Instruction files: `AGENTS.md`, the open standard, and `CLAUDE.md`, read
 //! where a project has no `AGENTS.md`. As in opencode, one global file and
-//! the project's files from its root down to the working directory.
+//! the project's files from its root down to the working directory go into
+//! the system prompt; files deeper in the tree are attached when the model
+//! reads something next to them.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use crate::{Paths, project_root};
 
@@ -65,6 +71,69 @@ fn project(cwd: &Path) -> Vec<PathBuf> {
         }
     }
     Vec::new()
+}
+
+/// The instruction files between `file` and the project root that are not
+/// in `loaded` yet, root first, claiming each in `loaded`. The root's own
+/// files are already in the system prompt, so the walk stops below it.
+pub async fn nested(
+    file: PathBuf,
+    cwd: PathBuf,
+    loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
+) -> Vec<Instruction> {
+    let found = tokio::task::spawn_blocking(move || nested_blocking(&file, &cwd, &loaded)).await;
+    match found {
+        Ok(found) => found,
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
+}
+
+fn nested_blocking(file: &Path, cwd: &Path, loaded: &Mutex<BTreeSet<PathBuf>>) -> Vec<Instruction> {
+    let cwd = normalize(cwd);
+    let file = normalize(&cwd.join(file));
+    let root = project_root(&cwd).unwrap_or(cwd);
+    let Some(dir) = file.parent() else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = dir
+        .ancestors()
+        .take_while(|dir| *dir != root && dir.starts_with(&root))
+        .filter_map(|dir| {
+            NAMES
+                .iter()
+                .map(|name| dir.join(name))
+                .find(|p| p.is_file())
+        })
+        .filter(|path| {
+            // Claimed before reading, so a parallel read never takes it too.
+            loaded
+                .lock()
+                .expect("only poisoned if a holder panicked")
+                .insert(path.clone())
+        })
+        .collect();
+    found.reverse();
+    let mut ignored = Vec::new();
+    found
+        .into_iter()
+        .filter_map(|path| read(path, &mut ignored))
+        .collect()
+}
+
+/// Resolves `.` and `..` without touching the file system, so paths the
+/// model writes compare equal to the ones found by walking directories.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// An empty file says nothing, so it is left out rather than shown as a
@@ -230,6 +299,78 @@ mod tests {
             tree.discover("repo", &paths)[0],
             ("home/.config/nth/AGENTS.md".into(), "nth".into())
         );
+    }
+
+    fn loaded(paths: &[PathBuf]) -> Arc<Mutex<BTreeSet<PathBuf>>> {
+        Arc::new(Mutex::new(paths.iter().cloned().collect()))
+    }
+
+    async fn nested_in(
+        tree: &Tree,
+        file: &str,
+        loaded: &Arc<Mutex<BTreeSet<PathBuf>>>,
+    ) -> Vec<(String, String)> {
+        nested(file.into(), tree.path("repo"), loaded.clone())
+            .await
+            .into_iter()
+            .map(|i| {
+                let rel = i.path.strip_prefix(tree.0.path()).expect("inside");
+                (rel.display().to_string(), i.content)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn reading_deeper_attaches_each_file_once() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "root")
+            .file("repo/a/AGENTS.md", "a")
+            .file("repo/a/b/CLAUDE.md", "b")
+            .file("repo/a/b/x.rs", "")
+            .file("repo/a/b/y.rs", "");
+        let loaded = loaded(&[tree.path("repo/AGENTS.md")]);
+
+        assert_eq!(
+            nested_in(&tree, "a/b/x.rs", &loaded).await,
+            pairs(&[("repo/a/AGENTS.md", "a"), ("repo/a/b/CLAUDE.md", "b")])
+        );
+        assert_eq!(
+            nested_in(&tree, "./a/b/../b/y.rs", &loaded).await,
+            pairs(&[])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_root_and_outside_files_attach_nothing() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "root")
+            .file("repo/x.rs", "")
+            .file("elsewhere/AGENTS.md", "elsewhere")
+            .file("elsewhere/x.rs", "");
+        let loaded = loaded(&[]);
+
+        assert_eq!(nested_in(&tree, "x.rs", &loaded).await, pairs(&[]));
+        let outside = tree.path("elsewhere/x.rs").display().to_string();
+        assert_eq!(nested_in(&tree, &outside, &loaded).await, pairs(&[]));
+    }
+
+    #[tokio::test]
+    async fn parallel_reads_attach_a_file_once() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/a/AGENTS.md", "a")
+            .file("repo/a/x.rs", "")
+            .file("repo/a/y.rs", "");
+        let loaded = loaded(&[]);
+
+        let (x, y) = tokio::join!(
+            nested_in(&tree, "a/x.rs", &loaded),
+            nested_in(&tree, "a/y.rs", &loaded)
+        );
+
+        assert_eq!(x.len() + y.len(), 1, "{x:?} {y:?}");
     }
 
     #[test]

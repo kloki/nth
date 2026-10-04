@@ -1,4 +1,8 @@
-use std::path::PathBuf;
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use futures::future::BoxFuture;
 use tokio::sync::mpsc;
@@ -17,14 +21,20 @@ pub struct ToolContext {
     pub cwd: PathBuf,
     /// Where a tool streams what it produces while it runs.
     pub output: OutputSink,
+    /// Instruction files already in the conversation. Shared by the calls
+    /// of a turn, which run in parallel, so each file is attached once.
+    pub instructions: LoadedInstructions,
 }
 
+pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
+
 impl ToolContext {
-    /// A context whose output goes nowhere.
+    /// A context whose output goes nowhere and that has loaded nothing.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
             output: OutputSink::default(),
+            instructions: LoadedInstructions::default(),
         }
     }
 }

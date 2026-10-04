@@ -13,7 +13,8 @@ start with `tui/`, which means `packages/tui/src/`.
 effort, the read, write and bash tools, parallel tool calls, a 100-step cap,
 Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
 `/models` commands, a model picker, `nth run` (headless), `nth models`, and
-`AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt.
+`AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
+nested ones attached once when read touches their directory.
 
 Items are grouped by the milestones in [design.md](design.md). Each item names
 the opencode code to copy from.
@@ -42,7 +43,6 @@ the opencode code to copy from.
 
 ### Context and instructions
 
-- [ ] **Nested AGENTS.md**: when read touches a file in a subdirectory with its own AGENTS.md, attach it once. `session/instruction.ts` (`loaded`)
 - [ ] **Environment block**: add today's date and the workspace root. `session/system.ts:80`
 - [ ] **Per-model system prompts**: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
 

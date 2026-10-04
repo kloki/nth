@@ -133,6 +133,7 @@ async fn run_tool(
     let ctx = ToolContext {
         cwd: ctx.cwd.clone(),
         output: OutputSink::new(events.clone(), call.id.clone()),
+        instructions: ctx.instructions.clone(),
     };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),
@@ -166,7 +167,7 @@ async fn emit(events: &mpsc::Sender<Event>, event: Event) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
 
     use futures::{
@@ -185,14 +186,14 @@ mod tests {
         session_id: "s1",
     };
 
-    struct Scripted {
+    pub(crate) struct Scripted {
         replies: Mutex<Vec<Vec<StreamEvent>>>,
         /// The model and session id of every request, in order.
         routes: Mutex<Vec<(String, String)>>,
     }
 
     impl Scripted {
-        fn new(replies: Vec<Vec<StreamEvent>>) -> Self {
+        pub(crate) fn new(replies: Vec<Vec<StreamEvent>>) -> Self {
             Self {
                 replies: Mutex::new(replies),
                 routes: Mutex::new(Vec::new()),
@@ -290,7 +291,7 @@ mod tests {
         }
     }
 
-    fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
+    pub(crate) fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
         ToolCall {
             id: id.into(),
             name: name.into(),

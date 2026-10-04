@@ -1,4 +1,9 @@
-use std::{path::PathBuf, sync::Arc, time::SystemTime};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 use nth_context::Context;
 use nth_protocol::{Effort, Event, Message, Provider, Tool, ToolContext};
@@ -24,6 +29,10 @@ pub struct Session {
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
     pub messages: Vec<Message>,
+    /// Instruction files the read tool has attached, so a resumed session
+    /// does not get them again.
+    #[serde(default)]
+    pub loaded_instructions: BTreeSet<PathBuf>,
     /// Not saved: it is read afresh for the working directory, so a resumed
     /// session sees the instruction files as they are now.
     #[serde(skip)]
@@ -44,6 +53,7 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages,
+            loaded_instructions: BTreeSet::new(),
             context,
         }
     }
@@ -103,8 +113,14 @@ impl Session {
     ) -> Result<(), Error> {
         self.messages.push(Message::User(text.into()));
         self.updated_at = SystemTime::now();
-        let ctx = ToolContext::new(self.cwd.clone());
-        run_turn(
+        // The system prompt's files count as loaded, so read never repeats them.
+        let mut loaded = self.loaded_instructions.clone();
+        loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
+        let ctx = ToolContext {
+            instructions: Arc::new(Mutex::new(loaded)),
+            ..ToolContext::new(self.cwd.clone())
+        };
+        let result = run_turn(
             provider,
             Route {
                 model: &self.model,
@@ -117,7 +133,13 @@ impl Session {
             events,
             cancel,
         )
-        .await
+        .await;
+        self.loaded_instructions = ctx
+            .instructions
+            .lock()
+            .expect("only poisoned if a holder panicked")
+            .clone();
+        result
     }
 }
 
@@ -191,6 +213,64 @@ mod tests {
         let json = serde_json::to_string(&session).expect("serializes");
         let back: Session = serde_json::from_str(&json).expect("deserializes");
         assert!(back.context().instructions.is_empty());
+    }
+
+    /// Marks `/repo/sub/AGENTS.md` loaded, as read does when it attaches it.
+    struct Claim;
+
+    impl Tool for Claim {
+        fn spec(&self) -> nth_protocol::ToolSpec {
+            nth_protocol::ToolSpec {
+                name: "claim",
+                description: "",
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+            let mut loaded = ctx.instructions.lock().expect("not poisoned");
+            let fresh = loaded.insert("/repo/sub/AGENTS.md".into());
+            Box::pin(async move { Ok(fresh.to_string()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn remembers_the_instruction_files_tools_attached() {
+        use nth_protocol::StreamEvent;
+
+        use crate::agent_loop::tests::{Scripted, call};
+
+        let context = Arc::new(Context {
+            instructions: vec![nth_context::Instruction {
+                path: "/repo/AGENTS.md".into(),
+                content: "root".into(),
+            }],
+            warnings: Vec::new(),
+        });
+        let mut session = Session::new("glm-5.3", "/repo".into()).with_context(context);
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "claim", ""))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Claim)];
+        let (tx, _rx) = mpsc::channel(64);
+
+        session
+            .prompt("go", &provider, &tools, &tx, &CancellationToken::new())
+            .await
+            .expect("turn completes");
+
+        assert_eq!(
+            session.loaded_instructions,
+            BTreeSet::from(["/repo/AGENTS.md".into(), "/repo/sub/AGENTS.md".into()])
+        );
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.loaded_instructions, session.loaded_instructions);
     }
 
     #[test]
