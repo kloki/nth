@@ -73,8 +73,8 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | Interrupted | none | `⏹ interrupted · 3.0s` in yellow, after a blank line |
 | Error | red | `✗ message` in red |
 
-- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
-- **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. A multi-line command shows its first line followed by `…`.
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, `¿` question, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
+- **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. question shows the questions' headers. A multi-line command shows its first line followed by `…`.
 - **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
 **Tool output**
@@ -90,6 +90,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | write | The content being written, the first 10 lines, taken from the call's arguments |
 | bash | The command's output, stdout and stderr interleaved, the last 10 lines |
 | skill | None: the row says which skill was loaded, and its body is for the model only |
+| question | Your answers, one line per question |
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
@@ -110,7 +111,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 | ------------------ | ------------ | --------------------- | ------------- |
 | Prompt             | 4            | default               | —             |
 | Model picker       | ~8           | `/model`              | enter, esc    |
-| Question (later)   | per question | the agent asks        | answer, esc   |
+| Question           | per call     | the agent asks        | answer, esc   |
 | Permission (later) | ~4           | a tool needs approval | allow, reject |
 
 ## Input panel style
@@ -131,6 +132,7 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 | --- | --- | --- |
 | Prompt | the mode's colour: blue for build | the mode label, or the spinner |
 | Model picker | magenta | `switch model` |
+| Question | cyan | `question`, or a tab per question |
 
 ## Prompt
 
@@ -169,6 +171,65 @@ The mode label is replaced by a braille spinner in the same mode colour. Its fra
 The bar keeps the mode colour, and the text is dimmed while Enter cannot submit. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
 The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
+
+## Question
+
+The question tool lets the model stop mid-turn and ask you something, as Claude Code's AskUserQuestion does. One call asks 1 to 4 questions. Each has 2 to 4 options, picks one or any number of them, and can give every option a one-line description. Every question also gets an open field for your own answer, so the model never adds an "Other" option itself.
+
+The panel is cyan, the model answer's colour, because this is the model talking to you.
+
+**One question, one choice**
+
+```
+▎ question                                   ↑↓ · 1-4 · enter · esc
+▎ Which auth method should the client use?
+▎ → 1. OAuth (Recommended)   Standard, works with SSO
+▎   2. API key               Simplest; one secret per user
+▎   3. mTLS                  Strongest, needs client certs
+▎   4. Type your own answer…
+```
+
+- **Title row.** `question` in cyan, the keys dim against the right edge, dropped when the row is too narrow, as in the model picker.
+- **Question.** Default fg, wrapped, at most 3 rows.
+- **Options.** A number, then the label in blue, as model ids are in the model picker. The highlighted one has `→` and is bold magenta (`theme::pick`). The description is dim, in one column after the longest label, and is cut with `…` when it does not fit.
+- **Open field.** Always the last row. Highlighting it and typing writes straight into it, with no separate edit mode. "Type your own answer…" is the dim placeholder.
+- **Answering.** Enter on an option, or on an open field with text, answers. A lone one-choice question is sent right away.
+
+**Any number of choices**
+
+```
+▎ question                              ↑↓ · space toggle · enter · esc
+▎ Which checks should run before commit?
+▎ → [x] 1. fmt        cargo fmt --check
+▎   [x] 2. clippy     -D warnings
+▎   [ ] 3. test       the whole workspace
+▎   [ ] 4. Type your own answer…
+```
+
+`[x]` and `[ ]` sit in front of the number. Space or the number toggles an option, the open field counts as ticked once it has text, and Enter moves on.
+
+**Several questions**
+
+```
+▎ ☒ Auth   ☐ Checks   ✓ Submit                ←→ question · ↑↓ · enter · esc
+▎ Which checks should run before commit?
+▎ → [x] 1. fmt        cargo fmt --check
+```
+
+- **Tab row.** Replaces the title: each question's short header, `☒` once it is answered and `☐` before, the current one bold magenta. Tab and ←→ move between them, and answering one moves to the next.
+- **Submit.** The last tab reviews every answer before they go. Enter sends them; an unanswered question shows in yellow, and Enter waits until there are none.
+
+```
+▎ ☒ Auth   ☒ Checks   ✓ Submit                          enter send · esc
+▎ Auth    OAuth (Recommended)
+▎ Checks  fmt, clippy, "and a doc check"
+```
+
+**Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
+
+**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. Once answered, its body lists the answers as the Submit tab does.
+
+**Esc.** Declines: the panel goes, the prompt comes back with its text, and the model reads that you declined and carries on. Esc at the prompt cancels the turn, as it always does.
 
 ## Status bar
 
@@ -254,4 +315,3 @@ Orange is not a standard terminal colour, so it means yellow.
 
 - Which key switches content tabs: `ctrl+x <n>` with the leader, as planned, or a Tab-style cycle?
 - Does the chat banner (`nth · model · place`) stay, now that status line 2 shows the same?
-- May an input panel grow with its content, such as a long question, or is a fixed height per panel strict?
