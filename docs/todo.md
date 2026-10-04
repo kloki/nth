@@ -64,8 +64,8 @@ the opencode code to copy from.
 - [ ] **Worktree per session** on branch `nth/<slug>`, with a setup hook. `worktree/`
 - [ ] **Checkpoint commit per turn**, which also gives undo and redo. opencode uses a separate snapshot repo for this. `snapshot/`, `session/revert.ts`
 - [ ] **Diff view**: worktree against base, file list plus hunks, next and previous hunk and file. `session/summary.ts`, `tui/` `diff.*` keybinds
-- [ ] **Format after write**: rustfmt, prettier or ruff by file type, and return the formatted file. `format/formatter.ts`
-- [ ] **LSP diagnostics**: rust-analyzer per worktree, started lazily; append errors to the edit and write result. `lsp/`, `lsp/diagnostic.ts`
+- [x] **Format after write**: rustfmt, prettier or ruff by file type. nth tells the model which formatter ran rather than returning the formatted file. `format/formatter.ts`
+- [x] **LSP diagnostics**: rust-analyzer per worktree, started lazily; append errors to the write, edit and apply_patch result. `lsp/`, `lsp/diagnostic.ts`
 
 ### TUI
 

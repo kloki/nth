@@ -1339,7 +1339,9 @@ dependencies = [
  "anyhow",
  "clap",
  "nth-context",
+ "nth-format",
  "nth-llm",
+ "nth-lsp",
  "nth-protocol",
  "nth-session",
  "nth-tools",
@@ -1363,6 +1365,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nth-format"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "nth-llm"
 version = "0.2.0"
 dependencies = [
@@ -1374,6 +1387,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "nth-lsp"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
 ]
 
 [[package]]
@@ -1412,6 +1439,8 @@ dependencies = [
  "ignore",
  "libc",
  "nth-context",
+ "nth-format",
+ "nth-lsp",
  "nth-protocol",
  "regex",
  "reqwest",
@@ -1431,6 +1460,8 @@ dependencies = [
  "futures",
  "ignore",
  "nth-context",
+ "nth-format",
+ "nth-lsp",
  "nth-protocol",
  "nth-session",
  "nucleo-matcher",

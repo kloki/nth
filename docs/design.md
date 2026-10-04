@@ -22,6 +22,7 @@ nth ("N-th time") is a personal, opinionated coding harness in Rust. It runs man
 - A client/server split, web UI, desktop app or IDE plugin. opencode has these; nth does not need them.
 
   The one exception is a local Unix socket on a running nth. It carries the same commands and events as JSON lines, so a CLI call or an agent acts on the sessions you see in the TUI.
+
 - Plugin loading at runtime. Swapping happens at compile time through crates and cargo features.
 - Multi-user or team features, telemetry, sharing sessions by link.
 
@@ -42,22 +43,22 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 
 **The cut**
 
-| Feature | M1 (daily driver) | Later |
-| --- | --- | --- |
-| Agent loop, streaming, tool calls | yes |  |
-| Tools: read, write, edit, glob, grep, bash, todo | yes | webfetch, task, question |
-| Plan and Build agents | yes | custom agents |
-| Sessions | persist and resume | compaction, fork, revert |
-| Worktrees | one per session, auto-created | merge flow UI, pool, cleanup |
-| Providers | Go over chat completions | messages, responses, Anthropic direct |
-| Skills | markdown files and a skill tool |  |
-| Formatting | run formatter after each write |  |
-| LSP | rust-analyzer diagnostics | more servers, symbol tools |
-| TUI | content panel, input panel, status bar; chat | content tabs: diff, monitor, worktrees, plan |
-| Long-run flows |  | plan/design flow, review flow |
-| Multi-agent | parallel sessions, one tab each | subagents via the task tool, agents sidebar |
-| Agent-native control | one command set, CLI with JSON output | socket to a running TUI, agent tools for every command |
-| Plan review | Plan agent writes a plan file | inline comment threads on plans |
+| Feature                                          | M1 (daily driver)                            | Later                                                  |
+| ------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------ |
+| Agent loop, streaming, tool calls                | yes                                          |                                                        |
+| Tools: read, write, edit, glob, grep, bash, todo | yes                                          | webfetch, task, question                               |
+| Plan and Build agents                            | yes                                          | custom agents                                          |
+| Sessions                                         | persist and resume                           | compaction, fork, revert                               |
+| Worktrees                                        | one per session, auto-created                | merge flow UI, pool, cleanup                           |
+| Providers                                        | Go over chat completions                     | messages, responses, Anthropic direct                  |
+| Skills                                           | markdown files and a skill tool              |                                                        |
+| Formatting                                       | run formatter after each write               |                                                        |
+| LSP                                              | diagnostics from every server on PATH        | symbol tools                                           |
+| TUI                                              | content panel, input panel, status bar; chat | content tabs: diff, monitor, worktrees, plan           |
+| Long-run flows                                   |                                              | plan/design flow, review flow                          |
+| Multi-agent                                      | parallel sessions, one tab each              | subagents via the task tool, agents sidebar            |
+| Agent-native control                             | one command set, CLI with JSON output        | socket to a running TUI, agent tools for every command |
+| Plan review                                      | Plan agent writes a plan file                | inline comment threads on plans                        |
 
 ## Architecture
 
@@ -70,9 +71,9 @@ flowchart TD
     cli["nth CLI (agent-native)<br/>same commands as the TUI, JSON out"]
     session["nth-session<br/>agent loop, session store, Plan and Build agents, skills, permissions<br/>one actor task per session: commands in over mpsc, events out over broadcast"]
     llm["nth-llm<br/>Provider impls, one module per protocol"]
-    tools["nth-tools<br/>one module per tool, format after write"]
+    tools["nth-tools<br/>one module per tool, format and diagnostics after write"]
     wt["nth-worktree<br/>create, merge, clean; shells out to git"]
-    lsp["nth-lsp<br/>server per worktree, diagnostics feed"]
+    lsp["nth-lsp<br/>client per server and project root, diagnostics feed"]
     proto[["nth-protocol: messages, events, Provider and Tool traits, used by every crate"]]
     bin --> tui
     bin --> cli
@@ -81,7 +82,7 @@ flowchart TD
     session --> llm
     session --> tools
     session --> wt
-    session --> lsp
+    tools --> lsp
 ```
 
 Arrows point from caller to callee. Only the binary knows the concrete types. Every other crate depends on the traits in nth-protocol.
@@ -123,8 +124,11 @@ crates/
 │       └── skills.rs
 ├── nth-llm/src/chat_completions/   # later: messages/, responses/
 ├── nth-tools/src/{read,write,edit,glob,grep,bash,todo}/
+├── nth-format/          # formatters run after a write
 ├── nth-worktree/
-├── nth-lsp/
+├── nth-lsp/src/         # hand-written LSP client, server table, pool, report
+│   ├── client/          # one task per server process
+│   └── server/          # opencode's servers and their project roots
 └── nth-tui/src/views/{chat,diff,worktrees,monitor}/
 ```
 
@@ -139,18 +143,18 @@ crates/
 
 Each subsystem copies opencode's behaviour unless the table says otherwise. The only real departures are storage, which is simpler, and permissions, which are looser inside a worktree.
 
-| Subsystem | nth decision | opencode reference |
-| --- | --- | --- |
-| Sessions | One JSON file per session under `$XDG_DATA_HOME/nth/sessions`, rewritten after every turn; empty sessions are not saved. Listed by last use, not by directory. Resume restores the session's cwd and rebuilds the chat from its messages. | SQLite through drizzle, `session/` |
-| Agent loop | Prompt, stream, run tool calls in parallel, append results, repeat until no tool calls. Esc cancels the turn. | `session/processor.ts`, `session/prompt.ts` |
-| Agents | Build and Plan as primary agents. Explore and worker subagents through the task tool in M2, as described under Multi-agent. | `agent/agent.ts` |
-| Tools | read, write, edit, glob, grep, bash, todo in M1. Tool descriptions copied from opencode's `.txt` files. | `tool/` |
-| Permissions | Allow everything inside the session's worktree. Ask for paths outside it and for a small deny-list of bash commands. | `permission/`, per-agent rules |
-| Skills | `SKILL.md` folders wherever Claude Code, opencode and the open standard keep them: `~/.claude/skills`, `~/.config/opencode/skills`, `~/.agents/skills` and `~/.config/nth/skills`, then `.claude`, `.opencode`, `.agents` and `.nth` skill folders from the repo root down to the cwd, then `[skills] paths` from the config. A later find wins a name clash. `nth skills` lists them. Names and descriptions go in the system prompt, and a `skill` tool loads the body. | `skill/`, `tool/skill.ts` |
-| Formatting | After every write or edit, run the formatter for that file type: rustfmt, prettier, ruff. The model sees the formatted file. | `format/formatter.ts` |
-| LSP | Start rust-analyzer per worktree, lazily. After an edit, wait briefly for diagnostics and append errors to the tool result. | `lsp/`, diagnostics in edit tool |
-| Instructions | One global file, the first of `~/.config/nth/AGENTS.md`, `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`. Then every `AGENTS.md` from the repo root down to the cwd, or every `CLAUDE.md` when there is no `AGENTS.md`. Read afresh when a session is resumed. Deeper files are attached to a read result once, the first time read touches a file below them. | `session/instruction.ts` |
-| Compaction | M2. Summarise older turns once the context window is 80% full. | `session/compaction.ts` |
+| Subsystem    | nth decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | opencode reference                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| Sessions     | One JSON file per session under `$XDG_DATA_HOME/nth/sessions`, rewritten after every turn; empty sessions are not saved. Listed by last use, not by directory. Resume restores the session's cwd and rebuilds the chat from its messages.                                                                                                                                                                                                                                                                                                                                      | SQLite through drizzle, `session/`          |
+| Agent loop   | Prompt, stream, run tool calls in parallel, append results, repeat until no tool calls. Esc cancels the turn.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `session/processor.ts`, `session/prompt.ts` |
+| Agents       | Build and Plan as primary agents. Explore and worker subagents through the task tool in M2, as described under Multi-agent.                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `agent/agent.ts`                            |
+| Tools        | read, write, edit, glob, grep, bash, todo in M1. Tool descriptions copied from opencode's `.txt` files.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `tool/`                                     |
+| Permissions  | Allow everything inside the session's worktree. Ask for paths outside it and for a small deny-list of bash commands.                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `permission/`, per-agent rules              |
+| Skills       | `SKILL.md` folders wherever Claude Code, opencode and the open standard keep them: `~/.claude/skills`, `~/.config/opencode/skills`, `~/.agents/skills` and `~/.config/nth/skills`, then `.claude`, `.opencode`, `.agents` and `.nth` skill folders from the repo root down to the cwd, then `[skills] paths` from the config. A later find wins a name clash. `nth skills` lists them. Names and descriptions go in the system prompt, and a `skill` tool loads the body.                                                                                                      | `skill/`, `tool/skill.ts`                   |
+| Formatting   | The `nth-format` crate. After every write, edit or apply_patch, run each formatter for that file type whose program is already installed and that applies to the project: opencode's set (rustfmt, prettier, biome, ruff, gofmt, clang-format and more), plus custom ones from `[format]` in the config. Each runs with a 10 s timeout. The model gets a note only (`Formatted with rustfmt.`, or the first error line), not the formatted file. `nth formatters` lists them.                                                                                                  | `format/formatter.ts`                       |
+| LSP          | The `nth-lsp` crate. opencode's server set (rust-analyzer, typescript-language-server, gopls, pyright, clangd and more), plus custom ones from `[lsp]` in the config, each used only when its program is on PATH. One client per (server, project root), started lazily. read touches the file without waiting, to warm the server. After a write, edit or apply_patch, wait briefly for diagnostics and append the errors: write's for this file and up to five others, edit's for the edited file only, apply_patch's for each file it changed. `nth lsp` lists the servers. | `lsp/`, diagnostics in edit tool            |
+| Instructions | One global file, the first of `~/.config/nth/AGENTS.md`, `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`. Then every `AGENTS.md` from the repo root down to the cwd, or every `CLAUDE.md` when there is no `AGENTS.md`. Read afresh when a session is resumed. Deeper files are attached to a read result once, the first time read touches a file below them.                                                                                                                                                                                                        | `session/instruction.ts`                    |
+| Compaction   | M2. Summarise older turns once the context window is 80% full.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `session/compaction.ts`                     |
 
 **Plan and Build**
 
@@ -202,11 +206,11 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 
 **Three ways agents multiply**
 
-| Kind | How it starts | Worktree | Example |
-| --- | --- | --- | --- |
-| Session | You open a tab, or a flow starts a task | its own | two features in parallel |
-| Subagent | The task tool, called by a session's agent | the parent's, read-only | Explore searching the codebase |
-| Worker subagent | The task tool with write access | its own, branched from the parent's | a flow fanning out edits |
+| Kind            | How it starts                              | Worktree                            | Example                        |
+| --------------- | ------------------------------------------ | ----------------------------------- | ------------------------------ |
+| Session         | You open a tab, or a flow starts a task    | its own                             | two features in parallel       |
+| Subagent        | The task tool, called by a session's agent | the parent's, read-only             | Explore searching the codebase |
+| Worker subagent | The task tool with write access            | its own, branched from the parent's | a flow fanning out edits       |
 
 **Coordination rules**
 
@@ -237,15 +241,15 @@ Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar 
 
 **Views**
 
-| View | Shows | Milestone |
-| --- | --- | --- |
-| Agents sidebar | Every agent as a tree with status and current action. M1 lists sessions only; subagents appear in M2 | M1 |
-| Chat | Transcript, tool calls collapsed to one line each, and input | M1 |
-| Diff | Worktree diff against base, file list plus hunks | M1 |
-| Worktrees | Every session's worktree, branch, ahead/behind count and status, with land and discard actions | M2 |
-| Monitor | Live tool calls: running bash output, durations, tokens and cost per turn | M2 |
-| Plan | The plan or design file with inline comment threads, plus the todo list | M2 |
-| Events | Raw event stream, for debugging nth itself | M1, behind a flag |
+| View           | Shows                                                                                                | Milestone         |
+| -------------- | ---------------------------------------------------------------------------------------------------- | ----------------- |
+| Agents sidebar | Every agent as a tree with status and current action. M1 lists sessions only; subagents appear in M2 | M1                |
+| Chat           | Transcript, tool calls collapsed to one line each, and input                                         | M1                |
+| Diff           | Worktree diff against base, file list plus hunks                                                     | M1                |
+| Worktrees      | Every session's worktree, branch, ahead/behind count and status, with land and discard actions       | M2                |
+| Monitor        | Live tool calls: running bash output, durations, tokens and cost per turn                            | M2                |
+| Plan           | The plan or design file with inline comment threads, plus the todo list                              | M2                |
+| Events         | Raw event stream, for debugging nth itself                                                           | M1, behind a flag |
 
 **Styleguide**
 
@@ -254,18 +258,18 @@ Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar 
 - No borders or divider lines. Panes are separated by background colour and one column of padding.
 - One line per tool call by default. Details expand in place on Enter.
 
-| Role | Style |
-| --- | --- |
-| Body text | default fg on default bg |
-| Secondary text | default fg, dim |
-| Sidebar, side pane, tab bar, status line | bright black background |
-| Selection, active tab | reversed |
-| Build mode, accents | blue |
-| Plan mode | magenta |
-| Tool names, paths | cyan |
-| Success, added lines | green |
-| Errors, removed lines | red |
-| Waiting for approval | yellow |
+| Role                                     | Style                    |
+| ---------------------------------------- | ------------------------ |
+| Body text                                | default fg on default bg |
+| Secondary text                           | default fg, dim          |
+| Sidebar, side pane, tab bar, status line | bright black background  |
+| Selection, active tab                    | reversed                 |
+| Build mode, accents                      | blue                     |
+| Plan mode                                | magenta                  |
+| Tool names, paths                        | cyan                     |
+| Success, added lines                     | green                    |
+| Errors, removed lines                    | red                      |
+| Waiting for approval                     | yellow                   |
 
 **Why 16 and not 8.** In many dark themes ANSI black is the same colour as the default background, so a black pane would be invisible. Bright black fixes that and is still a theme colour.
 

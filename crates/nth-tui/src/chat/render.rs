@@ -73,6 +73,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             call,
             state,
             output,
+            notes,
         } => {
             // A call is told apart by its tool's icon, not by a success
             // mark: only a failure stands out, in red.
@@ -101,6 +102,13 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 Line::from(vec![
                     Span::styled(BAR, bar),
                     Span::styled(format!("{INDENT}{text}"), Style::new().fg(Color::Gray)),
+                ])
+            }));
+            lines.extend(notes.iter().map(|note| {
+                Line::from(vec![
+                    Span::styled(BAR, bar),
+                    Span::raw(INDENT),
+                    note.span(cwd),
                 ])
             }));
             lines
@@ -182,6 +190,7 @@ fn barred(text: &str, width: u16, bar: Style, body: Style) -> Vec<Line<'static>>
 #[cfg(test)]
 mod tests {
     use nth_protocol::Event;
+    use ratatui::style::{Color, Modifier};
 
     use crate::chat::transcript::tests::{call, text, transcript};
 
@@ -278,6 +287,50 @@ mod tests {
         let total = t.layout(40);
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ✦ skill  research-opencode"]);
+    }
+
+    #[test]
+    fn a_write_shows_its_format_note_and_errors() {
+        let mut t = transcript();
+        let write = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            arguments: r#"{"filePath":"/repo/src/a.rs","content":"fn main() {\n    let x: u8 = \"no\";\n}"}"#
+                .into(),
+        };
+        t.apply(&Event::ToolStarted(write.clone()));
+        t.apply(&Event::ToolFinished {
+            call: write,
+            result: Ok("Wrote file: /repo/src/a.rs\n\n\
+                Formatted with rustfmt.\n\n\
+                LSP errors detected in this file, please fix:\n\
+                <diagnostics file=\"/repo/src/a.rs\">\n\
+                ERROR [2:18] mismatched types\n\
+                </diagnostics>"
+                .into()),
+        });
+
+        let total = t.layout(60);
+        let lines = t.visible(0, total);
+
+        assert_eq!(
+            text(&lines),
+            [
+                "▎ ✎ write  src/a.rs",
+                "▎   fn main() {",
+                "▎       let x: u8 = \"no\";",
+                "▎   }",
+                "▎   Formatted with rustfmt.",
+                "▎   src/a.rs",
+                "▎     ERROR [2:18] mismatched types",
+            ]
+        );
+        let note = lines[4].spans.last().expect("note");
+        assert!(note.style.add_modifier.contains(Modifier::DIM), "dim");
+        for line in &lines[5..] {
+            let fg = line.spans.last().expect("span").style.fg;
+            assert_eq!(fg, Some(Color::Red), "{line}");
+        }
     }
 
     #[test]

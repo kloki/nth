@@ -18,7 +18,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎                                                                     │
 ▎                                                                     ┘
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth +3 *4 󰊐 2 ┐ status, 2 lines
-                                                                       ┘
+ ● rust  ● typescript  rustfmt · prettier                              ┘
 ```
 
 There are no borders or divider lines, as the styleguide in [design.md](design.md#tui) says. Bands are told apart by coloured bars and spacing.
@@ -91,6 +91,8 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | bash     | The command's output, stdout and stderr interleaved, the last 10 lines         |
 | skill    | None: the row says which skill was loaded, and its body is for the model only  |
 | question | None: the row says what was asked, and the answers are for the model only |
+
+- **After a write.** Once a write, edit or apply_patch is done, what checked it shows under its row and any content: a dim note per formatter that ran (`Formatted with rustfmt.`), then for each file a language server found errors in, its path and the `ERROR [line:col] message` lines, in red. Warnings are left out, as they are for the model. At most 12 lines.
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
@@ -255,10 +257,11 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is empty for now. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is what checks the model's writes. The right side of a line is cut first when it is too narrow, and line 2 is cut from its end.
 
 ```
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
+ ● rust  ● typescript  rustfmt · prettier
 ```
 
 **Line 1: where you are**
@@ -311,6 +314,18 @@ untracked = ' [ $count](white)'
 Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather than the default colour, because they block a commit and should be the first thing you notice.
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
+
+**Line 2: what checks a write**
+
+Left-aligned. First a dot and the id of every language server the tools have started, in the order they started, then the formatters that run on writes in the working directory, dim and joined by ` · `. Either part is left out when empty, so the line is blank until a formatter is found or a server starts.
+
+| Part | Shows | Colour |
+| --- | --- | --- |
+| Server dot | `●`, by state: connected, starting, broken | green, yellow, red |
+| Server id | The server's id, as in opencode: `rust`, `typescript` | white |
+| Formatters | The names of the formatters whose probe passed for the working directory | dim |
+
+Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters are probed in the background at start-up and again when `/resume` moves to another directory, since a probe runs commands.
 
 **Line 2: empty**
 
