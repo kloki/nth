@@ -1389,6 +1389,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nth-lsp"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+]
+
+[[package]]
 name = "nth-protocol"
 version = "0.2.0"
 dependencies = [
