@@ -1,24 +1,23 @@
+//! The `nth` binary: the command line, and what every subcommand shares.
+//! Each subcommand is its own module.
+
+mod chat;
 mod config;
+mod formatters;
 mod lsp;
-mod render;
+mod models;
+mod run;
+mod skills;
 
-use std::{
-    io::{IsTerminal, Write},
-    path::PathBuf,
-    process::ExitCode,
-    sync::Arc,
-    time::Instant,
-};
+use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::{FrontEnd, Provider};
-use nth_session::{CancellationToken, Session, Store};
+use nth_session::Session;
 use owo_colors::OwoColorize;
-use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(name = "nth", version, about = "A coding harness, for the N-th time")]
@@ -96,6 +95,39 @@ impl Endpoint {
     }
 }
 
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let result = match Config::load(cli.config.as_deref()) {
+        Err(e) => Err(e),
+        Ok(mut config) => match cli.command {
+            None => {
+                cli.endpoint.apply(&mut config);
+                chat::run(cli.resume, config).await
+            }
+            Some(Command::Run { prompt, endpoint }) => {
+                endpoint.apply(&mut config);
+                run::run(prompt, config).await
+            }
+            Some(Command::Models { json, endpoint }) => {
+                endpoint.apply(&mut config);
+                models::run(json, config).await
+            }
+            Some(Command::Skills { json }) => skills::run(json, &config).await,
+            Some(Command::Formatters { json }) => formatters::run(json, &config).await,
+            Some(Command::Lsp { json, command }) => lsp::run(command, json, &config).await,
+            Some(Command::Config) => config::show(cli.config, &config),
+        },
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{} {:#}", "✗".red().bold(), e.red());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// A fresh session in the working directory, with its instruction files
 /// read, and the client it talks through.
 async fn setup(config: &Config, paths: &Paths) -> Result<(Session, ChatClient)> {
@@ -129,304 +161,4 @@ async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
         eprintln!("{} {warning}", "!".yellow().bold());
     }
     Arc::new(context)
-}
-
-#[tokio::main]
-async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = match Config::load(cli.config.as_deref()) {
-        Err(e) => Err(e),
-        Ok(mut config) => match cli.command {
-            None => {
-                cli.endpoint.apply(&mut config);
-                chat(cli.resume, config).await
-            }
-            Some(Command::Run { prompt, endpoint }) => {
-                endpoint.apply(&mut config);
-                run(prompt, config).await
-            }
-            Some(Command::Models { json, endpoint }) => {
-                endpoint.apply(&mut config);
-                models(json, config).await
-            }
-            Some(Command::Skills { json }) => skills(json, &config).await,
-            Some(Command::Formatters { json }) => formatters(json, &config).await,
-            Some(Command::Lsp { json, command }) => lsp::run(command, json, &config).await,
-            Some(Command::Config) => show_config(cli.config, &config),
-        },
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{} {:#}", "✗".red().bold(), e.red());
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// With `resume`, the last session comes back as it was: its model, effort
-/// and working directory win over the flags and where nth was started.
-async fn chat(resume: bool, config: Config) -> Result<()> {
-    let paths = config.paths();
-    let (mut session, provider) = setup(&config, &paths).await?;
-    let store = Store::open()?;
-    if resume {
-        session = store
-            .latest()
-            .await?
-            .context("no saved session to continue")?;
-        let context = context(session.cwd.clone(), &paths).await;
-        session.set_context(context);
-        session.max_steps = config.session.max_steps;
-    }
-    let post_write = post_write(&config);
-    // From the same servers the tools use, so the status bar shows what
-    // checks the writes.
-    let checkers = nth_tui::Checkers {
-        lsp: post_write.lsp().clone(),
-        formatters: post_write.formatters().clone(),
-    };
-    nth_tui::run(
-        session,
-        Arc::new(provider),
-        Arc::new(nth_tools::all(&config.tools, post_write)),
-        checkers,
-        store,
-        paths,
-    )
-    .await
-}
-
-async fn run(prompt: String, config: Config) -> Result<()> {
-    let (mut session, provider) = setup(&config, &config.paths()).await?;
-    let cwd = session.cwd.clone();
-    let tools = nth_tools::all(&config.tools, post_write(&config));
-    // `/name args` runs a skill, as in the chat.
-    let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
-        Some((skill, args)) => skill
-            .invoke(args, &cwd)
-            .await
-            .map_err(|e| anyhow!("could not run the skill: {e}"))?,
-        None => prompt,
-    };
-
-    let started = Instant::now();
-    let (tx, mut rx) = mpsc::channel(256);
-    let printer = tokio::spawn(async move {
-        let mut out = render::Printer::new(cwd);
-        while let Some(event) = rx.recv().await {
-            out.event(&event);
-        }
-        out
-    });
-    let turn = session
-        // Nobody is there to answer or to show a panel to, so the question
-        // tool tells the model to decide for itself.
-        .prompt(
-            prompt,
-            &provider,
-            &tools,
-            &FrontEnd::default(),
-            &tx,
-            &CancellationToken::new(),
-        )
-        .await;
-    drop(tx);
-    let printer = printer.await.context("printer task failed")?;
-    printer.finish();
-    // Saved even when the turn failed, so `nth -c` can pick it up. Not
-    // saving is worth a warning, not a failed run.
-    let saved = match Store::open() {
-        Ok(store) => store.save(&session).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = saved {
-        eprintln!("{} session not saved: {e}", "!".yellow().bold());
-    }
-    turn?;
-
-    eprintln!(
-        "{} {}",
-        "✓".green().bold(),
-        format!(
-            "{} · {} tool calls · {:.1}s",
-            session.model,
-            printer.tool_calls,
-            started.elapsed().as_secs_f64()
-        )
-        .dimmed()
-    );
-    Ok(())
-}
-
-/// Longest description shown in the terminal listing.
-const DESCRIPTION_CHARS: usize = 72;
-
-async fn skills(json: bool, config: &Config) -> Result<()> {
-    let cwd = std::env::current_dir().context("no working directory")?;
-    let context = context(cwd, &config.paths()).await;
-
-    let mut out = std::io::stdout().lock();
-    if json || !out.is_terminal() {
-        for skill in context.skills.iter() {
-            let line = serde_json::json!({
-                "name": skill.name,
-                "description": skill.description,
-                "path": skill.path,
-                "source": skill.source.name(),
-            });
-            writeln!(out, "{line}")?;
-        }
-        return Ok(());
-    }
-
-    if context.skills.is_empty() {
-        writeln!(out, "{} {}", "→".cyan().bold(), "no skills found".dimmed())?;
-        return Ok(());
-    }
-    let mut sources: Vec<_> = context.skills.iter().map(|s| s.source).collect();
-    sources.sort();
-    sources.dedup();
-    let width = context
-        .skills
-        .iter()
-        .map(|s| s.name.len())
-        .max()
-        .unwrap_or(0);
-    for source in sources {
-        writeln!(out, "{}", source.name().bold())?;
-        let group: Vec<_> = context
-            .skills
-            .iter()
-            .filter(|s| s.source == source)
-            .collect();
-        for (i, skill) in group.iter().enumerate() {
-            let branch = if i + 1 == group.len() {
-                "└─"
-            } else {
-                "├─"
-            };
-            let about = match &skill.description {
-                Some(d) => shorten(d).dimmed().to_string(),
-                None => "no description, so the model is not offered it"
-                    .yellow()
-                    .to_string(),
-            };
-            writeln!(
-                out,
-                "{} {:width$}  {about}",
-                branch.dimmed(),
-                skill.name.cyan()
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// The first line of `text`, cut to fit one terminal row.
-fn shorten(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    match line.char_indices().nth(DESCRIPTION_CHARS) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_string(),
-    }
-}
-
-async fn formatters(json: bool, config: &Config) -> Result<()> {
-    let cwd = std::env::current_dir().context("no working directory")?;
-    let status = nth_format::Formatters::new(&config.format)
-        .status(&cwd)
-        .await;
-
-    let mut out = std::io::stdout().lock();
-    if json || !out.is_terminal() {
-        for formatter in &status {
-            let line = match &formatter.command {
-                Ok(command) => serde_json::json!({
-                    "name": formatter.name,
-                    "extensions": formatter.extensions,
-                    "enabled": true,
-                    "command": command,
-                }),
-                Err(reason) => serde_json::json!({
-                    "name": formatter.name,
-                    "extensions": formatter.extensions,
-                    "enabled": false,
-                    "reason": reason,
-                }),
-            };
-            writeln!(out, "{line}")?;
-        }
-        return Ok(());
-    }
-
-    let width = status.iter().map(|f| f.name.len()).max().unwrap_or(0);
-    for formatter in &status {
-        match &formatter.command {
-            Ok(command) => writeln!(
-                out,
-                "{} {:width$}  {}",
-                "✓".green().bold(),
-                formatter.name.cyan(),
-                command.join(" ").dimmed()
-            )?,
-            Err(reason) => writeln!(
-                out,
-                "{} {:width$}  {}",
-                "✗".red(),
-                formatter.name.dimmed(),
-                reason.dimmed()
-            )?,
-        }
-    }
-    Ok(())
-}
-
-fn show_config(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
-    match explicit.or_else(Config::default_path) {
-        Some(path) if path.exists() => {
-            eprintln!("{} {}", "✓".green().bold(), path.display().dimmed())
-        }
-        Some(path) => eprintln!(
-            "{} {}",
-            "→".cyan().bold(),
-            format!("no {}, using defaults", path.display()).dimmed()
-        ),
-        None => eprintln!(
-            "{} {}",
-            "→".cyan().bold(),
-            "no home dir, using defaults".dimmed()
-        ),
-    }
-    print!("{}", config.to_toml()?);
-    Ok(())
-}
-
-async fn models(json: bool, config: Config) -> Result<()> {
-    let provider = client(&config)?;
-    let models = provider.models().await.map_err(|e| anyhow!(e))?;
-
-    let mut out = std::io::stdout().lock();
-    if json || !out.is_terminal() {
-        for model in &models {
-            writeln!(out, "{}", serde_json::to_string(model)?)?;
-        }
-        return Ok(());
-    }
-
-    let width = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
-    for model in &models {
-        let limits = model.limits().dimmed().to_string();
-        if model.id == config.provider.model {
-            writeln!(
-                out,
-                "{} {:width$}  {limits}",
-                "→".cyan().bold(),
-                model.id.bold()
-            )?;
-        } else {
-            writeln!(out, "  {:width$}  {limits}", model.id)?;
-        }
-    }
-    Ok(())
 }
