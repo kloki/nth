@@ -137,7 +137,13 @@ fn icon(tool: &str) -> &'static str {
     match tool {
         "read" => "≡",
         "write" => "✎",
+        "edit" => "±",
+        "apply_patch" => "Δ",
         "bash" => "$",
+        "glob" => "*",
+        "grep" => "/",
+        "webfetch" => "↓",
+        "websearch" => "?",
         "skill" => "✦",
         _ => "•",
     }

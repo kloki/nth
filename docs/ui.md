@@ -73,7 +73,7 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | Interrupted | none | `⏹ interrupted · 3.0s` in yellow, after a blank line |
 | Error | red | `✗ message` in red |
 
-- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `$` bash, `✦` skill, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `✎` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
 - **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. A multi-line command shows its first line followed by `…`.
 - **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
