@@ -10,7 +10,7 @@ Compared against opencode at
 start with `tui/`, which means `packages/tui/src/`.
 
 **What nth has today:** a chat-completions provider for OpenCode Go with reasoning
-effort, the read, write, edit, apply_patch, bash, glob and grep tools, parallel tool calls, a 100-step cap,
+effort, the read, write, edit, apply_patch, bash, glob, grep and websearch tools, parallel tool calls, a 100-step cap,
 Esc to interrupt, the TUI chat with `@` file mentions, the `/clear`, `/exit` and
 `/models` commands, a model picker, `nth run` (headless), `nth models`, and
 `AGENTS.md` (or `CLAUDE.md`) instruction files in the system prompt, plus
@@ -100,7 +100,6 @@ the opencode code to copy from.
 ## M3 and later
 
 - [ ] **webfetch** with HTML to markdown. `tool/webfetch.ts`
-- [x] **websearch**. `tool/websearch.ts`
 - [ ] **lsp tool**: hover, definition, references and symbols. `tool/lsp.ts`
 - [ ] **Custom commands**: markdown templates in `.nth/commands/`, plus the built-in `/init` (writes AGENTS.md) and `/review`. Skills already run as `/name args` with opencode's template expansion, so a command could be a skill without a description. `command/index.ts`, `command/template/`
 - [ ] **Custom agents** from markdown files with a tool filter and model. `agent/agent.ts`, `cli/cmd/agent.ts`
