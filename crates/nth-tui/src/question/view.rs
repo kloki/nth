@@ -12,7 +12,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::QuestionPanel;
+use super::{Pane, QuestionPanel};
 use crate::{
     prompt::Prompt,
     theme::{BAR_WIDTH, dim, panel_row, panel_title, pick},
@@ -22,19 +22,38 @@ const TITLE: &str = "question";
 const PLACEHOLDER: &str = "Type your own answer…";
 /// The most rows a long question wraps to; it is cut after that.
 const QUESTION_ROWS: usize = 3;
+/// Between the options and the preview: the only divider line in nth, since
+/// two sides of free text, one of them ASCII art, need keeping apart.
+const RULE: &str = " │ ";
+/// After a one-choice question's chosen label.
+const CHOSEN: &str = " ✓";
 
 /// The model talks to you here, so the panel has the model answer's colour.
 const ACCENT: Color = Color::Cyan;
 
-/// Set once from the tallest question, so moving between them never makes
-/// the layout jump, and kept to half of `screen`; the options scroll past
-/// that.
+/// Set once from the tallest question or preview, so moving between them
+/// never makes the layout jump, and kept to half of `screen`; the options
+/// scroll past that and previews are cut.
 pub fn rows(panel: &QuestionPanel, screen: Rect) -> u16 {
     let width = usize::from(screen.width.saturating_sub(BAR_WIDTH));
     let tallest = panel
         .questions()
         .iter()
-        .map(|q| question_rows(q, width).len() + q.options.len() + 1)
+        .map(|q| {
+            let side = split(q, width).map_or(0, |(_, side_width)| {
+                (0..q.options.len())
+                    .map(|highlight| {
+                        let pane = Pane {
+                            highlight,
+                            ..Pane::default()
+                        };
+                        side(q, &pane, side_width).len()
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+            question_rows(q, width).len() + side.max(q.options.len() + 1)
+        })
         .chain([panel.questions().len()])
         .max()
         .unwrap_or(0);
@@ -68,17 +87,83 @@ pub fn draw(frame: &mut Frame, area: Rect, panel: &QuestionPanel) {
     let question = &panel.questions()[panel.tab];
     let pane = &panel.panes[panel.tab];
     let width = usize::from(area.width.saturating_sub(BAR_WIDTH));
-    let mut lines: Vec<Line> = question_rows(question, width)
+    let asked: Vec<Line> = question_rows(question, width)
         .into_iter()
         .map(|row| panel_row(ACCENT, [Span::raw(row)]))
         .collect();
-    let first_option = lines.len();
+    let split = split(question, width);
+    let (choices, cursor) = choices(question, pane, width, split);
+
+    // The options scroll to keep the highlighted one in view when the panel
+    // is short; the side stays put and is cut at the bottom.
+    let room = usize::from(body.height).saturating_sub(asked.len());
+    let top = (pane.highlight + 1).saturating_sub(room);
+    let left = choices.into_iter().skip(top);
+    let mut lines = asked;
+    let first_choice = lines.len();
+    match split {
+        None => lines.extend(left.map(|spans| panel_row(ACCENT, spans))),
+        Some((left_width, side_width)) => {
+            let mut left: Vec<_> = left.collect();
+            let side = side(question, pane, side_width);
+            let height = left.len().max(side.len()).min(room);
+            left.resize(height, Vec::new());
+            for (i, mut spans) in left.into_iter().enumerate() {
+                let used: usize = spans.iter().map(|s| s.content.width()).sum();
+                spans.push(Span::raw(" ".repeat(left_width.saturating_sub(used))));
+                spans.push(Span::styled(RULE, dim()));
+                spans.extend(side.get(i).cloned());
+                lines.push(panel_row(ACCENT, spans));
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), body);
+
+    if let Some(col) = cursor
+        && let Ok(row) = u16::try_from(first_choice + pane.highlight - top)
+    {
+        let col = u16::try_from(col).unwrap_or(0);
+        frame.set_cursor_position(Position::new(body.x + BAR_WIDTH + col, body.y + row));
+    }
+}
+
+/// When any option has a preview, the widths of the options' side and of
+/// the preview's side, which the rule between them takes the rest of.
+fn split(question: &Question, width: usize) -> Option<(usize, usize)> {
+    if question.options.iter().all(|o| o.preview.is_none()) {
+        return None;
+    }
+    let lead = lead(false, question.multiple.then_some(false), 0)
+        .iter()
+        .map(|s| s.content.width())
+        .sum::<usize>();
+    let label = question
+        .options
+        .iter()
+        .map(|o| o.label.width())
+        .max()
+        .unwrap_or(0);
+    let left = (lead + label + CHOSEN.width()).min(width * 2 / 5);
+    Some((left, width.saturating_sub(left + RULE.width())))
+}
+
+/// One row per option and the open field last, without the bar; and when
+/// the open field is highlighted, the cursor's column in it. Split, the
+/// rows keep to the left side and the descriptions move to the right.
+fn choices<'a>(
+    question: &'a Question,
+    pane: &'a Pane,
+    width: usize,
+    split: Option<(usize, usize)>,
+) -> (Vec<Vec<Span<'a>>>, Option<usize>) {
+    let width = split.map_or(width, |(left, _)| left);
     let label_width = question
         .options
         .iter()
         .map(|o| o.label.width())
         .max()
         .unwrap_or(0);
+    let mut rows = Vec::new();
     for (i, option) in question.options.iter().enumerate() {
         let here = i == pane.highlight;
         let mut spans = lead(here, question.multiple.then_some(pane.checked[i]), i);
@@ -87,46 +172,60 @@ pub fn draw(frame: &mut Frame, area: Rect, panel: &QuestionPanel) {
         } else {
             Style::new().fg(Color::Blue)
         };
-        let gap = label_width - option.label.width();
-        spans.push(Span::styled(option.label.as_str(), label_style));
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let label = cut(&option.label, width.saturating_sub(used + CHOSEN.width()));
+        let gap = label_width.saturating_sub(label.width());
+        spans.push(Span::styled(label, label_style));
         let chosen = !question.multiple && pane.checked[i];
         spans.push(Span::styled(
-            if chosen { " ✓" } else { "  " },
+            if chosen { CHOSEN } else { "  " },
             Style::new().fg(Color::Green),
         ));
-        if let Some(description) = &option.description {
+        if let (None, Some(description)) = (split, &option.description) {
             let used: usize = spans.iter().map(|s| s.content.width()).sum();
             let room = width.saturating_sub(used + gap + 1);
             spans.push(Span::raw(" ".repeat(gap + 1)));
             spans.push(Span::styled(cut(description, room), dim()));
         }
-        lines.push(panel_row(ACCENT, spans));
+        rows.push(spans);
     }
 
-    let open_index = question.options.len();
-    let here = pane.highlight == open_index;
+    let open = question.options.len();
+    let here = pane.highlight == open;
     let ticked = !pane.open.text().trim().is_empty();
-    let mut spans = lead(here, question.multiple.then_some(ticked), open_index);
+    let mut spans = lead(here, question.multiple.then_some(ticked), open);
     let prefix: usize = spans.iter().map(|s| s.content.width()).sum();
     let room = width.saturating_sub(prefix + 1);
-    let (shown, cursor_col) = open_text(&pane.open, room);
+    let (shown, cursor) = open_text(&pane.open, room);
     if pane.open.is_empty() {
-        spans.push(Span::styled(PLACEHOLDER, dim()));
+        spans.push(Span::styled(cut(PLACEHOLDER, room), dim()));
     } else {
         spans.push(Span::raw(shown));
     }
-    lines.push(panel_row(ACCENT, spans));
+    rows.push(spans);
+    (rows, here.then_some(prefix + cursor))
+}
 
-    // Scrolled to keep the highlighted row in view when the panel is short.
-    let highlighted = first_option + pane.highlight;
-    let top = (highlighted + 1).saturating_sub(usize::from(body.height));
-    let visible: Vec<Line> = lines.into_iter().skip(top).collect();
-    frame.render_widget(Paragraph::new(visible), body);
-
-    if here && let Ok(row) = u16::try_from(highlighted - top) {
-        let col = u16::try_from(prefix + cursor_col).unwrap_or(0);
-        frame.set_cursor_position(Position::new(body.x + BAR_WIDTH + col, body.y + row));
+/// The highlighted option's preview as written, cut rather than wrapped so
+/// a mockup keeps its shape, then its description, dim and wrapped.
+fn side<'a>(question: &'a Question, pane: &Pane, width: usize) -> Vec<Span<'a>> {
+    let Some(option) = question.options.get(pane.highlight) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<Span> = option
+        .preview
+        .iter()
+        .flat_map(|p| p.trim_end().lines())
+        .map(|line| Span::raw(cut(line, width)))
+        .collect();
+    if let Some(description) = &option.description {
+        rows.extend(
+            wrap(description, width)
+                .into_iter()
+                .map(|row| Span::styled(row, dim())),
+        );
     }
+    rows
 }
 
 /// `question` alone, or with several questions a tab per question's header
@@ -214,11 +313,15 @@ fn lead(here: bool, ticked: Option<bool>, i: usize) -> Vec<Span<'static>> {
 }
 
 fn question_rows(question: &Question, width: usize) -> Vec<String> {
-    let mut text = Prompt::default();
-    text.set(question.question.trim());
-    let mut rows = text.wrap(width).rows;
+    let mut rows = wrap(&question.question, width);
     rows.truncate(QUESTION_ROWS);
     rows
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut prompt = Prompt::default();
+    prompt.set(text.trim());
+    prompt.wrap(width).rows
 }
 
 /// What fits of the open field in `room` cells, scrolled to keep the
@@ -337,6 +440,43 @@ mod tests {
         let (p, _) = panel(vec![q]);
 
         assert_eq!(drawn(&p, 24)[2], "▎ → 1. a   a descriptio…");
+    }
+
+    fn with_previews() -> Question {
+        let mut q = question("layout", false, &["Two lines", "One line"]);
+        q.options[0].preview =
+            Some("┌──────────────┐\n│ glm · ~/nth  │\n│ git · main   │\n└──────────────┘".into());
+        q.options[0].description = Some("Room for git".into());
+        q.options[1].preview = Some("glm · ~/nth · git · main".into());
+        q
+    }
+
+    #[test]
+    fn previews_show_beside_the_options_for_the_highlighted_one() {
+        let (mut p, _) = panel(vec![with_previews()]);
+
+        assert_eq!(
+            drawn(&p, 60)[1..],
+            [
+                "▎ Which layout?",
+                "▎ → 1. Two lines   │ ┌──────────────┐",
+                "▎   2. One line    │ │ glm · ~/nth  │",
+                "▎   3. Type your…  │ │ git · main   │",
+                "▎                  │ └──────────────┘",
+                "▎                  │ Room for git",
+            ]
+        );
+
+        p.next();
+        assert_eq!(
+            drawn(&p, 60)[2..5],
+            [
+                "▎   1. Two lines   │ glm · ~/nth · git · main",
+                "▎ → 2. One line    │",
+                "▎   3. Type your…  │",
+            ],
+            "the side follows the highlight, the height stays"
+        );
     }
 
     #[test]

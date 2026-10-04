@@ -217,7 +217,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 ▎ Which layout for the status bar?
 ▎ → 1. Two lines     │ ┌──────────────────────────┐
 ▎   2. One line      │ │ glm-5.3 · ~/repos/nth    │
-▎   3. Type your own │ │ git · main +2 *1         │
+▎   3. Type your…    │ │ git · main +2 *1         │
 ▎                    │ └──────────────────────────┘
 ▎                    │ Room for git on its own row
 ```
