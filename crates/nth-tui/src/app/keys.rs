@@ -100,13 +100,16 @@ impl App {
         if action != Action::ClearOrQuit {
             self.quit_armed = false;
         }
-        // Tabs switch whichever input panel is open, as it never changes
-        // with them.
+        // Tabs switch and scroll whichever input panel is open, as it
+        // never changes with them.
         match action {
             Action::NextContent => return self.content.next(),
             Action::Content(index) => return self.content.select(index),
             Action::CloseContent => return self.close_content(),
             Action::StopContent => return self.stop_content(),
+            Action::PageUp | Action::PageDown | Action::Top | Action::Bottom => {
+                return self.scroll(action);
+            }
             _ => {}
         }
         if let Input::LlmPicker(picker) = &mut self.input {
@@ -120,10 +123,6 @@ impl App {
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }
-                Action::PageUp => self.page_up(),
-                Action::PageDown => self.page_down(),
-                Action::Top => self.jump_top(),
-                Action::Bottom => self.jump_bottom(),
                 _ => {}
             }
             return;
@@ -136,10 +135,6 @@ impl App {
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }
-                Action::PageUp => self.page_up(),
-                Action::PageDown => self.page_down(),
-                Action::Top => self.jump_top(),
-                Action::Bottom => self.jump_bottom(),
                 _ => {}
             }
             return;
@@ -193,13 +188,6 @@ impl App {
                             _ => {}
                         }
                     }
-                    match action {
-                        Action::PageUp => self.page_up(),
-                        Action::PageDown => self.page_down(),
-                        Action::Top => self.jump_top(),
-                        Action::Bottom => self.jump_bottom(),
-                        _ => {}
-                    }
                     None
                 }
             };
@@ -240,7 +228,11 @@ impl App {
             Action::NextContent
             | Action::Content(_)
             | Action::CloseContent
-            | Action::StopContent => {}
+            | Action::StopContent
+            | Action::PageUp
+            | Action::PageDown
+            | Action::Top
+            | Action::Bottom => {}
             Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
@@ -254,19 +246,28 @@ impl App {
             Action::Right => self.prompt.right(),
             Action::LineStart => self.prompt.home(),
             Action::LineEnd => self.prompt.end(),
-            Action::PageUp => self.page_up(),
-            Action::PageDown => self.page_down(),
-            Action::Top => self.jump_top(),
-            Action::Bottom => self.jump_bottom(),
         }
         match action {
             Action::Insert(_) | Action::Newline | Action::Backspace | Action::Delete => {
                 self.refresh_completion()
             }
-            // Chat scrolling leaves the popup be; anything else on the
-            // prompt closes it.
-            Action::PageUp | Action::PageDown | Action::Top | Action::Bottom => {}
+            // Anything else on the prompt closes the popup; scrolling
+            // returned before reaching here, so it leaves the popup be.
             _ => self.completion = None,
+        }
+    }
+
+    /// Scrolls whichever tab is showing.
+    fn scroll(&mut self, action: Action) {
+        let Some(view) = self.active_view() else {
+            return;
+        };
+        match action {
+            Action::PageUp => view.page_up(),
+            Action::PageDown => view.page_down(),
+            Action::Top => view.jump_top(),
+            Action::Bottom => view.jump_bottom(),
+            _ => {}
         }
     }
 }

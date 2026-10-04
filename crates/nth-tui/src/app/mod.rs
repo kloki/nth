@@ -451,11 +451,16 @@ impl App {
     fn on_terminal(&mut self, event: TermEvent) {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-            TermEvent::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_up(WHEEL_LINES),
-                MouseEventKind::ScrollDown => self.scroll_down(WHEEL_LINES),
-                _ => {}
-            },
+            TermEvent::Mouse(mouse) => {
+                let Some(view) = self.active_view() else {
+                    return;
+                };
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => view.scroll_up(WHEEL_LINES),
+                    MouseEventKind::ScrollDown => view.scroll_down(WHEEL_LINES),
+                    _ => {}
+                }
+            }
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -508,80 +513,6 @@ impl App {
     pub(super) fn open_content(&mut self, tab: Tab) {
         if self.content.open(tab) && tab == Tab::Diagnostics {
             self.diagnose();
-        }
-    }
-
-    // Scrolling moves whichever tab is showing.
-
-    fn scroll_up(&mut self, lines: usize) {
-        match self.content.active() {
-            Tab::Chat => self.chat.scroll_up(lines),
-            Tab::Diagnostics => self.diagnostics.scroll_up(lines),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.scroll_up(lines);
-                }
-            }
-        }
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        match self.content.active() {
-            Tab::Chat => self.chat.scroll_down(lines),
-            Tab::Diagnostics => self.diagnostics.scroll_down(lines),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.scroll_down(lines);
-                }
-            }
-        }
-    }
-
-    pub(super) fn page_up(&mut self) {
-        match self.content.active() {
-            Tab::Chat => self.chat.page_up(),
-            Tab::Diagnostics => self.diagnostics.page_up(),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.page_up();
-                }
-            }
-        }
-    }
-
-    pub(super) fn page_down(&mut self) {
-        match self.content.active() {
-            Tab::Chat => self.chat.page_down(),
-            Tab::Diagnostics => self.diagnostics.page_down(),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.page_down();
-                }
-            }
-        }
-    }
-
-    pub(super) fn jump_top(&mut self) {
-        match self.content.active() {
-            Tab::Chat => self.chat.jump_top(),
-            Tab::Diagnostics => self.diagnostics.jump_top(),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.jump_top();
-                }
-            }
-        }
-    }
-
-    pub(super) fn jump_bottom(&mut self) {
-        match self.content.active() {
-            Tab::Chat => self.chat.jump_bottom(),
-            Tab::Diagnostics => self.diagnostics.jump_bottom(),
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.jump_bottom();
-                }
-            }
         }
     }
 }
