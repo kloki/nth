@@ -90,7 +90,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | write    | The content being written, the first 10 lines, taken from the call's arguments |
 | bash     | The command's output, stdout and stderr interleaved, the last 10 lines         |
 | skill    | None: the row says which skill was loaded, and its body is for the model only  |
-| question | Your answers, one line per question                                            |
+| question | None: the row says what was asked, and the answers are for the model only |
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
@@ -247,7 +247,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 **Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, or its tallest preview, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
 
-**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. Once answered, its body lists the answers one line per question, as the model reads them: `"Which auth?" = OAuth`.
+**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
 
 **Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 

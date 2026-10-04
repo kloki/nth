@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn a_question_shows_its_headers_then_your_answers() {
+    fn an_answered_question_is_one_row() {
         let mut t = transcript();
         let question = nth_protocol::ToolCall {
             id: "1".into(),
@@ -296,10 +296,7 @@ mod tests {
 
         let total = t.layout(40);
 
-        assert_eq!(
-            text(&t.visible(0, total)),
-            ["▎ ? question Auth", "▎   \"Which auth?\" = OAuth"]
-        );
+        assert_eq!(text(&t.visible(0, total)), ["▎ ? question Auth"]);
     }
 
     #[test]

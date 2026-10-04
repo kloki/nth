@@ -112,7 +112,7 @@ impl Transcript {
                         None if call.name == "write" => Ok(content.clone()),
                         // A skill is one row; its body is for the model.
                         None if call.name == "skill" => Ok(content.clone()),
-                        // Its answers come from the result, as they did live.
+                        // A question is one row too; the answers are for the model.
                         None if call.name == "question" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
@@ -204,15 +204,10 @@ impl Transcript {
             }
             Event::ToolFinished { call, result } => {
                 if let Some(Item {
-                    entry: Entry::Tool { state, output, .. },
+                    entry: Entry::Tool { state, .. },
                     lines,
                 }) = self.tool_mut(&call.id)
                 {
-                    // Your answers show under the call; the line above them
-                    // is for the model.
-                    if let ("question", Ok(answers)) = (call.name.as_str(), result) {
-                        output.extend(answers.lines().skip(1).map(String::from));
-                    }
                     *state = match result {
                         Ok(_) => ToolState::Done,
                         Err(e) => ToolState::Failed(e.lines().next().unwrap_or_default().into()),
