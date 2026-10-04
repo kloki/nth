@@ -51,15 +51,11 @@ fn is_live(entry: &Entry) -> bool {
     matches!(entry, Entry::Reasoning { took: None, .. })
 }
 
-/// Tool output is indented to sit under the tool's name, so it reads as
-/// coming from the row above rather than as a message of its own.
-const OUTPUT_INDENT: &str = "    ";
-
 fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>> {
     let dim = dim();
     match entry {
         Entry::User(text) => barred(text, width, Style::new().fg(Color::Green), Style::new()),
-        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Cyan), Style::new()),
+        Entry::Answer(text) => barred(text, width, Style::new().fg(Color::Blue), Style::new()),
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
@@ -88,8 +84,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 ToolState::Running => dim,
                 ToolState::Done | ToolState::Failed(_) => name_style,
             };
+            // One bar down the call and its output, so they read as one block.
+            let bar = Style::new().fg(Color::Cyan);
             let mut spans = vec![
-                Span::styled(BAR, Style::new().fg(Color::Cyan)),
+                Span::styled(BAR, bar),
                 Span::styled(icon(&call.name), icon_style),
                 Span::raw(" "),
                 Span::styled(format!("{:<6} ", call.name), name_style),
@@ -100,10 +98,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             }
             let mut lines = vec![Line::from(spans)];
             lines.extend(output.iter().map(|text| {
-                Line::styled(
-                    format!("{OUTPUT_INDENT}{text}"),
-                    Style::new().fg(Color::Gray),
-                )
+                Line::from(vec![
+                    Span::styled(BAR, bar),
+                    Span::styled(format!("{INDENT}{text}"), Style::new().fg(Color::Gray)),
+                ])
             }));
             lines
         }
@@ -248,7 +246,7 @@ mod tests {
             text(&t.visible(0, total)),
             [
                 "▎ ≡ read   src/a.rs",
-                "    fn main() {}",
+                "▎   fn main() {}",
                 "",
                 "▎ ≡ read   src/a.rs",
             ]

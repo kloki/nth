@@ -623,7 +623,7 @@ pub(crate) mod tests {
 
         assert_eq!(running[2].trim_end(), " ▎ test it");
         assert_eq!(running[4].trim_end(), " ▎ $ bash   cargo test");
-        assert_eq!(running[5].trim_end(), "     running 3 tests");
+        assert_eq!(running[5].trim_end(), " ▎   running 3 tests");
 
         app.on_session(Event::ToolFinished {
             call: bash,
@@ -631,7 +631,7 @@ pub(crate) mod tests {
         });
         let finished = rows(&mut app);
         assert_eq!(finished[4].trim_end(), " ▎ $ bash   cargo test");
-        assert_eq!(finished[5].trim_end(), "     running 3 tests", "kept");
+        assert_eq!(finished[5].trim_end(), " ▎   running 3 tests", "kept");
         assert!(app.git_loading.is_some(), "bash may have changed the tree");
     }
 
