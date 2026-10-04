@@ -1,7 +1,7 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! place and context used on the left, git branch and status on the right.
-//! Line 2 holds the one hint that matters now on the right. The right side
-//! is cut first when a line is too narrow.
+//! Line 2 is empty for now, kept so the bands above don't move when it
+//! gets something. The right side is cut first when a line is too narrow.
 
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub const ROWS: u16 = 2;
 const BAR_WIDTH: usize = 13;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let [state, now] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
+    let [state, _] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
     let mut place = vec![app.model.clone()];
     place.extend(app.effort.wire().map(String::from));
@@ -56,17 +56,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
     split_line(frame, state, place, summary);
-
-    let below = app.chat.lines_below();
-    let hint = if below > 0 {
-        vec![Span::styled(
-            format!("↓ {below} more · ctrl+End"),
-            Style::new().fg(Color::Yellow),
-        )]
-    } else {
-        Vec::new()
-    };
-    split_line(frame, now, Vec::new(), hint);
 }
 
 /// `Color::White` is the terminal's bright white; plain white is `Gray`.

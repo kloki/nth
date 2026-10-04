@@ -25,6 +25,8 @@ use nth_session::{CancellationToken, Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
+    style::{Color, Style},
+    widgets::{Scrollbar, ScrollbarOrientation},
 };
 use tokio::{
     sync::mpsc,
@@ -320,6 +322,22 @@ impl App {
             Content::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
                 self.chat.draw(frame, content, &banner);
+                // In the right margin, so the chat keeps its width and
+                // doesn't rewrap when the bar comes and goes.
+                if let Some(mut state) = self.chat.scrollbar() {
+                    let column = Rect {
+                        x: content.right(),
+                        width: 1,
+                        ..content
+                    };
+                    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .begin_symbol(None)
+                        .end_symbol(None)
+                        .track_symbol(None)
+                        .thumb_symbol("┃")
+                        .thumb_style(Style::new().fg(Color::Gray));
+                    frame.render_stateful_widget(bar, column, &mut state);
+                }
             }
         }
         status::draw(frame, status, self);
@@ -521,6 +539,39 @@ pub(crate) mod tests {
         );
         assert_eq!(busy[14].trim_end(), " glm · /repo", "no git outside a repo");
         assert!(busy[15].trim().is_empty(), "nothing below while busy");
+    }
+
+    /// The scrollbar column (the right margin) of the content panel's rows.
+    fn scrollbar(rows: &[String]) -> String {
+        rows[2..=7]
+            .iter()
+            .map(|row| row.chars().nth(39).expect("40 wide"))
+            .collect()
+    }
+
+    #[test]
+    fn a_scrollbar_shows_only_while_scrolled_up() {
+        let mut app = app();
+        for i in 0..20 {
+            app.chat.transcript.push_user(format!("message {i}"));
+        }
+        assert_eq!(scrollbar(&rows(&mut app)), " ".repeat(6), "following");
+
+        app.chat.scroll_up(10);
+        let up = rows(&mut app);
+        let bar = scrollbar(&up);
+        assert!(bar.contains('┃'), "{bar:?}");
+        assert!(
+            !bar.starts_with('┃') && !bar.ends_with('┃'),
+            "partway: {bar:?}"
+        );
+        assert!(up[15].trim().is_empty(), "no hint in the status bar");
+
+        app.chat.jump_top();
+        assert!(scrollbar(&rows(&mut app)).starts_with('┃'));
+
+        app.chat.jump_bottom();
+        assert_eq!(scrollbar(&rows(&mut app)), " ".repeat(6), "following again");
     }
 
     #[test]
