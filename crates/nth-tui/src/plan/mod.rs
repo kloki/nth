@@ -25,6 +25,9 @@ pub struct PlanView {
     /// The plan changed since the running turn started, so later changes
     /// in that turn add to the same diff.
     changed_this_turn: bool,
+    /// The running turn wrote the first plan. Everything in it would be
+    /// marked new, which says nothing, so it is shown unmarked.
+    created_this_turn: bool,
     /// The first line in view, and how far it can go, as of the last draw.
     top: usize,
     max_top: usize,
@@ -43,10 +46,14 @@ impl PlanView {
             return false;
         }
         if !self.changed_this_turn {
+            self.created_this_turn = self.current.is_none();
             self.baseline = self.current.take().unwrap_or_default();
             self.changed_this_turn = true;
         }
         self.current = text;
+        if self.created_this_turn {
+            self.baseline = self.current.clone().unwrap_or_default();
+        }
         true
     }
 
@@ -185,17 +192,9 @@ mod tests {
 
         view.turn_started();
         assert!(view.update(Some("# Plan\nstep one\n".into())));
-        assert_eq!(view.label(), "plan +2 -0", "a new plan is all new");
+        assert_eq!(view.label(), "plan", "a first plan is shown unmarked");
         view.update(Some("# Plan\nstep one\nstep two\n".into()));
-        assert_eq!(view.label(), "plan +3 -0", "one turn, one diff");
-
-        view.turn_started();
-        assert!(!view.update(Some("# Plan\nstep one\nstep two\n".into())));
-        assert_eq!(
-            view.label(),
-            "plan +3 -0",
-            "a turn that only talks keeps it"
-        );
+        assert_eq!(view.label(), "plan", "and so is the rest of its turn");
 
         view.turn_started();
         view.update(Some("# Plan\nstep 1\nstep two\n".into()));
@@ -203,6 +202,16 @@ mod tests {
             view.label(),
             "plan +1 -1",
             "against the plan before this turn"
+        );
+        view.update(Some("# Plan\nstep 1\nstep two\nstep three\n".into()));
+        assert_eq!(view.label(), "plan +2 -1", "one turn, one diff");
+
+        view.turn_started();
+        assert!(!view.update(Some("# Plan\nstep 1\nstep two\nstep three\n".into())));
+        assert_eq!(
+            view.label(),
+            "plan +2 -1",
+            "a turn that only talks keeps it"
         );
 
         view.accept();

@@ -128,7 +128,11 @@ mod tests {
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
         assert_eq!(app.content.active(), Tab::Chat);
-        assert_eq!(app.tab_label(Tab::Plan), "plan +2 -0");
+        assert_eq!(
+            app.tab_label(Tab::Plan),
+            "plan",
+            "a first plan has no marks"
+        );
     }
 
     #[tokio::test]
@@ -139,14 +143,19 @@ mod tests {
         write_plan(&app, "# Plan\nstep\n");
         app.read_plan();
         read(&mut app).await;
+        app.plan.turn_started();
+        write_plan(&app, "# Plan\nstep 1\n");
+        app.read_plan();
+        read(&mut app).await;
         app.apply(Action::NextContent);
 
         let rows = crate::app::tests::rows(&mut app);
 
-        assert!(rows[0].starts_with(" 1 chat  2 plan +2 -0 "), "{rows:#?}");
+        assert!(rows[0].starts_with(" 1 chat  2 plan +1 -1 "), "{rows:#?}");
         assert!(rows[2].starts_with(" .nth/plans/"));
-        assert_eq!(rows[4].trim_end(), " + # Plan");
-        assert_eq!(rows[5].trim_end(), " + step");
+        assert_eq!(rows[4].trim_end(), "   # Plan");
+        assert_eq!(rows[5].trim_end(), " - step");
+        assert_eq!(rows[6].trim_end(), " + step 1");
     }
 
     #[tokio::test]
