@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use nth_context::Paths;
+use nth_protocol::{Effort, Mode};
 use serde::{Deserialize, Serialize};
 
 /// Everything in `config.toml`. Every key is optional: a missing key keeps
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub provider: ProviderConfig,
     pub session: SessionConfig,
+    pub mode: ModeConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
@@ -55,6 +57,36 @@ impl Default for SessionConfig {
     }
 }
 
+/// Which mode a new chat starts in, and the model and effort each mode
+/// runs with.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModeConfig {
+    /// Before the tables, since TOML has values ahead of tables.
+    pub default: Mode,
+    pub plan: ModeDefaults,
+    pub act: ModeDefaults,
+}
+
+impl Default for ModeConfig {
+    fn default() -> Self {
+        Self {
+            default: Mode::Plan,
+            plan: ModeDefaults::default(),
+            act: ModeDefaults::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModeDefaults {
+    /// Empty means the provider's model, so `--model` reaches every mode
+    /// that has none of its own.
+    pub model: String,
+    pub effort: Effort,
+}
+
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SkillsConfig {
@@ -70,6 +102,19 @@ impl Config {
     /// so this does not use the macOS `Library` folder.
     pub fn default_path() -> Option<PathBuf> {
         Some(Paths::from_env().config_dir()?.join("config.toml"))
+    }
+
+    /// The model and effort `mode` runs with.
+    pub fn llm_for(&self, mode: Mode) -> (String, Effort) {
+        let defaults = match mode {
+            Mode::Plan => &self.mode.plan,
+            Mode::Act => &self.mode.act,
+        };
+        let model = match defaults.model.as_str() {
+            "" => self.provider.model.clone(),
+            model => model.to_string(),
+        };
+        (model, defaults.effort)
     }
 
     /// Where nth looks for files about a project, with the configured skill
@@ -232,6 +277,30 @@ mod tests {
         assert!(text.contains("[lsp.rust]"), "{text}");
         assert_eq!(Config::parse(&text).expect("parses"), config);
         assert!(Config::parse("[lsp.mine]\ncommand = [\"mine\"]").is_err());
+    }
+
+    #[test]
+    fn each_mode_falls_back_to_the_provider_model() {
+        let mut config = Config::parse(
+            r#"
+            [mode]
+            default = "act"
+
+            [mode.plan]
+            model = "kimi-k3"
+            effort = "high"
+            "#,
+        )
+        .expect("parses");
+        assert_eq!(config.mode.default, Mode::Act);
+        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
+
+        config.provider.model = "from-flag".into();
+        assert_eq!(
+            config.llm_for(Mode::Act),
+            ("from-flag".into(), Effort::Default)
+        );
+        assert!(Config::parse("[mode]\ndefault = \"build\"").is_err());
     }
 
     #[test]

@@ -51,6 +51,7 @@ impl Tool for Write {
         async move {
             let args: Args = crate::parse_args(args)?;
             let path = ctx.cwd.join(&args.file_path);
+            ctx.writable.check(&path)?;
             let existing = match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_dir() => {
                     return Err(format!("cannot write {}: is a directory", path.display()));
@@ -112,6 +113,32 @@ mod tests {
 
     fn contents(path: &Path) -> String {
         std::fs::read_to_string(path).expect("read back")
+    }
+
+    #[tokio::test]
+    async fn plan_mode_writes_only_the_plan_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = dir.path().join(".nth/plans/1.md");
+        let ctx = ToolContext {
+            writable: nth_protocol::Writable::Only(plan.clone()),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let tool = Write::new(PostWrite::off());
+
+        let refused = tool
+            .call(json!({ "filePath": "a.txt", "content": "x" }), &ctx)
+            .await
+            .expect_err("outside the plan");
+        assert!(refused.contains("plan mode is active"), "{refused}");
+        assert!(!dir.path().join("a.txt").exists());
+
+        tool.call(
+            json!({ "filePath": ".nth/plans/1.md", "content": "# Plan" }),
+            &ctx,
+        )
+        .await
+        .expect("the plan file");
+        assert_eq!(contents(&plan), "# Plan");
     }
 
     #[tokio::test]

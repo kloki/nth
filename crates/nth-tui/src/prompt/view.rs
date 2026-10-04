@@ -1,6 +1,7 @@
 //! Draws the prompt: the mode's bar down its left, its label on the top row,
 //! and three rows of text under it, scrolled to the cursor.
 
+use nth_protocol::Mode;
 use ratatui::{
     Frame,
     layout::{Position, Rect},
@@ -8,8 +9,8 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{Mode, Prompt};
-use crate::theme::{BAR_WIDTH, dim, panel_row, panel_title};
+use super::Prompt;
+use crate::theme::{BAR_WIDTH, dim, mode_colour, panel_row, panel_title};
 
 const PLACEHOLDER: &str = "Ask anything.";
 /// Right-aligned on the label row while a turn runs.
@@ -34,10 +35,9 @@ pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner:
             .collect()
     };
 
-    let mut lines = vec![panel_title(label, mode.colour())];
-    lines.extend(
-        (0..usize::from(TEXT_ROWS)).map(|i| panel_row(mode.colour(), text.get(i).cloned())),
-    );
+    let colour = mode_colour(mode);
+    let mut lines = vec![panel_title(label, colour)];
+    lines.extend((0..usize::from(TEXT_ROWS)).map(|i| panel_row(colour, text.get(i).cloned())));
     frame.render_widget(Paragraph::new(lines), area);
     if spinner.is_some() {
         let label_row = Rect { height: 1, ..area };

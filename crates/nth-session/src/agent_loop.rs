@@ -149,6 +149,7 @@ async fn run_tool(
         asker: ctx.asker.for_call(call.id.clone()),
         screen: ctx.screen.clone(),
         monitors: ctx.monitors.clone(),
+        writable: ctx.writable.clone(),
     };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),

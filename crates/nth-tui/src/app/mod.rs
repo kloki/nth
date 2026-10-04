@@ -13,6 +13,7 @@ mod input;
 mod job;
 mod keys;
 mod llms;
+mod mode;
 mod monitor;
 mod resume;
 #[cfg(test)]
@@ -34,13 +35,14 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEvent
 use futures::StreamExt;
 use input::Input;
 use job::Job;
+pub use mode::{Llm, ModeLlms};
 use monitor::due;
 use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel, Provider,
-    Tool, Usage, monitor_log_dir,
+    Ask, BoxError, Effort, Event, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
+    Provider, Tool, Usage, monitor_log_dir,
 };
 use nth_session::{Session, Store, Summary, store};
 use ratatui::{
@@ -66,7 +68,7 @@ use crate::{
     history::History,
     llm_picker,
     monitor::MonitorView,
-    prompt::{self, Mode, Prompt},
+    prompt::{self, Prompt},
     question, session_picker, spinner, status,
 };
 
@@ -81,7 +83,11 @@ const NOTICE_DELAY: Duration = Duration::from_millis(200);
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
+    /// The mode the next turn runs in.
     pub mode: Mode,
+    /// The model and effort each mode runs with; the current mode's are
+    /// `model` and `effort`, which it is synced with on a switch.
+    mode_llms: ModeLlms,
     /// Prompts sent before, recalled with Up and Down.
     history: History,
     /// Each save writes the whole history; one asked for mid-save runs
@@ -229,7 +235,11 @@ impl App {
         Self {
             chat,
             prompt: Prompt::default(),
-            mode: Mode::default(),
+            mode: session.mode,
+            mode_llms: ModeLlms::same(Llm {
+                model: session.model.clone(),
+                effort: session.effort,
+            }),
             history: History::default(),
             history_saving: Job::default(),
             queue: VecDeque::new(),
@@ -494,6 +504,7 @@ impl App {
                 let mut session = Session::new(self.model.clone(), self.cwd.clone())
                     .with_context(self.context.clone());
                 session.effort = self.effort;
+                session.mode = self.mode;
                 session.max_steps = self.max_steps;
                 self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());

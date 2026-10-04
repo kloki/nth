@@ -66,6 +66,7 @@ impl Tool for Edit {
                 return Err("no changes to apply: oldString and newString are identical".into());
             }
             let path = ctx.cwd.join(&args.file_path);
+            ctx.writable.check(&path)?;
             let edits = EDITS.lock().await;
             let done = edit(&path, &args).await?;
             // The formatter rewrites the file, so it runs under the lock;
@@ -158,6 +159,26 @@ mod tests {
         let path = dir.join("a.rs");
         std::fs::write(&path, content).expect("write");
         path
+    }
+
+    #[tokio::test]
+    async fn plan_mode_refuses_other_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a = 1");
+        let ctx = ToolContext {
+            writable: nth_protocol::Writable::Only(dir.path().join("plan.md")),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+
+        let out = Edit::new(PostWrite::off())
+            .call(
+                json!({ "filePath": "a.rs", "oldString": "1", "newString": "2" }),
+                &ctx,
+            )
+            .await;
+
+        assert!(out.expect_err("refused").contains("plan mode is active"));
+        assert_eq!(contents(&path), "a = 1");
     }
 
     fn contents(path: &Path) -> String {

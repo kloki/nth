@@ -1,4 +1,5 @@
 mod agent_loop;
+pub mod plan;
 mod session;
 pub mod store;
 mod system_prompt;

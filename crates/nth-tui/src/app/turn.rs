@@ -60,6 +60,7 @@ impl App {
             session.set_model(self.model.clone());
         }
         session.effort = self.effort;
+        session.mode = self.mode;
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
         let skill = nth_context::skills::parse(&text, &self.context.skills)

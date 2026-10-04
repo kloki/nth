@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Event, Monitors, Screen};
+use crate::{Asker, Event, Monitors, Screen, Writable};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -33,6 +33,9 @@ pub struct ToolContext {
     pub screen: Screen,
     /// The commands left running in the background, and what they said.
     pub monitors: Monitors,
+    /// The files the tools may write: all of them, or in plan mode only
+    /// the plan file.
+    pub writable: Writable,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -59,6 +62,7 @@ impl ToolContext {
             asker: Asker::default(),
             screen: Screen::default(),
             monitors: Monitors::default(),
+            writable: Writable::Any,
         }
     }
 }

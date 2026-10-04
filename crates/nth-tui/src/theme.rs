@@ -1,5 +1,6 @@
 //! Styling shared by every pane, so blocks and bars line up across them.
 
+use nth_protocol::Mode;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -13,6 +14,15 @@ pub const INDENT: &str = "  ";
 
 pub fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
+}
+
+/// A mode's colour, shared by the prompt's bar and label and the spinner
+/// that replaces the label: plan is magenta, act blue.
+pub fn mode_colour(mode: Mode) -> Color {
+    match mode {
+        Mode::Plan => Color::Magenta,
+        Mode::Act => Color::Blue,
+    }
 }
 
 /// The highlighted item in any list: popup, picker.

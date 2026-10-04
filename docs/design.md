@@ -47,7 +47,7 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 | ------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------ |
 | Agent loop, streaming, tool calls                | yes                                          |                                                        |
 | Tools: read, write, edit, glob, grep, bash, todo | yes                                          | webfetch, task, question                               |
-| Plan and Build agents                            | yes                                          | custom agents                                          |
+| Plan and Act modes                               | yes                                          | custom agents                                          |
 | Sessions                                         | persist and resume                           | compaction, fork, revert                               |
 | Worktrees                                        | one per session, auto-created                | merge flow UI, pool, cleanup                           |
 | Providers                                        | Go over chat completions                     | messages, responses, Anthropic direct                  |
@@ -156,12 +156,14 @@ Each subsystem copies opencode's behaviour unless the table says otherwise. The 
 | Instructions | One global file, the first of `~/.config/nth/AGENTS.md`, `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`. Then every `AGENTS.md` from the repo root down to the cwd, or every `CLAUDE.md` when there is no `AGENTS.md`. Read afresh when a session is resumed. Deeper files are attached to a read result once, the first time read touches a file below them.                                                                                                                                                                                                        | `session/instruction.ts`                    |
 | Compaction   | M2. Summarise older turns once the context window is 80% full.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `session/compaction.ts`                     |
 
-**Plan and Build**
+**Plan and Act**
 
-- **Build** has every tool and is the default.
-- **Plan** cannot edit code. It may write one file, `.nth/plans/<session>.md`, which is the same trick opencode uses. Switching to Build injects that plan into the next prompt.
-- **Plan review** uses comment threads, as described under Long-running flows. Build does not start until every thread on the plan is resolved.
-- Tab switches between the two, as in opencode.
+opencode calls these agents plan and build; nth calls them modes, plan and act.
+
+- **Plan** is the default in the chat. It cannot edit code: write, edit and apply_patch may touch one file, `.nth/plans/<session>.md`, which is the same trick opencode uses. On the first plan turn the model gets opencode's plan-mode reminder.
+- **Act** has every tool, and is what `nth run` uses unless given `--mode plan`. Switching from plan tells the model and points it at the plan file.
+- **Plan review** uses comment threads, as described under Long-running flows. Act does not start until every thread on the plan is resolved.
+- Tab switches between the two, as in opencode, and each has its own model and effort in the config.
 
 **Provider for OpenCode Go**
 
@@ -235,7 +237,7 @@ The TUI is three bands stacked top to bottom: a content panel, an input panel an
 - **Content panel.** Chat by default. Later it holds tabs such as Diff, Worktrees, Monitor and Plan, which replace the earlier side pane and agents sidebar.
 - **Input panel.** The 1-line prompt by default. Context swaps it for another input panel, such as the model picker, and each one declares its own height.
 - **Status bar.** Fixed at 2 lines at the bottom, always visible: what is happening now, and general state such as mode, model and place.
-- **Keys.** A leader key of `ctrl+x`, as in opencode. Tab switches Plan and Build.
+- **Keys.** A leader key of `ctrl+x`, as in opencode. Tab switches plan and act.
 
 Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar differ from the content by background colour only. There are no border or divider lines.
 
@@ -264,7 +266,7 @@ Markers: ● running, ? waiting for you, ✓ done. The tab strip and status bar 
 | Secondary text                           | default fg, dim          |
 | Sidebar, side pane, tab bar, status line | bright black background  |
 | Selection, active tab                    | reversed                 |
-| Build mode, accents                      | blue                     |
+| Act mode, accents                        | blue                     |
 | Plan mode                                | magenta                  |
 | Tool names, paths                        | cyan                     |
 | Success, added lines                     | green                    |

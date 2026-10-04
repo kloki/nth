@@ -1,12 +1,10 @@
 //! The prompt: the text being typed, with a cursor, and the mode it goes to.
 
-mod mode;
 mod view;
 mod wrap;
 
 use std::ops::Range;
 
-pub use mode::Mode;
 pub use view::{ROWS, draw, position};
 
 #[derive(Debug, Default)]

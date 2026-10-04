@@ -79,7 +79,7 @@ fn prompt_and_status_rows_never_move() {
         [1, 8, 13].iter().all(|&i| idle[i].trim().is_empty()),
         "an empty line between bands"
     );
-    assert_eq!(idle[9].trim_end(), " ▎ build");
+    assert_eq!(idle[9].trim_end(), " ▎ act");
     assert_eq!(idle[10].trim_end(), " ▎ Ask anything.");
     assert_eq!(idle[11].trim_end(), " ▎");
     assert_eq!(idle[12].trim_end(), " ▎");
