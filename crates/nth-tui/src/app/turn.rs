@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use nth_protocol::Asker;
 use nth_session::{Session, store};
 
 use super::App;
@@ -53,6 +54,7 @@ impl App {
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
         let store = self.store.clone();
+        let asker = Asker::new(self.asks_tx.clone());
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let text = match skill {
@@ -65,7 +67,7 @@ impl App {
                 let result = match text {
                     Ok(text) => {
                         session
-                            .prompt(text, provider.as_ref(), &tools, &events, &token)
+                            .prompt(text, provider.as_ref(), &tools, &asker, &events, &token)
                             .await
                     }
                     Err(e) => Err(e),
@@ -104,6 +106,7 @@ impl App {
         while let Ok(event) = self.events_rx.try_recv() {
             self.chat.apply(&event);
         }
+        self.drop_asks();
         let elapsed = self
             .busy_since
             .take()

@@ -145,8 +145,15 @@ fn icon(tool: &str) -> &'static str {
     match tool {
         "read" => "≡",
         "write" => "✎",
+        "edit" => "±",
+        "apply_patch" => "Δ",
         "bash" => "$",
+        "glob" => "*",
+        "grep" => "/",
+        "webfetch" => "↓",
+        "websearch" => "?",
         "skill" => "✦",
+        "question" => "¿",
         _ => "•",
     }
 }
@@ -324,6 +331,25 @@ mod tests {
             let fg = line.spans.last().expect("span").style.fg;
             assert_eq!(fg, Some(Color::Red), "{line}");
         }
+    }
+
+    #[test]
+    fn an_answered_question_is_one_row() {
+        let mut t = transcript();
+        let question = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "question".into(),
+            arguments: r#"{"questions":[{"header":"Auth"}]}"#.into(),
+        };
+        t.apply(&Event::ToolStarted(question.clone()));
+        t.apply(&Event::ToolFinished {
+            call: question,
+            result: Ok("The user answered:\n\"Which auth?\" = OAuth".into()),
+        });
+
+        let total = t.layout(40);
+
+        assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
     }
 
     #[test]

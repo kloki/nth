@@ -5,6 +5,7 @@ mod edit;
 mod glob;
 mod grep;
 mod post_write;
+mod question;
 mod read;
 mod skill;
 mod webfetch;
@@ -18,6 +19,7 @@ pub use glob::Glob;
 pub use grep::Grep;
 use nth_protocol::Tool;
 pub use post_write::PostWrite;
+pub use question::Question;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use skill::Skill;
@@ -48,6 +50,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Skill),
         Box::new(WebFetch),
         Box::new(Websearch::new(config.websearch.clone())),
+        Box::new(Question),
     ]
 }
 

@@ -1,0 +1,15 @@
+Ask the user one or more multiple-choice questions while you work, and wait for their answers. Use it to:
+1. Gather preferences or requirements
+2. Clarify ambiguous instructions
+3. Settle implementation choices as you go
+4. Offer choices about which direction to take
+
+Usage notes:
+- Ask 1 to 4 questions in one call, each with 2 to 4 options.
+- Give each question a short `header` of at most 12 characters, such as "Auth" or "Library"; it labels the question's tab.
+- Set `multiple: true` when more than one option may be picked.
+- Give an option a one-line `description` when its label alone does not say what it means or what it costs.
+- Give an option a `preview` when the choice is easier to see than to describe: an ASCII mockup of a layout, a code snippet, a config or a diagram. It shows beside the options while that option is highlighted, as written and never wrapped, so keep it to about 10 lines of 40 characters. Use previews only for single concrete artifacts the user compares, not for simple preferences.
+- The user can always type their own answer instead, so do not add an "Other" or catch-all option.
+- If you recommend an option, make it the first and end its label with "(Recommended)".
+- The answers come back one line per question. The user may decline to answer; then decide yourself and say what you assumed.

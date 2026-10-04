@@ -2,31 +2,72 @@
 //! prompt, or a widget that swaps in for it and hands back to the prompt
 //! when done.
 
-use nth_protocol::{BoxError, ModelInfo};
+use nth_protocol::{Ask, BoxError, ModelInfo, Reply};
+use ratatui::layout::Rect;
 
 use super::App;
-use crate::{llm_picker::LlmPicker, prompt, session_picker::SessionPicker};
+use crate::{
+    llm_picker::LlmPicker,
+    prompt,
+    question::{self, QuestionPanel},
+    session_picker::SessionPicker,
+};
 
 #[derive(Debug)]
 pub(super) enum Input {
     Prompt,
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
+    Question(QuestionPanel),
 }
 
 impl Input {
     /// Fixed while the input is open, so typing or filtering never moves
     /// the layout; the content panel takes up the difference when inputs
-    /// swap.
-    pub(super) fn rows(&self) -> u16 {
+    /// swap. The question panel sizes itself to its questions, within
+    /// `screen`.
+    pub(super) fn rows(&self, screen: Rect) -> u16 {
         match self {
             Input::Prompt => prompt::ROWS,
             Input::LlmPicker(_) | Input::SessionPicker(_) => 8,
+            Input::Question(panel) => question::rows(panel, screen),
         }
     }
 }
 
 impl App {
+    /// Shows a tool's questions, or queues them behind the ones showing:
+    /// calls run in parallel, so several can ask at once.
+    pub(super) fn on_ask(&mut self, ask: Ask) {
+        if matches!(self.input, Input::Question(_)) {
+            self.asks.push_back(ask);
+            return;
+        }
+        // The prompt keeps its text underneath, as with any panel.
+        self.completion = None;
+        self.input = Input::Question(QuestionPanel::new(ask));
+    }
+
+    /// Answers the questions showing, then shows the next ones waiting.
+    pub(super) fn reply(&mut self, reply: Reply) {
+        if let Input::Question(panel) = std::mem::replace(&mut self.input, Input::Prompt) {
+            panel.reply(reply);
+        }
+        if let Some(ask) = self.asks.pop_front() {
+            self.on_ask(ask);
+        }
+    }
+
+    /// Closes the question panel when its turn ends: the tools that asked
+    /// are gone, so there is nobody left to answer.
+    pub(super) fn drop_asks(&mut self) {
+        self.asks.clear();
+        while self.asks_rx.try_recv().is_ok() {}
+        if matches!(self.input, Input::Question(_)) {
+            self.input = Input::Prompt;
+        }
+    }
+
     /// Opens the picker on the LLM in use, listing LLMs the first time.
     pub(super) fn open_llm_picker(&mut self) {
         self.completion = None;

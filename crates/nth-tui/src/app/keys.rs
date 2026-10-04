@@ -1,6 +1,7 @@
 //! The keymap: which key does what, kept apart from what doing it means.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use nth_protocol::Reply;
 
 use super::{App, Completion, input::Input};
 use crate::{command::Entry, mention, popup::Popup};
@@ -20,6 +21,9 @@ pub enum Action {
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
     Insert(char),
+    /// Moves between the question panel's tabs.
+    NextTab,
+    PrevTab,
     Newline,
     Backspace,
     Delete,
@@ -48,6 +52,8 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Esc => Action::Interrupt,
         KeyCode::Enter if ctrl => Action::Newline,
         KeyCode::Enter => Action::Submit,
+        KeyCode::Tab => Action::NextTab,
+        KeyCode::BackTab => Action::PrevTab,
         KeyCode::Down => Action::SelectNext,
         KeyCode::Up => Action::SelectPrev,
         KeyCode::PageUp => Action::PageUp,
@@ -108,6 +114,70 @@ impl App {
             }
             return;
         }
+        if let Input::Question(panel) = &mut self.input {
+            let editing = panel.editing();
+            let answers = match action {
+                Action::SelectNext => {
+                    panel.next();
+                    None
+                }
+                Action::SelectPrev => {
+                    panel.prev();
+                    None
+                }
+                Action::NextTab => {
+                    panel.next_tab();
+                    None
+                }
+                Action::PrevTab => {
+                    panel.prev_tab();
+                    None
+                }
+                Action::Insert(c) => panel.insert(c),
+                Action::Submit => panel.enter(),
+                // Esc declines the questions; the turn runs on, and a
+                // second Esc at the prompt cancels it as usual.
+                Action::Interrupt | Action::ClearOrQuit => {
+                    self.reply(Reply::Declined);
+                    return;
+                }
+                // ←→ edit the open field while it is highlighted, and move
+                // between questions anywhere else.
+                Action::Right if !editing => {
+                    panel.next_tab();
+                    None
+                }
+                Action::Left if !editing => {
+                    panel.prev_tab();
+                    None
+                }
+                action => {
+                    if let Some(open) = panel.open_mut() {
+                        match action {
+                            Action::Backspace => open.backspace(),
+                            Action::Delete => open.delete(),
+                            Action::Left => open.left(),
+                            Action::Right => open.right(),
+                            Action::LineStart => open.home(),
+                            Action::LineEnd => open.end(),
+                            _ => {}
+                        }
+                    }
+                    match action {
+                        Action::PageUp => self.chat.page_up(),
+                        Action::PageDown => self.chat.page_down(),
+                        Action::Top => self.chat.jump_top(),
+                        Action::Bottom => self.chat.jump_bottom(),
+                        _ => {}
+                    }
+                    None
+                }
+            };
+            if let Some(answers) = answers {
+                self.reply(Reply::Answered(answers));
+            }
+            return;
+        }
         if let Some(completion) = &mut self.completion {
             match action {
                 Action::SelectNext => return completion.next(),
@@ -135,7 +205,7 @@ impl App {
                     self.prompt.set(&text);
                 }
             }
-            Action::Accept => {}
+            Action::Accept | Action::NextTab | Action::PrevTab => {}
             Action::LlmPicker => self.open_llm_picker(),
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
@@ -236,7 +306,8 @@ mod tests {
         assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
-        assert_eq!(key(KeyCode::Tab, none), None);
+        assert_eq!(key(KeyCode::Tab, none), Some(Action::NextTab));
+        assert_eq!(key(KeyCode::BackTab, none), Some(Action::PrevTab));
         assert_eq!(key(KeyCode::Char('x'), ctrl), None);
     }
 

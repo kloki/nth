@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_llm::chat_completions::ChatClient;
-use nth_protocol::Provider;
+use nth_protocol::{Asker, Provider};
 use nth_session::{CancellationToken, Session, Store};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
@@ -220,7 +220,16 @@ async fn run(prompt: String, config: Config) -> Result<()> {
         out
     });
     let turn = session
-        .prompt(prompt, &provider, &tools, &tx, &CancellationToken::new())
+        // Nobody is there to answer, so the question tool tells the model
+        // to decide for itself.
+        .prompt(
+            prompt,
+            &provider,
+            &tools,
+            &Asker::default(),
+            &tx,
+            &CancellationToken::new(),
+        )
         .await;
     drop(tx);
     let printer = printer.await.context("printer task failed")?;

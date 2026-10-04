@@ -140,6 +140,7 @@ async fn run_tool(
         output: OutputSink::new(events.clone(), call.id.clone()),
         instructions: ctx.instructions.clone(),
         context: ctx.context.clone(),
+        asker: ctx.asker.for_call(call.id.clone()),
     };
     let result = match tools.iter().find(|t| t.spec().name == call.name) {
         None => Err(format!("unknown tool: {}", call.name)),
@@ -181,7 +182,7 @@ pub(crate) mod tests {
         future::BoxFuture,
         stream::{self, BoxStream},
     };
-    use nth_protocol::{ModelInfo, ToolSpec};
+    use nth_protocol::{Answer, Asker, ModelInfo, Question, Reply, ToolSpec};
 
     use super::*;
 
@@ -372,6 +373,86 @@ pub(crate) mod tests {
         assert_eq!(
             *provider.routes.lock().expect("not poisoned"),
             vec![("glm-5.3".to_string(), "s1".to_string()); 2]
+        );
+    }
+
+    /// Asks one question and returns the first label you picked.
+    struct Pick;
+
+    impl Tool for Pick {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "pick",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            async move {
+                let question = Question {
+                    question: "Which?".into(),
+                    header: "Which".into(),
+                    multiple: false,
+                    options: Vec::new(),
+                };
+                match ctx.asker.ask(vec![question]).await {
+                    Some(Reply::Answered(answers)) => Ok(answers[0].picked[0].clone()),
+                    _ => Err("no answer".into()),
+                }
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_ask_under_their_own_call_id() {
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("7", "pick", ""))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Pick)];
+        let (asks, mut asked) = mpsc::channel(1);
+        let ctx = ToolContext {
+            asker: Asker::new(asks),
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+        let answering = tokio::spawn(async move {
+            let ask = asked.recv().await.expect("asks");
+            let answer = Answer {
+                picked: vec![format!("for {}", ask.call_id)],
+                typed: None,
+            };
+            ask.reply
+                .send(Reply::Answered(vec![answer]))
+                .expect("tool waits");
+        });
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+        answering.await.expect("answers");
+
+        assert_eq!(
+            messages[2],
+            Message::ToolResult {
+                call_id: "7".into(),
+                content: "for 7".into()
+            }
         );
     }
 
