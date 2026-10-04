@@ -118,9 +118,13 @@ impl Transcript {
                         None if call.name == "skill" => Ok(content.clone()),
                         None => {
                             // read appends instruction files for the model
-                            // only; the live view never showed them.
+                            // only; the live view never showed them. The
+                            // notes after an edit show as notes.
                             let shown = match content.split_once("\n\n<system-reminder>") {
                                 Some((shown, _)) if call.name == "read" => shown,
+                                _ if writes_files(&call.name) => content
+                                    .split_once("\n\n")
+                                    .map_or(content.as_str(), |(s, _)| s),
                                 _ => content,
                             };
                             t.apply(&Event::ToolOutput {
@@ -212,7 +216,7 @@ impl Transcript {
                 }) = self.tool_mut(&call.id)
                 {
                     if let Ok(text) = result
-                        && call.name == "write"
+                        && writes_files(&call.name)
                     {
                         *notes = after_write::parse(text);
                     }
@@ -298,6 +302,11 @@ impl Transcript {
 /// Adds `text` to a call's output, keeping the lines worth seeing: the end
 /// of a command's output, where it has got to, but the top of a file, where
 /// it says what it is.
+/// The tools whose results end with format notes and LSP errors.
+fn writes_files(tool: &str) -> bool {
+    matches!(tool, "write" | "edit" | "apply_patch")
+}
+
 fn keep_output(tool: &str, output: &mut Vec<String>, text: &str) {
     let lines = text.lines().map(|line| line.replace('\t', "    "));
     if tool == "bash" {
@@ -538,6 +547,30 @@ pub(super) mod tests {
             panic!("no write entry");
         };
         assert_eq!(output, &["x"]);
+        assert_eq!(notes, &[Note::Format("Formatted with rustfmt.".into())]);
+    }
+
+    #[test]
+    fn replay_keeps_what_an_edit_reported_apart_from_its_output() {
+        let edit = tool("1", "edit", r#"{"filePath":"/repo/a.rs"}"#);
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![edit],
+                ..Default::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "Edited file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
+            },
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        let Some(Entry::Tool { output, notes, .. }) = t.entries().nth(1) else {
+            panic!("no edit entry");
+        };
+        assert_eq!(output, &["Edited file: /repo/a.rs"]);
         assert_eq!(notes, &[Note::Format("Formatted with rustfmt.".into())]);
     }
 

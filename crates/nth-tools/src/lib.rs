@@ -39,9 +39,9 @@ pub struct ToolsConfig {
 pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(Read::new(config.read.clone(), post_write.lsp().clone())),
-        Box::new(Write::new(post_write)),
-        Box::new(Edit),
-        Box::new(ApplyPatch),
+        Box::new(Write::new(post_write.clone())),
+        Box::new(Edit::new(post_write.clone())),
+        Box::new(ApplyPatch::new(post_write)),
         Box::new(Bash::new(config.bash.clone())),
         Box::new(Glob),
         Box::new(Grep),
