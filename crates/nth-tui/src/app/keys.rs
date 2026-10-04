@@ -18,6 +18,8 @@ pub enum Action {
     ClearOrQuit,
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
+    /// Edits the prompt in `$VISUAL` or `$EDITOR`.
+    Editor,
     Insert(char),
     Newline,
     Backspace,
@@ -40,6 +42,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
         KeyCode::Char('n') if ctrl => Action::Accept,
+        KeyCode::Char('g') if ctrl => Action::Editor,
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
@@ -126,6 +129,8 @@ impl App {
         match action {
             Action::SelectNext | Action::SelectPrev | Action::Accept => {}
             Action::LlmPicker => self.open_llm_picker(),
+            // Needs the terminal, which only the run loop holds.
+            Action::Editor => self.editing = true,
             Action::Submit => self.submit(),
             Action::Interrupt => self.interrupt(),
             Action::ClearOrQuit if self.prompt.is_empty() => self.quit = true,
@@ -223,6 +228,7 @@ mod tests {
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
         assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
         assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
+        assert_eq!(key(KeyCode::Char('g'), ctrl), Some(Action::Editor));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), None);

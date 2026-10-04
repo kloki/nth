@@ -3,6 +3,7 @@
 mod app;
 mod chat;
 mod command;
+mod editor;
 mod git;
 mod header;
 mod llm_picker;

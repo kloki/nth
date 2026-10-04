@@ -136,7 +136,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
 fn icon(tool: &str) -> &'static str {
     match tool {
         "read" => "≡",
-        "write" => "✎",
+        "write" => ">",
         "bash" => "$",
         "skill" => "✦",
         _ => "•",

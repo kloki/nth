@@ -10,7 +10,7 @@ use crossterm::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::supports_keyboard_enhancement,
+    terminal::{EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement},
 };
 use ratatui::DefaultTerminal;
 
@@ -21,6 +21,32 @@ pub fn enter() -> Result<DefaultTerminal> {
         release();
         hook(info);
     }));
+    hold();
+    Ok(terminal)
+}
+
+pub fn restore() {
+    release();
+    ratatui::restore();
+}
+
+/// Hands the terminal back as the shell left it, for a program such as
+/// the user's editor to take over; `resume` takes it back.
+pub fn suspend() {
+    restore();
+}
+
+/// Takes the terminal back after `suspend`. The caller clears the screen,
+/// since what the other program left there is not the app's last frame.
+pub fn resume() -> Result<()> {
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    hold();
+    Ok(())
+}
+
+/// Sets the modes the chat needs on top of what `ratatui::init` enables.
+fn hold() {
     let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
     // Lets shift+Enter arrive as its own key where the terminal supports it.
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
@@ -29,12 +55,6 @@ pub fn enter() -> Result<DefaultTerminal> {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    Ok(terminal)
-}
-
-pub fn restore() {
-    release();
-    ratatui::restore();
 }
 
 /// Undoes the modes set on top of what `ratatui::init` enables; popping
