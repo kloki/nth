@@ -42,9 +42,10 @@ impl App {
     /// Asks for the LLMs unless they are listed or already asked for. Done
     /// at start-up too, since the status bar needs the context window.
     pub(super) fn list_llms(&mut self) {
-        if self.llms.is_none() && self.llm_listing.is_none() {
+        if self.llms.is_none() && !self.llm_listing.is_running() {
             let provider = self.provider.clone();
-            self.llm_listing = Some(tokio::spawn(async move { provider.models().await }));
+            self.llm_listing
+                .start(|_| tokio::spawn(async move { provider.models().await }));
         }
     }
 
@@ -56,7 +57,6 @@ impl App {
 
     /// Only a list is kept; after a failure the next open asks again.
     pub(super) fn llms_listed(&mut self, llms: Result<Vec<ModelInfo>, BoxError>) {
-        self.llm_listing = None;
         let llms = llms.map_err(|e| e.to_string());
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());

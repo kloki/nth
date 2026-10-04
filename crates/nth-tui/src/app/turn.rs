@@ -3,8 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use nth_session::{CancellationToken, Session, store};
-use tokio::task::JoinHandle;
+use nth_session::{Session, store};
 
 use super::App;
 use crate::command::Command;
@@ -17,16 +16,9 @@ pub(super) struct Ended {
     saved: Result<(), store::Error>,
 }
 
-/// A turn in flight. Esc cancels it cooperatively so the session comes back;
-/// aborting the task would drop the session with it.
-pub(super) struct Running {
-    pub(super) handle: JoinHandle<Ended>,
-    cancel: CancellationToken,
-}
-
 impl App {
     pub fn is_busy(&self) -> bool {
-        self.turn.is_some()
+        self.turn.is_running()
     }
 
     pub(super) fn submit(&mut self) {
@@ -58,44 +50,43 @@ impl App {
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
-        let cancel = CancellationToken::new();
-        let token = cancel.clone();
         let store = self.store.clone();
-        let handle = tokio::spawn(async move {
-            let text = match skill {
-                Some((skill, args)) => skill
-                    .invoke(&args, &session.cwd)
-                    .await
-                    .map_err(nth_session::Error::Skill),
-                None => Ok(text),
-            };
-            let result = match text {
-                Ok(text) => {
-                    session
-                        .prompt(text, provider.as_ref(), &tools, &events, &token)
+        self.turn.start(|token| {
+            tokio::spawn(async move {
+                let text = match skill {
+                    Some((skill, args)) => skill
+                        .invoke(&args, &session.cwd)
                         .await
+                        .map_err(nth_session::Error::Skill),
+                    None => Ok(text),
+                };
+                let result = match text {
+                    Ok(text) => {
+                        session
+                            .prompt(text, provider.as_ref(), &tools, &events, &token)
+                            .await
+                    }
+                    Err(e) => Err(e),
+                };
+                // Saved however the turn ended, interrupted included: the
+                // session is always valid to continue from.
+                let saved = match &store {
+                    Some(store) => store.save(&session).await,
+                    None => Ok(()),
+                };
+                Ended {
+                    session,
+                    result,
+                    saved,
                 }
-                Err(e) => Err(e),
-            };
-            // Saved however the turn ended, interrupted included: the
-            // session is always valid to continue from.
-            let saved = match &store {
-                Some(store) => store.save(&session).await,
-                None => Ok(()),
-            };
-            Ended {
-                session,
-                result,
-                saved,
-            }
+            })
         });
-        self.turn = Some(Running { handle, cancel });
     }
 
+    /// Esc cancels the turn cooperatively so the session comes back;
+    /// aborting the task would drop the session with it.
     pub(super) fn interrupt(&mut self) {
-        if let Some(running) = &self.turn {
-            running.cancel.cancel();
-        }
+        self.turn.cancel();
     }
 
     pub(super) fn end_turn(
@@ -128,33 +119,8 @@ impl App {
             transcript.push_error(format!("session not saved: {e}"));
         }
         self.session = Some(session);
-        self.turn = None;
         self.index_files();
         self.load_git();
-    }
-}
-
-impl Drop for App {
-    fn drop(&mut self) {
-        // Quitting mid-turn must not leave the agent running tools.
-        if let Some(running) = &self.turn {
-            running.handle.abort();
-        }
-        if let Some(indexing) = &self.indexing {
-            indexing.cancel.cancel();
-        }
-        if let Some(listing) = &self.llm_listing {
-            listing.abort();
-        }
-        if let Some(loading) = &self.git_loading {
-            loading.abort();
-        }
-        if let Some(listing) = &self.session_listing {
-            listing.abort();
-        }
-        if let Some(loading) = &self.session_loading {
-            loading.abort();
-        }
     }
 }
 
@@ -224,8 +190,7 @@ mod tests {
         let (mut app, dropped) = busy_app().await;
 
         app.on_key(KeyEvent::from(KeyCode::Esc));
-        let running = app.turn.take().expect("turn was running");
-        let ended = running.handle.await.expect("turn task finished");
+        let ended = app.turn.join().await.expect("turn task finished");
         app.end_turn(ended);
 
         assert!(!app.is_busy());
@@ -250,13 +215,7 @@ mod tests {
         app.submit();
         tokio::time::sleep(Duration::from_millis(100)).await;
         app.on_key(KeyEvent::from(KeyCode::Esc));
-        let ended = app
-            .turn
-            .take()
-            .expect("running")
-            .handle
-            .await
-            .expect("ends");
+        let ended = app.turn.join().await.expect("ends");
         app.end_turn(ended);
 
         assert_eq!(
@@ -290,13 +249,7 @@ mod tests {
 
         app.prompt.insert_str("/fix it");
         app.submit();
-        let ended = app
-            .turn
-            .take()
-            .expect("running")
-            .handle
-            .await
-            .expect("ends");
+        let ended = app.turn.join().await.expect("ends");
         app.end_turn(ended);
 
         let Some(Entry::TurnError(e)) = app.chat.transcript.entries().last() else {
@@ -317,8 +270,8 @@ mod tests {
         app.on_key(KeyEvent::from(KeyCode::Esc));
 
         assert!(matches!(app.input, crate::app::input::Input::Prompt));
-        let running = app.turn.as_ref().expect("still running");
-        assert!(!running.cancel.is_cancelled());
+        let token = app.turn.token().expect("still running");
+        assert!(!token.is_cancelled());
     }
 
     #[tokio::test]

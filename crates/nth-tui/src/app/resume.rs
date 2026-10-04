@@ -17,9 +17,10 @@ impl App {
         let current = self.session_id();
         let mut picker = SessionPicker::new(current.unwrap_or_default());
         match &self.store {
-            Some(store) if self.session_listing.is_none() => {
+            Some(store) if !self.session_listing.is_running() => {
                 let store = store.clone();
-                self.session_listing = Some(tokio::spawn(async move { store.list().await }));
+                self.session_listing
+                    .start(|_| tokio::spawn(async move { store.list().await }));
             }
             // The listing in flight fills this picker when it comes.
             Some(_) => {}
@@ -29,7 +30,6 @@ impl App {
     }
 
     pub(super) fn sessions_listed(&mut self, sessions: Result<Vec<Summary>, store::Error>) {
-        self.session_listing = None;
         if let Input::SessionPicker(picker) = &mut self.input {
             picker.load(sessions.map_err(|e| e.to_string()));
         }
@@ -53,23 +53,21 @@ impl App {
             return;
         }
         if let Some(store) = self.store.clone() {
-            if let Some(loading) = self.session_loading.take() {
-                loading.abort();
-            }
             let paths = self.paths.clone();
-            self.session_loading = Some(tokio::spawn(async move {
-                let mut session = store.load(id).await?;
-                // Read for the session's own directory, which may not be
-                // the one nth started in.
-                let context = Context::load(session.cwd.clone(), paths).await;
-                session.set_context(Arc::new(context));
-                Ok(session)
-            }));
+            self.session_loading.start(|_| {
+                tokio::spawn(async move {
+                    let mut session = store.load(id).await?;
+                    // Read for the session's own directory, which may not be
+                    // the one nth started in.
+                    let context = Context::load(session.cwd.clone(), paths).await;
+                    session.set_context(Arc::new(context));
+                    Ok(session)
+                })
+            });
         }
     }
 
     pub(super) fn session_loaded(&mut self, session: Result<Session, store::Error>) {
-        self.session_loading = None;
         match session {
             // A turn started while it was being read; switching now would
             // lose that turn's session when it ends.
@@ -132,11 +130,11 @@ mod tests {
 
         app.prompt.insert_str("/resume");
         app.apply(Action::Submit);
-        let listing = app.session_listing.take().expect("listing");
-        app.sessions_listed(listing.await.expect("lists"));
+        let sessions = app.session_listing.join().await.expect("lists");
+        app.sessions_listed(sessions);
         app.apply(Action::Submit);
-        let loading = app.session_loading.take().expect("loading");
-        app.session_loaded(loading.await.expect("loads"));
+        let session = app.session_loading.join().await.expect("loads");
+        app.session_loaded(session);
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.session_id(), Some(saved.id));
@@ -163,11 +161,11 @@ mod tests {
         let mut app = app().with_store(store);
 
         app.open_session_picker();
-        let listing = app.session_listing.take().expect("listing");
-        app.sessions_listed(listing.await.expect("lists"));
+        let sessions = app.session_listing.join().await.expect("lists");
+        app.sessions_listed(sessions);
         app.apply(Action::Submit);
-        let loading = app.session_loading.take().expect("loading");
-        app.session_loaded(loading.await.expect("loads"));
+        let session = app.session_loading.join().await.expect("loads");
+        app.session_loaded(session);
 
         let session = app.session.as_ref().expect("resumed");
         let Message::System(prompt) = &session.messages[0] else {
@@ -190,6 +188,6 @@ mod tests {
 
         assert!(matches!(app.input, Input::SessionPicker(_)));
         assert_eq!(app.session_id(), id);
-        assert!(app.session_listing.is_none());
+        assert!(!app.session_listing.is_running());
     }
 }

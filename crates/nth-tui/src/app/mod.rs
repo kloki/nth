@@ -5,6 +5,7 @@
 
 mod content;
 mod input;
+mod job;
 mod keys;
 mod resume;
 mod turn;
@@ -20,21 +21,18 @@ use content::Content;
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use input::Input;
+use job::Job;
 use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
-use nth_session::{CancellationToken, Session, Store, Summary, store};
+use nth_session::{Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation},
 };
-use tokio::{
-    sync::mpsc,
-    task::{JoinError, JoinHandle},
-    time::MissedTickBehavior,
-};
-use turn::{Ended, Running};
+use tokio::{sync::mpsc, task::JoinError, time::MissedTickBehavior};
+use turn::Ended;
 
 use crate::{
     chat::Chat,
@@ -72,22 +70,20 @@ pub struct App {
     /// What `@` mentions complete to, refreshed after every turn since the
     /// model may have added files.
     files: Vec<String>,
-    indexing: Option<Indexing>,
-    /// Set when a turn ends mid-walk, so its files get picked up by one
-    /// more walk rather than a second one racing the first.
-    reindex: bool,
+    /// Queued again when a turn ends mid-walk, so its files get picked up
+    /// by one more walk rather than a second one racing the first.
+    indexing: Job<Vec<String>>,
     /// The working tree's git state; `None` outside a repository or until
     /// the first load lands.
     pub git: Option<GitStatus>,
     /// What the last model reply used; `None` until the first one.
     pub usage: Option<Usage>,
-    git_loading: Option<JoinHandle<Result<Option<GitStatus>, String>>>,
-    /// Set when the tree may have changed mid-load, like `reindex`.
-    reload_git: bool,
+    /// Queued again when the tree may have changed mid-load, like `indexing`.
+    git_loading: Job<Result<Option<GitStatus>, String>>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Vec<ModelInfo>>,
-    llm_listing: Option<JoinHandle<Result<Vec<ModelInfo>, BoxError>>>,
+    llm_listing: Job<Result<Vec<ModelInfo>, BoxError>>,
     /// Where sessions are saved after every turn; `None` keeps them in
     /// memory only.
     store: Option<Arc<Store>>,
@@ -101,24 +97,17 @@ pub struct App {
     /// The configured step limit, which every session the app moves on to
     /// keeps; a loaded one would otherwise fall back to the default.
     max_steps: usize,
-    session_listing: Option<JoinHandle<Result<Vec<Summary>, store::Error>>>,
+    session_listing: Job<Result<Vec<Summary>, store::Error>>,
     /// The session chosen in the session picker, being read.
-    session_loading: Option<JoinHandle<Result<Session, store::Error>>>,
+    session_loading: Job<Result<Session, store::Error>>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
     tools: Arc<Vec<Box<dyn Tool>>>,
     events_tx: mpsc::Sender<Event>,
     events_rx: mpsc::Receiver<Event>,
-    turn: Option<Running>,
+    turn: Job<Ended>,
     quit: bool,
-}
-
-/// A file walk in flight. The walk checks `cancel` between entries, since a
-/// blocking task can't be aborted and quitting shouldn't wait for it.
-struct Indexing {
-    handle: JoinHandle<Vec<String>>,
-    cancel: CancellationToken,
 }
 
 /// The open completion popup.
@@ -202,26 +191,24 @@ impl App {
             busy_since: None,
             completion: None,
             files: Vec::new(),
-            indexing: None,
-            reindex: false,
+            indexing: Job::default(),
             git: None,
             usage: None,
-            git_loading: None,
-            reload_git: false,
+            git_loading: Job::default(),
             llms: None,
-            llm_listing: None,
+            llm_listing: Job::default(),
             store: None,
             paths: Paths::default(),
             context: session.context().clone(),
             max_steps: session.max_steps,
-            session_listing: None,
-            session_loading: None,
+            session_listing: Job::default(),
+            session_loading: Job::default(),
             session: Some(session),
             provider,
             tools,
             events_tx,
             events_rx,
-            turn: None,
+            turn: Job::default(),
             quit: false,
         }
     }
@@ -247,56 +234,15 @@ impl App {
         while !self.quit {
             terminal.draw(|frame| self.draw(frame))?;
             let busy = self.is_busy();
-            let turn = self.turn.as_mut().map(|running| &mut running.handle);
-            let indexing = self.indexing.is_some();
-            let index = self.indexing.as_mut().map(|indexing| &mut indexing.handle);
-            let git_loading = self.git_loading.is_some();
-            let git = self.git_loading.as_mut();
-            let llm_listing = self.llm_listing.is_some();
-            let llms = self.llm_listing.as_mut();
-            let session_listing = self.session_listing.is_some();
-            let sessions = self.session_listing.as_mut();
-            let session_loading = self.session_loading.is_some();
-            let loading = self.session_loading.as_mut();
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
-                ended = async {
-                    match turn {
-                        Some(turn) => turn.await,
-                        None => std::future::pending().await,
-                    }
-                }, if busy => Step::TurnEnded(ended),
-                files = async {
-                    match index {
-                        Some(index) => index.await,
-                        None => std::future::pending().await,
-                    }
-                }, if indexing => Step::Indexed(files),
-                status = async {
-                    match git {
-                        Some(git) => git.await,
-                        None => std::future::pending().await,
-                    }
-                }, if git_loading => Step::GitLoaded(status),
-                llms = async {
-                    match llms {
-                        Some(llms) => llms.await,
-                        None => std::future::pending().await,
-                    }
-                }, if llm_listing => Step::LlmsListed(llms),
-                sessions = async {
-                    match sessions {
-                        Some(sessions) => sessions.await,
-                        None => std::future::pending().await,
-                    }
-                }, if session_listing => Step::SessionsListed(sessions),
-                session = async {
-                    match loading {
-                        Some(loading) => loading.await,
-                        None => std::future::pending().await,
-                    }
-                }, if session_loading => Step::SessionLoaded(session),
+                ended = self.turn.join() => Step::TurnEnded(ended),
+                files = self.indexing.join() => Step::Indexed(files),
+                status = self.git_loading.join() => Step::GitLoaded(status),
+                llms = self.llm_listing.join() => Step::LlmsListed(llms),
+                sessions = self.session_listing.join() => Step::SessionsListed(sessions),
+                session = self.session_loading.join() => Step::SessionLoaded(session),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -407,41 +353,33 @@ impl App {
 
     /// Reads git status in the background; git is slow on a big tree.
     pub(super) fn load_git(&mut self) {
-        if self.git_loading.is_some() {
-            self.reload_git = true;
-            return;
-        }
         let cwd = self.cwd.clone();
-        self.git_loading = Some(tokio::spawn(async move { git::load(&cwd).await }));
+        self.git_loading
+            .start_or_queue(|_| tokio::spawn(async move { git::load(&cwd).await }));
     }
 
     /// A failed load (no git installed, say) shows no git state rather
     /// than stopping the app.
     fn git_loaded(&mut self, status: Result<Option<GitStatus>, String>) {
-        self.git_loading = None;
         self.git = status.ok().flatten();
-        if std::mem::take(&mut self.reload_git) {
+        if self.git_loading.take_again() {
             self.load_git();
         }
     }
 
     /// Lists the files off the runtime; a big tree takes a while to walk.
+    /// The walk checks its token between entries, since a blocking task
+    /// can't be aborted and quitting shouldn't wait for it.
     pub(super) fn index_files(&mut self) {
-        if self.indexing.is_some() {
-            self.reindex = true;
-            return;
-        }
         let root = self.cwd.clone();
-        let cancel = CancellationToken::new();
-        let token = cancel.clone();
-        let handle = tokio::task::spawn_blocking(move || mention::walk(&root, &token));
-        self.indexing = Some(Indexing { handle, cancel });
+        self.indexing.start_or_queue(|cancel| {
+            tokio::task::spawn_blocking(move || mention::walk(&root, &cancel))
+        });
     }
 
     fn indexed(&mut self, files: Vec<String>) {
         self.files = files;
-        self.indexing = None;
-        if std::mem::take(&mut self.reindex) {
+        if self.indexing.take_again() {
             self.index_files();
         }
         if matches!(self.completion, Some(Completion::File { .. })) {
@@ -645,18 +583,18 @@ pub(crate) mod tests {
         let mut app = app();
         app.load_git();
         app.load_git();
-        assert!(app.reload_git);
 
-        app.git_loaded(Ok(None));
-        assert!(!app.reload_git);
-        assert!(app.git_loading.is_some(), "the queued load starts");
+        let status = app.git_loading.join().await.expect("loads");
+        app.git_loaded(status);
+        assert!(app.git_loading.is_running(), "the queued load starts");
+        assert!(!app.git_loading.take_again(), "only once");
     }
 
     #[tokio::test]
     async fn dropping_the_app_aborts_the_git_load() {
         let mut app = app();
         app.load_git();
-        let loading = app.git_loading.as_ref().expect("loading").abort_handle();
+        let loading = app.git_loading.abort_handle().expect("loading");
 
         drop(app);
         tokio::task::yield_now().await;
@@ -717,7 +655,10 @@ pub(crate) mod tests {
         let finished = rows(&mut app);
         assert_eq!(finished[4].trim_end(), " ▎ $ bash   cargo test");
         assert_eq!(finished[5].trim_end(), " ▎   running 3 tests", "kept");
-        assert!(app.git_loading.is_some(), "bash may have changed the tree");
+        assert!(
+            app.git_loading.is_running(),
+            "bash may have changed the tree"
+        );
     }
 
     #[test]
@@ -771,18 +712,18 @@ pub(crate) mod tests {
         let mut app = app();
         app.index_files();
         app.index_files();
-        assert!(app.reindex);
 
-        app.indexed(Vec::new());
-        assert!(!app.reindex);
-        assert!(app.indexing.is_some(), "the queued walk starts");
+        let files = app.indexing.join().await.expect("walks");
+        app.indexed(files);
+        assert!(app.indexing.is_running(), "the queued walk starts");
+        assert!(!app.indexing.take_again(), "only once");
     }
 
     #[tokio::test]
     async fn dropping_the_app_cancels_the_walk() {
         let mut app = app();
         app.index_files();
-        let cancel = app.indexing.as_ref().expect("walking").cancel.clone();
+        let cancel = app.indexing.token().expect("walking");
 
         drop(app);
         assert!(cancel.is_cancelled());
@@ -900,8 +841,8 @@ pub(crate) mod tests {
 
         app.prompt.insert_str("go");
         app.submit();
-        let running = app.turn.take().expect("turn started");
-        app.end_turn(running.handle.await.expect("turn task finished"));
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
 
         let session = app.session.as_ref().expect("idle");
         assert_eq!(
@@ -935,7 +876,7 @@ pub(crate) mod tests {
 
         app.apply(keys::Action::Interrupt);
         app.apply(keys::Action::LlmPicker);
-        assert!(app.llm_listing.is_some(), "asked again");
+        assert!(app.llm_listing.is_running(), "asked again");
     }
 
     /// A provider whose model list never arrives, and records when the
