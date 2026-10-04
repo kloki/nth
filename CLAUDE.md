@@ -25,7 +25,7 @@ Crates in `crates/`, from the bottom up:
 - **nth-protocol**: types every crate shares: `Message`, `Event`, and the `Provider` and `Tool` traits. Anything swappable sits behind one of these traits.
 - **nth-llm**: `Provider` impls, one module per wire protocol. Only `chat_completions` exists today (OpenCode Go).
 - **nth-tools**: one module per tool (`read`, `write`, `bash`); `nth_tools::all()` lists them.
-- **nth-session**: `Session` (serializable history, model, effort, cwd) and `run_turn`, the agent loop: stream a reply, run its tool calls in parallel, feed results back, repeat until the model answers without tools (capped at `MAX_STEPS`). Progress goes out as `Event`s over an `mpsc` channel; cancellation is a `CancellationToken` and always leaves `messages` valid to continue from.
+- **nth-session**: `Session` (serializable history, model, effort, cwd), `Store` (one JSON file per session under `$XDG_DATA_HOME/nth/sessions`, saved after every turn, behind `/resume` and `nth -c`) and `run_turn`, the agent loop: stream a reply, run its tool calls in parallel, feed results back, repeat until the model answers without tools (capped at `MAX_STEPS`). Progress goes out as `Event`s over an `mpsc` channel; cancellation is a `CancellationToken` and always leaves `messages` valid to continue from.
 - **nth-tui**: the interactive chat (ratatui + crossterm).
 - **nth**: the clap CLI; with no subcommand it opens the TUI, `run` prints events with `render.rs`.
 

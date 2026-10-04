@@ -3,13 +3,19 @@
 
 use std::time::{Duration, Instant};
 
-use nth_session::{CancellationToken, Session};
+use nth_session::{CancellationToken, Session, store};
 use tokio::task::JoinHandle;
 
 use super::App;
 use crate::command::Command;
 
-pub(super) type Ended = (Session, Result<(), nth_session::Error>);
+/// What a turn task hands back: the session, how its turn ended, and
+/// whether saving it afterwards worked.
+pub(super) struct Ended {
+    session: Session,
+    result: Result<(), nth_session::Error>,
+    saved: Result<(), store::Error>,
+}
 
 /// A turn in flight. Esc cancels it cooperatively so the session comes back;
 /// aborting the task would drop the session with it.
@@ -50,11 +56,22 @@ impl App {
         let events = self.events_tx.clone();
         let cancel = CancellationToken::new();
         let token = cancel.clone();
+        let store = self.store.clone();
         let handle = tokio::spawn(async move {
             let result = session
                 .prompt(text, provider.as_ref(), &tools, &events, &token)
                 .await;
-            (session, result)
+            // Saved however the turn ended, interrupted included: the
+            // session is always valid to continue from.
+            let saved = match &store {
+                Some(store) => store.save(&session).await,
+                None => Ok(()),
+            };
+            Ended {
+                session,
+                result,
+                saved,
+            }
         });
         self.turn = Some(Running { handle, cancel });
     }
@@ -65,7 +82,14 @@ impl App {
         }
     }
 
-    pub(super) fn end_turn(&mut self, (session, result): Ended) {
+    pub(super) fn end_turn(
+        &mut self,
+        Ended {
+            session,
+            result,
+            saved,
+        }: Ended,
+    ) {
         // Events sent just before the task returned may still be queued, and
         // they belong above the footer.
         while let Ok(event) = self.events_rx.try_recv() {
@@ -83,6 +107,9 @@ impl App {
                 // been switched since.
                 transcript.finish_turn(result.map_err(|e| e.to_string()), &session.model, elapsed)
             }
+        }
+        if let Err(e) = saved {
+            transcript.push_error(format!("session not saved: {e}"));
         }
         self.session = Some(session);
         self.turn = None;
@@ -104,6 +131,12 @@ impl Drop for App {
             listing.abort();
         }
         if let Some(loading) = &self.git_loading {
+            loading.abort();
+        }
+        if let Some(listing) = &self.session_listing {
+            listing.abort();
+        }
+        if let Some(loading) = &self.session_loading {
             loading.abort();
         }
     }

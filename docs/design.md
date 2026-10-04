@@ -119,7 +119,7 @@ crates/
 │   └── src/
 │       ├── actor.rs     # the loop: prompt → stream → tools → repeat
 │       ├── agents/      # plan.md, build.md prompt templates + tool filters
-│       ├── store.rs     # JSONL per session
+│       ├── store.rs     # one JSON file per session
 │       └── skills.rs
 ├── nth-llm/src/chat_completions/   # later: messages/, responses/
 ├── nth-tools/src/{read,write,edit,glob,grep,bash,todo}/
@@ -141,7 +141,7 @@ Each subsystem copies opencode's behaviour unless the table says otherwise. The 
 
 | Subsystem | nth decision | opencode reference |
 | --- | --- | --- |
-| Sessions | Append-only JSONL of events, one file per session under `~/.local/share/nth`. Resume replays the file. | SQLite through drizzle, `session/` |
+| Sessions | One JSON file per session under `$XDG_DATA_HOME/nth/sessions`, rewritten after every turn; empty sessions are not saved. Listed by last use, not by directory. Resume restores the session's cwd and rebuilds the chat from its messages. | SQLite through drizzle, `session/` |
 | Agent loop | Prompt, stream, run tool calls in parallel, append results, repeat until no tool calls. Esc cancels the turn. | `session/processor.ts`, `session/prompt.ts` |
 | Agents | Build and Plan as primary agents. Explore and worker subagents through the task tool in M2, as described under Multi-agent. | `agent/agent.ts` |
 | Tools | read, write, edit, glob, grep, bash, todo in M1. Tool descriptions copied from opencode's `.txt` files. | `tool/` |

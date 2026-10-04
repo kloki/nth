@@ -11,16 +11,23 @@ pub enum Command {
     Clear,
     Exit,
     Models,
+    Resume,
 }
 
 impl Command {
-    const ALL: [Command; 3] = [Command::Clear, Command::Exit, Command::Models];
+    const ALL: [Command; 4] = [
+        Command::Clear,
+        Command::Exit,
+        Command::Models,
+        Command::Resume,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Command::Clear => "clear",
             Command::Exit => "exit",
             Command::Models => "models",
+            Command::Resume => "resume",
         }
     }
 
@@ -29,6 +36,7 @@ impl Command {
             Command::Clear => "start a fresh session",
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
+            Command::Resume => "reopen a past session",
         }
     }
 
@@ -79,6 +87,7 @@ mod tests {
         assert_eq!(Command::matching("/"), Command::ALL);
         assert_eq!(Command::matching("/c"), [Command::Clear]);
         assert_eq!(Command::matching("/m"), [Command::Models]);
+        assert_eq!(Command::matching("/r"), [Command::Resume]);
         assert_eq!(Command::matching("/x"), []);
         assert_eq!(Command::matching("/c x"), []);
         assert_eq!(Command::matching("c"), []);

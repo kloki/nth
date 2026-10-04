@@ -5,6 +5,7 @@
 mod content;
 mod input;
 mod keys;
+mod resume;
 mod turn;
 
 use std::{
@@ -19,7 +20,7 @@ use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEvent
 use futures::StreamExt;
 use input::Input;
 use nth_protocol::{BoxError, Effort, Event, ModelInfo, Provider, Tool, Usage};
-use nth_session::{CancellationToken, Session};
+use nth_session::{CancellationToken, Session, Store, Summary, store};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
@@ -38,7 +39,7 @@ use crate::{
     llm_picker, mention,
     popup::{self, Popup},
     prompt::{self, Mode, Prompt},
-    spinner, status,
+    session_picker, spinner, status,
 };
 
 const WHEEL_LINES: usize = 3;
@@ -83,6 +84,12 @@ pub struct App {
     /// next open asks again.
     llms: Option<Vec<ModelInfo>>,
     llm_listing: Option<JoinHandle<Result<Vec<ModelInfo>, BoxError>>>,
+    /// Where sessions are saved after every turn; `None` keeps them in
+    /// memory only.
+    store: Option<Arc<Store>>,
+    session_listing: Option<JoinHandle<Result<Vec<Summary>, store::Error>>>,
+    /// The session chosen in the session picker, being read.
+    session_loading: Option<JoinHandle<Result<Session, store::Error>>>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -156,6 +163,8 @@ enum Step {
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
     LlmsListed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
+    SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
+    SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     Tick,
 }
 
@@ -168,7 +177,7 @@ impl App {
         let (events_tx, events_rx) = mpsc::channel(256);
         let home = std::env::var("HOME").ok();
         Self {
-            chat: Chat::new(session.cwd.clone()),
+            chat: Chat::replay(session.cwd.clone(), &session.messages),
             prompt: Prompt::default(),
             mode: Mode::default(),
             content: Content::Chat,
@@ -188,6 +197,9 @@ impl App {
             reload_git: false,
             llms: None,
             llm_listing: None,
+            store: None,
+            session_listing: None,
+            session_loading: None,
             session: Some(session),
             provider,
             tools,
@@ -196,6 +208,11 @@ impl App {
             turn: None,
             quit: false,
         }
+    }
+
+    pub fn with_store(mut self, store: Store) -> Self {
+        self.store = Some(Arc::new(store));
+        self
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -216,6 +233,10 @@ impl App {
             let git = self.git_loading.as_mut();
             let llm_listing = self.llm_listing.is_some();
             let llms = self.llm_listing.as_mut();
+            let session_listing = self.session_listing.is_some();
+            let sessions = self.session_listing.as_mut();
+            let session_loading = self.session_loading.is_some();
+            let loading = self.session_loading.as_mut();
             let step = tokio::select! {
                 event = input.next() => Step::Terminal(event),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
@@ -243,6 +264,18 @@ impl App {
                         None => std::future::pending().await,
                     }
                 }, if llm_listing => Step::LlmsListed(llms),
+                sessions = async {
+                    match sessions {
+                        Some(sessions) => sessions.await,
+                        None => std::future::pending().await,
+                    }
+                }, if session_listing => Step::SessionsListed(sessions),
+                session = async {
+                    match loading {
+                        Some(loading) => loading.await,
+                        None => std::future::pending().await,
+                    }
+                }, if session_loading => Step::SessionLoaded(session),
                 _ = tick.tick(), if busy => Step::Tick,
             };
             match step {
@@ -257,6 +290,12 @@ impl App {
                     self.git_loaded(status.context("reading git status failed")?)
                 }
                 Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
+                Step::SessionsListed(sessions) => {
+                    self.sessions_listed(sessions.context("listing sessions failed")?)
+                }
+                Step::SessionLoaded(session) => {
+                    self.session_loaded(session.context("loading the session failed")?)
+                }
                 // Nothing changed but time: the redraw advances the reasoning timer.
                 Step::Tick => {}
             }
@@ -293,6 +332,7 @@ impl App {
                 }
             }
             Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
+            Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
         }
     }
 
@@ -384,6 +424,7 @@ impl App {
                 self.usage = None;
             }
             Command::Models => self.open_llm_picker(),
+            Command::Resume => self.open_session_picker(),
         }
     }
 }
@@ -616,10 +657,11 @@ pub(crate) mod tests {
         app.apply(keys::Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[8].starts_with("    /clear "));
-        assert!(rows[9].starts_with("    /exit "));
+        assert!(rows[7].starts_with("    /clear "));
+        assert!(rows[8].starts_with("    /exit "));
+        assert!(rows[9].starts_with("    /models "));
         assert!(
-            rows[10].starts_with(" ▎  /models "),
+            rows[10].starts_with(" ▎  /resume "),
             "right above the cursor"
         );
         assert!(rows[11].starts_with(" ▎ /"));
@@ -694,7 +736,7 @@ pub(crate) mod tests {
     fn picker(app: &App) -> &crate::llm_picker::LlmPicker {
         match &app.input {
             Input::LlmPicker(picker) => picker,
-            Input::Prompt => panic!("picker not open"),
+            _ => panic!("picker not open"),
         }
     }
 

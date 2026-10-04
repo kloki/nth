@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{Error, Route, run_turn, system_prompt};
 
 /// One conversation: who it runs for, where, and everything said so far.
-/// Serializable so a later store can persist and resume it.
+/// Serializable so the [`Store`](crate::Store) can persist and resume it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     /// Also sent to the provider so it can route and cache per conversation.
@@ -20,6 +20,8 @@ pub struct Session {
     #[serde(default)]
     pub effort: Effort,
     pub created_at: SystemTime,
+    /// When a prompt was last sent; saved sessions are listed by it.
+    pub updated_at: SystemTime,
     pub messages: Vec<Message>,
 }
 
@@ -27,14 +29,29 @@ impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let messages = vec![Message::System(system_prompt(&model, &cwd))];
+        let now = SystemTime::now();
         Self {
             id: Uuid::new_v4(),
             cwd,
             model,
             effort: Effort::default(),
-            created_at: SystemTime::now(),
+            created_at: now,
+            updated_at: now,
             messages,
         }
+    }
+
+    /// Nothing has been asked yet.
+    pub fn is_empty(&self) -> bool {
+        self.title().is_none()
+    }
+
+    /// The first line of the first prompt, which names the session in lists.
+    pub fn title(&self) -> Option<&str> {
+        self.messages.iter().find_map(|m| match m {
+            Message::User(text) => Some(text.trim().lines().next().unwrap_or_default()),
+            _ => None,
+        })
     }
 
     /// Later turns go to `model`. The history is kept; only the system
@@ -57,6 +74,7 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         self.messages.push(Message::User(text.into()));
+        self.updated_at = SystemTime::now();
         let ctx = ToolContext::new(self.cwd.clone());
         run_turn(
             provider,
@@ -87,7 +105,20 @@ mod tests {
         let b = Session::new("glm-5.3", ".".into());
 
         assert!(matches!(a.messages[..], [Message::System(_)]));
+        assert!(a.is_empty());
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn is_titled_by_its_first_prompt() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        session
+            .messages
+            .push(Message::User("\n fix the build\nnow".into()));
+        session.messages.push(Message::User("and test".into()));
+
+        assert!(!session.is_empty());
+        assert_eq!(session.title(), Some("fix the build"));
     }
 
     #[test]

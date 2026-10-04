@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use nth_llm::chat_completions::ChatClient;
 use nth_protocol::Provider;
-use nth_session::{CancellationToken, Session};
+use nth_session::{CancellationToken, Session, Store};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
@@ -21,6 +21,9 @@ struct Cli {
     /// Without a subcommand, nth opens the interactive chat.
     #[command(subcommand)]
     command: Option<Command>,
+    /// Pick up the most recently used session instead of starting a new one
+    #[arg(short = 'c', long = "continue")]
+    resume: bool,
     #[command(flatten)]
     endpoint: Endpoint,
 }
@@ -71,7 +74,7 @@ fn api_key() -> Result<String> {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        None => chat(cli.endpoint).await,
+        None => chat(cli.resume, cli.endpoint).await,
         Some(Command::Run { prompt, endpoint }) => run(prompt, endpoint).await,
         Some(Command::Models { json, endpoint }) => models(json, endpoint).await,
     };
@@ -84,9 +87,24 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn chat(endpoint: Endpoint) -> Result<()> {
-    let (session, provider) = setup(endpoint)?;
-    nth_tui::run(session, Arc::new(provider), Arc::new(nth_tools::all())).await
+/// With `resume`, the last session comes back as it was: its model, effort
+/// and working directory win over the flags and where nth was started.
+async fn chat(resume: bool, endpoint: Endpoint) -> Result<()> {
+    let (mut session, provider) = setup(endpoint)?;
+    let store = Store::open()?;
+    if resume {
+        session = store
+            .latest()
+            .await?
+            .context("no saved session to continue")?;
+    }
+    nth_tui::run(
+        session,
+        Arc::new(provider),
+        Arc::new(nth_tools::all()),
+        store,
+    )
+    .await
 }
 
 async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
@@ -109,6 +127,15 @@ async fn run(prompt: String, endpoint: Endpoint) -> Result<()> {
     drop(tx);
     let printer = printer.await.context("printer task failed")?;
     printer.finish();
+    // Saved even when the turn failed, so `nth -c` can pick it up. Not
+    // saving is worth a warning, not a failed run.
+    let saved = match Store::open() {
+        Ok(store) => store.save(&session).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = saved {
+        eprintln!("{} session not saved: {e}", "!".yellow().bold());
+    }
     turn?;
 
     eprintln!(
