@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(
             text(&lines),
             [
-                "▎ ✎ write  src/a.rs",
+                "▎ > write  src/a.rs",
                 "▎   fn main() {",
                 "▎       let x: u8 = \"no\";",
                 "▎   }",
