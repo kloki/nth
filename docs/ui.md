@@ -91,7 +91,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | bash | The command's output, stdout and stderr interleaved, the last 10 lines |
 | skill | None: the row says which skill was loaded, and its body is for the model only |
 
-- **After a write.** Once a write is done, what checked it shows under its content: a dim note per formatter that ran (`Formatted with rustfmt.`), then for each file a language server found errors in, its path and the `ERROR [line:col] message` lines, in red. Warnings are left out, as they are for the model. At most 12 lines.
+- **After a write.** Once a write, edit or apply_patch is done, what checked it shows under its row and any content: a dim note per formatter that ran (`Formatted with rustfmt.`), then for each file a language server found errors in, its path and the `ERROR [line:col] message` lines, in red. Warnings are left out, as they are for the model. At most 12 lines.
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 

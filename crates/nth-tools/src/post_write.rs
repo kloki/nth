@@ -1,12 +1,12 @@
 //! What happens after a tool writes a file: its formatters run, its
-//! language servers check it, and the model is told what they found. Every
-//! tool that writes files (write, and later edit and apply_patch) calls
-//! [`PostWrite::after_write`].
+//! language servers check it, and the model is told what they found. write
+//! calls [`PostWrite::after_write`]; edit and apply_patch format under their
+//! lock and ask the servers after it, so they call the two halves.
 
 use std::{path::Path, sync::Arc};
 
 use nth_format::{Formatters, Outcome};
-use nth_lsp::{Lsp, report};
+use nth_lsp::{Diagnostic, Lsp, report};
 
 use crate::bom;
 
@@ -44,7 +44,7 @@ impl PostWrite {
     /// Formats `path` with the formatters for `cwd`'s project and returns
     /// one note per formatter that ran. A BOM the file had before survives
     /// the formatter.
-    async fn format(&self, path: &Path, cwd: &Path) -> String {
+    pub(crate) async fn format(&self, path: &Path, cwd: &Path) -> String {
         let bom = bom::has_bom(path).await.unwrap_or(false);
         let outcomes = self.format.format(path, cwd).await;
         let mut notes: Vec<_> = outcomes.iter().map(note).collect();
@@ -55,17 +55,33 @@ impl PostWrite {
         }
         notes.join("\n")
     }
+
+    /// What the language servers report on `path` once they have seen it
+    /// as it now is; other files' diagnostics are left out.
+    pub(crate) async fn diagnostics(&self, path: &Path) -> Vec<Diagnostic> {
+        let mut all = self.lsp.touch(path, true).await;
+        all.remove(path).unwrap_or_default()
+    }
 }
 
-/// The format notes, then the LSP report, a blank line apart. The report
-/// comes with leading blank lines of its own, which go.
-fn join_sections(notes: &str, errors: &str) -> String {
-    let errors = errors.trim_start_matches('\n');
-    match (notes.is_empty(), errors.is_empty()) {
-        (_, true) => notes.to_string(),
-        (true, false) => errors.to_string(),
-        (false, false) => format!("{notes}\n\n{errors}"),
+/// `result`, then each section that is not empty, a blank line apart. LSP
+/// reports come with leading blank lines of their own, which go.
+pub(crate) fn append(result: String, sections: &[&str]) -> String {
+    let mut out = result;
+    for section in sections {
+        let section = section.trim_start_matches('\n');
+        if !section.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(section);
+        }
     }
+    out
+}
+
+/// The format notes, then the LSP report, a blank line apart.
+fn join_sections(notes: &str, errors: &str) -> String {
+    let joined = append(notes.to_string(), &[errors]);
+    joined.trim_start_matches('\n').to_string()
 }
 
 fn note(outcome: &Outcome) -> String {
@@ -91,6 +107,32 @@ impl PostWrite {
     pub(crate) fn with_formatter(name: &str, command: &[&str]) -> Self {
         Self::new(formatter(name, command, ".txt"), lsp_off())
     }
+
+    /// Formats nothing and asks every language server on PATH.
+    pub(crate) fn lsp_only() -> Self {
+        let format = nth_format::FormatConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let lsp = Lsp::new(&nth_lsp::LspConfig::default());
+        Self::new(Arc::new(Formatters::new(&format)), lsp)
+    }
+}
+
+/// A cargo project in `dir` whose `src/main.rs` is `main` and whose
+/// `src/other.rs` has a type error, for tests with a real rust-analyzer.
+#[cfg(test)]
+pub(crate) fn broken_crate(dir: &Path) {
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"broken\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write");
+    let main = "mod other;\n\nfn main() {\n    let x: u32 = 1;\n    println!(\"{x}\");\n}\n";
+    std::fs::write(dir.join("src/main.rs"), main).expect("write");
+    let other = "pub fn f() -> u32 {\n    \"text\"\n}\n";
+    std::fs::write(dir.join("src/other.rs"), other).expect("write");
 }
 
 /// Only the formatter `name`, on files with `extension`.

@@ -1,6 +1,6 @@
-//! What the write tool reports after the file is written: a note per
-//! formatter that ran, and the errors language servers found, read back
-//! from its result so they show under the call.
+//! What write, edit and apply_patch report after the files are written: a
+//! note per formatter that ran, and the errors language servers found, read
+//! back from their result so they show under the call.
 
 use std::path::Path;
 
@@ -26,24 +26,35 @@ pub enum Note {
     More(String),
 }
 
-/// The notes in a write tool's result: everything after its first line,
-/// without the headings and tags meant for the model.
+/// The notes in a file-writing tool's result: everything after its first
+/// blank line, without the headings and tags meant for the model.
 pub fn parse(result: &str) -> Vec<Note> {
+    let Some((_, after)) = result.split_once("\n\n") else {
+        return Vec::new();
+    };
     let mut notes = Vec::new();
-    for line in result.lines().skip(1) {
+    let mut in_block = false;
+    for line in after.lines() {
         let line = line.trim_end();
-        if line.is_empty() || line.starts_with("LSP errors detected") || line == "</diagnostics>" {
+        if line.is_empty() || line.starts_with("LSP errors detected") {
+            continue;
+        }
+        if line == "</diagnostics>" {
+            in_block = false;
             continue;
         }
         let note = if let Some(file) = line
             .strip_prefix("<diagnostics file=\"")
             .and_then(|rest| rest.strip_suffix("\">"))
         {
+            in_block = true;
             Note::File(file.to_string())
-        } else if line.starts_with("ERROR ") {
-            Note::Error(line.to_string())
         } else if line.starts_with("... and ") {
             Note::More(line.to_string())
+        } else if in_block || line.starts_with("ERROR ") {
+            // Every line in a block is an error's, as a message can run
+            // over several.
+            Note::Error(line.to_string())
         } else {
             Note::Format(line.to_string())
         };
@@ -102,6 +113,28 @@ mod tests {
                 Note::More("... and 3 more".into()),
             ]
         );
+    }
+
+    #[test]
+    fn skips_the_files_apply_patch_lists() {
+        let result = "Success. Updated the following files:\nM src/a.rs\nA b.rs\n\n\
+            src/a.rs: Formatted with rustfmt.\n\n\
+            LSP errors detected in src/a.rs, please fix:\n\
+            <diagnostics file=\"/repo/src/a.rs\">\n\
+            ERROR [2:18] mismatched types\n\
+            expected `u32`, found `&str`\n\
+            </diagnostics>";
+
+        assert_eq!(
+            parse(result),
+            [
+                Note::Format("src/a.rs: Formatted with rustfmt.".into()),
+                Note::File("/repo/src/a.rs".into()),
+                Note::Error("ERROR [2:18] mismatched types".into()),
+                Note::Error("expected `u32`, found `&str`".into()),
+            ]
+        );
+        assert!(parse("Success. Updated the following files:\nM a.rs").is_empty());
     }
 
     #[test]
