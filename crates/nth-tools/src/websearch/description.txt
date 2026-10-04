@@ -1,0 +1,8 @@
+- Search the web with Exa - performs real-time web searches and returns the content of the most relevant pages
+- Provides up-to-date information for current events and recent data
+- Supports configurable result counts
+- Use this tool for accessing information beyond knowledge cutoff
+- Searches are performed automatically within a single API call
+
+The current year is {year}. You MUST use this year when searching for recent information or current events
+- Example: If the current year is 2026 and the user asks for "latest AI news", search for "AI news 2026", NOT "AI news 2025"

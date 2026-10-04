@@ -1363,6 +1363,7 @@ dependencies = [
  "nth-context",
  "nth-protocol",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

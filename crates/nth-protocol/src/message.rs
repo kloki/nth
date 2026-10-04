@@ -40,7 +40,7 @@ impl ToolCall {
             return patch_summary(patch, cwd);
         }
         // The command itself over the model's description of it.
-        let text = ["filePath", "command", "description", "name", "pattern"]
+        let text = ["filePath", "command", "description", "name", "pattern", "query"]
             .iter()
             .find_map(|key| args[key].as_str())
             .unwrap_or_default();
@@ -120,6 +120,10 @@ mod tests {
         assert_eq!(
             call(r#"{"pattern":"**/*.rs","path":"crates"}"#).summary(cwd),
             "**/*.rs"
+        );
+        assert_eq!(
+            call(r#"{"query":"ratatui release"}"#).summary(cwd),
+            "ratatui release"
         );
         assert_eq!(call("not json").summary(cwd), "not json");
         assert_eq!(

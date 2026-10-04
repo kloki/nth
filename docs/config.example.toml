@@ -30,6 +30,10 @@ max_timeout_ms = 600000
 # Longer output keeps only its last this-many characters.
 max_output_chars = 30000
 
+[tools.websearch]
+# Exa's MCP endpoint. EXA_API_KEY, when set, is sent with each search.
+url = "https://mcp.exa.ai/mcp"
+
 [skills]
 # Extra folders searched for SKILL.md files, after the standard ones.
 # ~/ is the home directory; relative paths are from the working directory.
