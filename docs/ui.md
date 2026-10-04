@@ -170,7 +170,7 @@ The mode label is replaced by a braille spinner in the same mode colour. Its fra
 ▎
 ```
 
-The bar keeps the mode colour, and the text is dimmed while Enter cannot submit. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
+The bar keeps the mode colour. Enter still sends: the prompt is queued and runs as its own turn once the running one ends well. After Esc or a failed turn, queued prompts are not sent; they go back into the prompt, ahead of what is typed, separated by blank lines. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
 The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
 
@@ -257,11 +257,11 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is what checks the model's writes. The right side of a line is cut first when it is too narrow, and line 2 is cut from its end.
+Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
 
 ```
  glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
- ● rust  ● typescript  rustfmt · prettier
+ ⏵ 2 queued · fix the failing test                    ● rust  ● typescript
 ```
 
 **Line 1: where you are**
@@ -315,9 +315,13 @@ Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather 
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
-**Line 2: the language servers**
+**Line 2, left: queued prompts**
 
-Left-aligned. A dot and the id of every language server the tools have started, in the order they started. The line is blank until a server starts.
+While prompts are queued, `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
+
+**Line 2, right: the language servers**
+
+Against the right edge. A dot and the id of every language server the tools have started, in the order they started. Nothing shows until a server starts.
 
 | Part | Shows | Colour |
 | --- | --- | --- |
@@ -325,10 +329,6 @@ Left-aligned. A dot and the id of every language server the tools have started, 
 | Server id | The server's id, as in opencode: `rust`, `typescript` | white |
 
 Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters that run on writes are not shown; `nth formatters` lists them.
-
-**Line 2: empty**
-
-Kept so nothing above moves when it gets a job. That there is more chat below the view is shown by the chat's scrollbar, and how to cancel a running turn is on the input panel.
 
 ## Colours
 
