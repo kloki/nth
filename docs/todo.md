@@ -9,7 +9,7 @@ Items are grouped by the milestones in [design.md](design.md). Each item names t
 
 ### Agent loop hardening
 
-- [ ] Retry with backoff on 429, 5xx and dropped streams: start at 2 s, factor 2, and honor `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
+- [x] Retry with backoff on 429, 5xx and dropped streams: start at 2 s, factor 2, and honor `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
 - [ ] Doom-loop guard: when the same tool is called with the same input 3 times in a row, ask the user before continuing. `session/processor.ts:29`
 - [ ] Max-steps prompt: on the last allowed step, tell the model to stop calling tools and summarize, instead of cutting it off. `session/prompt.ts:1281`
 

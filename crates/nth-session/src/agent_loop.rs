@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures::StreamExt;
 use nth_protocol::{
     AssistantMessage, BoxError, Effort, Event, Message, OutputSink, Provider, Request, StreamEvent,
@@ -8,6 +10,17 @@ use tokio_util::sync::CancellationToken;
 
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
+
+/// The first retry waits this long; each next one doubles it.
+const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
+/// The longest computed backoff, for when the server asked to wait no
+/// particular time.
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+/// How many times one step's request may be retried before giving up.
+const RETRY_MAX_ATTEMPTS: u32 = 5;
+/// A server asking to wait longer than this is not retried: the error shows
+/// right away rather than an unexplained stall.
+const RETRY_MAX_AFTER: Duration = Duration::from_secs(60);
 
 /// What the model reads in place of a tool result the user cut short.
 const INTERRUPTED: &str = "Error: interrupted by the user";
@@ -61,40 +74,16 @@ pub async fn run_turn(
             messages,
             tools: &specs,
         };
-        let mut stream = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(Error::Interrupted),
-            stream = provider.stream(request) => stream.map_err(Error::Provider)?,
-        };
-        let mut reply = AssistantMessage::default();
-        loop {
-            let event = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    // Calls from an unfinished reply never ran, so they are
-                    // dropped rather than left without results.
-                    reply.tool_calls.clear();
-                    if !reply.text.is_empty() || !reply.reasoning.is_empty() {
-                        messages.push(Message::Assistant(reply));
-                    }
-                    return Err(Error::Interrupted);
+        let reply = match stream_step(provider, request, events, cancel).await {
+            Ok(reply) => reply,
+            Err(Stop::Cancelled(partial)) => {
+                if !partial.text.is_empty() || !partial.reasoning.is_empty() {
+                    messages.push(Message::Assistant(partial));
                 }
-                event = stream.next() => event,
-            };
-            let Some(event) = event else { break };
-            match event.map_err(Error::Provider)? {
-                StreamEvent::TextDelta(text) => {
-                    reply.text.push_str(&text);
-                    emit(events, Event::TextDelta(text)).await;
-                }
-                StreamEvent::ReasoningDelta(text) => {
-                    reply.reasoning.push_str(&text);
-                    emit(events, Event::ReasoningDelta(text)).await;
-                }
-                StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
-                StreamEvent::Usage(usage) => emit(events, Event::Usage(usage)).await,
+                return Err(Error::Interrupted);
             }
-        }
+            Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
+        };
 
         let calls = reply.tool_calls.clone();
         messages.push(Message::Assistant(reply));
@@ -130,6 +119,97 @@ pub async fn run_turn(
         }
     }
     Err(Error::TooManySteps(route.max_steps))
+}
+
+/// Why a step's reply did not finish.
+enum Stop {
+    /// The provider failed; whether a retry can help is the provider's say.
+    Failed(BoxError),
+    /// Cancelled; the partial reply is handed back so it can be kept.
+    Cancelled(AssistantMessage),
+}
+
+/// One step's request, retried on a transient provider error with backoff:
+/// 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's `Retry-After`
+/// when it gave one no longer than `RETRY_MAX_AFTER`. The retry is announced
+/// as an [`Event::Retry`], and cancelling during the wait ends the step.
+async fn stream_step(
+    provider: &dyn Provider,
+    request: Request<'_>,
+    events: &mpsc::Sender<Event>,
+    cancel: &CancellationToken,
+) -> Result<AssistantMessage, Stop> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let error = match one_attempt(provider, request, events, cancel).await {
+            Err(Stop::Failed(error)) => error,
+            done => return done,
+        };
+        let delay = provider
+            .retry(&error)
+            .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
+            .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
+            .filter(|delay| *delay <= RETRY_MAX_AFTER);
+        let Some(delay) = delay else {
+            return Err(Stop::Failed(error));
+        };
+        emit(events, Event::Retry { attempt, delay }).await;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+/// Streams one reply, appending text, reasoning and tool calls to it as they
+/// arrive.
+async fn one_attempt(
+    provider: &dyn Provider,
+    request: Request<'_>,
+    events: &mpsc::Sender<Event>,
+    cancel: &CancellationToken,
+) -> Result<AssistantMessage, Stop> {
+    let mut stream = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
+        stream = provider.stream(request) => stream.map_err(Stop::Failed)?,
+    };
+    let mut reply = AssistantMessage::default();
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // Calls from an unfinished reply never ran, so they are
+                // dropped rather than left without results.
+                reply.tool_calls.clear();
+                return Err(Stop::Cancelled(reply));
+            }
+            event = stream.next() => event,
+        };
+        let Some(event) = event else { break };
+        match event.map_err(Stop::Failed)? {
+            StreamEvent::TextDelta(text) => {
+                reply.text.push_str(&text);
+                emit(events, Event::TextDelta(text)).await;
+            }
+            StreamEvent::ReasoningDelta(text) => {
+                reply.reasoning.push_str(&text);
+                emit(events, Event::ReasoningDelta(text)).await;
+            }
+            StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
+            StreamEvent::Usage(usage) => emit(events, Event::Usage(usage)).await,
+        }
+    }
+    Ok(reply)
+}
+
+/// The backoff before the `attempt`-th retry: `RETRY_INITIAL_DELAY` doubled
+/// each time, capped at `RETRY_MAX_DELAY`.
+fn backoff(attempt: u32) -> Duration {
+    let factor = 1u32 << (attempt.saturating_sub(1)).min(16);
+    (RETRY_INITIAL_DELAY * factor).min(RETRY_MAX_DELAY)
 }
 
 async fn run_tool(
@@ -192,7 +272,7 @@ pub(crate) mod tests {
         stream::{self, BoxStream},
     };
     use nth_protocol::{
-        Answer, Asker, ModelInfo, MonitorEvent, Monitors, Question, Reply, Stream, ToolSpec,
+        Answer, Asker, ModelInfo, MonitorEvent, Monitors, Question, Reply, Retry, Stream, ToolSpec,
     };
 
     use super::*;
@@ -595,5 +675,154 @@ pub(crate) mod tests {
                 ..Default::default()
             })]
         );
+    }
+
+    /// A transient provider failure, retried by [`Flaky`].
+    #[derive(Debug, thiserror::Error)]
+    #[error("temporary failure")]
+    struct Temporary;
+
+    /// Fails the requests named in `fail` (1-based) and answers the rest.
+    struct Flaky {
+        fail: Vec<usize>,
+        attempts: Mutex<usize>,
+        reply: Vec<StreamEvent>,
+        retry_after: Option<Duration>,
+    }
+
+    impl Flaky {
+        fn new(fail: Vec<usize>) -> Self {
+            Self {
+                fail,
+                attempts: Mutex::new(0),
+                // A retry that waits in a test would only slow it down.
+                reply: vec![StreamEvent::TextDelta("done".into())],
+                retry_after: Some(Duration::ZERO),
+            }
+        }
+    }
+
+    impl Provider for Flaky {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let mut attempts = self.attempts.lock().expect("not poisoned");
+            *attempts += 1;
+            let fails = self.fail.contains(&*attempts);
+            let reply = self.reply.clone();
+            async move {
+                match fails {
+                    true => Err(Box::new(Temporary) as BoxError),
+                    false => Ok(stream::iter(reply.into_iter().map(Ok)).boxed()),
+                }
+            }
+            .boxed()
+        }
+
+        fn retry(&self, error: &BoxError) -> Option<Retry> {
+            error.downcast_ref::<Temporary>().map(|_| Retry {
+                after: self.retry_after,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_a_transient_error_then_answers() {
+        let provider = Flaky::new(vec![1]);
+        let ctx = ToolContext::new(".".into());
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+
+        assert_eq!(
+            messages[1..],
+            [Message::Assistant(AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            })]
+        );
+        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        drop(tx);
+        let mut retries = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let Event::Retry { attempt, delay } = event {
+                retries.push((attempt, delay));
+            }
+        }
+        assert_eq!(retries, [(1, Duration::ZERO)]);
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_retry_budget() {
+        let provider = Flaky::new((1..=20).collect());
+        let ctx = ToolContext::new(".".into());
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Provider(_))));
+        assert_eq!(
+            *provider.attempts.lock().expect("not poisoned"),
+            RETRY_MAX_ATTEMPTS as usize + 1,
+            "the first try plus the retries"
+        );
+        drop(tx);
+        let mut retries = 0;
+        while let Some(event) = rx.recv().await {
+            retries += usize::from(matches!(event, Event::Retry { .. }));
+        }
+        assert_eq!(retries, RETRY_MAX_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn a_long_retry_after_fails_at_once() {
+        let provider = Flaky {
+            retry_after: Some(RETRY_MAX_AFTER + Duration::from_secs(1)),
+            ..Flaky::new(vec![1])
+        };
+        let ctx = ToolContext::new(".".into());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Provider(_))));
+        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 1);
     }
 }

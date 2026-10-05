@@ -5,10 +5,13 @@ mod models;
 mod sse;
 mod wire;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Duration,
+};
 
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use nth_protocol::{BoxError, ModelInfo, Provider, Request, StreamEvent, ToolCall, Usage};
+use nth_protocol::{BoxError, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage};
 
 const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 
@@ -20,6 +23,8 @@ pub enum Error {
     Status {
         status: reqwest::StatusCode,
         body: String,
+        /// The server's `Retry-After`, when it sent one.
+        retry_after: Option<Duration>,
     },
     #[error("bad stream chunk: {source} in {line:?}")]
     Parse {
@@ -77,14 +82,36 @@ impl ChatClient {
     }
 }
 
-/// Turns a non-2xx response into an error that carries the server's body.
+/// Turns a non-2xx response into an error that carries the server's body
+/// and its `Retry-After`, if any.
 async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
+    let retry_after = retry_after(response.headers());
     let body = response.text().await.unwrap_or_default();
-    Err(Error::Status { status, body })
+    Err(Error::Status {
+        status,
+        body,
+        retry_after,
+    })
+}
+
+/// How long the server asked to wait, from `Retry-After-Ms` or the usual
+/// `Retry-After` in seconds; the HTTP-date form is not supported, and a
+/// value no `Duration` holds (negative, `inf`, huge) counts as absent.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let number = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<f64>().ok())
+    };
+    if let Some(ms) = number("retry-after-ms") {
+        return Duration::try_from_secs_f64(ms / 1000.0).ok();
+    }
+    number("retry-after").and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
 }
 
 impl Provider for ChatClient {
@@ -102,6 +129,32 @@ impl Provider for ChatClient {
         request: Request<'a>,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
         async move { self.open(request).await.map_err(BoxError::from) }.boxed()
+    }
+
+    fn retry(&self, error: &BoxError) -> Option<Retry> {
+        let error = error.downcast_ref::<Error>()?;
+        match error {
+            // A rate limit or a transient server failure; the server may
+            // have said how long to wait.
+            Error::Status {
+                status,
+                retry_after,
+                ..
+            } if *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
+                Some(Retry {
+                    after: *retry_after,
+                })
+            }
+            // The connection failed or timed out, possibly part-way through
+            // the stream. Other HTTP errors (a bad URL, an undecodable
+            // body) fail the same way every time.
+            Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
+                Some(Retry { after: None })
+            }
+            // The stream ended before the reply did.
+            Error::Incomplete => Some(Retry { after: None }),
+            _ => None,
+        }
     }
 }
 
@@ -305,5 +358,82 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
         );
+    }
+
+    fn client() -> ChatClient {
+        ChatClient::new("http://localhost".into(), "key".into())
+    }
+
+    #[test]
+    fn only_transient_errors_are_retryable() {
+        let boxed = |error: Error| -> BoxError { Box::new(error) };
+
+        let limited = boxed(Error::Status {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body: String::new(),
+            retry_after: Some(Duration::from_secs(7)),
+        });
+        assert_eq!(
+            client().retry(&limited),
+            Some(Retry {
+                after: Some(Duration::from_secs(7))
+            })
+        );
+
+        let overloaded = boxed(Error::Status {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            body: String::new(),
+            retry_after: None,
+        });
+        assert_eq!(client().retry(&overloaded), Some(Retry { after: None }));
+
+        let rejected = boxed(Error::Status {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: String::new(),
+            retry_after: None,
+        });
+        assert_eq!(client().retry(&rejected), None);
+        assert_eq!(
+            client().retry(&boxed(Error::Incomplete)),
+            Some(Retry { after: None })
+        );
+        assert_eq!(client().retry(&boxed(Error::Truncated)), None);
+
+        let bad_url = reqwest::Client::new()
+            .get("not a url")
+            .build()
+            .expect_err("not a url");
+        assert_eq!(client().retry(&boxed(Error::Http(bad_url))), None);
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_or_milliseconds() {
+        let header = |name: &'static str, value: &str| {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(name, value.parse().expect("header"));
+            headers
+        };
+
+        assert_eq!(
+            retry_after(&header("retry-after", "3")),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            retry_after(&header("retry-after-ms", "1500")),
+            Some(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            retry_after(&header("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")),
+            None,
+            "the HTTP-date form is not parsed"
+        );
+        for unholdable in ["inf", "1e30", "-1", "NaN"] {
+            assert_eq!(
+                retry_after(&header("retry-after", unholdable)),
+                None,
+                "{unholdable} is not a wait"
+            );
+        }
+        assert_eq!(retry_after(&reqwest::header::HeaderMap::new()), None);
     }
 }
