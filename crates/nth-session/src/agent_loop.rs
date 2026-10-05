@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Message, OutputSink, Provider, Request, StreamEvent,
-    Tool, ToolCall, ToolContext, ToolResult,
+    AssistantMessage, BoxError, Effort, Event, Message, OutputSink, Provider, Question,
+    QuestionOption, Reply, Request, StreamEvent, Tool, ToolCall, ToolContext, ToolResult,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -22,8 +22,16 @@ const RETRY_MAX_ATTEMPTS: u32 = 5;
 /// right away rather than an unexplained stall.
 const RETRY_MAX_AFTER: Duration = Duration::from_secs(60);
 
+/// How many times the same call in a row trips the doom-loop guard.
+const DOOM_LOOP_THRESHOLD: usize = 3;
+/// The doom-loop question's answers.
+const CONTINUE: &str = "Run it";
+const STOP: &str = "Stop";
+
 /// What the model reads in place of a tool result the user cut short.
 const INTERRUPTED: &str = "Error: interrupted by the user";
+/// What the model reads for calls the user stopped at the doom-loop prompt.
+const STOPPED: &str = "Error: stopped by the user (the same call kept repeating)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -33,6 +41,10 @@ pub enum Error {
     TooManySteps(usize),
     #[error("interrupted")]
     Interrupted,
+    #[error(
+        "stopped: the model called {0} with the same input {DOOM_LOOP_THRESHOLD} times in a row"
+    )]
+    DoomLoop(String),
     /// A skill run as `/name` could not be filled in, so the turn never
     /// started.
     #[error("could not run the skill: {0}")]
@@ -66,6 +78,9 @@ pub async fn run_turn(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
+    // Where this turn's messages start, so the doom-loop guard counts only
+    // calls made since the user last spoke.
+    let start = messages.len();
     for _ in 0..route.max_steps {
         let request = Request {
             model: route.model,
@@ -89,6 +104,25 @@ pub async fn run_turn(
         messages.push(Message::Assistant(reply));
         if calls.is_empty() {
             return Ok(());
+        }
+
+        // The same call three times in a row is a model stuck in a loop;
+        // ask before running it.
+        if let Some(call) = repeating(&messages[start..]) {
+            let stopped = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Some((INTERRUPTED, Error::Interrupted)),
+                run = confirm_doom_loop(ctx, call) => {
+                    (!run).then(|| (STOPPED, Error::DoomLoop(call.name.clone())))
+                }
+            };
+            if let Some((content, error)) = stopped {
+                messages.extend(calls.iter().map(|call| Message::ToolResult {
+                    call_id: call.id.clone(),
+                    content: content.to_string(),
+                }));
+                return Err(error);
+            }
         }
 
         let running =
@@ -210,6 +244,66 @@ async fn one_attempt(
 fn backoff(attempt: u32) -> Duration {
     let factor = 1u32 << (attempt.saturating_sub(1)).min(16);
     (RETRY_INITIAL_DELAY * factor).min(RETRY_MAX_DELAY)
+}
+
+/// The first of the latest reply's calls that completes a run of identical
+/// calls (same name and arguments) `DOOM_LOOP_THRESHOLD` long, counted over
+/// `turn`. Only whole multiples of the threshold count, so after a "Run it"
+/// the question comes back after another full run, not on every repeat.
+fn repeating(turn: &[Message]) -> Option<&ToolCall> {
+    let replies = turn.iter().filter_map(|message| match message {
+        Message::Assistant(reply) => Some(reply),
+        _ => None,
+    });
+    let latest = replies.clone().next_back()?.tool_calls.len();
+    let calls: Vec<&ToolCall> = replies.flat_map(|reply| &reply.tool_calls).collect();
+    let first_new = calls.len() - latest;
+    let mut run = 0;
+    for (i, call) in calls.iter().enumerate() {
+        let same =
+            i > 0 && (&calls[i - 1].name, &calls[i - 1].arguments) == (&call.name, &call.arguments);
+        run = if same { run + 1 } else { 1 };
+        if i >= first_new && run % DOOM_LOOP_THRESHOLD == 0 {
+            return Some(call);
+        }
+    }
+    None
+}
+
+/// Asks whether to run a call that keeps repeating. `true` means run it; a
+/// front-end with nobody to ask (as in a headless run) lets it through, and
+/// a decline stops the turn.
+async fn confirm_doom_loop(ctx: &ToolContext, call: &ToolCall) -> bool {
+    if !ctx.asker.reaches_someone() {
+        return true;
+    }
+    let question = Question {
+        question: format!(
+            "The model called {} with the same input {} times in a row. Run it again?",
+            call.name, DOOM_LOOP_THRESHOLD
+        ),
+        header: "Doom loop".into(),
+        multiple: false,
+        options: [CONTINUE, STOP]
+            .map(|label| QuestionOption {
+                label: label.into(),
+                description: None,
+                preview: None,
+            })
+            .into(),
+    };
+    match ctx
+        .asker
+        .for_call(call.id.clone())
+        .ask(vec![question])
+        .await
+    {
+        Some(Reply::Answered(answers)) => !answers
+            .first()
+            .is_some_and(|answer| answer.picked.iter().any(|picked| picked == STOP)),
+        // Declined, or nobody answered: stop.
+        _ => false,
+    }
 }
 
 async fn run_tool(
@@ -824,5 +918,212 @@ pub(crate) mod tests {
 
         assert!(matches!(result, Err(Error::Provider(_))));
         assert_eq!(*provider.attempts.lock().expect("not poisoned"), 1);
+    }
+
+    /// `n` identical calls in one reply, then an answer.
+    fn looping_reply(n: usize) -> Vec<Vec<StreamEvent>> {
+        vec![
+            (1..=n)
+                .map(|i| StreamEvent::ToolCall(call(&i.to_string(), "echo", r#"{"say":"hi"}"#)))
+                .collect(),
+            vec![StreamEvent::TextDelta("done".into())],
+        ]
+    }
+
+    /// Answers every question with `answer`; the task returns how many it
+    /// answered once the asker is dropped.
+    fn answering(answer: Reply) -> (Asker, tokio::task::JoinHandle<usize>) {
+        let (asks, mut asked) = mpsc::channel::<nth_protocol::Ask>(1);
+        let task = tokio::spawn(async move {
+            let mut answered = 0;
+            while let Some(ask) = asked.recv().await {
+                ask.reply.send(answer.clone()).expect("the loop waits");
+                answered += 1;
+            }
+            answered
+        });
+        (Asker::new(asks), task)
+    }
+
+    fn run_it() -> Reply {
+        Reply::Answered(vec![Answer {
+            picked: vec![CONTINUE.into()],
+            typed: None,
+        }])
+    }
+
+    #[tokio::test]
+    async fn the_same_call_three_times_asks_before_running() {
+        let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let (asker, answering) = answering(run_it());
+        let ctx = ToolContext {
+            asker,
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+        drop(ctx);
+
+        assert_eq!(answering.await.expect("answers"), 1);
+        let results: Vec<_> = messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolResult { .. }))
+            .collect();
+        assert_eq!(results.len(), DOOM_LOOP_THRESHOLD, "all three ran");
+    }
+
+    #[tokio::test]
+    async fn running_a_loop_on_asks_again_only_after_another_full_run() {
+        let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD + 1));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let (asker, answering) = answering(run_it());
+        let ctx = ToolContext {
+            asker,
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+        drop(ctx);
+
+        assert_eq!(answering.await.expect("answers"), 1, "asked once for four");
+    }
+
+    #[tokio::test]
+    async fn declining_the_doom_loop_stops_the_turn() {
+        let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let (asker, answering) = answering(Reply::Declined);
+        let ctx = ToolContext {
+            asker,
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+        drop(ctx);
+        answering.await.expect("answers");
+
+        assert!(matches!(result, Err(Error::DoomLoop(name)) if name == "echo"));
+        assert_eq!(
+            messages[2..],
+            ["1", "2", "3"].map(|id| Message::ToolResult {
+                call_id: id.into(),
+                content: STOPPED.into(),
+            }),
+            "every call is answered, so the session stays valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_at_the_doom_loop_question_interrupts() {
+        let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let cancel = CancellationToken::new();
+        // Cancels once asked, and never answers.
+        let (asks, mut asked) = mpsc::channel::<nth_protocol::Ask>(1);
+        let canceller = cancel.clone();
+        let unanswered = tokio::spawn(async move {
+            let ask = asked.recv().await.expect("asks");
+            canceller.cancel();
+            ask
+        });
+        let ctx = ToolContext {
+            asker: Asker::new(asks),
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(&provider, ROUTE, &tools, &ctx, &mut messages, &tx, &cancel).await;
+        let _ask = unanswered.await.expect("asked");
+
+        assert!(matches!(result, Err(Error::Interrupted)));
+        assert_eq!(
+            messages[2..],
+            ["1", "2", "3"].map(|id| Message::ToolResult {
+                call_id: id.into(),
+                content: INTERRUPTED.into(),
+            }),
+            "every call is answered, so the session stays valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_headless_run_never_asks_about_a_loop() {
+        let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        // Nobody to ask, so it must not block; the model decides.
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+    }
+
+    #[test]
+    fn a_new_turn_starts_the_count_over() {
+        let reply = |id: &str| {
+            Message::Assistant(AssistantMessage {
+                tool_calls: vec![call(id, "echo", "{}")],
+                ..Default::default()
+            })
+        };
+        let earlier = [reply("1"), reply("2")];
+        let turn = [reply("3")];
+
+        assert!(repeating(&earlier).is_none());
+        assert!(
+            repeating(&turn).is_none(),
+            "the earlier turn is not counted"
+        );
+        assert_eq!(
+            repeating(&[reply("1"), reply("2"), reply("3")]).map(|c| c.id.as_str()),
+            Some("3")
+        );
     }
 }
