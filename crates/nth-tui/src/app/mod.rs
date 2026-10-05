@@ -531,8 +531,7 @@ impl App {
                 }
             }
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
-                self.prompt
-                    .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                self.prompt.paste(&text);
                 self.refresh_completion();
             }
             _ => {}

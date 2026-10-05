@@ -69,7 +69,7 @@ impl App {
                 Some(text) => text.to_string(),
                 None => return,
             },
-            Target::Prompt => self.prompt.text().to_string(),
+            Target::Prompt => self.prompt.expanded(),
         };
         // The plan is named after its session, so the prompt copy is too,
         // and two nth instances never share one temp file.
