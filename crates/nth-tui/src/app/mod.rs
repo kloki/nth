@@ -76,8 +76,9 @@ use crate::{
 };
 
 const WHEEL_LINES: usize = 3;
-/// How often a running turn redraws, so the spinner shows every frame and
-/// the live reasoning timer advances.
+/// How often the app redraws with nothing else happening, while a turn
+/// runs or a monitor does: the spinner shows every frame, and the
+/// reasoning timer and the monitors' running time advance.
 const TICK: Duration = spinner::FRAME;
 /// How long notices wait for more lines before an idle app sends them, so
 /// one burst of output reaches the model as one message.
@@ -393,7 +394,7 @@ impl App {
             if !self.is_editing() {
                 terminal.draw(|frame| self.draw(frame))?;
             }
-            let busy = self.is_busy();
+            let ticking = self.is_busy() || self.running_monitors() > 0;
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -413,7 +414,7 @@ impl App {
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
-                _ = tick.tick(), if busy => Step::Tick,
+                _ = tick.tick(), if ticking => Step::Tick,
             };
             match step {
                 Step::Terminal(None) => break,
@@ -452,7 +453,7 @@ impl App {
                         Some(formatters.context("checking formatters failed")?)
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
-                // Nothing changed but time: the redraw advances the reasoning timer.
+                // Nothing changed but time: the redraw advances the timers.
                 Step::Tick => {}
             }
         }
