@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use nth_context::project_root;
+
 /// How far up a search may go. opencode stops at the session's directory;
 /// nth's pool is shared across sessions, so it stops at the file's git
 /// checkout instead, or the filesystem root outside of one.
@@ -17,10 +19,7 @@ pub struct Scope {
 impl Scope {
     pub fn of(file: &Path) -> Self {
         let dir = file.parent().unwrap_or(file);
-        let stop = dir
-            .ancestors()
-            .find(|d| d.join(".git").exists())
-            .map(Path::to_path_buf);
+        let stop = project_root(dir);
         let home = stop.clone().unwrap_or_else(|| dir.to_path_buf());
         Self { stop, home }
     }
