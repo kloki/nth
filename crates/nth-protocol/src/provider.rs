@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 
@@ -5,6 +7,15 @@ use crate::{Message, ToolCall, ToolSpec};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// What a provider says about an error it produced: whether another attempt
+/// could work, and the server's `Retry-After` when it sent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retry {
+    /// The server asked to wait this long first, instead of the backoff.
+    pub after: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Request<'a> {
     /// Per request rather than per provider, so a session can switch models
     /// without rebuilding its client.
@@ -126,6 +137,13 @@ pub trait Provider: Send + Sync {
         &'a self,
         request: Request<'a>,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>;
+
+    /// Whether `error`, one this provider produced, may be retried, with the
+    /// server's `Retry-After` when it gave one. The default never retries.
+    fn retry(&self, error: &BoxError) -> Option<Retry> {
+        let _ = error;
+        None
+    }
 }
 
 #[cfg(test)]

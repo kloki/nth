@@ -84,6 +84,11 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             ])]
         }
         Entry::Answer(text) => barred_markdown(text, width, Style::new().fg(Color::Blue)),
+        Entry::Retry { attempt, delay } => vec![Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled("⟳ ", Style::new().fg(Color::Yellow)),
+            Span::styled(nth_protocol::retry_label(*attempt, *delay), dim),
+        ])],
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
