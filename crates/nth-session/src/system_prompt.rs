@@ -5,18 +5,26 @@ use nth_context::{Context, project_root};
 
 /// The default system prompt, opencode's `default.txt`.
 const TEMPLATE: &str = include_str!("prompts/system/default.md");
+/// The environment block, after the persona and before the instructions. Kept
+/// apart from the templates so a per-model variant replaces only the persona.
+const ENV: &str = include_str!("prompts/system/env.md");
 /// One per instruction file, after the environment block.
 const INSTRUCTION: &str = include_str!("prompts/system/instruction.md");
 /// The skills the model may load, after the instructions, as in opencode.
 const SKILLS: &str = include_str!("prompts/system/skills.md");
 const SKILL: &str = include_str!("prompts/system/skill.md");
 
-/// Model-id substring → its own system prompt, first match wins. Empty until a
-/// model misbehaves; opencode ships kimi, gpt and gemini variants, nth adds one
-/// only then. Drop the file in `prompts/system/` and add a row here.
-const BY_MODEL: &[(&str, &str)] = &[];
+/// Model-id substring → its own persona, first match wins; opencode's family
+/// prompts, adapted. A model matching none gets the default. Drop a new file in
+/// `prompts/system/` and add a row here.
+const BY_MODEL: &[(&str, &str)] = &[
+    ("kimi", include_str!("prompts/system/kimi.md")),
+    ("moonshot", include_str!("prompts/system/kimi.md")),
+    ("gpt", include_str!("prompts/system/gpt.md")),
+    ("gemini", include_str!("prompts/system/gemini.md")),
+];
 
-/// The template for `model`: the first matching variant, else the default.
+/// The persona for `model`: the first matching variant, else the default.
 fn template(model: &str) -> &'static str {
     BY_MODEL
         .iter()
@@ -30,13 +38,14 @@ pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
     // Outside a repository the workspace root is the working directory, as in
     // opencode, where the project defaults to the directory.
     let root = root.unwrap_or_else(|| cwd.to_path_buf());
-    let mut prompt = template(model)
+    let env = ENV
         .replace("{model}", model)
         .replace("{cwd}", &cwd.display().to_string())
         .replace("{root}", &root.display().to_string())
         .replace("{git}", git)
         .replace("{platform}", std::env::consts::OS)
         .replace("{today}", &today());
+    let mut prompt = format!("{}\n{env}", template(model));
     for instruction in &context.instructions {
         prompt.push('\n');
         // Content last, so a `{path}` inside a file is left alone.
@@ -187,9 +196,26 @@ mod tests {
     }
 
     #[test]
-    fn every_model_shares_the_one_prompt_for_now() {
-        // Flipped by a `BY_MODEL` row once a model misbehaves.
-        assert_eq!(template("kimi-k3"), TEMPLATE);
-        assert_eq!(template("glm"), TEMPLATE);
+    fn a_model_picks_its_family_prompt_else_the_default() {
+        assert_eq!(template("glm-5.3"), TEMPLATE);
+        assert!(template("kimi-k3").starts_with("You are nth, an interactive general AI agent"));
+        assert!(template("moonshotai/kimi-k2").starts_with("You are nth, an interactive"));
+        assert!(template("gpt-5").starts_with("You are nth."));
+        assert!(template("gemini-2.5-pro").starts_with("You are nth, an interactive CLI agent"));
+    }
+
+    #[test]
+    fn a_family_prompt_still_carries_the_environment_block() {
+        let prompt = system_prompt("kimi-k3", "/repo".as_ref(), &Context::default());
+
+        assert!(
+            prompt.contains("an interactive general AI agent"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("</env>\n"), "{prompt}");
+        assert!(
+            prompt.contains("\n\nYou are powered by the model named kimi-k3."),
+            "the env block follows the persona after a blank line: {prompt}"
+        );
     }
 }
