@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     DEFAULT_MAX_STEPS, Error, Route,
-    agent_loop::{INTERRUPTED, run_call},
+    agent_loop::{failed, run_call},
     plan::{self, Approver},
     run_turn, system_prompt,
 };
@@ -238,19 +238,15 @@ impl Session {
         }));
         self.updated_at = SystemTime::now();
         let ctx = ToolContext::new(self.cwd.clone());
-        let (content, result) = tokio::select! {
-            biased;
-            // Dropping the call kills the command's process group.
-            _ = cancel.cancelled() => (INTERRUPTED.to_string(), Err(Error::Interrupted)),
-            result = run_call(Some(shell), &ctx, &call, events) => {
-                (result.unwrap_or_else(|e| format!("Error: {e}")), Ok(()))
-            }
-        };
+        let result = run_call(Some(shell), &ctx, &call, events, cancel).await;
         self.messages.push(Message::ToolResult {
             call_id: call.id,
-            content,
+            content: result.unwrap_or_else(|reason| failed(&reason)),
         });
-        result
+        match cancel.is_cancelled() {
+            true => Err(Error::Interrupted),
+            false => Ok(()),
+        }
     }
 }
 
@@ -285,9 +281,10 @@ fn default_max_steps() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, ToolCall};
+    use nth_protocol::{AssistantMessage, StreamEvent, ToolCall};
 
     use super::*;
+    use crate::agent_loop::INTERRUPTED;
 
     #[test]
     fn starts_with_only_the_system_prompt() {
@@ -380,8 +377,6 @@ mod tests {
 
     #[tokio::test]
     async fn remembers_the_instruction_files_tools_attached() {
-        use nth_protocol::StreamEvent;
-
         use crate::agent_loop::tests::{Scripted, call};
 
         let context = Arc::new(Context {
@@ -446,8 +441,6 @@ mod tests {
     /// Sends `text` in `session`'s mode with a model that just answers,
     /// and returns the user message the model got.
     async fn send(session: &mut Session, text: &str) -> String {
-        use nth_protocol::StreamEvent;
-
         let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
             "ok".into(),
         )]]);
@@ -529,8 +522,6 @@ mod tests {
 
     #[tokio::test]
     async fn plan_mode_lets_tools_write_only_the_plan() {
-        use nth_protocol::StreamEvent;
-
         use crate::agent_loop::tests::{Scripted, call};
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -689,7 +680,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Interrupted)));
         assert!(matches!(
             session.messages.last(),
-            Some(Message::ToolResult { content, .. }) if content == INTERRUPTED
+            Some(Message::ToolResult { content, .. }) if *content == failed(INTERRUPTED)
         ));
     }
 }
