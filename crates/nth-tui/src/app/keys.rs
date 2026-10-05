@@ -673,10 +673,17 @@ mod tests {
 
     #[test]
     fn tab_keeps_command_mode() {
-        let mut app = typed("!");
+        // Plan, since act is the default and a switch to it would pass too.
+        let mut app = app();
+        app.set_mode(nth_protocol::Mode::Plan);
+        app.apply(Action::Insert('!'));
         app.apply(Action::NextTab);
         assert!(app.prompt.shell());
-        assert_eq!(app.mode, nth_protocol::Mode::Act);
+        assert_eq!(
+            app.mode,
+            nth_protocol::Mode::Plan,
+            "a command has no mode to switch"
+        );
     }
 
     #[test]
