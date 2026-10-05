@@ -25,6 +25,12 @@ pub enum Entry {
         took: Option<Duration>,
     },
     Answer(String),
+    /// A provider error being retried, shown as its own row; the retry's
+    /// text follows in a fresh answer block.
+    Retry {
+        attempt: u32,
+        delay: Duration,
+    },
     Tool {
         call: ToolCall,
         state: ToolState,
@@ -275,6 +281,13 @@ impl Transcript {
                 }
             }
             Event::Usage(_) => {}
+            Event::Retry { attempt, delay } => {
+                self.close_reasoning();
+                self.push(Entry::Retry {
+                    attempt: *attempt,
+                    delay: *delay,
+                });
+            }
             Event::Notice(text) => {
                 self.close_reasoning();
                 self.push_user(text.clone());
@@ -445,6 +458,33 @@ pub(super) mod tests {
         );
         assert_eq!(entries[3], &Entry::Answer("done".into()));
         assert!(matches!(entries[4], Entry::TurnDone { tool_calls: 1, .. }));
+    }
+
+    #[test]
+    fn a_retry_row_sits_between_the_partial_and_the_retried_answer() {
+        let mut t = transcript();
+        t.push_user("go".into());
+        t.apply(&Event::TextDelta("partial".into()));
+        t.apply(&Event::Retry {
+            attempt: 1,
+            delay: Duration::from_secs(2),
+        });
+        t.apply(&Event::TextDelta("full answer".into()));
+
+        let entries: Vec<_> = t.entries().collect();
+        assert_eq!(
+            entries,
+            [
+                &Entry::User("go".into()),
+                &Entry::Answer("partial".into()),
+                &Entry::Retry {
+                    attempt: 1,
+                    delay: Duration::from_secs(2),
+                },
+                &Entry::Answer("full answer".into()),
+            ],
+            "the retry's text starts a fresh answer block"
+        );
     }
 
     #[test]

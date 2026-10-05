@@ -51,6 +51,13 @@ impl Printer {
                 let first = e.lines().next().unwrap_or_default();
                 eprintln!("  {} {} {}", "✗".red(), call.name.red(), first.red());
             }
+            Event::Retry { attempt, delay } => {
+                self.break_line();
+                eprintln!(
+                    "{}",
+                    format!("⟳ retrying in {}s · attempt {attempt}", delay.as_secs()).yellow()
+                );
+            }
             // The headless run prints the result's summary, not the stream.
             Event::ToolFinished { .. }
             | Event::ToolOutput { .. }

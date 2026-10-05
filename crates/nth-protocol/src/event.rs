@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{ToolCall, ToolResult, Usage};
 
 /// What a running session reports to its front-ends.
@@ -22,4 +24,11 @@ pub enum Event {
     /// What background monitors said, handed to the model between steps as
     /// a user message.
     Notice(String),
+    /// A provider error is being retried: the front-end should show that a
+    /// new attempt follows in `delay`, the `attempt`-th so far. The partial
+    /// reply for the step is kept.
+    Retry {
+        attempt: u32,
+        delay: Duration,
+    },
 }
