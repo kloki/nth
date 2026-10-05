@@ -7,6 +7,7 @@ use std::{
     time::SystemTime,
 };
 
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::Session;
@@ -35,6 +36,18 @@ pub struct Summary {
     pub cwd: PathBuf,
     pub model: String,
     pub updated_at: SystemTime,
+}
+
+/// What [`list`] reads of a save: the fields the picker shows, which skips
+/// the history. The title is saved beside the session so the list never
+/// parses one; saves from before it carry none and are parsed whole.
+#[derive(Deserialize)]
+struct Head {
+    id: Uuid,
+    cwd: PathBuf,
+    model: String,
+    updated_at: SystemTime,
+    title: Option<String>,
 }
 
 /// Where nth keeps what it saves: `$XDG_DATA_HOME/nth`, or
@@ -71,10 +84,16 @@ impl Store {
         if session.is_empty() {
             return Ok(());
         }
-        let json = serde_json::to_vec_pretty(session).map_err(|source| Error::Json {
+        let json_error = |source| Error::Json {
             path: self.path(session.id),
             source,
-        })?;
+        };
+        let mut json = serde_json::to_value(session).map_err(json_error)?;
+        // The title goes beside the session for [`Head`]; loading ignores it.
+        if let Some(fields) = json.as_object_mut() {
+            fields.insert("title".into(), session.title().into());
+        }
+        let json = serde_json::to_vec_pretty(&json).map_err(json_error)?;
         tokio::fs::create_dir_all(&self.dir)
             .await
             .map_err(io_at(&self.dir))?;
@@ -124,17 +143,29 @@ fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .filter_map(|path| std::fs::read(&path).ok())
-        .filter_map(|json| serde_json::from_slice::<Session>(&json).ok())
-        .map(|session| Summary {
-            id: session.id,
-            title: session.title().unwrap_or_default().to_string(),
-            cwd: session.cwd,
-            model: session.model,
-            updated_at: session.updated_at,
-        })
+        .filter_map(|json| summary(&json))
         .collect();
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
+}
+
+fn summary(json: &[u8]) -> Option<Summary> {
+    let head: Head = serde_json::from_slice(json).ok()?;
+    let title = match head.title {
+        Some(title) => title,
+        // Saved before the title was kept beside the session.
+        None => serde_json::from_slice::<Session>(json)
+            .ok()?
+            .title()
+            .unwrap_or_default(),
+    };
+    Some(Summary {
+        id: head.id,
+        title,
+        cwd: head.cwd,
+        model: head.model,
+        updated_at: head.updated_at,
+    })
 }
 
 fn io_at(path: &Path) -> impl FnOnce(io::Error) -> Error {
@@ -177,6 +208,22 @@ mod tests {
         assert_eq!(titles, ["add resume", "fix the build"]);
         assert_eq!(store.latest().await.expect("loads"), Some(new));
         assert_eq!(store.load(old.id).await.expect("loads"), old);
+    }
+
+    #[tokio::test]
+    async fn a_save_from_before_titles_still_lists_by_its_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path());
+        let old = session("fix the build", 1);
+        let json = serde_json::to_vec(&old).expect("serializes");
+        assert!(!json.windows(7).any(|w| w == b"\"title\""));
+        std::fs::write(dir.path().join(format!("{}.json", old.id)), json).expect("writes");
+
+        let listed = store.list().await.expect("lists");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "fix the build");
+        assert_eq!(listed[0].id, old.id);
     }
 
     #[tokio::test]

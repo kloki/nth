@@ -114,9 +114,15 @@ pub struct ModelInfo {
 impl ModelInfo {
     /// The known limits, such as `1M ctx · 128k out`; empty when none are.
     pub fn limits(&self) -> String {
+        // Rounded to the nearest, with a decimal only where a window like
+        // 1.5M would otherwise read as 1M.
         let tokens = |n: u64| match n {
-            1_000_000.. => format!("{}M", n / 1_000_000),
-            _ => format!("{}k", n / 1_000),
+            1_000_000.. => match (n + 50_000) / 100_000 {
+                tenths if tenths % 10 == 0 => format!("{}M", tenths / 10),
+                tenths => format!("{}.{}M", tenths / 10, tenths % 10),
+            },
+            1_000.. => format!("{}k", (n + 500) / 1_000),
+            _ => n.to_string(),
         };
         [
             self.context.map(|n| format!("{} ctx", tokens(n))),
@@ -173,8 +179,20 @@ mod tests {
         let unknown = ModelInfo {
             context: None,
             output: None,
-            ..model
+            ..model.clone()
         };
         assert_eq!(unknown.limits(), "");
+        let odd = ModelInfo {
+            context: Some(1_500_000),
+            output: Some(800),
+            ..model.clone()
+        };
+        assert_eq!(odd.limits(), "1.5M ctx · 800 out");
+        let rounded = ModelInfo {
+            context: Some(1_048_576),
+            output: Some(65_536),
+            ..model
+        };
+        assert_eq!(rounded.limits(), "1M ctx · 66k out");
     }
 }

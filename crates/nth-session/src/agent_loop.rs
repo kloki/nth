@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, collections::HashMap, time::Duration};
 
 use futures::StreamExt;
 use nth_protocol::{
@@ -28,12 +28,12 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const CONTINUE: &str = "Run it";
 const STOP: &str = "Stop";
 
-/// What the model reads in place of a tool result the user cut short.
-pub(crate) const INTERRUPTED: &str = "Error: interrupted by the user";
-/// What the model reads for calls the user stopped at the doom-loop prompt.
-const STOPPED: &str = "Error: stopped by the user (the same call kept repeating)";
-/// What the model reads for calls it made on the last allowed step anyway.
-const MAX_STEPS_REACHED: &str = "Error: maximum steps reached; tool not run";
+/// Why a tool the user cut short failed; the model reads it after `Error: `.
+pub(crate) const INTERRUPTED: &str = "interrupted by the user";
+/// Why calls the user stopped at the doom-loop prompt failed.
+const STOPPED: &str = "stopped by the user (the same call kept repeating)";
+/// Why calls the model made on the last allowed step anyway failed.
+const MAX_STEPS_REACHED: &str = "maximum steps reached; tool not run";
 
 /// Appended to the last allowed step's request, so the model answers instead
 /// of being cut off mid-tool. opencode's `max-steps.ts`, kept verbatim,
@@ -85,6 +85,13 @@ pub async fn run_turn(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
+    // Looked up by name once per call; a spec is too costly to build for
+    // every lookup.
+    let by_name: HashMap<&str, &dyn Tool> = specs
+        .iter()
+        .zip(tools)
+        .map(|(spec, tool)| (spec.name, tool.as_ref()))
+        .collect();
     // Where this turn's messages start, so the doom-loop guard counts only
     // calls made since the user last spoke.
     let start = messages.len();
@@ -129,7 +136,7 @@ pub async fn run_turn(
         if last {
             messages.extend(calls.into_iter().map(|call| Message::ToolResult {
                 call_id: call.id,
-                content: MAX_STEPS_REACHED.to_string(),
+                content: failed(MAX_STEPS_REACHED),
             }));
             return Err(Error::TooManySteps(route.max_steps));
         }
@@ -144,34 +151,30 @@ pub async fn run_turn(
                     (!run).then(|| (STOPPED, Error::DoomLoop(call.name.clone())))
                 }
             };
-            if let Some((content, error)) = stopped {
+            if let Some((reason, error)) = stopped {
                 messages.extend(calls.iter().map(|call| Message::ToolResult {
                     call_id: call.id.clone(),
-                    content: content.to_string(),
+                    content: failed(reason),
                 }));
                 return Err(error);
             }
         }
 
-        let running =
-            futures::future::join_all(calls.iter().map(|call| run_tool(tools, ctx, call, events)));
-        let results = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                // Dropping the tool futures stops them; bash kills its process group.
-                messages.extend(calls.into_iter().map(|call| Message::ToolResult {
-                    call_id: call.id,
-                    content: INTERRUPTED.to_string(),
-                }));
-                return Err(Error::Interrupted);
-            }
-            results = running => results,
-        };
-        for (call, content) in calls.into_iter().zip(results) {
+        // Each call answers the cancel itself, so one that finished before
+        // it keeps its result and every call started also finishes.
+        let results = futures::future::join_all(calls.iter().map(|call| {
+            let tool = by_name.get(call.name.as_str()).copied();
+            run_call(tool, ctx, call, events, cancel)
+        }))
+        .await;
+        for (call, result) in calls.into_iter().zip(results) {
             messages.push(Message::ToolResult {
                 call_id: call.id,
-                content: content.unwrap_or_else(|e| format!("Error: {e}")),
+                content: result.unwrap_or_else(|reason| failed(&reason)),
             });
+        }
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
         }
         // What monitors said while the tools ran, so a model busy on a long
         // turn hears it at its next step rather than when the turn ends.
@@ -345,24 +348,23 @@ async fn confirm_doom_loop(ctx: &ToolContext, call: &ToolCall) -> bool {
     }
 }
 
-async fn run_tool(
-    tools: &[Box<dyn Tool>],
-    ctx: &ToolContext,
-    call: &ToolCall,
-    events: &mpsc::Sender<Event>,
-) -> ToolResult {
-    let tool = tools.iter().find(|t| t.spec().name == call.name);
-    run_call(tool.map(|t| t.as_ref()), ctx, call, events).await
+/// A tool result's content when the tool failed for `reason`: the shape
+/// front-ends read the reason back out of.
+pub(crate) fn failed(reason: &str) -> String {
+    format!("Error: {reason}")
 }
 
 /// Runs `call` on `tool`, announcing it with [`Event::ToolStarted`] and
 /// [`Event::ToolFinished`] and streaming its output in between. No `tool`
-/// means the model named one that does not exist.
+/// means the model named one that does not exist. Cancelling `cancel` stops
+/// the tool and fails the call with [`INTERRUPTED`], finished event
+/// included, so a front-end sees every started call end.
 pub(crate) async fn run_call(
     tool: Option<&dyn Tool>,
     ctx: &ToolContext,
     call: &ToolCall,
     events: &mpsc::Sender<Event>,
+    cancel: &CancellationToken,
 ) -> ToolResult {
     emit(events, Event::ToolStarted(call.clone())).await;
     // Output goes straight onto the event channel from inside this future,
@@ -377,12 +379,20 @@ pub(crate) async fn run_call(
         monitors: ctx.monitors.clone(),
         writable: ctx.writable.clone(),
     };
-    let result = match tool {
-        None => Err(format!("unknown tool: {}", call.name)),
-        Some(tool) => match parse_arguments(&call.arguments) {
-            Ok(args) => tool.call(args, &ctx).await,
-            Err(e) => Err(e),
-        },
+    let run = async {
+        match tool {
+            None => Err(format!("unknown tool: {}", call.name)),
+            Some(tool) => match parse_arguments(&call.arguments) {
+                Ok(args) => tool.call(args, &ctx).await,
+                Err(e) => Err(e),
+            },
+        }
+    };
+    let result = tokio::select! {
+        biased;
+        // Dropping the tool's future stops it; bash kills its process group.
+        _ = cancel.cancelled() => Err(INTERRUPTED.to_string()),
+        result = run => result,
     };
     emit(
         events,
@@ -780,7 +790,7 @@ pub(crate) mod tests {
         let cancel = CancellationToken::new();
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stall(cancel.clone())), Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
         let result = run_turn(&provider, ROUTE, &tools, &ctx, &mut messages, &tx, &cancel).await;
@@ -790,8 +800,33 @@ pub(crate) mod tests {
             messages[2..],
             ["1", "2"].map(|id| Message::ToolResult {
                 call_id: id.into(),
-                content: INTERRUPTED.into(),
+                content: failed(INTERRUPTED),
             })
+        );
+        // A front-end that only sees events, like `nth run`, sees each call
+        // end too, with the same result the history has.
+        drop(tx);
+        let mut seen = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::ToolStarted(call) => seen.push(format!("started {}", call.id)),
+                Event::ToolFinished { call, result } => {
+                    seen.push(format!("finished {} {result:?}", call.id))
+                }
+                _ => {}
+            }
+        }
+        // The calls run in parallel, so only the set of endings is fixed.
+        seen.sort();
+        let interrupted = Err::<String, _>(INTERRUPTED.to_string());
+        assert_eq!(
+            seen,
+            [
+                format!("finished 1 {interrupted:?}"),
+                format!("finished 2 {interrupted:?}"),
+                "started 1".to_string(),
+                "started 2".to_string(),
+            ]
         );
     }
 
@@ -1095,7 +1130,7 @@ pub(crate) mod tests {
             messages[2..],
             ["1", "2", "3"].map(|id| Message::ToolResult {
                 call_id: id.into(),
-                content: STOPPED.into(),
+                content: failed(STOPPED),
             }),
             "every call is answered, so the session stays valid"
         );
@@ -1129,7 +1164,7 @@ pub(crate) mod tests {
             messages[2..],
             ["1", "2", "3"].map(|id| Message::ToolResult {
                 call_id: id.into(),
-                content: INTERRUPTED.into(),
+                content: failed(INTERRUPTED),
             }),
             "every call is answered, so the session stays valid"
         );
@@ -1269,7 +1304,7 @@ pub(crate) mod tests {
             messages.last(),
             Some(&Message::ToolResult {
                 call_id: "1".into(),
-                content: MAX_STEPS_REACHED.into(),
+                content: failed(MAX_STEPS_REACHED),
             })
         );
         drop(tx);

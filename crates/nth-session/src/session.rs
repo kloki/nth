@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     DEFAULT_MAX_STEPS, Error, Route,
-    agent_loop::{INTERRUPTED, run_call},
+    agent_loop::{failed, run_call},
     plan::{self, Approver},
     run_turn, system_prompt,
 };
@@ -149,6 +149,19 @@ impl Session {
         }
     }
 
+    /// Rewrites the system prompt when the day it names has passed: a
+    /// session that crosses midnight or is resumed later would tell the
+    /// model yesterday's date otherwise. Costs one scan of the prompt.
+    fn refresh_system_prompt(&mut self) {
+        let stale = match self.messages.first() {
+            Some(Message::System(prompt)) => !system_prompt::names_today(prompt),
+            _ => false,
+        };
+        if stale {
+            self.rewrite_system_prompt();
+        }
+    }
+
     /// Adds a user message and runs the turn it starts, until it ends or
     /// `cancel` interrupts it. Tools reach you through `front_end`.
     pub async fn prompt(
@@ -173,7 +186,17 @@ impl Session {
             text = format!("{text}\n\n{reminder}");
         }
         self.last_turn_mode = Some(self.mode);
-        self.messages.push(Message::User(text));
+        self.refresh_system_prompt();
+        match self.messages.last_mut() {
+            // A turn that failed before the model said anything left the
+            // last prompt unanswered; for the same reason as the reminder,
+            // this one joins it rather than following it.
+            Some(Message::User(previous)) => {
+                previous.push_str("\n\n");
+                previous.push_str(&text);
+            }
+            _ => self.messages.push(Message::User(text)),
+        }
         self.updated_at = SystemTime::now();
         // The system prompt's files count as loaded, so read never repeats them.
         let mut loaded = self.loaded_instructions.clone();
@@ -208,7 +231,7 @@ impl Session {
         self.loaded_instructions = ctx
             .instructions
             .lock()
-            .expect("only poisoned if a holder panicked")
+            .expect("loaded instructions lock poisoned")
             .clone();
         result
     }
@@ -238,19 +261,15 @@ impl Session {
         }));
         self.updated_at = SystemTime::now();
         let ctx = ToolContext::new(self.cwd.clone());
-        let (content, result) = tokio::select! {
-            biased;
-            // Dropping the call kills the command's process group.
-            _ = cancel.cancelled() => (INTERRUPTED.to_string(), Err(Error::Interrupted)),
-            result = run_call(Some(shell), &ctx, &call, events) => {
-                (result.unwrap_or_else(|e| format!("Error: {e}")), Ok(()))
-            }
-        };
+        let result = run_call(Some(shell), &ctx, &call, events, cancel).await;
         self.messages.push(Message::ToolResult {
             call_id: call.id,
-            content,
+            content: result.unwrap_or_else(|reason| failed(&reason)),
         });
-        result
+        match cancel.is_cancelled() {
+            true => Err(Error::Interrupted),
+            false => Ok(()),
+        }
     }
 }
 
@@ -285,9 +304,11 @@ fn default_max_steps() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, ToolCall};
+    use futures::{future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{AssistantMessage, BoxError, ModelInfo, Request, StreamEvent, ToolCall};
 
     use super::*;
+    use crate::agent_loop::INTERRUPTED;
 
     #[test]
     fn starts_with_only_the_system_prompt() {
@@ -380,8 +401,6 @@ mod tests {
 
     #[tokio::test]
     async fn remembers_the_instruction_files_tools_attached() {
-        use nth_protocol::StreamEvent;
-
         use crate::agent_loop::tests::{Scripted, call};
 
         let context = Arc::new(Context {
@@ -446,8 +465,6 @@ mod tests {
     /// Sends `text` in `session`'s mode with a model that just answers,
     /// and returns the user message the model got.
     async fn send(session: &mut Session, text: &str) -> String {
-        use nth_protocol::StreamEvent;
-
         let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
             "ok".into(),
         )]]);
@@ -521,6 +538,64 @@ mod tests {
         assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 
+    /// Fails every request, as a provider that is down does.
+    struct Down;
+
+    impl Provider for Down {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            Box::pin(async { Err("connection refused".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prompt_after_a_failed_turn_joins_the_unanswered_one() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let (tx, _rx) = mpsc::channel(64);
+
+        let failed = session
+            .prompt(
+                "first",
+                &Down,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(matches!(failed, Err(Error::Provider(_))));
+        assert_eq!(session.messages[1..], [Message::User("first".into())]);
+
+        // One user message, as endpoints that reject two in a row expect.
+        assert_eq!(send(&mut session, "second").await, "first\n\nsecond");
+        assert!(matches!(
+            session.messages[1..],
+            [Message::User(_), Message::Assistant(_)]
+        ));
+        assert_eq!(session.title().as_deref(), Some("first"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_rewrites_a_system_prompt_from_another_day() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let current = session.messages[0].clone();
+        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &Context::default())
+            .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
+        session.messages[0] = Message::System(stale);
+
+        send(&mut session, "go").await;
+
+        assert_eq!(session.messages[0], current);
+    }
+
     #[tokio::test]
     async fn act_mode_from_the_start_says_nothing() {
         let mut session = Session::new("glm-5.3", "/repo".into());
@@ -529,8 +604,6 @@ mod tests {
 
     #[tokio::test]
     async fn plan_mode_lets_tools_write_only_the_plan() {
-        use nth_protocol::StreamEvent;
-
         use crate::agent_loop::tests::{Scripted, call};
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -689,7 +762,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Interrupted)));
         assert!(matches!(
             session.messages.last(),
-            Some(Message::ToolResult { content, .. }) if content == INTERRUPTED
+            Some(Message::ToolResult { content, .. }) if *content == failed(INTERRUPTED)
         ));
     }
 }

@@ -636,7 +636,9 @@ mod tests {
         send(&mut app, "fix it");
         app.on_key(KeyEvent::from(KeyCode::Esc));
         end(&mut app).await;
-        assert_eq!(sent(&app), ["go", &format!("{NOTICE}\n\nfix it")]);
+        // The interrupted "go" was never answered, so the next prompt joins
+        // it rather than following it as a second user message.
+        assert_eq!(sent(&app), [format!("go\n\n{NOTICE}\n\nfix it")]);
         assert_eq!(last_user(&app), Some("fix it"));
     }
 

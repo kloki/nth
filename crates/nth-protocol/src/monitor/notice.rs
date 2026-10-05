@@ -42,8 +42,15 @@ pub(super) fn render(
     out.join("\n")
 }
 
+/// Keeps a value from ending its attribute or its tag: `split_notices`
+/// finds the tag's end at the first `>`, and a newline would read as a
+/// line of output.
 fn attribute(text: &str) -> String {
-    text.replace('&', "&amp;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\n', "&#10;")
 }
 
 /// A monitor's notice as the transcript shows it, from the text the model
@@ -101,8 +108,12 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
 fn value(attrs: &str, name: &str) -> Option<String> {
     let start = attrs.find(&format!("{name}=\""))? + name.len() + 2;
     let len = attrs[start..].find('"')?;
+    // `&amp;` last, so an escaped ampersand is not unescaped twice.
     Some(
         attrs[start..start + len]
+            .replace("&#10;", "\n")
+            .replace("&gt;", ">")
+            .replace("&lt;", "<")
             .replace("&quot;", "\"")
             .replace("&amp;", "&"),
     )
@@ -147,5 +158,42 @@ mod tests {
         );
         assert_eq!(rest, "now fix it");
         assert_eq!(split_notices("hi"), (vec![], "hi"));
+    }
+
+    #[test]
+    fn a_description_cannot_end_the_tag_or_start_a_line() {
+        let log = Path::new("/logs/2.log");
+        let lines = ["GET /health".to_string()];
+        for description in ["errors (status > 400)", "first\nsecond", "<b>&amp;</b>"] {
+            let output = render(2, description, log, &lines, 0, None);
+            let ended = render(2, description, log, &[], 0, Some((MonitorEnd::Flooded, 1)));
+            let text = format!("{output}\n{ended}\n\nlook");
+
+            assert_eq!(
+                output.lines().count(),
+                3,
+                "the tag stays on one line: {output}"
+            );
+            let (notices, rest) = split_notices(&text);
+            assert_eq!(
+                notices,
+                [
+                    NoticeSummary {
+                        id: 2,
+                        description: description.into(),
+                        lines: 1,
+                        ended: None,
+                    },
+                    NoticeSummary {
+                        id: 2,
+                        description: description.into(),
+                        lines: 0,
+                        ended: Some(MonitorEnd::Flooded.to_string()),
+                    },
+                ],
+                "{description:?}"
+            );
+            assert_eq!(rest, "look");
+        }
     }
 }
