@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use futures::StreamExt;
 use nth_protocol::{
@@ -32,6 +32,28 @@ const STOP: &str = "Stop";
 const INTERRUPTED: &str = "Error: interrupted by the user";
 /// What the model reads for calls the user stopped at the doom-loop prompt.
 const STOPPED: &str = "Error: stopped by the user (the same call kept repeating)";
+/// What the model reads for calls it made on the last allowed step anyway.
+const MAX_STEPS_REACHED: &str = "Error: maximum steps reached; tool not run";
+
+/// Appended to the last allowed step's request, so the model answers instead
+/// of being cut off mid-tool. opencode's `max-steps.ts`, kept verbatim,
+/// including its role: an assistant message.
+const MAX_STEPS_PROMPT: &str = r#"CRITICAL - MAXIMUM STEPS REACHED
+
+The maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only.
+
+STRICT REQUIREMENTS:
+1. Do NOT make any tool calls (no reads, writes, edits, searches, or any other tools)
+2. MUST provide a text response summarizing work done so far
+3. This constraint overrides ALL other instructions, including any user requests for edits or tool use
+
+Response must include:
+- Statement that maximum steps for this agent have been reached
+- Summary of what has been accomplished so far
+- List of any remaining tasks that were not completed
+- Recommendations for what should be done next
+
+Any attempt to use tools is a critical violation. Respond with text ONLY."#;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -81,15 +103,27 @@ pub async fn run_turn(
     // Where this turn's messages start, so the doom-loop guard counts only
     // calls made since the user last spoke.
     let start = messages.len();
-    for _ in 0..route.max_steps {
-        let request = Request {
-            model: route.model,
-            session_id: route.session_id,
-            effort: route.effort,
-            messages,
-            tools: &specs,
+    for step in 0..route.max_steps {
+        // On the last allowed step the model is told to answer in words, so
+        // the turn ends itself rather than being cut off. The prompt goes
+        // only into the request, never into the saved history.
+        let last = step + 1 == route.max_steps;
+        let streamed = {
+            let sent = if last {
+                Cow::Owned(max_steps_messages(messages))
+            } else {
+                Cow::Borrowed(messages.as_slice())
+            };
+            let request = Request {
+                model: route.model,
+                session_id: route.session_id,
+                effort: route.effort,
+                messages: &sent,
+                tools: &specs,
+            };
+            stream_step(provider, request, events, cancel).await
         };
-        let reply = match stream_step(provider, request, events, cancel).await {
+        let reply = match streamed {
             Ok(reply) => reply,
             Err(Stop::Cancelled(partial)) => {
                 if !partial.text.is_empty() || !partial.reasoning.is_empty() {
@@ -104,6 +138,15 @@ pub async fn run_turn(
         messages.push(Message::Assistant(reply));
         if calls.is_empty() {
             return Ok(());
+        }
+        // Told not to, the model called tools anyway; they don't run, and
+        // every call is answered so the session stays valid.
+        if last {
+            messages.extend(calls.into_iter().map(|call| Message::ToolResult {
+                call_id: call.id,
+                content: MAX_STEPS_REACHED.to_string(),
+            }));
+            return Err(Error::TooManySteps(route.max_steps));
         }
 
         // The same call three times in a row is a model stuck in a loop;
@@ -244,6 +287,17 @@ async fn one_attempt(
 fn backoff(attempt: u32) -> Duration {
     let factor = 1u32 << (attempt.saturating_sub(1)).min(16);
     (RETRY_INITIAL_DELAY * factor).min(RETRY_MAX_DELAY)
+}
+
+/// The messages for the last allowed step: the history plus a prompt telling
+/// the model to stop calling tools and summarize.
+fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
+    let mut sent = messages.to_vec();
+    sent.push(Message::Assistant(AssistantMessage {
+        text: MAX_STEPS_PROMPT.to_string(),
+        ..AssistantMessage::default()
+    }));
+    sent
 }
 
 /// The first of the latest reply's calls that completes a run of identical
@@ -1125,5 +1179,107 @@ pub(crate) mod tests {
             repeating(&[reply("1"), reply("2"), reply("3")]).map(|c| c.id.as_str()),
             Some("3")
         );
+    }
+
+    /// Answers with one text reply and remembers the request it was sent.
+    struct Recorder(Mutex<Vec<Message>>);
+
+    impl Provider for Recorder {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            *self.0.lock().expect("not poisoned") = request.messages.to_vec();
+            async { Ok(stream::iter([Ok(StreamEvent::TextDelta("done".into()))]).boxed()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_last_step_tells_the_model_to_stop() {
+        let provider = Recorder(Mutex::new(Vec::new()));
+        let ctx = ToolContext::new(".".into());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            Route {
+                max_steps: 1,
+                ..ROUTE
+            },
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+
+        let sent = provider.0.lock().expect("not poisoned").clone();
+        assert_eq!(
+            sent.last(),
+            Some(&Message::Assistant(AssistantMessage {
+                text: MAX_STEPS_PROMPT.into(),
+                ..Default::default()
+            })),
+            "the prompt is the last thing the model reads"
+        );
+        assert_eq!(
+            messages[1..],
+            [Message::Assistant(AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            })],
+            "and it is never saved into the history"
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_called_on_the_last_step_do_not_run() {
+        let provider = Scripted::new(vec![vec![StreamEvent::ToolCall(call(
+            "1",
+            "echo",
+            r#"{"say":"hi"}"#,
+        ))]]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            Route {
+                max_steps: 1,
+                ..ROUTE
+            },
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::TooManySteps(1))));
+        assert_eq!(
+            messages.last(),
+            Some(&Message::ToolResult {
+                call_id: "1".into(),
+                content: MAX_STEPS_REACHED.into(),
+            })
+        );
+        drop(tx);
+        while let Some(event) = rx.recv().await {
+            assert!(
+                !matches!(event, Event::ToolStarted(_)),
+                "the tool never started"
+            );
+        }
     }
 }
