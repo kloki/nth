@@ -211,11 +211,7 @@ impl App {
             shell,
         }: Ended,
     ) {
-        // Events sent just before the task returned may still be queued, and
-        // they belong above the footer.
-        while let Ok(event) = self.events_rx.try_recv() {
-            self.chat.apply(&event);
-        }
+        self.drain_events();
         self.drop_asks();
         let elapsed = self
             .busy_since
@@ -256,6 +252,15 @@ impl App {
         }
     }
 
+    /// Events sent just before the task returned may still be queued, and
+    /// they belong above the footer. Through `on_session`, so a usage
+    /// report at the tail counts too.
+    fn drain_events(&mut self) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.on_session(event);
+        }
+    }
+
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again.
@@ -278,7 +283,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+        BoxError, Event, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+        Usage,
     };
     use tokio::sync::Notify;
 
@@ -535,6 +541,23 @@ mod tests {
         assert!(!app.is_busy());
         assert!(app.queue.is_empty());
         assert_eq!(app.prompt.text(), "two\n\nthree\n\ntyping");
+    }
+
+    #[tokio::test]
+    async fn a_usage_report_at_the_tail_of_a_turn_still_counts() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "one");
+        settle(&app).await;
+        let usage = Usage {
+            input: 10,
+            output: 2,
+        };
+        app.events_tx.try_send(Event::Usage(usage)).expect("room");
+
+        end(&mut app).await;
+
+        assert_eq!(app.usage, Some(usage));
     }
 
     #[tokio::test]
