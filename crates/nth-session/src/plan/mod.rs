@@ -4,7 +4,10 @@
 
 pub mod edits;
 
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use uuid::Uuid;
 
@@ -12,9 +15,28 @@ const PLAN_MODE: &str = include_str!("plan_mode.md");
 const BUILD_SWITCH: &str = include_str!("build_switch.md");
 const APPROVED: &str = include_str!("approved.md");
 
+/// The project `.nth`'s `.gitignore`: nth's plan files stay out of git,
+/// while project skills (`.nth/skills`) stay tracked.
+const GITIGNORE: &str = "# nth's plan files.\nplans/\n";
+
 /// Where the session `id` keeps its plan: `<cwd>/.nth/plans/<id>.md`.
 pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
     cwd.join(".nth").join("plans").join(format!("{id}.md"))
+}
+
+/// Creates `<cwd>/.nth` and, unless one is already there, the
+/// `.gitignore` that keeps nth's plan files out of git. Called when plan
+/// mode starts, so the directory is ready before the model writes the plan.
+///
+/// A `.gitignore` already there is left alone: the user's rules win.
+pub async fn ensure_dir(cwd: &Path) -> io::Result<()> {
+    let dir = cwd.join(".nth");
+    tokio::fs::create_dir_all(&dir).await?;
+    let gitignore = dir.join(".gitignore");
+    if !tokio::fs::try_exists(&gitignore).await.unwrap_or(false) {
+        tokio::fs::write(&gitignore, GITIGNORE).await?;
+    }
+    Ok(())
 }
 
 /// Who can approve the plan, which decides how the model hands it over.
@@ -115,5 +137,25 @@ mod tests {
         assert!(build_switch_reminder(plan, true).ends_with(
             "A plan file exists at /p.md. You should execute on the plan defined within it"
         ));
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_writes_a_gitignore_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        ensure_dir(dir.path()).await.expect("creates .nth");
+
+        let gitignore = dir.path().join(".nth/.gitignore");
+        assert_eq!(
+            std::fs::read_to_string(&gitignore).expect("reads"),
+            GITIGNORE
+        );
+
+        // The user's own rules win over nth's.
+        std::fs::write(&gitignore, "plans/\ncustom\n").expect("writes");
+        ensure_dir(dir.path()).await.expect("leaves it alone");
+        assert_eq!(
+            std::fs::read_to_string(&gitignore).expect("reads"),
+            "plans/\ncustom\n"
+        );
     }
 }
