@@ -12,6 +12,8 @@ use super::{Error, USER_AGENT, success};
 const CATALOG_URL: &str = "https://models.dev/api.json";
 /// models.dev only refines the list, so a stall must not hold it up.
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(5);
+/// The list is one small JSON body, so unlike a reply it can have a deadline.
+const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const CHAT_COMPLETIONS_NPM: &str = "@ai-sdk/openai-compatible";
 
 #[derive(Deserialize)]
@@ -72,6 +74,7 @@ async fn listed(
 ) -> Result<Vec<String>, Error> {
     let response = http
         .get(format!("{base_url}/models"))
+        .timeout(LIST_TIMEOUT)
         .bearer_auth(api_key)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
