@@ -3,7 +3,7 @@
 
 use std::{io::Write, path::PathBuf};
 
-use nth_protocol::Event;
+use nth_protocol::{Event, retry_label};
 use owo_colors::OwoColorize;
 
 pub struct Printer {
@@ -50,6 +50,13 @@ impl Printer {
                 self.break_line();
                 let first = e.lines().next().unwrap_or_default();
                 eprintln!("  {} {} {}", "✗".red(), call.name.red(), first.red());
+            }
+            Event::Retry { attempt, delay } => {
+                self.break_line();
+                eprintln!(
+                    "{}",
+                    format!("⟳ {}", retry_label(*attempt, *delay)).yellow()
+                );
             }
             // The headless run prints the result's summary, not the stream.
             Event::ToolFinished { .. }

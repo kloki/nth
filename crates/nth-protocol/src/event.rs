@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{ToolCall, ToolResult, Usage};
 
 /// What a running session reports to its front-ends.
@@ -22,4 +24,40 @@ pub enum Event {
     /// What background monitors said, handed to the model between steps as
     /// a user message.
     Notice(String),
+    /// A provider error is being retried: the front-end should show that a
+    /// new attempt follows in `delay`, the `attempt`-th so far. Text already
+    /// streamed for the step stays on screen but is not saved; the retry
+    /// starts the reply over.
+    Retry {
+        attempt: u32,
+        delay: Duration,
+    },
+}
+
+/// How a retry reads, the same in every front-end: whole seconds rounded
+/// up, so a sub-second wait never shows as `0s`.
+pub fn retry_label(attempt: u32, delay: Duration) -> String {
+    let seconds = delay.as_millis().div_ceil(1000);
+    format!("retrying in {seconds}s · attempt {attempt}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_label_rounds_the_wait_up() {
+        assert_eq!(
+            retry_label(1, Duration::from_millis(500)),
+            "retrying in 1s · attempt 1"
+        );
+        assert_eq!(
+            retry_label(2, Duration::from_millis(1500)),
+            "retrying in 2s · attempt 2"
+        );
+        assert_eq!(
+            retry_label(3, Duration::from_secs(4)),
+            "retrying in 4s · attempt 3"
+        );
+    }
 }

@@ -3,6 +3,7 @@
 
 use std::{sync::Arc, time::Instant};
 
+use crossterm::event::Event as TermEvent;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{
@@ -312,4 +313,25 @@ async fn the_agent_switches_the_tab() {
     let panel = app.screen_rx.recv().await.expect("sent");
     app.open_content(panel.into());
     assert_eq!(app.content.active(), Tab::Diagnostics);
+}
+
+#[test]
+fn a_large_paste_collapses_and_a_small_one_does_not() {
+    let mut app = app();
+    let pasted = (1..=5)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    app.on_terminal(TermEvent::Paste(pasted));
+
+    assert_eq!(app.prompt.text(), "[pasted 5 lines] ");
+    assert_eq!(rows(&mut app)[10].trim_end(), " ▎ [pasted 5 lines]");
+
+    app.on_terminal(TermEvent::Paste("one\ntwo".into()));
+    assert_eq!(
+        app.prompt.text(),
+        "[pasted 5 lines] one\ntwo",
+        "a small paste goes in as is"
+    );
 }
