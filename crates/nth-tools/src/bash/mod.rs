@@ -9,7 +9,10 @@ use tokio::{
     process::Child,
 };
 
-use crate::process::{self, KillGroupOnDrop, kill_group};
+use crate::{
+    output::{self, tail},
+    process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
+};
 
 /// How long to keep reading after bash exits, for output still in the pipe.
 const DRAIN: Duration = Duration::from_millis(100);
@@ -30,7 +33,7 @@ impl Default for BashConfig {
         Self {
             default_timeout_ms: 120_000,
             max_timeout_ms: 600_000,
-            max_output_chars: 30_000,
+            max_output_chars: output::MAX_CHARS,
         }
     }
 }
@@ -85,7 +88,7 @@ impl Tool for Bash {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command to execute" },
-                    "timeout": { "type": "integer", "minimum": 1, "description": "Optional timeout in milliseconds" },
+                    "timeout": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "description": "Optional timeout in milliseconds" },
                     "description": { "type": "string", "description": "Clear, concise description of what this command does in 5-10 words" }
                 },
                 "required": ["command", "description"]
@@ -100,8 +103,11 @@ impl Tool for Bash {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = crate::parse_args(args)?;
+            // The configured default is the user's to set as low as they
+            // like; the model's `0` would kill the command before it ran.
             let timeout_ms = args
                 .timeout
+                .map(|t| t.max(MIN_TIMEOUT_MS))
                 .unwrap_or(self.config.default_timeout_ms)
                 .min(self.config.max_timeout_ms);
             let max_chars = self.config.max_output_chars;
@@ -214,15 +220,6 @@ impl<'a> Streamed<'a> {
     }
 }
 
-fn tail(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
-        return text.to_string();
-    }
-    let kept: String = text.chars().skip(count - max_chars).collect();
-    format!("...output truncated, showing the last {max_chars} characters...\n{kept}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +228,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(dir.path().to_path_buf());
         Bash::default().call(args, &ctx).await
+    }
+
+    /// A bash whose default timeout is `ms`: the one way to time out
+    /// faster than the minimum the model may ask for.
+    fn quick(ms: u64) -> Bash {
+        Bash::new(BashConfig {
+            default_timeout_ms: ms,
+            ..BashConfig::default()
+        })
     }
 
     /// Runs `command` with a sink, and returns what it streamed.
@@ -299,7 +305,7 @@ mod tests {
             .await;
         assert_eq!(
             out,
-            Ok("...output truncated, showing the last 3 characters...\ndef".to_string())
+            Ok("...output truncated, showing the last 3 of 6 characters...\ndef".to_string())
         );
         let out = bash
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)
@@ -323,16 +329,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn times_out() {
-        let out = bash(json!({ "command": "sleep 5", "timeout": 50, "description": "t" })).await;
-        assert!(out.is_err_and(|e| e.contains("timeout 50 ms")));
+    async fn a_too_short_timeout_is_raised_to_the_minimum() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = quick(50)
+            .call(
+                json!({ "command": "sleep 0.2; echo hi", "timeout": 0, "description": "t" }),
+                &ctx,
+            )
+            .await;
+        assert_eq!(out, Ok("hi\n".to_string()));
     }
 
     #[tokio::test]
     async fn timeout_keeps_output_so_far() {
-        let out =
-            bash(json!({ "command": "echo early; sleep 5", "timeout": 200, "description": "t" }))
-                .await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = quick(200)
+            .call(
+                json!({ "command": "echo early; sleep 5", "description": "t" }),
+                &ctx,
+            )
+            .await;
         assert!(out.is_err_and(|e| e.starts_with("early\n") && e.contains("timeout 200 ms")));
     }
 
@@ -350,9 +368,9 @@ mod tests {
     async fn timeout_kills_background_processes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let out = Bash::default()
+        let out = quick(200)
             .call(
-                json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "timeout": 200, "description": "t" }),
+                json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "description": "t" }),
                 &ctx,
             )
             .await;

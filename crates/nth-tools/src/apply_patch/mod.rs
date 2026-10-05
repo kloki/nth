@@ -245,7 +245,18 @@ fn apply(source: &str, hunks: &[Hunk]) -> Result<String, String> {
         let n = i + 1;
         if let Some(context) = &hunk.context {
             let found = matcher::find_where(&text, context, |span| span.start >= cursor)
-                .map_err(|_| format!("hunk {n}: the @@ line `{context}` is not in the file"))?;
+                .map_err(|_| {
+                    if cursor == 0 {
+                        format!("hunk {n}: the @@ line `{context}` is not in the file")
+                    } else {
+                        // It may well be in the file, before the cursor: hunks
+                        // apply in order, so the model needs to merge or reorder.
+                        format!(
+                            "hunk {n}: the @@ line `{context}` is not in the file after hunk {}. Hunks apply in file order, each after the one before, so two changes under one @@ line go in one hunk, in order.",
+                            n - 1
+                        )
+                    }
+                })?;
             // Sorted, so the first is the nearest after the previous hunk.
             cursor = found
                 .first()
@@ -441,6 +452,33 @@ mod tests {
             contents(&path),
             "fn a() {\n    10\n}\n\nfn b() {\n    2\n}\n\nfn c() {\n    30\n    31\n}\n"
         );
+    }
+
+    #[tokio::test]
+    async fn a_second_hunk_under_the_same_at_line_says_where_it_looked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a.rs", "fn a() {\n    1\n    2\n}\n");
+        let err = patch(
+            dir.path(),
+            "\
+*** Begin Patch
+*** Update File: a.rs
+@@ fn a() {
+-    1
++    10
+@@ fn a() {
+-    2
++    20
+*** End Patch",
+        )
+        .await
+        .expect_err("the anchor is behind the cursor");
+        assert!(
+            err.contains("hunk 2: the @@ line `fn a() {` is not in the file after hunk 1"),
+            "{err}"
+        );
+        assert!(err.contains("in one hunk"), "{err}");
+        assert_eq!(contents(&path), "fn a() {\n    1\n    2\n}\n");
     }
 
     #[tokio::test]

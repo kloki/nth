@@ -1,7 +1,7 @@
 //! What happens after a tool writes a file: its formatters run, its
-//! language servers check it, and the model is told what they found. write
-//! calls [`PostWrite::after_write`]; edit and apply_patch format under their
-//! lock and ask the servers after it, so they call the two halves.
+//! language servers check it, and the model is told what they found. The
+//! tools format under their shared lock and ask the servers after it, so
+//! they call the two halves; [`PostWrite::after_write`] is both at once.
 
 use std::{path::Path, sync::Arc};
 
@@ -35,10 +35,16 @@ impl PostWrite {
     /// when nothing ran and nothing is wrong.
     pub async fn after_write(&self, path: &Path, cwd: &Path) -> String {
         let notes = self.format(path, cwd).await;
-        // After formatting, so positions match the file as it now is.
-        let diagnostics = self.lsp.touch(path, true).await;
-        let errors = report::after_write(path, &diagnostics);
+        let errors = self.check(path).await;
         join_sections(&notes, &errors)
+    }
+
+    /// The errors language servers report on `path` as it now is, and on
+    /// up to five other files. Called after formatting, so positions match
+    /// the file as it now is.
+    pub(crate) async fn check(&self, path: &Path) -> String {
+        let diagnostics = self.lsp.touch(path, true).await;
+        report::after_write(path, &diagnostics)
     }
 
     /// Formats `path` with the formatters for `cwd`'s project and returns

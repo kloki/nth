@@ -8,6 +8,8 @@ use serde_json::json;
 use crate::{
     PostWrite,
     bom::{BOM, has_bom},
+    edit::EDITS,
+    post_write,
 };
 
 pub struct Write {
@@ -52,6 +54,9 @@ impl Tool for Write {
             let args: Args = crate::parse_args(args)?;
             let path = ctx.cwd.join(&args.file_path);
             ctx.writable.check(&path)?;
+            // Under the same lock as edit and apply_patch: a write that lands
+            // while an edit's formatter rewrites the file would be undone.
+            let edits = EDITS.lock().await;
             let existing = match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_dir() => {
                     return Err(format!("cannot write {}: is a directory", path.display()));
@@ -80,11 +85,12 @@ impl Tool for Write {
                 "Created"
             };
             let wrote = format!("{verb} file: {}", path.display());
-            let notes = self.post_write.after_write(&path, &ctx.cwd).await;
-            Ok(match notes.is_empty() {
-                true => wrote,
-                false => format!("{wrote}\n\n{notes}"),
-            })
+            // The formatter rewrites the file, so it runs under the lock;
+            // waiting on the language servers need not.
+            let notes = self.post_write.format(&path, &ctx.cwd).await;
+            drop(edits);
+            let errors = self.post_write.check(&path).await;
+            Ok(post_write::append(wrote, &[&notes, &errors]))
         }
         .boxed()
     }
@@ -225,6 +231,38 @@ mod tests {
                 .is_err()
         );
         assert!(write(dir.path(), json!({ "filePath": "a" })).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_write_waits_for_a_parallel_edit_and_its_formatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "x\n").expect("write");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        // The edit's formatter holds the file for a while and then writes
+        // back what it read, as a real one does; a write slipping in
+        // between would be lost.
+        let edit = crate::Edit::new(PostWrite::with_formatter(
+            "slow",
+            &[
+                "sh",
+                "-c",
+                "c=$(cat $FILE); sleep 0.3; printf '%s!\\n' \"$c\" > $FILE",
+            ],
+        ));
+        let write = Write::new(PostWrite::off());
+
+        let (edited, wrote) = tokio::join!(
+            edit.call(
+                json!({ "filePath": "a.txt", "oldString": "x", "newString": "y" }),
+                &ctx,
+            ),
+            write.call(json!({ "filePath": "a.txt", "content": "z\n" }), &ctx),
+        );
+
+        edited.expect("edit");
+        wrote.expect("write");
+        assert_eq!(contents(&path), "z\n");
     }
 
     #[tokio::test]

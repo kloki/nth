@@ -5,6 +5,7 @@ mod edit;
 mod glob;
 mod grep;
 mod monitor;
+mod output;
 mod panel;
 mod post_write;
 mod process;

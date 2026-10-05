@@ -78,7 +78,12 @@ impl Tool for Read {
             let args: Args = crate::parse_args(args)?;
             let path = ctx.cwd.join(&args.file_path);
             let offset = args.offset.unwrap_or(1).max(1);
-            let limit = args.limit.unwrap_or(self.config.default_limit);
+            // A `limit` of 0 asks for nothing, which the model never means;
+            // an empty read would only tell it to continue from where it is.
+            let limit = match args.limit {
+                None | Some(0) => self.config.default_limit,
+                Some(limit) => limit,
+            };
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -163,6 +168,19 @@ async fn read_file(path: &Path, offset: usize, limit: usize, config: &ReadConfig
         };
         let entry = format!("{}: {line}\n", i + 1);
         if out.len() + entry.len() > config.max_bytes {
+            if !out.is_empty() {
+                break;
+            }
+            // A first line past the whole budget still goes out, cut, or
+            // the read makes no progress and tells the model to continue
+            // from the line it is on.
+            let cut = entry.floor_char_boundary(config.max_bytes);
+            out.push_str(entry[..cut].trim_end_matches('\n'));
+            out.push_str(&format!(
+                "... (line truncated to {} bytes)\n",
+                config.max_bytes
+            ));
+            last = i + 1;
             break;
         }
         out.push_str(&entry);
@@ -213,6 +231,33 @@ mod tests {
         assert_eq!(
             out,
             "2: 2\n3: 3\n\n(Showing lines 2-3 of 4. Use offset=4 to continue.)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_limit_means_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), "1\n2\n").expect("write");
+        let out = read(dir.path(), json!({ "filePath": "a.txt", "limit": 0 })).await;
+        assert_eq!(out, Ok("1: 1\n2: 2\n".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_line_over_the_byte_budget_still_moves_the_read_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), "abcdefghijklmnop\nx\n").expect("write");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let read = Read::new(
+            ReadConfig {
+                max_bytes: 12,
+                ..ReadConfig::default()
+            },
+            crate::post_write::lsp_off(),
+        );
+        let out = read.call(json!({ "filePath": "a.txt" }), &ctx).await;
+        assert_eq!(
+            out,
+            Ok("1: abcdefghi... (line truncated to 12 bytes)\n\n(Showing lines 1-1 of 2. Use offset=2 to continue.)".to_string())
         );
     }
 

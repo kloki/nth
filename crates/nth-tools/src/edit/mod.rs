@@ -13,8 +13,10 @@ use tokio::sync::Mutex;
 use crate::{PostWrite, bom::BOM, post_write, write::write_with_dirs};
 
 /// The calls of a turn run in parallel, and two edits of one file would
-/// each read it before the other writes, losing the first. Edits are quick,
-/// so one lock for all of them, and for apply_patch, is enough.
+/// each read it before the other writes, losing the first. One lock for
+/// every tool that writes files (write, edit and apply_patch), held while
+/// the formatters rewrite the file too, so writes of different files wait
+/// on each other's formatters; a lock per path can come when that shows.
 pub(crate) static EDITS: Mutex<()> = Mutex::const_new(());
 
 pub struct Edit {

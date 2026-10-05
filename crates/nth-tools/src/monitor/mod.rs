@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     path::Path,
+    pin::Pin,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -18,11 +19,10 @@ use tokio::{
     process::Child,
 };
 
-use crate::process::{self, KillGroupOnDrop, kill_group};
+use crate::process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group};
 
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
-const MIN_TIMEOUT_MS: u64 = 1_000;
 
 /// More stdout lines than this within [`FLOOD_WINDOW`] stop the monitor:
 /// the model could not take them in.
@@ -81,7 +81,10 @@ impl Tool for Monitor {
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
-            // Dropping the child unregistered kills it.
+            // Armed before anything can fail: a command whose watch never
+            // starts is killed with everything it started, where dropping
+            // the child alone would reach only bash.
+            let abandoned = KillGroupOnDrop(child.id());
             let registered = ctx
                 .monitors
                 .register(&args.description, &args.command)
@@ -92,7 +95,14 @@ impl Tool for Monitor {
                 Ok(file) => (Some(file), format!("The full output, stderr included, is in {}.", registered.log.display())),
                 Err(e) => (None, format!("Its output is not logged: {e}.")),
             };
-            tokio::spawn(watch(ctx.monitors.clone(), registered, child, log, timeout));
+            tokio::spawn(watch(
+                ctx.monitors.clone(),
+                registered,
+                child,
+                abandoned,
+                log,
+                timeout,
+            ));
             Ok(format!(
                 "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. {log_note} Stop it with monitor_stop.",
                 args.description,
@@ -111,21 +121,20 @@ async fn open_log(path: &Path) -> std::io::Result<File> {
 }
 
 /// Runs until the command exits, the timeout, a stop, a flood or the
-/// front-end leaving, then kills what is left of it and reports how it
-/// ended.
+/// front-end leaving, and reports how it ended. Everything the command
+/// started dies with it unless it exited by itself: then, as with bash,
+/// what it put in the background lives on.
 async fn watch(
     monitors: Monitors,
     registered: Registered,
     mut child: Child,
+    mut abandoned: KillGroupOnDrop,
     log: Option<File>,
     timeout: Duration,
 ) {
     let Registered { id, stop, .. } = registered;
-    // Declared after `child` so it drops first, while the child is still
-    // unreaped and its pid cannot have been reused.
-    let _abandoned = KillGroupOnDrop(child.id());
-    let mut out = child.stdout.take().map(BufReader::new);
-    let mut err = child.stderr.take().map(BufReader::new);
+    let mut out = child.stdout.take().map(Pipe::new);
+    let mut err = child.stderr.take().map(Pipe::new);
     let mut watch = Watch {
         monitors: &monitors,
         id,
@@ -171,11 +180,19 @@ async fn watch(
                     }
                 });
                 let _ = drained.await;
+                // Reaped, so the group is no longer ours to kill: its pid
+                // may be reused, and what is left in it was meant to
+                // outlive the command.
+                abandoned.0 = None;
                 break MonitorEnd::Exited(status);
             }
         }
     };
-    kill_group(&child);
+    if abandoned.0.is_some() {
+        // Stopped, timed out or flooded: the command and all it started go.
+        kill_group(&child);
+        abandoned.0 = None;
+    }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
     monitors
@@ -183,24 +200,54 @@ async fn watch(
         .await;
 }
 
+/// One of the command's pipes with the start of a line that has not ended
+/// yet. The line is kept here rather than in the reading future, which the
+/// `select!` drops whenever another arm wins: a half-read line must survive
+/// that, or stdout loses bytes every time stderr speaks first.
+struct Pipe<R> {
+    reader: BufReader<R>,
+    partial: Vec<u8>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            partial: Vec::new(),
+        }
+    }
+}
+
 /// The next line from a pipe, without its newline; `None` once it is
 /// closed, and forever after, so a closed pipe's `select!` arm sleeps.
-async fn next_line(reader: &mut Option<impl AsyncBufRead + Unpin>) -> Option<String> {
-    let Some(pipe) = reader else {
+async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
+    let Some(Pipe { reader, partial }) = pipe else {
         return std::future::pending().await;
     };
-    let mut buf = Vec::new();
-    match pipe.read_until(b'\n', &mut buf).await {
-        Ok(0) | Err(_) => None,
-        Ok(_) => {
-            if buf.ends_with(b"\n") {
-                buf.pop();
-            }
-            if buf.ends_with(b"\r") {
-                buf.pop();
-            }
-            Some(String::from_utf8_lossy(&buf).into_owned())
+    // `fill_buf` and `consume` rather than `read_until`, so that between
+    // two awaits every byte taken from the reader is already in `partial`.
+    loop {
+        let available: &[u8] = match reader.fill_buf().await {
+            Ok([]) | Err(_) if partial.is_empty() => return None,
+            // Closed with a line still unfinished: that is the last line.
+            Ok([]) | Err(_) => &[],
+            Ok(available) => available,
+        };
+        let newline = available.iter().position(|&b| b == b'\n');
+        let taken = newline.map_or(available.len(), |i| i + 1);
+        partial.extend_from_slice(&available[..taken]);
+        Pin::new(&mut *reader).consume(taken);
+        if newline.is_none() && taken > 0 {
+            continue;
         }
+        let mut line = std::mem::take(partial);
+        if line.ends_with(b"\n") {
+            line.pop();
+        }
+        if line.ends_with(b"\r") {
+            line.pop();
+        }
+        return Some(String::from_utf8_lossy(&line).into_owned());
     }
 }
 
@@ -386,6 +433,37 @@ mod tests {
         assert!(notices.contains("\none\ntwo\n</monitor>"), "{notices}");
         assert!(!notices.contains("oops"), "stderr is only in the log");
         assert_eq!(f.ctx.monitors.running(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_line_interrupted_by_stderr_arrives_whole() {
+        let mut f = fixture();
+        // Stdout starts a line, stderr wins the next `select!`, then stdout
+        // finishes the line.
+        let command =
+            "printf par; sleep 0.1; echo oops >&2; sleep 0.1; echo tial; printf 'no newline'";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["partial", "no newline"]);
+        assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 2));
+    }
+
+    #[tokio::test]
+    async fn background_processes_outlive_a_natural_exit() {
+        let mut f = fixture();
+        let pid_file = f.dir.path().join("pid");
+        let command = format!("sleep 30 & echo $! > {}; echo started", pid_file.display());
+        start(&f.ctx, &command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 1));
+
+        let pid = std::fs::read_to_string(&pid_file).expect("pid");
+        let pid = pid.trim();
+        let alive = std::path::Path::new("/proc").join(pid).exists();
+        // Our business is over either way; the sleep must not linger past
+        // the test.
+        let _ = std::process::Command::new("kill").arg(pid).status();
+        assert!(alive, "the background sleep {pid} died with the monitor");
     }
 
     #[tokio::test]
