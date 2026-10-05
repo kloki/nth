@@ -574,7 +574,7 @@ impl App {
             Command::Exit => self.ask_quit(),
             // Mid-turn the session is in the turn task, so there is nothing
             // to replace yet.
-            Command::Clear if self.is_busy() => {}
+            Command::Clear if self.is_busy() => self.hint = Some("a turn is running".into()),
             Command::Clear => {
                 // Same directory, so the same instruction files and skills.
                 let mut session = Session::new(self.model.clone(), self.cwd.clone())

@@ -46,6 +46,7 @@ impl App {
             return;
         };
         if self.is_busy() {
+            self.hint = Some("a turn is running".into());
             return;
         }
         self.input = Input::Prompt;
@@ -71,7 +72,7 @@ impl App {
         match session {
             // A turn started while it was being read; switching now would
             // lose that turn's session when it ends.
-            Ok(_) if self.is_busy() => {}
+            Ok(_) if self.is_busy() => self.hint = Some("a turn is running".into()),
             Ok(session) => self.resume(session),
             Err(e) => self
                 .chat
