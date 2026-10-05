@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use nth_protocol::Mode;
 use nth_session::plan;
 
-use super::{App, Tab};
+use super::{App, Queued, Tab};
 
 impl App {
     /// Points the plan tab at the plan of the session the app is on, and
@@ -80,7 +80,7 @@ impl App {
             plan::approved(&self.plan_path)
         );
         if self.is_busy() {
-            self.queue.push_back(text);
+            self.queue.push_back(Queued::Prompt(text));
         } else {
             self.start_turn(text);
         }

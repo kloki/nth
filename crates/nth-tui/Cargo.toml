@@ -25,4 +25,5 @@ unicode-width.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+nth-tools.workspace = true
 tempfile.workspace = true

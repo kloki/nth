@@ -43,6 +43,13 @@ pub struct Checkers {
     pub formatters: Arc<Formatters>,
 }
 
+/// What the chat runs commands with: the model's tools, and the shell for
+/// the commands you type after `!`.
+pub struct Tools {
+    pub model: Arc<Vec<Box<dyn Tool>>>,
+    pub shell: Arc<dyn Tool>,
+}
+
 /// Runs the chat until the user quits, saving `session` and any other it
 /// moves on to in `store` after every turn. Each mode runs on its model in
 /// `mode_llms`. The terminal is restored on every exit path, including a
@@ -50,7 +57,7 @@ pub struct Checkers {
 pub async fn run(
     session: Session,
     provider: Arc<dyn Provider>,
-    tools: Arc<Vec<Box<dyn Tool>>>,
+    tools: Tools,
     checkers: Checkers,
     store: Store,
     paths: Paths,
@@ -67,7 +74,8 @@ pub async fn run(
         Err(_) => history::History::default(),
     };
     let mut terminal = terminal::enter()?;
-    let result = app::App::new(session, provider, tools)
+    let result = app::App::new(session, provider, tools.model)
+        .with_shell(tools.shell)
         .with_store(store)
         .with_paths(paths)
         .with_history(history)

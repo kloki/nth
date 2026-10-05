@@ -58,7 +58,7 @@ use tokio::{
     task::JoinError,
     time::MissedTickBehavior,
 };
-use turn::Ended;
+use turn::{Ended, Queued};
 
 use crate::{
     Checkers,
@@ -99,7 +99,7 @@ pub struct App {
     history_saving: Job<std::io::Result<()>>,
     /// Prompts sent while a turn runs, oldest first; each runs as its own
     /// turn once the one before ends well. Always empty while idle.
-    pub queue: VecDeque<String>,
+    pub queue: VecDeque<Queued>,
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
@@ -165,6 +165,8 @@ pub struct App {
     session: Option<Session>,
     provider: Arc<dyn Provider>,
     tools: Arc<Vec<Box<dyn Tool>>>,
+    /// Runs the commands typed after `!`; `None` leaves them unrun.
+    shell: Option<Arc<dyn Tool>>,
     events_tx: mpsc::Sender<Event>,
     events_rx: mpsc::Receiver<Event>,
     /// Where the running turn's tools send their questions.
@@ -320,6 +322,7 @@ impl App {
             session: Some(session),
             provider,
             tools,
+            shell: None,
             events_tx,
             events_rx,
             asks_tx,
@@ -345,6 +348,12 @@ impl App {
             quit_armed: false,
             quit: false,
         }
+    }
+
+    /// Runs the commands typed after `!` on `shell`.
+    pub fn with_shell(mut self, shell: Arc<dyn Tool>) -> Self {
+        self.shell = Some(shell);
+        self
     }
 
     /// Saves sessions to `store`, and logs monitors next to them.

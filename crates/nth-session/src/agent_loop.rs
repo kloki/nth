@@ -29,7 +29,7 @@ const CONTINUE: &str = "Run it";
 const STOP: &str = "Stop";
 
 /// What the model reads in place of a tool result the user cut short.
-const INTERRUPTED: &str = "Error: interrupted by the user";
+pub(crate) const INTERRUPTED: &str = "Error: interrupted by the user";
 /// What the model reads for calls the user stopped at the doom-loop prompt.
 const STOPPED: &str = "Error: stopped by the user (the same call kept repeating)";
 /// What the model reads for calls it made on the last allowed step anyway.
@@ -366,6 +366,19 @@ async fn run_tool(
     call: &ToolCall,
     events: &mpsc::Sender<Event>,
 ) -> ToolResult {
+    let tool = tools.iter().find(|t| t.spec().name == call.name);
+    run_call(tool.map(|t| t.as_ref()), ctx, call, events).await
+}
+
+/// Runs `call` on `tool`, announcing it with [`Event::ToolStarted`] and
+/// [`Event::ToolFinished`] and streaming its output in between. No `tool`
+/// means the model named one that does not exist.
+pub(crate) async fn run_call(
+    tool: Option<&dyn Tool>,
+    ctx: &ToolContext,
+    call: &ToolCall,
+    events: &mpsc::Sender<Event>,
+) -> ToolResult {
     emit(events, Event::ToolStarted(call.clone())).await;
     // Output goes straight onto the event channel from inside this future,
     // so it is dropped with the call and always lands before ToolFinished.
@@ -379,7 +392,7 @@ async fn run_tool(
         monitors: ctx.monitors.clone(),
         writable: ctx.writable.clone(),
     };
-    let result = match tools.iter().find(|t| t.spec().name == call.name) {
+    let result = match tool {
         None => Err(format!("unknown tool: {}", call.name)),
         Some(tool) => match parse_arguments(&call.arguments) {
             Ok(args) => tool.call(args, &ctx).await,

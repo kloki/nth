@@ -6,7 +6,10 @@ use std::{
 };
 
 use nth_context::Context;
-use nth_protocol::{Effort, Event, FrontEnd, Message, Mode, Provider, Tool, ToolContext, Writable};
+use nth_protocol::{
+    AssistantMessage, Effort, Event, FrontEnd, Message, Mode, Provider, Tool, ToolCall,
+    ToolContext, Writable,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -14,9 +17,18 @@ use uuid::Uuid;
 
 use crate::{
     DEFAULT_MAX_STEPS, Error, Route,
+    agent_loop::{INTERRUPTED, run_call},
     plan::{self, Approver},
     run_turn, system_prompt,
 };
+
+fn first_line(text: &str) -> &str {
+    text.trim().lines().next().unwrap_or_default()
+}
+
+/// The user message before a command the user ran themselves, as opencode
+/// words it. Front-ends that replay a session leave it out.
+pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 
 /// One conversation: who it runs for, where, and everything said so far.
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
@@ -100,11 +112,23 @@ impl Session {
     }
 
     /// The first line of the first prompt, which names the session in lists.
-    pub fn title(&self) -> Option<&str> {
-        self.messages.iter().find_map(|m| match m {
-            Message::User(text) => Some(text.trim().lines().next().unwrap_or_default()),
-            _ => None,
-        })
+    /// A command the user ran comes first as `!command`.
+    pub fn title(&self) -> Option<String> {
+        let mut messages = self.messages.iter();
+        while let Some(message) = messages.next() {
+            match message {
+                Message::User(text) if text == SHELL_PROMPT => {
+                    if let Some(Message::Assistant(reply)) = messages.next()
+                        && let Some(call) = reply.tool_calls.first()
+                    {
+                        return Some(format!("!{}", call.summary(&self.cwd)));
+                    }
+                }
+                Message::User(text) => return Some(first_line(text).to_string()),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Where plan mode writes this session's plan.
@@ -186,6 +210,46 @@ impl Session {
 }
 
 impl Session {
+    /// Runs `command` on `shell` for the user, without the model. It lands
+    /// in the history as a bash call the model made, after a user message
+    /// saying the user ran it, so the model sees it on its next turn.
+    /// Cancelling kills the command and still leaves `messages` valid.
+    pub async fn shell(
+        &mut self,
+        command: impl Into<String>,
+        shell: &dyn Tool,
+        events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        let call = ToolCall {
+            id: format!("shell-{}", Uuid::new_v4()),
+            name: shell.spec().name.into(),
+            arguments: serde_json::json!({ "command": command.into() }).to_string(),
+        };
+        self.messages.push(Message::User(SHELL_PROMPT.into()));
+        self.messages.push(Message::Assistant(AssistantMessage {
+            tool_calls: vec![call.clone()],
+            ..AssistantMessage::default()
+        }));
+        self.updated_at = SystemTime::now();
+        let ctx = ToolContext::new(self.cwd.clone());
+        let (content, result) = tokio::select! {
+            biased;
+            // Dropping the call kills the command's process group.
+            _ = cancel.cancelled() => (INTERRUPTED.to_string(), Err(Error::Interrupted)),
+            result = run_call(Some(shell), &ctx, &call, events) => {
+                (result.unwrap_or_else(|e| format!("Error: {e}")), Ok(()))
+            }
+        };
+        self.messages.push(Message::ToolResult {
+            call_id: call.id,
+            content,
+        });
+        result
+    }
+}
+
+impl Session {
     /// What the model needs to hear about the mode before this turn: that
     /// plan mode starts, or that it ended. Nothing while the mode stays.
     async fn reminder(&self, plan_path: &Path, front_end: &FrontEnd) -> Option<String> {
@@ -239,7 +303,7 @@ mod tests {
         session.messages.push(Message::User("and test".into()));
 
         assert!(!session.is_empty());
-        assert_eq!(session.title(), Some("fix the build"));
+        assert_eq!(session.title().as_deref(), Some("fix the build"));
     }
 
     #[test]
@@ -420,7 +484,7 @@ mod tests {
         assert!(first.contains(&format!("create your plan at {}", plan.display())));
         assert!(first.contains("Nobody can approve it"), "headless: {first}");
         assert_eq!(send(&mut session, "more").await, "more");
-        assert_eq!(session.title(), Some("plan it"));
+        assert_eq!(session.title().as_deref(), Some("plan it"));
 
         std::fs::create_dir_all(plan.parent().expect("dir")).expect("dirs");
         std::fs::write(&plan, "# Plan").expect("writes");
@@ -533,5 +597,81 @@ mod tests {
         let back: Session = serde_json::from_str(&json).expect("deserializes");
 
         assert_eq!(back, session);
+    }
+
+    /// Says what it was asked to run, or never finishes on `hang`.
+    struct Shell;
+
+    impl Tool for Shell {
+        fn spec(&self) -> nth_protocol::ToolSpec {
+            nth_protocol::ToolSpec {
+                name: "bash",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            args: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+            use futures::FutureExt;
+            async move {
+                let command = args["command"].as_str().unwrap_or_default().to_string();
+                if command == "hang" {
+                    std::future::pending::<()>().await;
+                }
+                ctx.output.send(command.clone()).await;
+                Ok(format!("ran {command}"))
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shell_command_lands_as_a_bash_call() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        let (events, mut rx) = mpsc::channel(16);
+
+        let result = session
+            .shell("ls", &Shell, &events, &CancellationToken::new())
+            .await;
+
+        assert!(result.is_ok());
+        let [
+            _,
+            Message::User(said),
+            Message::Assistant(reply),
+            Message::ToolResult { call_id, content },
+        ] = &session.messages[..]
+        else {
+            panic!("unexpected messages: {:?}", session.messages);
+        };
+        assert_eq!(said, SHELL_PROMPT);
+        assert_eq!(reply.tool_calls[0].name, "bash");
+        assert_eq!(reply.tool_calls[0].arguments, r#"{"command":"ls"}"#);
+        assert_eq!(call_id, &reply.tool_calls[0].id);
+        assert_eq!(content, "ran ls");
+        assert_eq!(session.title().as_deref(), Some("!ls"));
+        assert!(matches!(rx.recv().await, Some(Event::ToolStarted(_))));
+        assert!(matches!(rx.recv().await, Some(Event::ToolOutput { .. })));
+        assert!(matches!(rx.recv().await, Some(Event::ToolFinished { .. })));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_shell_command_answers_its_call() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        let (events, _rx) = mpsc::channel(16);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = session.shell("hang", &Shell, &events, &cancel).await;
+
+        assert!(matches!(result, Err(Error::Interrupted)));
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::ToolResult { content, .. }) if content == INTERRUPTED
+        ));
     }
 }

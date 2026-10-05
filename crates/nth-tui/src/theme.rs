@@ -25,6 +25,9 @@ pub fn mode_colour(mode: Mode) -> Color {
     }
 }
 
+/// The prompt's colour while it holds a command to run.
+pub const SHELL_COLOUR: Color = Color::Yellow;
+
 /// The highlighted item in any list: popup, picker.
 pub fn pick() -> Style {
     Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)

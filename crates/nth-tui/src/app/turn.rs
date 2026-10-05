@@ -15,6 +15,26 @@ pub(super) struct Ended {
     session: Session,
     result: Result<(), nth_session::Error>,
     saved: Result<(), store::Error>,
+    /// Ran a command you typed after `!`, not a model turn.
+    shell: bool,
+}
+
+/// What Enter sends while a turn runs, held until it ends.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Queued {
+    Prompt(String),
+    /// A command to run, typed after `!`.
+    Shell(String),
+}
+
+impl Queued {
+    /// As the prompt shows it: a command with its `!`.
+    pub fn text(&self) -> String {
+        match self {
+            Queued::Prompt(text) => text.clone(),
+            Queued::Shell(command) => format!("!{command}"),
+        }
+    }
 }
 
 impl App {
@@ -23,7 +43,8 @@ impl App {
     }
 
     pub(super) fn submit(&mut self) {
-        if let Some(command) = Command::parse(self.prompt.text()) {
+        let shell = self.prompt.shell();
+        if !shell && let Some(command) = Command::parse(self.prompt.text()) {
             self.prompt.clear();
             self.run_command(command);
             return;
@@ -31,17 +52,67 @@ impl App {
         if self.prompt.text().trim().is_empty() {
             return;
         }
-        let text = self.prompt.take();
-        self.history.push(text.clone());
+        self.history.push(self.prompt.entry());
         self.save_history();
-        self.hold_notices = false;
+        let text = self.prompt.take();
+        self.prompt.set_shell(false);
         // Sent when the running turn ends; the chat shows it only then, so
         // the transcript keeps the order the model saw.
+        let next = match shell {
+            true => Queued::Shell(text),
+            false => {
+                self.hold_notices = false;
+                Queued::Prompt(text)
+            }
+        };
         if self.is_busy() {
-            self.queue.push_back(text);
+            self.queue.push_back(next);
         } else {
-            self.start_turn(text);
+            self.start(next);
         }
+    }
+
+    fn start(&mut self, next: Queued) {
+        match next {
+            Queued::Prompt(text) => self.start_turn(text),
+            Queued::Shell(command) => self.start_shell(command),
+        }
+    }
+
+    /// Runs `command` for you, without the model; the session keeps it as
+    /// a bash call so the model sees it next turn. It runs as a turn does,
+    /// so Esc stops it and what you send meanwhile waits for it.
+    pub(super) fn start_shell(&mut self, command: String) {
+        let Some(shell) = self.shell.clone() else {
+            self.chat
+                .transcript
+                .push_error("no shell to run commands with".into());
+            return;
+        };
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        self.chat.jump_bottom();
+        self.busy_since = Some(Instant::now());
+        let events = self.events_tx.clone();
+        let store = self.store.clone();
+        self.turn.start(|token| {
+            tokio::spawn(async move {
+                let result = session
+                    .shell(command, shell.as_ref(), &events, &token)
+                    .await;
+                let saved = match &store {
+                    Some(store) => store.save(&session).await,
+                    None => Ok(()),
+                };
+                Ended {
+                    session,
+                    result,
+                    saved,
+                    shell: true,
+                }
+            })
+        });
     }
 
     /// Starts a turn with `text` after what monitors said since the last
@@ -116,6 +187,7 @@ impl App {
                     session,
                     result,
                     saved,
+                    shell: false,
                 }
             })
         });
@@ -136,6 +208,7 @@ impl App {
             session,
             result,
             saved,
+            shell,
         }: Ended,
     ) {
         // Events sent just before the task returned may still be queued, and
@@ -154,6 +227,8 @@ impl App {
         let send_next = result.is_ok() && !std::mem::take(&mut self.interrupted);
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
+            // The bash row says how a command went; no model answered.
+            Ok(()) if shell => {}
             result => {
                 // The session's model ran the turn; `self.model` may have
                 // been switched since.
@@ -171,7 +246,7 @@ impl App {
         // prompt, or wake it on their own.
         self.hold_notices = !send_next;
         match self.queue.pop_front() {
-            Some(next) if send_next => self.start_turn(next),
+            Some(next) if send_next => self.start(next),
             Some(next) => {
                 self.queue.push_front(next);
                 self.unqueue();
@@ -185,7 +260,7 @@ impl App {
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again.
     fn unqueue(&mut self) {
-        let mut parts: Vec<String> = self.queue.drain(..).collect();
+        let mut parts: Vec<String> = self.queue.drain(..).map(|next| next.text()).collect();
         if !self.prompt.is_empty() {
             parts.push(self.prompt.take());
         }
@@ -303,7 +378,7 @@ mod tests {
             ),
             "{sent}"
         );
-        assert_eq!(session.title(), Some("/fix the build"));
+        assert_eq!(session.title().as_deref(), Some("/fix the build"));
     }
 
     #[tokio::test]
@@ -404,7 +479,7 @@ mod tests {
         send(&mut app, "next");
 
         assert!(app.prompt.is_empty());
-        assert_eq!(app.queue, ["next"]);
+        assert_eq!(app.queue, [Queued::Prompt("next".into())]);
         assert_eq!(last_user(&app), Some("go"), "shown only once sent");
         let token = app.turn.token().expect("still running");
         assert!(!token.is_cancelled());
@@ -421,7 +496,7 @@ mod tests {
         end(&mut app).await;
         assert!(app.is_busy());
         assert_eq!(last_user(&app), Some("two"));
-        assert_eq!(app.queue, ["three"]);
+        assert_eq!(app.queue, [Queued::Prompt("three".into())]);
 
         end(&mut app).await;
         end(&mut app).await;
@@ -600,5 +675,76 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             "turn kept running after quit"
         );
+    }
+
+    /// An idle app in `dir` that runs commands with the real bash.
+    fn shell_app(dir: &std::path::Path) -> App {
+        let session = Session::new("glm", dir.to_path_buf());
+        App::new(session, Arc::new(Answer), Arc::new(Vec::new()))
+            .with_shell(Arc::new(nth_tools::Bash::untimed(Default::default())))
+    }
+
+    fn command(app: &mut App, text: &str) {
+        app.apply(crate::app::keys::Action::Insert('!'));
+        send(app, text);
+    }
+
+    #[tokio::test]
+    async fn a_command_runs_without_the_model_and_lands_in_the_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = shell_app(dir.path());
+
+        command(&mut app, "echo hi");
+        assert!(app.is_busy());
+        assert!(!app.prompt.shell(), "the prompt is back to the mode");
+        end(&mut app).await;
+
+        let entries: Vec<_> = app.chat.transcript.entries().collect();
+        assert!(
+            matches!(&entries[..], [Entry::Tool { call, output, .. }] if call.name == "bash" && output == &["hi"]),
+            "{entries:?}"
+        );
+        let session = app.session.as_ref().expect("session came back");
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::ToolResult { content, .. }) if content == "hi\n"
+        ));
+        assert_eq!(app.history.prev("").as_deref(), Some("!echo hi"));
+    }
+
+    #[tokio::test]
+    async fn a_command_sent_while_busy_runs_after_the_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = shell_app(dir.path());
+        send(&mut app, "hello");
+        command(&mut app, "echo later");
+        assert_eq!(app.queue, [Queued::Shell("echo later".into())]);
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the command runs next");
+        end(&mut app).await;
+
+        let session = app.session.as_ref().expect("session came back");
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::ToolResult { content, .. }) if content == "later\n"
+        ));
+    }
+
+    #[tokio::test]
+    async fn esc_stops_a_running_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = shell_app(dir.path());
+        command(&mut app, "sleep 30");
+        tokio::task::yield_now().await;
+
+        app.apply(crate::app::keys::Action::Interrupt);
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
     }
 }

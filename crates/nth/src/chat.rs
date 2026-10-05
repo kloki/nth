@@ -49,7 +49,11 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
     nth_tui::run(
         session,
         Arc::new(provider),
-        Arc::new(nth_tools::all(&config.tools, post_write)),
+        nth_tui::Tools {
+            model: Arc::new(nth_tools::all(&config.tools, post_write)),
+            // You watch what you run and stop it yourself.
+            shell: Arc::new(nth_tools::Bash::untimed(config.tools.bash.clone())),
+        },
         checkers,
         store,
         paths,

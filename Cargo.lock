@@ -1637,6 +1637,7 @@ dependencies = [
  "nth-lsp",
  "nth-protocol",
  "nth-session",
+ "nth-tools",
  "nucleo-matcher",
  "ratatui",
  "serde_json",
