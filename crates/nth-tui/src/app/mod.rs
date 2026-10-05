@@ -426,7 +426,8 @@ impl App {
                 Step::Show(panel) => self.open_content(panel.into()),
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::NoticesDue => self.notices_due(),
-                Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
+                Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
+                Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
                     self.git_loaded(status.context("reading git status failed")?)
@@ -576,18 +577,8 @@ impl App {
             // to replace yet.
             Command::Clear if self.is_busy() => self.hint = Some("a turn is running".into()),
             Command::Clear => {
-                // Same directory, so the same instruction files and skills.
-                let mut session = Session::new(self.model.clone(), self.cwd.clone())
-                    .with_context(self.context.clone());
-                session.effort = self.effort;
-                session.mode = self.mode;
-                session.max_steps = self.max_steps;
-                let plan_path = session.plan_path();
-                self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
-                self.usage = None;
-                self.plan_for_session(plan_path);
-                self.left_session();
+                self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
@@ -595,6 +586,22 @@ impl App {
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
         }
+    }
+
+    /// Moves on to a new, empty session in the same directory, so it has
+    /// the same instruction files and skills, and keeps the model, effort
+    /// and mode picked. The chat is the caller's to clear or keep.
+    fn start_fresh_session(&mut self) {
+        let mut session =
+            Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
+        session.effort = self.effort;
+        session.mode = self.mode;
+        session.max_steps = self.max_steps;
+        let plan_path = session.plan_path();
+        self.session = Some(session);
+        self.usage = None;
+        self.plan_for_session(plan_path);
+        self.left_session();
     }
 
     /// Shows `tab`. The diagnostics tab looks again at what applies every

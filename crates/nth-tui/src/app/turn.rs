@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use nth_protocol::{Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
+use tokio::task::JoinError;
 
 use super::App;
 use crate::command::Command;
@@ -280,6 +281,24 @@ impl App {
         while let Ok(event) = self.events_rx.try_recv() {
             self.on_session(event);
         }
+    }
+
+    /// The turn task panicked, or was aborted, and the session it held is
+    /// gone with it. The app goes on in a fresh session in the same
+    /// directory rather than exit: the lost one was saved after its
+    /// previous turn, so `/resume` brings it back to there. A failed turn
+    /// otherwise: the queue goes back into the prompt.
+    pub(super) fn turn_task_failed(&mut self, error: JoinError) {
+        self.drain_events();
+        self.drop_asks();
+        self.busy_since = None;
+        self.interrupted = false;
+        self.chat.transcript.fail_turn(format!(
+            "turn task failed: {error} · continuing in a new session; \
+             the old one was last saved after its previous turn, /resume brings it back"
+        ));
+        self.start_fresh_session();
+        self.unqueue();
     }
 
     /// After an interrupted or failed turn, the queued prompts go back into
@@ -619,6 +638,34 @@ mod tests {
         end(&mut app).await;
 
         assert_eq!(app.usage, Some(usage));
+    }
+
+    #[tokio::test]
+    async fn a_turn_task_that_panics_leaves_the_app_running() {
+        let (mut app, _) = busy_app().await;
+        send(&mut app, "next");
+        // In place of the real task, whose session is lost with it.
+        app.turn
+            .start(|_| tokio::spawn(async { panic!("tool bug") }));
+
+        let Err(error) = app.turn.join().await else {
+            panic!("the task panicked");
+        };
+        app.turn_task_failed(error);
+
+        assert!(!app.is_busy());
+        assert_eq!(app.prompt.text(), "next", "the queue comes back");
+        let session = app.session.as_ref().expect("a fresh session");
+        assert!(session.is_empty(), "nothing of the lost one");
+        assert_eq!(session.cwd, std::path::Path::new("/repo"));
+        let Some(Entry::TurnError(e)) = app.chat.transcript.entries().last() else {
+            panic!(
+                "the turn failed: {:?}",
+                app.chat.transcript.entries().last()
+            );
+        };
+        assert!(e.starts_with("turn task failed: "), "{e}");
+        assert!(e.contains("/resume"), "{e}");
     }
 
     #[tokio::test]

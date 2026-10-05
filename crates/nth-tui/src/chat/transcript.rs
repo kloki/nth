@@ -333,15 +333,27 @@ impl Transcript {
     /// back, so they are marked as stopped here.
     pub fn interrupt(&mut self, elapsed: Duration) {
         self.close_reasoning();
+        self.stop_running_tools("interrupted");
+        self.push(Entry::Interrupted { elapsed });
+    }
+
+    /// Closes a turn whose task died under it, with `error` as the footer;
+    /// its tools never report back either.
+    pub fn fail_turn(&mut self, error: String) {
+        self.close_reasoning();
+        self.stop_running_tools("lost");
+        self.push(Entry::TurnError(error));
+    }
+
+    fn stop_running_tools(&mut self, why: &str) {
         for item in &mut self.items {
             if let Entry::Tool { state, .. } = &mut item.entry
                 && *state == ToolState::Running
             {
-                *state = ToolState::Failed("interrupted".into());
+                *state = ToolState::Failed(why.into());
                 item.lines = None;
             }
         }
-        self.push(Entry::Interrupted { elapsed });
     }
 
     fn push(&mut self, entry: Entry) {
