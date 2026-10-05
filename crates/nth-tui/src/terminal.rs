@@ -5,6 +5,7 @@ use std::io::stdout;
 
 use anyhow::Result;
 use crossterm::{
+    cursor::Show,
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -28,6 +29,9 @@ pub fn enter() -> Result<DefaultTerminal> {
 /// Gives the terminal to another program, such as your editor, as it was
 /// before nth started. `resume` takes it back.
 pub fn suspend() {
+    // The last frame may have hidden the cursor, and the editor expects
+    // one; `restore` leaves the cursor as it is.
+    let _ = execute!(stdout(), Show);
     restore();
 }
 
@@ -46,7 +50,9 @@ pub fn resume(terminal: &mut DefaultTerminal) -> Result<()> {
 /// and keys told apart.
 fn capture() {
     let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
-    // Lets shift+Enter arrive as its own key where the terminal supports it.
+    // Tells the keys apart that share a byte without it, where the terminal
+    // supports it: shift+Enter and ctrl+Enter from Enter, ctrl+m from
+    // Enter, ctrl+1 to ctrl+4 from the digits.
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
         let _ = execute!(
             stdout(),
