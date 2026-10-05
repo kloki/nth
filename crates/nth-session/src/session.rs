@@ -162,6 +162,11 @@ impl Session {
     ) -> Result<(), Error> {
         let mut text = text.into();
         let plan_path = self.plan_path();
+        if self.mode == Mode::Plan {
+            // The `.nth` directory, with the `.gitignore` that keeps plan
+            // files out of git, is ready before the model writes the plan.
+            let _ = plan::ensure_dir(&self.cwd).await;
+        }
         if let Some(reminder) = self.reminder(&plan_path, front_end).await {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
@@ -501,6 +506,19 @@ mod tests {
             plan.display()
         )));
         assert_eq!(send(&mut session, "next").await, "next");
+    }
+
+    #[tokio::test]
+    async fn plan_mode_keeps_a_gitignore_in_the_project_nth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
+        session.mode = Mode::Plan;
+
+        send(&mut session, "plan it").await;
+
+        let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
+        assert!(gitignore.contains("plans/"), "{gitignore}");
+        assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 
     #[tokio::test]
