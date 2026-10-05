@@ -18,10 +18,12 @@ pub enum Command {
     Exit,
     Models,
     Resume,
+    ToggleReasoning,
+    ToggleToolOutput,
 }
 
 impl Command {
-    const ALL: [Command; 7] = [
+    const ALL: [Command; 9] = [
         Command::Approve,
         Command::Clear,
         Command::Close,
@@ -29,6 +31,8 @@ impl Command {
         Command::Exit,
         Command::Models,
         Command::Resume,
+        Command::ToggleReasoning,
+        Command::ToggleToolOutput,
     ];
 
     pub fn name(self) -> &'static str {
@@ -40,6 +44,8 @@ impl Command {
             Command::Exit => "exit",
             Command::Models => "models",
             Command::Resume => "resume",
+            Command::ToggleReasoning => "toggle-reasoning",
+            Command::ToggleToolOutput => "toggle-tool-output",
         }
     }
 
@@ -52,6 +58,8 @@ impl Command {
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
             Command::Resume => "reopen a past session",
+            Command::ToggleReasoning => "show or hide the model's reasoning",
+            Command::ToggleToolOutput => "show or hide what tools return",
         }
     }
 
@@ -164,6 +172,10 @@ mod tests {
     fn parses_only_a_bare_command() {
         assert_eq!(Command::parse("/clear"), Some(Command::Clear));
         assert_eq!(Command::parse(" /exit\n"), Some(Command::Exit));
+        assert_eq!(
+            Command::parse("/toggle-tool-output"),
+            Some(Command::ToggleToolOutput)
+        );
         assert_eq!(Command::parse("/clear now"), None);
         assert_eq!(Command::parse("/nope"), None);
         assert_eq!(Command::parse("clear"), None);
@@ -172,7 +184,11 @@ mod tests {
     #[test]
     fn matches_commands_by_prefix() {
         let none = Skills::default();
-        assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL));
+        assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL[..8]));
+        assert_eq!(
+            Entry::matching("/t", &none),
+            builtins(&[Command::ToggleReasoning, Command::ToggleToolOutput])
+        );
         assert_eq!(
             Entry::matching("/c", &none),
             builtins(&[Command::Clear, Command::Close])
@@ -206,9 +222,9 @@ mod tests {
                 "exit",
                 "models",
                 "resume",
-                "deploy",
+                "toggle-reasoning",
             ],
-            "the clear skill is hidden by the command, and the popup holds 8"
+            "the popup holds 8; skills come after the commands"
         );
         assert_eq!(
             Entry::matching("/re", &skills),

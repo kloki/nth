@@ -389,12 +389,12 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Clear);
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::Approve);
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Resume);
+        assert_eq!(selected(&app), Command::ToggleReasoning);
         assert_eq!(app.prompt.text(), "/");
     }
 
@@ -431,8 +431,13 @@ mod tests {
                 "exit",
                 "models",
                 "resume",
-                "fix"
-            ]
+                "toggle-reasoning",
+            ],
+            "the popup is full before the skills"
+        );
+        assert_eq!(
+            names(&skilled(dir.path(), "/t")),
+            ["toggle-reasoning", "toggle-tool-output"]
         );
 
         let app = skilled(dir.path(), "/f");
@@ -584,7 +589,7 @@ mod tests {
             app.apply(Action::Insert(c));
         }
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Resume);
+        assert_eq!(selected(&app), Command::ToggleReasoning);
         assert_eq!(app.prompt.text(), "/");
     }
 

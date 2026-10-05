@@ -566,6 +566,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn toggles_flip_the_chat_and_outlast_clear() {
+        let mut app = crate::app::tests::app().with_show(crate::chat::Show {
+            reasoning: true,
+            tool_output: false,
+        });
+
+        app.run_command(Command::ToggleReasoning);
+        app.run_command(Command::ToggleToolOutput);
+        assert_eq!(app.hint.as_deref(), Some("tool output shown"));
+        app.run_command(Command::Clear);
+
+        assert_eq!(
+            app.chat.show(),
+            crate::chat::Show {
+                reasoning: false,
+                tool_output: true,
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn clear_stops_the_monitors() {
         let mut app = app_logging_to_tmp(Arc::new(Answer));
         monitor_says(&mut app, "build failed").await;

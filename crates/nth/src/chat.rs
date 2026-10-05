@@ -53,7 +53,13 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         checkers,
         store,
         paths,
-        mode_llms,
+        nth_tui::Start {
+            mode_llms,
+            show: nth_tui::Show {
+                reasoning: config.chat.reasoning,
+                tool_output: config.chat.tool_output,
+            },
+        },
     )
     .await
 }

@@ -8,7 +8,10 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::transcript::{Entry, OUTPUT_LINES, ToolState, Transcript};
+use super::{
+    Show,
+    transcript::{Entry, OUTPUT_LINES, ToolState, Transcript},
+};
 use crate::{
     rich,
     theme::{BAR, BAR_WIDTH, INDENT, dim},
@@ -30,7 +33,7 @@ impl Transcript {
                 if previous.is_some() {
                     lines.push(Line::default());
                 }
-                lines.extend(render(&item.entry, &self.cwd, width));
+                lines.extend(render(&item.entry, &self.cwd, width, self.show));
                 item.lines = Some(lines);
             }
             total += item.lines.as_ref().map_or(0, Vec::len);
@@ -56,7 +59,7 @@ fn is_live(entry: &Entry) -> bool {
     matches!(entry, Entry::Reasoning { took: None, .. })
 }
 
-fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>> {
+fn render(entry: &Entry, cwd: &std::path::Path, width: u16, show: Show) -> Vec<Line<'static>> {
     let dim = dim();
     match entry {
         Entry::User(text) => barred_markdown(text, width, Style::new().fg(Color::Green)),
@@ -100,10 +103,12 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 Some(took) => format!("thought · {:.1}s", took.as_secs_f64()),
             };
             let mut lines = vec![Line::styled(format!("{INDENT}∴ {timing}"), dim)];
-            // Plain text rather than markdown: reasoning is raw prose, often
-            // with half-written markup.
-            let body = dim.add_modifier(Modifier::ITALIC);
-            lines.extend(prefixed(text, width, Span::raw(INDENT), body));
+            if show.reasoning {
+                // Plain text rather than markdown: reasoning is raw prose,
+                // often with half-written markup.
+                let body = dim.add_modifier(Modifier::ITALIC);
+                lines.extend(prefixed(text, width, Span::raw(INDENT), body));
+            }
             lines
         }
         Entry::Tool {
@@ -135,12 +140,15 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
             }
             let mut lines = vec![Line::from(spans)];
-            let room = usize::from(width.saturating_sub(BAR_WIDTH)).saturating_sub(INDENT.len());
-            lines.extend(output_lines(call, output, room).into_iter().map(|line| {
-                let mut spans = vec![Span::styled(BAR, bar), Span::raw(INDENT)];
-                spans.extend(line.spans);
-                Line::from(spans)
-            }));
+            if show.tool_output {
+                let room =
+                    usize::from(width.saturating_sub(BAR_WIDTH)).saturating_sub(INDENT.len());
+                lines.extend(output_lines(call, output, room).into_iter().map(|line| {
+                    let mut spans = vec![Span::styled(BAR, bar), Span::raw(INDENT)];
+                    spans.extend(line.spans);
+                    Line::from(spans)
+                }));
+            }
             lines.extend(notes.iter().map(|note| {
                 Line::from(vec![
                     Span::styled(BAR, bar),
@@ -330,7 +338,10 @@ mod tests {
     use nth_protocol::Event;
     use ratatui::style::{Color, Modifier};
 
-    use crate::chat::transcript::tests::{call, text, transcript};
+    use crate::chat::{
+        Show,
+        transcript::tests::{call, text, transcript},
+    };
 
     #[test]
     fn wraps_under_the_bar_and_separates_blocks() {
@@ -392,6 +403,28 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::ITALIC)
         );
+    }
+
+    #[test]
+    fn hidden_bodies_leave_their_rows() {
+        let mut t = transcript();
+        t.apply(&Event::ReasoningDelta("look at the file".into()));
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolOutput {
+            call_id: "1".into(),
+            text: "fn main() {}\n".into(),
+        });
+        assert_eq!(t.layout(40), 5);
+
+        t.set_show(Show {
+            reasoning: false,
+            tool_output: false,
+        });
+        let total = t.layout(40);
+
+        let lines = text(&t.visible(0, total));
+        assert!(lines[0].starts_with("  ∴ thought · "), "{lines:?}");
+        assert_eq!(lines[1..], ["", "▎ ≡ read   src/a.rs"]);
     }
 
     #[test]

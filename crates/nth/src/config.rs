@@ -16,6 +16,7 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub session: SessionConfig,
     pub mode: ModeConfig,
+    pub chat: ChatConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
@@ -85,6 +86,24 @@ pub struct ModeDefaults {
     /// that has none of its own.
     pub model: String,
     pub effort: Effort,
+}
+
+/// What the chat shows when it opens; `/toggle-reasoning` and
+/// `/toggle-tool-output` flip them until nth quits.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChatConfig {
+    pub reasoning: bool,
+    pub tool_output: bool,
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            reasoning: true,
+            tool_output: true,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -301,6 +320,14 @@ mod tests {
             ("from-flag".into(), Effort::Default)
         );
         assert!(Config::parse("[mode]\ndefault = \"build\"").is_err());
+    }
+
+    #[test]
+    fn chat_section_hides_reasoning_and_tool_output() {
+        let config = Config::parse("[chat]\nreasoning = false\n").expect("parses");
+        assert!(!config.chat.reasoning);
+        assert!(config.chat.tool_output);
+        assert!(Config::parse("[chat]\nverbose = true").is_err());
     }
 
     #[test]
