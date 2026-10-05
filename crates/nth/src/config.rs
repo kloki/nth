@@ -104,6 +104,14 @@ impl Config {
         Some(Paths::from_env().config_dir()?.join("config.toml"))
     }
 
+    /// The model from `--model` or `NTH_MODEL`. It is for every mode, so
+    /// the per-mode models go: those only fill in when nothing was given.
+    pub fn set_model(&mut self, model: String) {
+        self.provider.model = model;
+        self.mode.plan.model.clear();
+        self.mode.act.model.clear();
+    }
+
     /// The model and effort `mode` runs with.
     pub fn llm_for(&self, mode: Mode) -> (String, Effort) {
         let defaults = match mode {
@@ -295,12 +303,32 @@ mod tests {
         assert_eq!(config.mode.default, Mode::Act);
         assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
 
-        config.provider.model = "from-flag".into();
+        config.provider.model = "from-file".into();
         assert_eq!(
             config.llm_for(Mode::Act),
-            ("from-flag".into(), Effort::Default)
+            ("from-file".into(), Effort::Default)
         );
         assert!(Config::parse("[mode]\ndefault = \"build\"").is_err());
+    }
+
+    #[test]
+    fn a_model_from_the_flag_beats_the_per_mode_ones() {
+        let mut config = Config::parse(
+            r#"
+            [mode.plan]
+            model = "kimi-k3"
+            effort = "high"
+            "#,
+        )
+        .expect("parses");
+
+        config.set_model("from-flag".into());
+
+        assert_eq!(
+            config.llm_for(Mode::Plan),
+            ("from-flag".into(), Effort::High)
+        );
+        assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
     }
 
     #[test]

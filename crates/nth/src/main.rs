@@ -32,6 +32,8 @@ struct Cli {
     /// Pick up the most recently used session instead of starting a new one
     #[arg(short = 'c', long = "continue")]
     resume: bool,
+    /// Global, so `nth run --model x` and `NTH_MODEL=x nth config` mean the
+    /// same as `nth --model x`: one place applies them for every subcommand.
     #[command(flatten)]
     endpoint: Endpoint,
 }
@@ -44,16 +46,12 @@ enum Command {
         /// plan only writes a plan file; act may change anything
         #[arg(long, default_value = "act", value_parser = ["plan", "act"])]
         mode: String,
-        #[command(flatten)]
-        endpoint: Endpoint,
     },
     /// List the models the endpoint serves that nth can talk to
     Models {
         /// Print JSON lines, the default when stdout is not a terminal
         #[arg(long)]
         json: bool,
-        #[command(flatten)]
-        endpoint: Endpoint,
     },
     /// List the skills nth finds for the working directory
     Skills {
@@ -82,16 +80,16 @@ enum Command {
 /// Overrides for the `[provider]` section of the config.
 #[derive(Args)]
 struct Endpoint {
-    #[arg(long, env = "NTH_MODEL")]
+    #[arg(long, global = true, env = "NTH_MODEL")]
     model: Option<String>,
-    #[arg(long, env = "NTH_BASE_URL")]
+    #[arg(long, global = true, env = "NTH_BASE_URL")]
     base_url: Option<String>,
 }
 
 impl Endpoint {
     fn apply(self, config: &mut Config) {
         if let Some(model) = self.model {
-            config.provider.model = model;
+            config.set_model(model);
         }
         if let Some(base_url) = self.base_url {
             config.provider.base_url = base_url;
@@ -104,31 +102,13 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match Config::load(cli.config.as_deref()) {
         Err(e) => Err(e),
-        Ok(mut config) => match cli.command {
-            None => {
-                cli.endpoint.apply(&mut config);
-                chat::run(cli.resume, config).await
+        Ok(mut config) => {
+            cli.endpoint.apply(&mut config);
+            match cli.command {
+                None => chat::run(cli.resume, config).await,
+                Some(command) => dispatch(command, cli.config, config).await,
             }
-            Some(Command::Run {
-                prompt,
-                mode,
-                endpoint,
-            }) => {
-                endpoint.apply(&mut config);
-                match mode.parse() {
-                    Ok(mode) => run::run(prompt, mode, config).await,
-                    Err(e) => Err(anyhow::anyhow!(e)),
-                }
-            }
-            Some(Command::Models { json, endpoint }) => {
-                endpoint.apply(&mut config);
-                models::run(json, config).await
-            }
-            Some(Command::Skills { json }) => skills::run(json, &config).await,
-            Some(Command::Formatters { json }) => formatters::run(json, &config).await,
-            Some(Command::Lsp { json, command }) => lsp::run(command, json, &config).await,
-            Some(Command::Config) => config::show(cli.config, &config),
-        },
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -136,6 +116,20 @@ async fn main() -> ExitCode {
             eprintln!("{} {:#}", "✗".red().bold(), e.red());
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn dispatch(command: Command, config_path: Option<PathBuf>, config: Config) -> Result<()> {
+    match command {
+        Command::Run { prompt, mode } => match mode.parse() {
+            Ok(mode) => run::run(prompt, mode, config).await,
+            Err(e) => Err(anyhow::anyhow!(e)),
+        },
+        Command::Models { json } => models::run(json, config).await,
+        Command::Skills { json } => skills::run(json, &config).await,
+        Command::Formatters { json } => formatters::run(json, &config).await,
+        Command::Lsp { json, command } => lsp::run(command, json, &config).await,
+        Command::Config => config::show(config_path, &config),
     }
 }
 

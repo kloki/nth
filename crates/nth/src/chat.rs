@@ -42,11 +42,12 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
     let post_write = post_write(&config);
     // From the same servers the tools use, so the status bar shows what
     // checks the writes.
+    let lsp = post_write.lsp().clone();
     let checkers = nth_tui::Checkers {
-        lsp: post_write.lsp().clone(),
+        lsp: lsp.clone(),
         formatters: post_write.formatters().clone(),
     };
-    nth_tui::run(
+    let result = nth_tui::run(
         session,
         Arc::new(provider),
         nth_tui::Tools {
@@ -59,7 +60,11 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         paths,
         mode_llms,
     )
-    .await
+    .await;
+    // After the terminal is back: the servers get a moment to leave on
+    // their own before the process ends and kills them.
+    lsp.shutdown().await;
+    result
 }
 
 fn llm((model, effort): (String, Effort)) -> Llm {

@@ -84,6 +84,7 @@ async fn diagnostics(lsp: Lsp, file: &Path, json: bool) -> Result<()> {
     let file = std::path::absolute(file).context("no working directory")?;
     anyhow::ensure!(file.is_file(), "{} is not a file", file.display());
     let diagnostics = lsp.touch(&file, true).await;
+    lsp.shutdown().await;
 
     let mut out = std::io::stdout().lock();
     if json || !out.is_terminal() {
