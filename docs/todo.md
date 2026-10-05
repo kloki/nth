@@ -15,8 +15,8 @@ Items are grouped by the milestones in [design.md](design.md). Each item names t
 
 ### Context and instructions
 
-- [ ] Environment block: add today's date and the workspace root. `session/system.ts:80`
-- [ ] Per-model system prompts: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
+- [x] Environment block: add today's date and the workspace root. `session/system.ts:80`
+- [x] Per-model system prompts: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
 
 ### Subagents and orchestrations
 

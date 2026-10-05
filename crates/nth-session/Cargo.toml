@@ -7,6 +7,7 @@ edition.workspace = true
 nth-context.workspace = true
 nth-protocol.workspace = true
 futures.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
