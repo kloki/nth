@@ -155,7 +155,7 @@ async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, C
 fn client(config: &Config) -> Result<ChatClient> {
     let key_env = &config.provider.api_key_env;
     let api_key = std::env::var(key_env).with_context(|| format!("{key_env} not set"))?;
-    Ok(ChatClient::new(config.provider.base_url.clone(), api_key))
+    Ok(ChatClient::new(config.provider.base_url.clone(), api_key)?)
 }
 
 /// Runs after every tool that writes a file. Its language servers are the

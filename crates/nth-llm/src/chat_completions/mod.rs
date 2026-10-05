@@ -14,6 +14,14 @@ use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream
 use nth_protocol::{BoxError, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage};
 
 const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
+/// A server that does not answer the handshake this fast is down or
+/// unreachable; waiting longer only delays the retry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest silence tolerated between two chunks of a reply. A whole
+/// reply may take minutes, so there is no overall deadline, but a live
+/// stream keeps sending (if only keep-alive comments), while a dead
+/// connection would otherwise hang the turn forever.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -29,12 +37,19 @@ pub enum Error {
     #[error("bad stream chunk: {source} in {line:?}")]
     Parse {
         source: serde_json::Error,
+        /// The start of the offending line; see `sse::EXCERPT_CHARS`.
         line: String,
     },
-    #[error("provider error: {0}")]
-    Provider(String),
+    #[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
+    Provider {
+        message: String,
+        /// The HTTP status the error stands for, when the chunk gave one.
+        status: Option<reqwest::StatusCode>,
+    },
     #[error("stream ended before the response was complete")]
     Incomplete,
+    #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
+    Stalled,
     #[error("response hit the output token limit")]
     Truncated,
 }
@@ -46,12 +61,15 @@ pub struct ChatClient {
 }
 
 impl ChatClient {
-    pub fn new(base_url: String, api_key: String) -> Self {
-        Self {
-            http: reqwest::Client::new(),
+    pub fn new(base_url: String, api_key: String) -> Result<Self, Error> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()?;
+        Ok(Self {
+            http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-        }
+        })
     }
 
     async fn open(
@@ -140,22 +158,29 @@ impl Provider for ChatClient {
                 status,
                 retry_after,
                 ..
-            } if *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
-                Some(Retry {
-                    after: *retry_after,
-                })
-            }
+            } if transient(*status) => Some(Retry {
+                after: *retry_after,
+            }),
+            // The same, reported inside the stream after a 200 status.
+            Error::Provider {
+                status: Some(status),
+                ..
+            } if transient(*status) => Some(Retry { after: None }),
             // The connection failed or timed out, possibly part-way through
             // the stream. Other HTTP errors (a bad URL, an undecodable
             // body) fail the same way every time.
             Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
                 Some(Retry { after: None })
             }
-            // The stream ended before the reply did.
-            Error::Incomplete => Some(Retry { after: None }),
+            // The stream ended, or went quiet, before the reply did.
+            Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
             _ => None,
         }
     }
+}
+
+fn transient(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 struct State<S> {
@@ -189,13 +214,19 @@ where
             if s.finished {
                 return None;
             }
-            let parsed = match s.bytes.next().await {
-                Some(Ok(chunk)) => s.parser.push(&chunk),
-                Some(Err(e)) => Err(e),
-                // Some servers close right after the finish chunk without
-                // `[DONE]`; without either, the connection was cut mid-reply.
-                None if s.finish_reason.is_some() => Ok(vec![sse::Event::Done]),
-                None => Err(Error::Incomplete),
+            let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, s.bytes.next()).await;
+            let (parsed, ended) = match next {
+                Ok(Some(Ok(chunk))) => (s.parser.push(&chunk), false),
+                // The reply is complete once the finish chunk arrived; what
+                // is lost with the connection after that is at most the
+                // `[DONE]` line, not worth failing the turn over.
+                Ok(Some(Err(_))) | Err(_) if s.finish_reason.is_some() => (Ok(Vec::new()), true),
+                Ok(Some(Err(e))) => (Err(e), false),
+                Err(_elapsed) => (Err(Error::Stalled), false),
+                // A remainder that does not parse is a line the connection
+                // cut short, which the end-of-stream rules below describe
+                // better than a parse error would.
+                Ok(None) => (Ok(s.parser.finish().unwrap_or_default()), true),
             };
             let parsed = match parsed {
                 Ok(parsed) => parsed,
@@ -215,18 +246,19 @@ where
                         })))
                     }
                     sse::Event::Done => {
-                        s.finished = true;
-                        // Tool calls cut off at the token limit have partial
-                        // JSON arguments and must not run.
-                        if s.finish_reason.as_deref() == Some("length") {
-                            s.pending.push_back(Err(Error::Truncated));
-                            break;
-                        }
-                        let calls = std::mem::take(&mut s.calls);
-                        s.pending
-                            .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+                        s.done();
                         break;
                     }
+                }
+            }
+            if ended && !s.finished {
+                // Some servers close right after the finish chunk without
+                // `[DONE]`; without either, the connection was cut mid-reply.
+                if s.finish_reason.is_some() {
+                    s.done();
+                } else {
+                    s.finished = true;
+                    s.pending.push_back(Err(Error::Incomplete));
                 }
             }
         }
@@ -234,6 +266,19 @@ where
 }
 
 impl<S> State<S> {
+    fn done(&mut self) {
+        self.finished = true;
+        // Tool calls cut off at the token limit have partial JSON
+        // arguments and must not run.
+        if self.finish_reason.as_deref() == Some("length") {
+            self.pending.push_back(Err(Error::Truncated));
+            return;
+        }
+        let calls = std::mem::take(&mut self.calls);
+        self.pending
+            .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+    }
+
     fn apply(&mut self, delta: sse::Delta) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
             self.pending
@@ -278,11 +323,16 @@ mod tests {
     }
 
     async fn replay_bytes(input: &[u8], chunk_size: usize) -> Vec<Result<StreamEvent, Error>> {
-        let chunks = input
+        events(futures::stream::iter(chunks(input, chunk_size)))
+            .collect()
+            .await
+    }
+
+    fn chunks(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, Error>> {
+        input
             .chunks(chunk_size)
             .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
-            .collect::<Vec<_>>();
-        events(futures::stream::iter(chunks)).collect().await
+            .collect()
     }
 
     fn fixture_until(marker: &str) -> &'static [u8] {
@@ -334,6 +384,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn last_line_without_a_newline_is_parsed() {
+        let text = std::str::from_utf8(fixture_until("data: [DONE]")).expect("utf-8 fixture");
+        let input = text.trim_end();
+        assert!(input.ends_with('}'), "the usage chunk has no newline");
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();
+        assert_eq!(events, replay(FIXTURE.len()).await);
+    }
+
+    #[tokio::test]
+    async fn body_error_after_finish_keeps_the_reply() {
+        let mut input = chunks(fixture_until("data: [DONE]"), FIXTURE.len());
+        input.push(Err(Error::Incomplete));
+        let events: Vec<_> = events(futures::stream::iter(input)).collect().await;
+        let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();
+        assert_eq!(events, replay(FIXTURE.len()).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_stream_is_a_retryable_error() {
+        let head = fixture_until("\"finish_reason\"");
+        let bytes =
+            futures::stream::iter(chunks(head, head.len())).chain(futures::stream::pending());
+        let events: Vec<_> = events(bytes).collect().await;
+        assert!(
+            matches!(events.last(), Some(Err(Error::Stalled))),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
+        );
+        let stalled: BoxError = Box::new(Error::Stalled);
+        assert_eq!(client().retry(&stalled), Some(Retry { after: None }));
+    }
+
+    #[tokio::test]
     async fn cut_off_stream_is_an_error_and_runs_no_tools() {
         let events = replay_bytes(fixture_until("\"finish_reason\""), FIXTURE.len()).await;
         assert!(matches!(events.last(), Some(Err(Error::Incomplete))));
@@ -361,7 +449,7 @@ mod tests {
     }
 
     fn client() -> ChatClient {
-        ChatClient::new("http://localhost".into(), "key".into())
+        ChatClient::new("http://localhost".into(), "key".into()).expect("client builds")
     }
 
     #[test]
@@ -398,6 +486,26 @@ mod tests {
             Some(Retry { after: None })
         );
         assert_eq!(client().retry(&boxed(Error::Truncated)), None);
+
+        let in_stream = |status: Option<reqwest::StatusCode>| {
+            boxed(Error::Provider {
+                message: "from the gateway".into(),
+                status,
+            })
+        };
+        assert_eq!(
+            client().retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),
+            Some(Retry { after: None })
+        );
+        assert_eq!(
+            client().retry(&in_stream(Some(reqwest::StatusCode::BAD_GATEWAY))),
+            Some(Retry { after: None })
+        );
+        assert_eq!(
+            client().retry(&in_stream(Some(reqwest::StatusCode::BAD_REQUEST))),
+            None
+        );
+        assert_eq!(client().retry(&in_stream(None)), None);
 
         let bad_url = reqwest::Client::new()
             .get("not a url")
