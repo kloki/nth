@@ -107,8 +107,8 @@ impl Skill {
     }
 }
 
-/// Up to `MAX_FILES` files in `dir` other than the `SKILL.md`, nearest
-/// first.
+/// Up to `MAX_FILES` files in `dir` other than the `SKILL.md`, walked
+/// depth-first in name order so the same ones are listed on every run.
 fn files(dir: &Path) -> Vec<PathBuf> {
     ignore::WalkBuilder::new(dir)
         .hidden(false)

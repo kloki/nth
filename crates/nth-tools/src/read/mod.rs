@@ -96,9 +96,13 @@ impl Tool for Read {
             let file = path.clone();
             tokio::spawn(async move { lsp.touch(&file, false).await });
             // Only the model sees these; they are not part of the file.
-            let nested =
-                nth_context::instructions::nested(path, ctx.cwd.clone(), ctx.instructions.clone())
-                    .await;
+            let nested = nth_context::instructions::nested(
+                path,
+                ctx.cwd.clone(),
+                ctx.context.instruction_name,
+                ctx.instructions.clone(),
+            )
+            .await;
             for instruction in nested {
                 content.push('\n');
                 content.push_str(
