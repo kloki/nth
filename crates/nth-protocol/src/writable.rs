@@ -3,6 +3,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
+/// Binds only the tools that write files: write, edit and apply_patch.
+/// bash and monitor do not consult it, so a shell command could still
+/// change a file in plan mode. That is left to the prompt, as opencode
+/// leaves it: the plan reminder forbids file-changing commands and allows
+/// only ones that read. Telling a read-only `grep` from a `sed -i` means
+/// parsing shell, an endless list of exceptions that would refuse honest
+/// commands and still miss some that write.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Writable {
     #[default]
