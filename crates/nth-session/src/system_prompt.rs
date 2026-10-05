@@ -14,14 +14,23 @@ const INSTRUCTION: &str = include_str!("prompts/system/instruction.md");
 const SKILLS: &str = include_str!("prompts/system/skills.md");
 const SKILL: &str = include_str!("prompts/system/skill.md");
 
-/// Model-id substring → its own persona, first match wins; opencode's family
-/// prompts, adapted. A model matching none gets the default. Drop a new file in
-/// `prompts/system/` and add a row here.
+/// Model-id substring → its own persona, first match wins, in opencode's
+/// `provider()` order; a model matching none gets the default. Drop a new file
+/// in `prompts/system/` and add a row here.
 const BY_MODEL: &[(&str, &str)] = &[
-    ("kimi", include_str!("prompts/system/kimi.md")),
-    ("moonshot", include_str!("prompts/system/kimi.md")),
+    ("muse", include_str!("prompts/system/meta.md")),
+    // gpt-4, o1 and o3 share opencode's "beast"; gpt-6 its "astra".
+    ("gpt-4", include_str!("prompts/system/beast.md")),
+    ("o1", include_str!("prompts/system/beast.md")),
+    ("o3", include_str!("prompts/system/beast.md")),
+    ("gpt-6", include_str!("prompts/system/gpt-astra.md")),
+    ("codex", include_str!("prompts/system/codex.md")),
     ("gpt", include_str!("prompts/system/gpt.md")),
     ("gemini", include_str!("prompts/system/gemini.md")),
+    ("claude", include_str!("prompts/system/anthropic.md")),
+    ("trinity", include_str!("prompts/system/trinity.md")),
+    ("kimi", include_str!("prompts/system/kimi.md")),
+    ("moonshot", include_str!("prompts/system/kimi.md")),
 ];
 
 /// The persona for `model`: the first matching variant, else the default.
@@ -45,7 +54,9 @@ pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
         .replace("{git}", git)
         .replace("{platform}", std::env::consts::OS)
         .replace("{today}", &today());
-    let mut prompt = format!("{}\n{env}", template(model));
+    // The meta persona names the model itself; every other one leaves it out.
+    let persona = template(model).replace("{{MODEL_NAME}}", model);
+    let mut prompt = format!("{persona}\n{env}");
     for instruction in &context.instructions {
         prompt.push('\n');
         // Content last, so a `{path}` inside a file is left alone.
@@ -197,11 +208,31 @@ mod tests {
 
     #[test]
     fn a_model_picks_its_family_prompt_else_the_default() {
+        // No match falls through to nth's own default.
         assert_eq!(template("glm-5.3"), TEMPLATE);
+        assert_eq!(template("deepseek-v4.1-flash"), TEMPLATE);
+
+        // The family starts, and opencode's order: beast before gpt/astra,
+        // astra and codex before the plain gpt prompt.
         assert!(template("kimi-k3").starts_with("You are nth, an interactive general AI agent"));
         assert!(template("moonshotai/kimi-k2").starts_with("You are nth, an interactive"));
-        assert!(template("gpt-5").starts_with("You are nth."));
+        assert!(template("gpt-4o").starts_with("You are nth, an agent"));
+        assert!(template("o3-mini").starts_with("You are nth, an agent"));
+        assert!(template("gpt-6").starts_with("You are an AI agent powered by nth"));
+        assert!(template("gpt-5-codex").starts_with("You are nth, the best coding agent"));
+        assert!(template("gpt-5.1").starts_with("You are nth."));
         assert!(template("gemini-2.5-pro").starts_with("You are nth, an interactive CLI agent"));
+        assert!(template("claude-sonnet-4").starts_with("You are nth, the best coding agent"));
+        assert!(template("trinity-large").starts_with("You are nth, an interactive CLI tool"));
+        assert!(template("muse-glimmer").starts_with("You are nth, a coding agent"));
+    }
+
+    #[test]
+    fn the_meta_prompt_is_named_for_the_model() {
+        let prompt = system_prompt("muse-glimmer", "/repo".as_ref(), &Context::default());
+
+        assert!(prompt.contains("powered by muse-glimmer,"), "{prompt}");
+        assert!(!prompt.contains("{{MODEL_NAME}}"), "{prompt}");
     }
 
     #[test]

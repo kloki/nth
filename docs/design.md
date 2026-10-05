@@ -170,7 +170,7 @@ opencode calls these agents plan and build; nth calls them modes, plan and act.
 - The M1 implementation is one `chat_completions` module that streams SSE and parses tool-call deltas. It works against any OpenAI-compatible endpoint, not only Go.
 - Go asks clients to send a stable `x-opencode-session` header per conversation for routing and prompt caching. It also asks for a real user agent, such as `nth/0.1`. Both are cheap and both are required.
 - Model metadata such as context size and pricing comes from models.dev, as in opencode, and is cached on disk.
-- opencode keeps a system prompt per model family (`kimi.txt`, `gpt.txt` and others). nth ships opencode's Kimi, GPT and Gemini personas, picked by model id, plus a default; more land only when a model misbehaves.
+- opencode keeps a system prompt per model family. nth ships all of opencode's family personas (`default`, `kimi`, `gpt`, `gpt-astra`, `beast`, `codex`, `gemini`, `anthropic`, `trinity`, `meta`), picked by model id, plus one environment block; more land only when a model misbehaves.
 
 ## Worktree-native execution
 
