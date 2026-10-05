@@ -16,8 +16,9 @@ const BUILD_SWITCH: &str = include_str!("build_switch.md");
 const APPROVED: &str = include_str!("approved.md");
 
 /// The project `.nth`'s `.gitignore`: nth's plan files stay out of git,
-/// while project skills (`.nth/skills`) stay tracked.
-const GITIGNORE: &str = "# nth's plan files.\nplans/\n";
+/// while project skills (`.nth/skills`) stay tracked. It lists itself
+/// too, so nth's own directory stays invisible to git.
+const GITIGNORE: &str = "# nth's plan files.\nplans/\n.gitignore\n";
 
 /// Where the session `id` keeps its plan: `<cwd>/.nth/plans/<id>.md`.
 pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {

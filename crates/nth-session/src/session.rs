@@ -516,11 +516,9 @@ mod tests {
 
         send(&mut session, "plan it").await;
 
-        let gitignore = dir.path().join(".nth/.gitignore");
-        assert_eq!(
-            std::fs::read_to_string(&gitignore).expect("reads"),
-            "# nth's plan files.\nplans/\n"
-        );
+        let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
+        assert!(gitignore.contains("plans/"), "{gitignore}");
+        assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 
     #[tokio::test]
