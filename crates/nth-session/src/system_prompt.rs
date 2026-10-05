@@ -93,6 +93,12 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Whether `prompt`, a rendered system prompt, names today in its
+/// environment block, or an earlier day.
+pub(crate) fn names_today(prompt: &str) -> bool {
+    prompt.contains(&format!("Today's date: {}", today()))
+}
+
 /// Today, local, in the shape opencode's `Date.toDateString` shows it.
 fn today() -> String {
     format_date(&Zoned::now())
@@ -204,6 +210,14 @@ mod tests {
             "{env}"
         );
         assert!(env.contains("  Today's date: "), "{env}");
+    }
+
+    #[test]
+    fn a_prompt_names_today_until_the_day_changes() {
+        let prompt = system_prompt("glm", "/repo".as_ref(), &Context::default());
+
+        assert!(names_today(&prompt));
+        assert!(!names_today(&prompt.replace(&today(), "Mon Jan 01 2001")));
     }
 
     #[test]

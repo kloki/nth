@@ -149,6 +149,19 @@ impl Session {
         }
     }
 
+    /// Rewrites the system prompt when the day it names has passed: a
+    /// session that crosses midnight or is resumed later would tell the
+    /// model yesterday's date otherwise. Costs one scan of the prompt.
+    fn refresh_system_prompt(&mut self) {
+        let stale = match self.messages.first() {
+            Some(Message::System(prompt)) => !system_prompt::names_today(prompt),
+            _ => false,
+        };
+        if stale {
+            self.rewrite_system_prompt();
+        }
+    }
+
     /// Adds a user message and runs the turn it starts, until it ends or
     /// `cancel` interrupts it. Tools reach you through `front_end`.
     pub async fn prompt(
@@ -173,6 +186,7 @@ impl Session {
             text = format!("{text}\n\n{reminder}");
         }
         self.last_turn_mode = Some(self.mode);
+        self.refresh_system_prompt();
         match self.messages.last_mut() {
             // A turn that failed before the model said anything left the
             // last prompt unanswered; for the same reason as the reminder,
@@ -567,6 +581,19 @@ mod tests {
             [Message::User(_), Message::Assistant(_)]
         ));
         assert_eq!(session.title().as_deref(), Some("first"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_rewrites_a_system_prompt_from_another_day() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let current = session.messages[0].clone();
+        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &Context::default())
+            .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
+        session.messages[0] = Message::System(stale);
+
+        send(&mut session, "go").await;
+
+        assert_eq!(session.messages[0], current);
     }
 
     #[tokio::test]
