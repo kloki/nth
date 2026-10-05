@@ -8,14 +8,29 @@ use std::{
     time::Duration,
 };
 
+use nth_context::which_in;
+
 use crate::registry::{Builtin, Probe};
 
 /// Where a probe looks.
 pub(crate) struct Env<'a> {
     /// The project directory; files are looked for here and above.
     pub cwd: &'a Path,
+    /// Where looking up stops, inclusive: the project root. A `.clang-format`
+    /// in the home directory says nothing about this project, so the walk
+    /// does not go on to `/`; opencode's stops at the worktree the same way.
+    pub root: &'a Path,
     /// The `PATH` programs are looked up in.
     pub search_path: Option<&'a OsStr>,
+}
+
+impl Env<'_> {
+    /// `cwd` and the directories above it up to the root.
+    fn dirs(&self) -> impl Iterator<Item = &Path> {
+        self.cwd
+            .ancestors()
+            .take_while(|dir| dir.starts_with(self.root))
+    }
 }
 
 /// The command to run, with the program resolved, or why the formatter
@@ -23,27 +38,27 @@ pub(crate) struct Env<'a> {
 pub(crate) async fn check(builtin: &Builtin, env: &Env<'_>) -> Result<Vec<String>, String> {
     let bin = builtin.command[0];
     let program = match &builtin.probe {
-        Probe::OnPath => on_path(bin, env).await?,
+        Probe::OnPath => on_path(bin, env)?,
         Probe::Marker(markers) => {
-            let program = on_path(bin, env).await?;
+            let program = on_path(bin, env)?;
             any_marker(markers, env).await?;
             program
         }
         Probe::NodeDep(package) => {
             node_dep(package, env).await?;
-            node_bin(bin, env).await?
+            node_bin(bin, env)?
         }
         Probe::NodeMarker(markers) => {
             any_marker(markers, env).await?;
-            node_bin(bin, env).await?
+            node_bin(bin, env)?
         }
         Probe::Ruff => {
-            let program = on_path(bin, env).await?;
+            let program = on_path(bin, env)?;
             uses_ruff(env).await?;
             program
         }
         Probe::Help { args, first_line } => {
-            let program = on_path(bin, env).await?;
+            let program = on_path(bin, env)?;
             help_matches(&program, args, first_line, env.cwd).await?;
             program
         }
@@ -53,44 +68,15 @@ pub(crate) async fn check(builtin: &Builtin, env: &Env<'_>) -> Result<Vec<String
     Ok(command)
 }
 
-async fn on_path(bin: &str, env: &Env<'_>) -> Result<PathBuf, String> {
-    which(bin, env.search_path)
-        .await
-        .ok_or_else(|| format!("{bin} not on PATH"))
+/// A handful of `stat`s on the PATH folders: not worth a blocking task.
+fn on_path(bin: &str, env: &Env<'_>) -> Result<PathBuf, String> {
+    which_in(bin, env.search_path).ok_or_else(|| format!("{bin} not on PATH"))
 }
 
-/// `bin` as an executable file in one of the `search_path` folders.
-pub(crate) async fn which(bin: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
-    if bin.contains('/') {
-        let path = PathBuf::from(bin);
-        return is_executable(&path).await.then_some(path);
-    }
-    for dir in std::env::split_paths(search_path?) {
-        let path = dir.join(bin);
-        if is_executable(&path).await {
-            return Some(path);
-        }
-    }
-    None
-}
-
-async fn is_executable(path: &Path) -> bool {
-    match tokio::fs::metadata(path).await {
-        #[cfg(unix)]
-        Ok(meta) => {
-            use std::os::unix::fs::PermissionsExt;
-            meta.is_file() && meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        Ok(meta) => meta.is_file(),
-        Err(_) => false,
-    }
-}
-
-/// Every `name` in `dir` and the directories above it, nearest first.
-async fn find_up(name: &str, dir: &Path) -> Vec<PathBuf> {
+/// Every `name` from the project directory up to the root, nearest first.
+async fn find_up(name: &str, env: &Env<'_>) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for dir in dir.ancestors() {
+    for dir in env.dirs() {
         let path = dir.join(name);
         if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             found.push(path);
@@ -101,7 +87,7 @@ async fn find_up(name: &str, dir: &Path) -> Vec<PathBuf> {
 
 async fn any_marker(markers: &[&str], env: &Env<'_>) -> Result<(), String> {
     for marker in markers {
-        if !find_up(marker, env.cwd).await.is_empty() {
+        if !find_up(marker, env).await.is_empty() {
             return Ok(());
         }
     }
@@ -109,7 +95,7 @@ async fn any_marker(markers: &[&str], env: &Env<'_>) -> Result<(), String> {
 }
 
 async fn node_dep(package: &str, env: &Env<'_>) -> Result<(), String> {
-    for manifest in find_up("package.json", env.cwd).await {
+    for manifest in find_up("package.json", env).await {
         let Ok(text) = tokio::fs::read_to_string(&manifest).await else {
             continue;
         };
@@ -127,21 +113,16 @@ async fn node_dep(package: &str, env: &Env<'_>) -> Result<(), String> {
 }
 
 /// The project's own copy of a node program first, then one on `PATH`.
-async fn node_bin(bin: &str, env: &Env<'_>) -> Result<PathBuf, String> {
-    for dir in env.cwd.ancestors() {
-        let path = dir.join("node_modules/.bin").join(bin);
-        if is_executable(&path).await {
-            return Ok(path);
-        }
-    }
-    which(bin, env.search_path)
-        .await
+fn node_bin(bin: &str, env: &Env<'_>) -> Result<PathBuf, String> {
+    env.dirs()
+        .find_map(|dir| which_in(bin, Some(dir.join("node_modules/.bin").as_os_str())))
+        .or_else(|| which_in(bin, env.search_path))
         .ok_or_else(|| format!("{bin} not in node_modules/.bin or on PATH"))
 }
 
 async fn uses_ruff(env: &Env<'_>) -> Result<(), String> {
     for config in ["pyproject.toml", "ruff.toml", ".ruff.toml"] {
-        let Some(found) = find_up(config, env.cwd).await.into_iter().next() else {
+        let Some(found) = find_up(config, env).await.into_iter().next() else {
             continue;
         };
         if config != "pyproject.toml" {
@@ -153,7 +134,7 @@ async fn uses_ruff(env: &Env<'_>) -> Result<(), String> {
         }
     }
     for deps in ["requirements.txt", "pyproject.toml", "Pipfile"] {
-        if let Some(found) = find_up(deps, env.cwd).await.into_iter().next() {
+        if let Some(found) = find_up(deps, env).await.into_iter().next() {
             let text = tokio::fs::read_to_string(&found).await.unwrap_or_default();
             if text.contains("ruff") {
                 return Ok(());

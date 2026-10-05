@@ -71,12 +71,20 @@ impl Default for RawFormatConfig {
 impl TryFrom<RawFormatConfig> for FormatConfig {
     type Error = String;
 
-    fn try_from(raw: RawFormatConfig) -> Result<Self, String> {
-        for (name, formatter) in &raw.formatters {
+    fn try_from(mut raw: RawFormatConfig) -> Result<Self, String> {
+        for (name, formatter) in &mut raw.formatters {
             if formatter.command.as_ref().is_some_and(Vec::is_empty) {
                 return Err(format!("format.{name}: command is empty"));
             }
             let custom = registry::find(name).is_none();
+            // An empty list would quietly turn a built-in off; leaving it
+            // out keeps the built-in's own, which is what was meant.
+            if formatter.extensions.as_ref().is_some_and(Vec::is_empty) {
+                if custom {
+                    return Err(format!("format.{name}: extensions is empty"));
+                }
+                formatter.extensions = None;
+            }
             if custom
                 && !formatter.disabled
                 && (formatter.command.is_none() || formatter.extensions.is_none())
@@ -85,11 +93,25 @@ impl TryFrom<RawFormatConfig> for FormatConfig {
                     "format.{name}: not a built-in formatter, so it needs command and extensions"
                 ));
             }
+            if let Some(extensions) = &mut formatter.extensions {
+                for extension in extensions {
+                    *extension = with_dot(extension);
+                }
+            }
         }
         Ok(Self {
             enabled: raw.enabled,
             formatters: raw.formatters,
         })
+    }
+}
+
+/// `rs` meant `.rs`: the files are matched on the dot, and the slip is an
+/// easy one to make.
+fn with_dot(extension: &str) -> String {
+    match extension.starts_with('.') {
+        true => extension.to_string(),
+        false => format!(".{extension}"),
     }
 }
 
@@ -138,6 +160,29 @@ mod tests {
     #[test]
     fn empty_command_is_an_error() {
         assert!(parse("[rustfmt]\ncommand = []").is_err());
+    }
+
+    #[test]
+    fn extensions_get_their_dot_and_an_empty_list_keeps_the_default() {
+        let config = parse(
+            r#"
+            [gofmt]
+            extensions = []
+
+            [sed]
+            command = ["sed", "-i", "s/a/b/", "$FILE"]
+            extensions = ["txt", ".md", "html.erb"]
+            "#,
+        )
+        .expect("parses");
+        assert_eq!(config.formatters["gofmt"].extensions, None);
+        assert_eq!(
+            config.formatters["sed"].extensions.as_deref(),
+            Some(&[".txt".to_string(), ".md".into(), ".html.erb".into()][..])
+        );
+
+        let err = parse("[mine]\ncommand = [\"x\"]\nextensions = []").expect_err("no extensions");
+        assert!(err.to_string().contains("extensions is empty"), "{err}");
     }
 
     #[test]
