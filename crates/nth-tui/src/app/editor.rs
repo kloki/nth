@@ -8,7 +8,6 @@
 use std::{io, path::PathBuf, process::ExitStatus};
 
 use crossterm::event::EventStream;
-use nth_session::plan::edits;
 use ratatui::DefaultTerminal;
 use tokio::task::JoinError;
 
@@ -138,7 +137,7 @@ impl App {
 
     /// Sends `edited` as your edits of `original`, queued behind a running
     /// turn like any prompt, or says why there is nothing to send.
-    fn plan_edited(&mut self, original: &str, edited: Result<String, String>) {
+    pub(super) fn plan_edited(&mut self, original: &str, edited: Result<String, String>) {
         let edited = match edited {
             Ok(edited) if edited == original => {
                 self.hint = Some("no changes to the plan".into());
@@ -150,13 +149,11 @@ impl App {
                 return;
             }
         };
-        let text = edits::render(&self.plan_path, original, &edited);
         self.hold_notices = false;
-        if self.is_busy() {
-            self.queue.push_back(Queued::Prompt(text));
-        } else {
-            self.start_turn(text);
-        }
+        self.send(Queued::PlanEdits {
+            original: original.to_string(),
+            edited,
+        });
     }
 
     /// Puts the edited copy back into the prompt, or says on the status bar
@@ -202,7 +199,7 @@ mod tests {
     use std::sync::Arc;
 
     use nth_protocol::Message;
-    use nth_session::Session;
+    use nth_session::{Session, plan::edits};
 
     use super::*;
     use crate::{

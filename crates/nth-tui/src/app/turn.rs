@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use nth_protocol::{Asker, FrontEnd, Screen};
-use nth_session::{Session, store};
+use nth_session::{Session, plan, store};
 
 use super::App;
 use crate::command::Command;
@@ -19,20 +19,32 @@ pub(super) struct Ended {
     shell: bool,
 }
 
-/// What Enter sends while a turn runs, held until it ends.
+/// What is sent while a turn runs, held until it ends. What the model
+/// gets for the plan ones is rendered only then: it is written for the
+/// model, so it never goes back into the prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Queued {
     Prompt(String),
     /// A command to run, typed after `!`.
     Shell(String),
+    /// `/approve`: the plan's approval.
+    Approve,
+    /// The plan as ctrl+g found it and as you left it.
+    PlanEdits {
+        original: String,
+        edited: String,
+    },
 }
 
 impl Queued {
-    /// As the prompt shows it: a command with its `!`.
-    pub fn text(&self) -> String {
+    /// As the status bar names it: a prompt as typed, a command with its
+    /// `!`, and a word for what goes to the model as a reminder or a diff.
+    pub fn label(&self) -> String {
         match self {
             Queued::Prompt(text) => text.clone(),
             Queued::Shell(command) => format!("!{command}"),
+            Queued::Approve => "/approve".into(),
+            Queued::PlanEdits { .. } => "plan edits".into(),
         }
     }
 }
@@ -65,6 +77,11 @@ impl App {
                 Queued::Prompt(text)
             }
         };
+        self.send(next);
+    }
+
+    /// Runs `next` as a turn, or holds it until the running one ends.
+    pub(super) fn send(&mut self, next: Queued) {
         if self.is_busy() {
             self.queue.push_back(next);
         } else {
@@ -76,6 +93,10 @@ impl App {
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
+            Queued::Approve => self.start_turn(self.approval()),
+            Queued::PlanEdits { original, edited } => {
+                self.start_turn(plan::edits::render(&self.plan_path, &original, &edited))
+            }
         }
     }
 
@@ -263,9 +284,26 @@ impl App {
 
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
-    /// turn that went well, so they wait to be looked at again.
+    /// turn that went well, so they wait to be looked at again. An
+    /// approval or plan edits have no text of yours to give back, so they
+    /// are dropped, and the status bar says so.
     fn unqueue(&mut self) {
-        let mut parts: Vec<String> = self.queue.drain(..).map(|next| next.text()).collect();
+        let mut parts = Vec::new();
+        let mut dropped = Vec::new();
+        for next in self.queue.drain(..) {
+            match next {
+                Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
+                Queued::Approve => dropped.push("plan approval discarded"),
+                Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
+            }
+        }
+        dropped.dedup();
+        if !dropped.is_empty() {
+            self.hint = Some(dropped.join(" · "));
+        }
+        if parts.is_empty() {
+            return;
+        }
         if !self.prompt.is_empty() {
             parts.push(self.prompt.take());
         }
@@ -541,6 +579,29 @@ mod tests {
         assert!(!app.is_busy());
         assert!(app.queue.is_empty());
         assert_eq!(app.prompt.text(), "two\n\nthree\n\ntyping");
+    }
+
+    #[tokio::test]
+    async fn esc_drops_queued_plan_edits_and_approval_with_a_hint() {
+        let (mut app, _) = busy_app().await;
+        app.plan_edited("# Plan\n", Ok("# Plan\nmore\n".into()));
+        assert!(matches!(app.queue.front(), Some(Queued::PlanEdits { .. })));
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.queue.is_empty());
+        assert!(app.prompt.is_empty(), "{:?}", app.prompt.text());
+        assert_eq!(app.hint.as_deref(), Some("plan edits discarded"));
+
+        let (mut app, _) = busy_app().await;
+        app.queue.push_back(Queued::Approve);
+        app.queue.push_back(Queued::Prompt("then this".into()));
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert_eq!(app.prompt.text(), "then this");
+        assert_eq!(app.hint.as_deref(), Some("plan approval discarded"));
     }
 
     #[tokio::test]

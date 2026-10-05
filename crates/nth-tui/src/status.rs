@@ -77,7 +77,7 @@ fn queued(app: &App) -> Vec<Span<'static>> {
     let Some(next) = app.queue.front() else {
         return Vec::new();
     };
-    let next = next.text();
+    let next = next.label();
     let first = next
         .lines()
         .find(|line| !line.trim().is_empty())
