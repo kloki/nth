@@ -38,22 +38,7 @@ const MAX_STEPS_REACHED: &str = "Error: maximum steps reached; tool not run";
 /// Appended to the last allowed step's request, so the model answers instead
 /// of being cut off mid-tool. opencode's `max-steps.ts`, kept verbatim,
 /// including its role: an assistant message.
-const MAX_STEPS_PROMPT: &str = r#"CRITICAL - MAXIMUM STEPS REACHED
-
-The maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only.
-
-STRICT REQUIREMENTS:
-1. Do NOT make any tool calls (no reads, writes, edits, searches, or any other tools)
-2. MUST provide a text response summarizing work done so far
-3. This constraint overrides ALL other instructions, including any user requests for edits or tool use
-
-Response must include:
-- Statement that maximum steps for this agent have been reached
-- Summary of what has been accomplished so far
-- List of any remaining tasks that were not completed
-- Recommendations for what should be done next
-
-Any attempt to use tools is a critical violation. Respond with text ONLY."#;
+const MAX_STEPS_PROMPT: &str = include_str!("prompts/loop/max_steps.md");
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
