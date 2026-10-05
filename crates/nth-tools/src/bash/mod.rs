@@ -9,7 +9,10 @@ use tokio::{
     process::Child,
 };
 
-use crate::process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group};
+use crate::{
+    output::{self, tail},
+    process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
+};
 
 /// How long to keep reading after bash exits, for output still in the pipe.
 const DRAIN: Duration = Duration::from_millis(100);
@@ -30,7 +33,7 @@ impl Default for BashConfig {
         Self {
             default_timeout_ms: 120_000,
             max_timeout_ms: 600_000,
-            max_output_chars: 30_000,
+            max_output_chars: output::MAX_CHARS,
         }
     }
 }
@@ -217,15 +220,6 @@ impl<'a> Streamed<'a> {
     }
 }
 
-fn tail(text: &str, max_chars: usize) -> String {
-    let count = text.chars().count();
-    if count <= max_chars {
-        return text.to_string();
-    }
-    let kept: String = text.chars().skip(count - max_chars).collect();
-    format!("...output truncated, showing the last {max_chars} characters...\n{kept}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,7 +305,7 @@ mod tests {
             .await;
         assert_eq!(
             out,
-            Ok("...output truncated, showing the last 3 characters...\ndef".to_string())
+            Ok("...output truncated, showing the last 3 of 6 characters...\ndef".to_string())
         );
         let out = bash
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)

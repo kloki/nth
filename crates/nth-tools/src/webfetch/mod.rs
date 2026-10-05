@@ -9,7 +9,19 @@ use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use reqwest::{StatusCode, header};
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::OnceCell;
 
+use crate::output;
+
+/// Built once, on the first fetch: a client per call would open a new
+/// connection pool and read the TLS roots again every time. Built lazily
+/// and fallibly, so a TLS backend that fails to set up is an error for
+/// the model, not a panic.
+static CLIENT: OnceCell<reqwest::Client> = OnceCell::const_new();
+
+/// The most that is downloaded. The model gets at most
+/// [`output::MAX_CHARS`] of it; the whole page is read because the
+/// markdown converter needs the HTML complete.
 const MAX_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
@@ -133,11 +145,12 @@ impl Tool for WebFetch {
                 }
                 Err(_) => return Err(format!("cannot show binary content ({content_type})")),
             };
-            match args.format {
-                Format::Markdown if html => markdown(&content),
-                Format::Text if html => Ok(text(&content)),
-                _ => Ok(content),
-            }
+            let content = match args.format {
+                Format::Markdown if html => markdown(&content)?,
+                Format::Text if html => text(&content),
+                _ => content,
+            };
+            Ok(output::head(&content, output::MAX_CHARS))
         }
         .boxed()
     }
@@ -145,8 +158,9 @@ impl Tool for WebFetch {
 
 /// Returns the content type and a body of at most `MAX_BYTES`.
 async fn fetch(url: &str, format: Format) -> Result<(String, Vec<u8>), String> {
-    let client = reqwest::Client::builder()
-        .build()
+    let client = CLIENT
+        .get_or_try_init(|| async { reqwest::Client::builder().build() })
+        .await
         .map_err(|e| describe(&e))?;
     let get = |user_agent| {
         client
@@ -376,6 +390,27 @@ mod tests {
         let url = serve(vec![declared]).await;
         let err = fetch(json!({ "url": url })).await.expect_err("too large");
         assert!(err.contains("too large"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_long_page_keeps_its_head() {
+        let long = "x".repeat(output::MAX_CHARS + 5);
+        let url = serve(vec![response(
+            "200 OK",
+            "Content-Type: text/plain\r\n",
+            &long,
+        )])
+        .await;
+        let out = fetch(json!({ "url": url })).await.expect("fetch");
+        assert_eq!(
+            out,
+            format!(
+                "{}\n\n...output truncated, showing the first {} of {} characters...",
+                &long[..output::MAX_CHARS],
+                output::MAX_CHARS,
+                output::MAX_CHARS + 5
+            )
+        );
     }
 
     #[tokio::test]
