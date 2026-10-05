@@ -74,16 +74,16 @@ impl App {
         self.plan.accept();
         // Acting happens in the chat.
         self.content.select(0);
-        let text = format!(
+        self.send(Queued::Approve);
+    }
+
+    /// What the model gets for `/approve`.
+    pub(super) fn approval(&self) -> String {
+        format!(
             "/approve{}{}\n</system-reminder>",
             REMINDER_OPEN,
             plan::approved(&self.plan_path)
-        );
-        if self.is_busy() {
-            self.queue.push_back(Queued::Prompt(text));
-        } else {
-            self.start_turn(text);
-        }
+        )
     }
 }
 

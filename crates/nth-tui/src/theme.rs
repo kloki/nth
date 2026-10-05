@@ -1,4 +1,5 @@
-//! Styling shared by every pane, so blocks and bars line up across them.
+//! Styling shared by the three bands and the content panel's tabs, so
+//! blocks and bars line up across them.
 
 use nth_protocol::Mode;
 use ratatui::{

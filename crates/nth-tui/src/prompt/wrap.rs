@@ -1,4 +1,4 @@
-//! Hard-wraps the prompt text for the prompt bar, tracking the cursor.
+//! Hard-wraps the prompt text for the input panel, tracking the cursor.
 
 use unicode_width::UnicodeWidthChar;
 

@@ -1,4 +1,5 @@
-//! The chat pane: the history, where it is scrolled to, and how it draws.
+//! The chat tab of the content panel: the history, where it is scrolled
+//! to, and how it draws.
 
 mod after_write;
 mod render;

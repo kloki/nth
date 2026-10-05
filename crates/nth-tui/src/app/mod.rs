@@ -1,7 +1,7 @@
-//! The app: its state, the loop that drives it, and the layout of four
-//! bands: the header, the content panel, the input panel and the status
-//! bar. Row heights never depend on content, so nothing shifts while a turn
-//! runs.
+//! The app: its state, the loop that drives it, and the layout of the
+//! three bands: the content panel under its tab header, the input panel
+//! and the status bar. Row heights never depend on content, so nothing
+//! shifts while a turn runs.
 
 mod checks;
 mod completion;
@@ -76,8 +76,9 @@ use crate::{
 };
 
 const WHEEL_LINES: usize = 3;
-/// How often a running turn redraws, so the spinner shows every frame and
-/// the live reasoning timer advances.
+/// How often the app redraws with nothing else happening, while a turn
+/// runs or a monitor does: the spinner shows every frame, and the
+/// reasoning timer and the monitors' running time advance.
 const TICK: Duration = spinner::FRAME;
 /// How long notices wait for more lines before an idle app sends them, so
 /// one burst of output reaches the model as one message.
@@ -393,7 +394,7 @@ impl App {
             if !self.is_editing() {
                 terminal.draw(|frame| self.draw(frame))?;
             }
-            let busy = self.is_busy();
+            let ticking = self.is_busy() || self.running_monitors() > 0;
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -413,7 +414,7 @@ impl App {
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
-                _ = tick.tick(), if busy => Step::Tick,
+                _ = tick.tick(), if ticking => Step::Tick,
             };
             match step {
                 Step::Terminal(None) => break,
@@ -425,7 +426,8 @@ impl App {
                 Step::Show(panel) => self.open_content(panel.into()),
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::NoticesDue => self.notices_due(),
-                Step::TurnEnded(ended) => self.end_turn(ended.context("turn task failed")?),
+                Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
+                Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
                     self.git_loaded(status.context("reading git status failed")?)
@@ -452,7 +454,7 @@ impl App {
                         Some(formatters.context("checking formatters failed")?)
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
-                // Nothing changed but time: the redraw advances the reasoning timer.
+                // Nothing changed but time: the redraw advances the timers.
                 Step::Tick => {}
             }
         }
@@ -573,20 +575,10 @@ impl App {
             Command::Exit => self.ask_quit(),
             // Mid-turn the session is in the turn task, so there is nothing
             // to replace yet.
-            Command::Clear if self.is_busy() => {}
+            Command::Clear if self.is_busy() => self.hint = Some("a turn is running".into()),
             Command::Clear => {
-                // Same directory, so the same instruction files and skills.
-                let mut session = Session::new(self.model.clone(), self.cwd.clone())
-                    .with_context(self.context.clone());
-                session.effort = self.effort;
-                session.mode = self.mode;
-                session.max_steps = self.max_steps;
-                let plan_path = session.plan_path();
-                self.session = Some(session);
                 self.chat = Chat::new(self.cwd.clone());
-                self.usage = None;
-                self.plan_for_session(plan_path);
-                self.left_session();
+                self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
@@ -594,6 +586,22 @@ impl App {
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
         }
+    }
+
+    /// Moves on to a new, empty session in the same directory, so it has
+    /// the same instruction files and skills, and keeps the model, effort
+    /// and mode picked. The chat is the caller's to clear or keep.
+    fn start_fresh_session(&mut self) {
+        let mut session =
+            Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
+        session.effort = self.effort;
+        session.mode = self.mode;
+        session.max_steps = self.max_steps;
+        let plan_path = session.plan_path();
+        self.session = Some(session);
+        self.usage = None;
+        self.plan_for_session(plan_path);
+        self.left_session();
     }
 
     /// Shows `tab`. The diagnostics tab looks again at what applies every

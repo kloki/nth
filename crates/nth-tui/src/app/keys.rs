@@ -52,6 +52,7 @@ pub enum Action {
 
 pub fn action(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let action = match key.code {
         KeyCode::Char('c') if ctrl => Action::ClearOrQuit,
         KeyCode::Char('j') if ctrl => Action::Newline,
@@ -70,7 +71,9 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(c @ '1'..='4') if ctrl => Action::Content(usize::from(c as u8 - b'1')),
         KeyCode::Char(c) if !ctrl => Action::Insert(c),
         KeyCode::Esc => Action::Interrupt,
-        KeyCode::Enter if ctrl => Action::Newline,
+        // Only told apart from Enter where the terminal disambiguates escape
+        // codes; ctrl+j breaks a line everywhere.
+        KeyCode::Enter if ctrl || shift => Action::Newline,
         KeyCode::Enter => Action::Submit,
         KeyCode::Tab => Action::NextTab,
         KeyCode::BackTab => Action::PrevTab,
@@ -323,6 +326,10 @@ mod tests {
         assert_eq!(key(KeyCode::Esc, none), Some(Action::Interrupt));
         assert_eq!(key(KeyCode::Enter, none), Some(Action::Submit));
         assert_eq!(key(KeyCode::Enter, ctrl), Some(Action::Newline));
+        assert_eq!(
+            key(KeyCode::Enter, KeyModifiers::SHIFT),
+            Some(Action::Newline)
+        );
         assert_eq!(key(KeyCode::Char('j'), ctrl), Some(Action::Newline));
         assert_eq!(key(KeyCode::Char('c'), ctrl), Some(Action::ClearOrQuit));
         assert_eq!(key(KeyCode::Char('c'), none), Some(Action::Insert('c')));
@@ -666,10 +673,17 @@ mod tests {
 
     #[test]
     fn tab_keeps_command_mode() {
-        let mut app = typed("!");
+        // Plan, since act is the default and a switch to it would pass too.
+        let mut app = app();
+        app.set_mode(nth_protocol::Mode::Plan);
+        app.apply(Action::Insert('!'));
         app.apply(Action::NextTab);
         assert!(app.prompt.shell());
-        assert_eq!(app.mode, nth_protocol::Mode::Act);
+        assert_eq!(
+            app.mode,
+            nth_protocol::Mode::Plan,
+            "a command has no mode to switch"
+        );
     }
 
     #[test]

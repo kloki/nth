@@ -4,7 +4,8 @@
 use std::time::{Duration, Instant};
 
 use nth_protocol::{Asker, FrontEnd, Screen};
-use nth_session::{Session, store};
+use nth_session::{Session, plan, store};
+use tokio::task::JoinError;
 
 use super::App;
 use crate::command::Command;
@@ -19,20 +20,32 @@ pub(super) struct Ended {
     shell: bool,
 }
 
-/// What Enter sends while a turn runs, held until it ends.
+/// What is sent while a turn runs, held until it ends. What the model
+/// gets for the plan ones is rendered only then: it is written for the
+/// model, so it never goes back into the prompt.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Queued {
     Prompt(String),
     /// A command to run, typed after `!`.
     Shell(String),
+    /// `/approve`: the plan's approval.
+    Approve,
+    /// The plan as ctrl+g found it and as you left it.
+    PlanEdits {
+        original: String,
+        edited: String,
+    },
 }
 
 impl Queued {
-    /// As the prompt shows it: a command with its `!`.
-    pub fn text(&self) -> String {
+    /// As the status bar names it: a prompt as typed, a command with its
+    /// `!`, and a word for what goes to the model as a reminder or a diff.
+    pub fn label(&self) -> String {
         match self {
             Queued::Prompt(text) => text.clone(),
             Queued::Shell(command) => format!("!{command}"),
+            Queued::Approve => "/approve".into(),
+            Queued::PlanEdits { .. } => "plan edits".into(),
         }
     }
 }
@@ -65,6 +78,11 @@ impl App {
                 Queued::Prompt(text)
             }
         };
+        self.send(next);
+    }
+
+    /// Runs `next` as a turn, or holds it until the running one ends.
+    pub(super) fn send(&mut self, next: Queued) {
         if self.is_busy() {
             self.queue.push_back(next);
         } else {
@@ -76,6 +94,10 @@ impl App {
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
+            Queued::Approve => self.start_turn(self.approval()),
+            Queued::PlanEdits { original, edited } => {
+                self.start_turn(plan::edits::render(&self.plan_path, &original, &edited))
+            }
         }
     }
 
@@ -211,11 +233,7 @@ impl App {
             shell,
         }: Ended,
     ) {
-        // Events sent just before the task returned may still be queued, and
-        // they belong above the footer.
-        while let Ok(event) = self.events_rx.try_recv() {
-            self.chat.apply(&event);
-        }
+        self.drain_events();
         self.drop_asks();
         let elapsed = self
             .busy_since
@@ -256,11 +274,55 @@ impl App {
         }
     }
 
+    /// Events sent just before the task returned may still be queued, and
+    /// they belong above the footer. Through `on_session`, so a usage
+    /// report at the tail counts too.
+    fn drain_events(&mut self) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.on_session(event);
+        }
+    }
+
+    /// The turn task panicked, or was aborted, and the session it held is
+    /// gone with it. The app goes on in a fresh session in the same
+    /// directory rather than exit: the lost one was saved after its
+    /// previous turn, so `/resume` brings it back to there. A failed turn
+    /// otherwise: the queue goes back into the prompt.
+    pub(super) fn turn_task_failed(&mut self, error: JoinError) {
+        self.drain_events();
+        self.drop_asks();
+        self.busy_since = None;
+        self.interrupted = false;
+        self.chat.transcript.fail_turn(format!(
+            "turn task failed: {error} · continuing in a new session; \
+             the old one was last saved after its previous turn, /resume brings it back"
+        ));
+        self.start_fresh_session();
+        self.unqueue();
+    }
+
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
-    /// turn that went well, so they wait to be looked at again.
+    /// turn that went well, so they wait to be looked at again. An
+    /// approval or plan edits have no text of yours to give back, so they
+    /// are dropped, and the status bar says so.
     fn unqueue(&mut self) {
-        let mut parts: Vec<String> = self.queue.drain(..).map(|next| next.text()).collect();
+        let mut parts = Vec::new();
+        let mut dropped = Vec::new();
+        for next in self.queue.drain(..) {
+            match next {
+                Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
+                Queued::Approve => dropped.push("plan approval discarded"),
+                Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
+            }
+        }
+        dropped.dedup();
+        if !dropped.is_empty() {
+            self.hint = Some(dropped.join(" · "));
+        }
+        if parts.is_empty() {
+            return;
+        }
         if !self.prompt.is_empty() {
             parts.push(self.prompt.take());
         }
@@ -278,14 +340,21 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+        BoxError, Event, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+        Usage,
     };
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::chat::Entry;
 
-    /// A provider that never answers, and records when its request is dropped.
-    struct Hang(Arc<AtomicBool>);
+    /// A provider that never answers: it says when a request reaches it,
+    /// and records when that request is dropped.
+    #[derive(Default)]
+    struct Hang {
+        asked: Arc<Notify>,
+        dropped: Arc<AtomicBool>,
+    }
 
     struct SetOnDrop(Arc<AtomicBool>);
 
@@ -305,7 +374,10 @@ mod tests {
             _: Request<'a>,
         ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
         {
-            let guard = SetOnDrop(self.0.clone());
+            // A permit, so a test that looks after the request arrived
+            // still sees it.
+            self.asked.notify_one();
+            let guard = SetOnDrop(self.dropped.clone());
             async move {
                 let _guard = guard;
                 std::future::pending().await
@@ -317,18 +389,24 @@ mod tests {
     /// An app whose turn is running against [`Hang`], and the flag that
     /// shows when that turn's request was dropped.
     async fn busy_app() -> (App, Arc<AtomicBool>) {
-        let dropped = Arc::new(AtomicBool::new(false));
+        let hang = Arc::new(Hang::default());
+        let dropped = hang.dropped.clone();
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(dropped.clone())),
-            Arc::new(Vec::new()),
-        );
+        let mut app = App::new(session, hang, Arc::new(Vec::new()));
         app.prompt.insert_str("go");
         app.submit();
         tokio::task::yield_now().await;
         assert!(app.is_busy());
         (app, dropped)
+    }
+
+    /// Lets the running turn task finish before the app hears of it, as
+    /// when the loop is busy drawing.
+    async fn settle(app: &App) {
+        let handle = app.turn.abort_handle().expect("running");
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
     }
 
     #[tokio::test]
@@ -352,14 +430,15 @@ mod tests {
     #[tokio::test]
     async fn a_skill_command_sends_the_filled_in_skill() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let dropped = Arc::new(AtomicBool::new(false));
+        let hang = Arc::new(Hang::default());
         let session = Session::new("glm", dir.path().to_path_buf())
             .with_context(crate::app::tests::with_fix_skill(dir.path()));
-        let mut app = App::new(session, Arc::new(Hang(dropped)), Arc::new(Vec::new()));
+        let mut app = App::new(session, hang.clone(), Arc::new(Vec::new()));
 
         app.prompt.insert_str("/fix the build");
         app.submit();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The skill is read first; Esc before the request would lose it.
+        hang.asked.notified().await;
         app.on_key(KeyEvent::from(KeyCode::Esc));
         let ended = app.turn.join().await.expect("ends");
         app.end_turn(ended);
@@ -387,11 +466,7 @@ mod tests {
         let context = crate::app::tests::with_fix_skill(dir.path());
         std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
         let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(Arc::default())),
-            Arc::new(Vec::new()),
-        );
+        let mut app = App::new(session, Arc::new(Hang::default()), Arc::new(Vec::new()));
 
         app.prompt.insert_str("/fix it");
         app.submit();
@@ -412,12 +487,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nth/prompt-history.jsonl");
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(Arc::default())),
-            Arc::new(Vec::new()),
-        )
-        .with_history(crate::history::History::load(path.clone()).await);
+        let mut app = App::new(session, Arc::new(Hang::default()), Arc::new(Vec::new()))
+            .with_history(crate::history::History::load(path.clone()).await);
 
         app.prompt.insert_str("two\nlines");
         app.submit();
@@ -530,13 +601,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn esc_drops_queued_plan_edits_and_approval_with_a_hint() {
+        let (mut app, _) = busy_app().await;
+        app.plan_edited("# Plan\n", Ok("# Plan\nmore\n".into()));
+        assert!(matches!(app.queue.front(), Some(Queued::PlanEdits { .. })));
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.queue.is_empty());
+        assert!(app.prompt.is_empty(), "{:?}", app.prompt.text());
+        assert_eq!(app.hint.as_deref(), Some("plan edits discarded"));
+
+        let (mut app, _) = busy_app().await;
+        app.queue.push_back(Queued::Approve);
+        app.queue.push_back(Queued::Prompt("then this".into()));
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert_eq!(app.prompt.text(), "then this");
+        assert_eq!(app.hint.as_deref(), Some("plan approval discarded"));
+    }
+
+    #[tokio::test]
+    async fn a_usage_report_at_the_tail_of_a_turn_still_counts() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "one");
+        settle(&app).await;
+        let usage = Usage {
+            input: 10,
+            output: 2,
+        };
+        app.events_tx.try_send(Event::Usage(usage)).expect("room");
+
+        end(&mut app).await;
+
+        assert_eq!(app.usage, Some(usage));
+    }
+
+    #[tokio::test]
+    async fn a_turn_task_that_panics_leaves_the_app_running() {
+        let (mut app, _) = busy_app().await;
+        send(&mut app, "next");
+        // In place of the real task, whose session is lost with it.
+        app.turn
+            .start(|_| tokio::spawn(async { panic!("tool bug") }));
+
+        let Err(error) = app.turn.join().await else {
+            panic!("the task panicked");
+        };
+        app.turn_task_failed(error);
+
+        assert!(!app.is_busy());
+        assert_eq!(app.prompt.text(), "next", "the queue comes back");
+        let session = app.session.as_ref().expect("a fresh session");
+        assert!(session.is_empty(), "nothing of the lost one");
+        assert_eq!(session.cwd, std::path::Path::new("/repo"));
+        let Some(Entry::TurnError(e)) = app.chat.transcript.entries().last() else {
+            panic!(
+                "the turn failed: {:?}",
+                app.chat.transcript.entries().last()
+            );
+        };
+        assert!(e.starts_with("turn task failed: "), "{e}");
+        assert!(e.contains("/resume"), "{e}");
+    }
+
+    #[tokio::test]
     async fn esc_after_the_reply_ended_still_holds_the_queue_back() {
         let session = Session::new("glm", "/repo".into());
         let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
         send(&mut app, "one");
         send(&mut app, "two");
-        // Lets the turn finish `Ok` before Esc reaches it.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settle(&app).await;
 
         app.interrupt();
         end(&mut app).await;
