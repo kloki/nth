@@ -159,9 +159,9 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | Entry        | Bar   | Shape                                                     |
 | ------------ | ----- | --------------------------------------------------------- |
 | Your message | green | Wrapped text under the bar                                |
-| Model answer | cyan  | Wrapped text under the bar                                |
+| Model answer | blue  | Wrapped text under the bar                                |
 | Thinking     | none  | `∴ thinking · 1.2s`, dim; the reasoning in italic below   |
-| Tool call    | none  | The tool's icon, name in cyan, summary in dim; one line   |
+| Tool call    | cyan  | The tool's icon, name in cyan, summary in dim; one line   |
 | Turn summary | none  | `∎ model · N tool calls · 14.2s`, dim, after a blank line |
 | Interrupted  | none  | `⏹ interrupted · 3.0s` in yellow, after a blank line      |
 | Error        | red   | `✗ message` in red                                        |
@@ -174,7 +174,7 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 
 Each tool call shows its output under its row as it streams in, and keeps it once the call finishes, so output that scrolls past too fast to read can be read back.
 
-- **Bar.** Bright white, at the left edge like every other bar, so the output lines up with the messages around it.
+- **Bar.** Cyan, continuing the call's own bar, so the call and its output read as one block that lines up with the messages around it.
 - **Body.** At most 10 lines:
 
 | Tool     | Body                                                                           |
@@ -436,11 +436,11 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | red              | red             | path, deleted, conflicted, errors         |
 | green            | green           | branch, your messages, success            |
 | yellow, orange   | yellow          | ahead, behind, renamed, interrupted       |
-| blue             | blue            | model, act mode, staged                   |
+| blue             | blue            | model, act mode, staged, model answer bar |
 | magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified |
-| cyan             | cyan            | tool names, model answer bar              |
+| cyan             | cyan            | tool names, tool call and output bar      |
 | white            | white           | context bar, untracked, stashed           |
-| bright white     | bright white    | status line 1 text, tool output bar       |
+| bright white     | bright white    | status line 1 text                        |
 
 Orange is not a standard terminal colour, so it means yellow.
 

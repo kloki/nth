@@ -57,4 +57,4 @@ Style: no borders or divider lines; bands differ by background and spacing. Use 
 
 ## opencode reference
 
-`refs/opencode` is a gitignored local clone of opencode pinned to the commit named in `docs/todo.md`. The `research-opencode` skill in `.claude/skills/` studies it and writes notes under `docs/research/opencode/`.
+`refs/opencode` is a gitignored local clone of opencode pinned to the commit named in `docs/research/opencode/README.md`. The `research-opencode` skill in `.claude/skills/` studies it and writes notes under `docs/research/opencode/`.
