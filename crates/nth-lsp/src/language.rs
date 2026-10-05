@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use nth_context::extension_keys;
+
 const LANGUAGES: &[(&str, &str)] = &[
     (".abap", "abap"),
     (".bat", "bat"),
@@ -121,24 +123,12 @@ const LANGUAGES: &[(&str, &str)] = &[
     (".typc", "typst"),
 ];
 
-/// The key both this table and the server registry match on: `.ext`, or the
-/// whole file name for files without one (`makefile`, `Dockerfile`).
-pub fn extension_key(path: &Path) -> String {
-    match path.extension() {
-        Some(ext) => format!(".{}", ext.to_string_lossy()),
-        None => path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    }
-}
-
-/// Anything unknown is `plaintext`.
+/// Anything unknown is `plaintext`. Matched on the same keys as the server
+/// registry, so a file goes to a server as the language it is opened as.
 pub fn id(path: &Path) -> &'static str {
-    let key = extension_key(path);
-    LANGUAGES
+    extension_keys(path)
         .iter()
-        .find(|(ext, _)| *ext == key)
+        .find_map(|key| LANGUAGES.iter().find(|(ext, _)| ext == key))
         .map_or("plaintext", |(_, id)| id)
 }
 

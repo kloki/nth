@@ -22,17 +22,25 @@ pub struct Instruction {
     pub content: String,
 }
 
-pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) -> Vec<Instruction> {
+/// The files for the system prompt, and the name the project's go by when
+/// it has any.
+pub(crate) fn discover(
+    cwd: &Path,
+    paths: &Paths,
+    warnings: &mut Vec<String>,
+) -> (Vec<Instruction>, Option<&'static str>) {
     let mut found = Vec::new();
     if let Some(global) = global(paths).into_iter().find(|path| path.is_file()) {
         found.push(global);
     }
-    found.extend(project(cwd));
+    let (project, name) = project(cwd);
+    found.extend(project);
     found.dedup();
-    found
+    let instructions = found
         .into_iter()
         .filter_map(|path| read(path, warnings))
-        .collect()
+        .collect();
+    (instructions, name)
 }
 
 /// The global files, best first: nth's own, then opencode's, then Claude
@@ -49,9 +57,9 @@ fn global(paths: &Paths) -> Vec<PathBuf> {
     candidates
 }
 
-/// Every copy of the winning name from the project root down to `cwd`.
-/// Outside a repository only `cwd` itself is looked at.
-fn project(cwd: &Path) -> Vec<PathBuf> {
+/// Every copy of the winning name from the project root down to `cwd`, and
+/// that name. Outside a repository only `cwd` itself is looked at.
+fn project(cwd: &Path) -> (Vec<PathBuf>, Option<&'static str>) {
     let dirs: Vec<&Path> = match project_root(cwd) {
         Some(root) => cwd
             .ancestors()
@@ -67,35 +75,47 @@ fn project(cwd: &Path) -> Vec<PathBuf> {
             .collect();
         if !files.is_empty() {
             files.reverse();
-            return files;
+            return (files, Some(name));
         }
     }
-    Vec::new()
+    (Vec::new(), None)
 }
 
 /// The instruction files between `file` and the project root that are not
-/// in `loaded` yet, root first, claiming each in `loaded`. The root's own
+/// in `loaded` yet, root first, claiming each in `loaded`. Only files called
+/// `name` count when the project has one (the name `discover` settled on);
+/// without one the first name found in each directory does. The root's own
 /// files are already in the system prompt, so the walk stops below it.
 pub async fn nested(
     file: PathBuf,
     cwd: PathBuf,
+    name: Option<&'static str>,
     loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
 ) -> Vec<Instruction> {
-    crate::blocking(move || nested_blocking(&file, &cwd, &loaded)).await
+    crate::blocking(move || nested_blocking(&file, &cwd, name, &loaded)).await
 }
 
-fn nested_blocking(file: &Path, cwd: &Path, loaded: &Mutex<BTreeSet<PathBuf>>) -> Vec<Instruction> {
+fn nested_blocking(
+    file: &Path,
+    cwd: &Path,
+    name: Option<&'static str>,
+    loaded: &Mutex<BTreeSet<PathBuf>>,
+) -> Vec<Instruction> {
     let cwd = normalize(cwd);
     let file = normalize(&cwd.join(file));
     let root = project_root(&cwd).unwrap_or(cwd);
     let Some(dir) = file.parent() else {
         return Vec::new();
     };
+    let names: &[&str] = match &name {
+        Some(name) => std::slice::from_ref(name),
+        None => &NAMES,
+    };
     let mut found: Vec<PathBuf> = dir
         .ancestors()
         .take_while(|dir| *dir != root && dir.starts_with(&root))
         .filter_map(|dir| {
-            NAMES
+            names
                 .iter()
                 .map(|name| dir.join(name))
                 .find(|p| p.is_file())
@@ -171,7 +191,7 @@ mod tests {
 
         fn discover(&self, cwd: &str, paths: &Paths) -> Vec<(String, String)> {
             let mut warnings = Vec::new();
-            let found = discover(&self.path(cwd), paths, &mut warnings);
+            let (found, _) = discover(&self.path(cwd), paths, &mut warnings);
             assert_eq!(warnings, Vec::<String>::new());
             found
                 .into_iter()
@@ -307,7 +327,16 @@ mod tests {
         file: &str,
         loaded: &Arc<Mutex<BTreeSet<PathBuf>>>,
     ) -> Vec<(String, String)> {
-        nested(file.into(), tree.path("repo"), loaded.clone())
+        nested_as(tree, file, None, loaded).await
+    }
+
+    async fn nested_as(
+        tree: &Tree,
+        file: &str,
+        name: Option<&'static str>,
+        loaded: &Arc<Mutex<BTreeSet<PathBuf>>>,
+    ) -> Vec<(String, String)> {
+        nested(file.into(), tree.path("repo"), name, loaded.clone())
             .await
             .into_iter()
             .map(|i| {
@@ -335,6 +364,25 @@ mod tests {
         assert_eq!(
             nested_in(&tree, "./a/b/../b/y.rs", &loaded).await,
             pairs(&[])
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_files_keep_to_the_name_the_project_uses() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "root")
+            .file("repo/crates/a/CLAUDE.md", "not read: AGENTS.md won")
+            .file("repo/crates/a/b/AGENTS.md", "b")
+            .file("repo/crates/a/b/x.rs", "");
+        let loaded = loaded(&[tree.path("repo/AGENTS.md")]);
+        let mut warnings = Vec::new();
+        let (_, name) = discover(&tree.path("repo/crates/a/b"), &no_globals(), &mut warnings);
+        assert_eq!(name, Some("AGENTS.md"));
+
+        assert_eq!(
+            nested_as(&tree, "crates/a/b/x.rs", name, &loaded).await,
+            pairs(&[("repo/crates/a/b/AGENTS.md", "b")])
         );
     }
 

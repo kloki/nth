@@ -492,3 +492,19 @@ async fn a_closed_connection_fails_requests() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_asks_then_tells_the_server_to_exit() {
+    let (client, mut fake) = connect(json!({}), None).await;
+    let server = async {
+        let request = fake.expect("shutdown").await;
+        fake.reply(&request, Value::Null).await;
+        fake.expect("exit").await;
+        // The server goes away, which is what shutdown waits for.
+        drop(fake);
+    };
+    let started = Instant::now();
+    tokio::join!(client.shutdown(), server);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(client.is_closed());
+}

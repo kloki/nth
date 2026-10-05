@@ -16,7 +16,9 @@ use crate::{config::Config, post_write, setup};
 pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
     let (mut session, provider) = setup(&config, &config.paths(), mode).await?;
     let cwd = session.cwd.clone();
-    let tools = nth_tools::all(&config.tools, post_write(&config));
+    let post_write = post_write(&config);
+    let lsp = post_write.lsp().clone();
+    let tools = nth_tools::all(&config.tools, post_write);
     // `/name args` runs a skill, as in the chat.
     let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
         Some((skill, args)) => skill
@@ -59,6 +61,7 @@ pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
     if let Err(e) = saved {
         eprintln!("{} session not saved: {e}", "!".yellow().bold());
     }
+    lsp.shutdown().await;
     turn?;
 
     eprintln!(

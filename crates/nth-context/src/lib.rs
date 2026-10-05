@@ -5,7 +5,10 @@
 pub mod instructions;
 pub mod skills;
 
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
 pub use instructions::Instruction;
 pub use skills::{Skill, Skills};
@@ -51,6 +54,10 @@ pub struct Context {
     /// In the order they go into the system prompt: global first, then the
     /// project's from its root down, so the most specific comes last.
     pub instructions: Vec<Instruction>,
+    /// The name the project's instruction files go by, `AGENTS.md` or
+    /// `CLAUDE.md`, once one was found: the files the read tool attaches
+    /// later keep to it, so a project with both is not read twice.
+    pub instruction_name: Option<&'static str>,
     pub skills: Skills,
     /// Files that were found but could not be used, worth telling the user.
     pub warnings: Vec<String>,
@@ -61,7 +68,9 @@ impl Context {
     /// [`Context::load`].
     pub fn discover(cwd: &Path, paths: &Paths) -> Self {
         let mut context = Self::default();
-        context.instructions = instructions::discover(cwd, paths, &mut context.warnings);
+        let (instructions, name) = instructions::discover(cwd, paths, &mut context.warnings);
+        context.instructions = instructions;
+        context.instruction_name = name;
         context.skills = skills::discover(cwd, paths, &mut context.warnings);
         context
     }
@@ -89,6 +98,56 @@ pub fn project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// A program by name on `PATH`, or as given when it is a path already.
+/// Blocking.
+pub fn which(program: &str) -> Option<PathBuf> {
+    which_in(program, std::env::var_os("PATH").as_deref())
+}
+
+/// [`which`] over `search_path`, shaped like `PATH`, instead of `PATH`
+/// itself. Blocking.
+pub fn which_in(program: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
+    if program.contains('/') {
+        let path = PathBuf::from(program);
+        return executable(&path).then_some(path);
+    }
+    std::env::split_paths(search_path?)
+        .map(|dir| dir.join(program))
+        .find(|path| executable(path))
+}
+
+fn executable(path: &Path) -> bool {
+    match path.metadata() {
+        #[cfg(unix)]
+        Ok(meta) => {
+            use std::os::unix::fs::PermissionsExt;
+            meta.is_file() && meta.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        Ok(meta) => meta.is_file(),
+        Err(_) => false,
+    }
+}
+
+/// The keys a file is looked up by in a table of extensions: every dotted
+/// suffix of its name, longest first, so `x.html.erb` tries `.html.erb`
+/// before `.erb`; the whole name for a file without a dot (`makefile`,
+/// `Dockerfile`). Empty for a path without a file name.
+pub fn extension_keys(path: &Path) -> Vec<String> {
+    let Some(name) = path.file_name() else {
+        return Vec::new();
+    };
+    let name = name.to_string_lossy();
+    let keys: Vec<String> = name
+        .match_indices('.')
+        .map(|(at, _)| name[at..].to_string())
+        .collect();
+    match keys.is_empty() {
+        true => vec![name.into_owned()],
+        false => keys,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +172,27 @@ mod tests {
         };
 
         assert_eq!(paths.config_dir(), Some("/home/k/.config/nth".into()));
+    }
+
+    #[test]
+    fn which_needs_an_executable() {
+        assert!(which("sh").is_some());
+        assert!(which("definitely-not-a-program-nth").is_none());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plain = tmp.path().join("plain");
+        std::fs::write(&plain, "").expect("write");
+        assert!(which(plain.to_str().expect("utf-8")).is_none());
+        assert!(which_in("sh", Some(tmp.path().as_os_str())).is_none());
+    }
+
+    #[test]
+    fn extension_keys_are_every_dotted_suffix() {
+        let keys = |p: &str| extension_keys(Path::new(p));
+        assert_eq!(keys("/a/main.rs"), [".rs"]);
+        assert_eq!(keys("/a/view.html.erb"), [".html.erb", ".erb"]);
+        assert_eq!(keys("/a/.eslintrc.json"), [".eslintrc.json", ".json"]);
+        assert_eq!(keys("/a/Dockerfile"), ["Dockerfile"]);
+        assert_eq!(keys("/a/.gitignore"), [".gitignore"]);
+        assert!(keys("/").is_empty());
     }
 }

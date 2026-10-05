@@ -33,6 +33,9 @@ impl Skill {
     pub async fn invoke(&self, args: &str, cwd: &Path) -> Result<String, String> {
         let skill = self.clone();
         let body = crate::blocking(move || skill.body()).await?;
+        // The arguments go in before the commands run, so a skill can take
+        // a ref and run `git diff $1`: it is the user's own input on their
+        // own machine, and how opencode fills in its commands.
         let body = shell(&arguments(&body, args), cwd).await;
         let skill = self.clone();
         let cwd = cwd.to_path_buf();
@@ -180,8 +183,9 @@ async fn run(command: &str, cwd: &Path) -> String {
     }
 }
 
-/// A `<file>` block for every `@path` in `body` that names a file under
-/// `cwd`, each file once.
+/// A `<file>` block for every `@path` in `body` that names a file, each
+/// file once. Relative paths start from `cwd`; absolute ones and `..` are
+/// taken as written, as the skill's author meant them.
 fn attachments(body: &str, cwd: &Path) -> Vec<String> {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut blocks = Vec::new();

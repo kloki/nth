@@ -13,13 +13,14 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
     process::Command as Process,
     sync::{mpsc, oneshot, watch},
     time::Instant,
@@ -121,6 +122,47 @@ enum Command {
     },
 }
 
+/// How many lines of a server's stderr are kept. The first few are where it
+/// says why it could not start or died; the rest is read and dropped, so a
+/// chatty server never blocks on a full pipe.
+const STDERR_LINES: usize = 5;
+
+/// The first lines a server wrote to stderr, for the broken-state text.
+#[derive(Debug, Clone, Default)]
+pub struct Stderr(Arc<Mutex<Vec<String>>>);
+
+impl Stderr {
+    fn capture(&self, stream: impl AsyncRead + Unpin + Send + 'static) {
+        let kept = Arc::clone(&self.0);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stream).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                // Poisoned only if a holder panicked; then nothing is kept.
+                let Ok(mut kept) = kept.lock() else {
+                    return;
+                };
+                if kept.len() < STDERR_LINES && !line.trim().is_empty() {
+                    kept.push(line.trim().to_string());
+                }
+            }
+        });
+    }
+
+    /// `reason`, followed by what the server said on stderr, if anything,
+    /// on the one line the status shows.
+    pub fn explain(&self, reason: &str) -> String {
+        let lines = self
+            .0
+            .lock()
+            .map(|kept| kept.join(" | "))
+            .unwrap_or_default();
+        match lines.is_empty() {
+            true => reason.to_string(),
+            false => format!("{reason}: {lines}"),
+        }
+    }
+}
+
 pub struct Client {
     id: String,
     root: PathBuf,
@@ -128,24 +170,35 @@ pub struct Client {
     store: watch::Receiver<Store>,
     /// The server answers `textDocument/diagnostic` without registering.
     pull: bool,
+    stderr: Stderr,
 }
 
 impl Client {
-    /// Starts `launch` and runs the initialize handshake.
-    pub async fn spawn(id: &str, launch: Launch, cancel: CancellationToken) -> Result<Self, Error> {
+    /// Starts `launch` and runs the initialize handshake. What the server
+    /// writes to stderr goes into `stderr`, which the caller keeps so it can
+    /// say why a start failed.
+    pub async fn spawn(
+        id: &str,
+        launch: Launch,
+        cancel: CancellationToken,
+        stderr: Stderr,
+    ) -> Result<Self, Error> {
         let mut child = Process::new(&launch.program)
             .args(&launch.args)
             .envs(&launch.env)
             .current_dir(&launch.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(Error::Closed);
         };
-        Self::start(
+        if let Some(stream) = child.stderr.take() {
+            stderr.capture(stream);
+        }
+        let mut client = Self::start(
             id,
             &launch.root,
             stdout,
@@ -154,7 +207,9 @@ impl Client {
             launch.initialization,
             cancel,
         )
-        .await
+        .await?;
+        client.stderr = stderr;
+        Ok(client)
     }
 
     /// Runs the client over any pair of streams, which is how tests talk to
@@ -189,6 +244,7 @@ impl Client {
             commands,
             store,
             pull: false,
+            stderr: Stderr::default(),
         };
         let root_uri = uri::from_path(root);
         let params = json!({
@@ -208,7 +264,10 @@ impl Client {
                 "textDocument": {
                     "synchronization": { "didOpen": true, "didChange": true },
                     "diagnostic": { "dynamicRegistration": true, "relatedDocumentSupport": true },
-                    "publishDiagnostics": { "versionSupport": false },
+                    // The wait tells a push for this touch from a stale one
+                    // by the version the server names; without this it
+                    // would name none.
+                    "publishDiagnostics": { "versionSupport": true },
                 },
             },
         });
@@ -247,6 +306,17 @@ impl Client {
     /// The task is gone: the server exited or the connection broke.
     pub fn is_closed(&self) -> bool {
         self.commands.is_closed()
+    }
+
+    /// Resolves once the task is gone.
+    async fn closed(&self) {
+        let mut store = self.store.clone();
+        while store.changed().await.is_ok() {}
+    }
+
+    /// What the server has written to stderr so far.
+    pub fn stderr(&self) -> &Stderr {
+        &self.stderr
     }
 
     async fn send(&self, command: Command) -> Result<(), Error> {
@@ -300,11 +370,14 @@ impl Client {
             .collect()
     }
 
-    /// Asks the server to shut down and exit, then lets the task end.
-    pub async fn shutdown(self) {
+    /// Asks the server to shut down and exit, as the protocol wants before
+    /// the pipe closes, and waits for it to go, each for [`SHUTDOWN_TIMEOUT`]
+    /// at most. One that does not answer is killed with the task.
+    pub async fn shutdown(&self) {
         let ask = self.request("shutdown", Value::Null);
         if tokio::time::timeout(SHUTDOWN_TIMEOUT, ask).await.is_ok() {
             let _ = self.notify("exit", Value::Null).await;
+            let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, self.closed()).await;
         }
     }
 }

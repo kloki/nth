@@ -11,11 +11,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nth_context::{extension_keys, which};
 pub use root::Scope;
 use root::{Root, nearest, strict};
 use serde_json::{Value, json};
 
-use crate::{config::LspConfig, language};
+use crate::config::LspConfig;
 
 const LOCKFILES: &[&str] = &[
     "package-lock.json",
@@ -192,7 +193,7 @@ const BUILTINS: &[Builtin] = &[
     },
     Builtin {
         id: "sourcekit-lsp",
-        extensions: &[".swift", ".objc", "objcpp"],
+        extensions: &[".swift", ".objc", ".objcpp"],
         root: nearest(&["Package.swift", "*.xcodeproj", "*.xcworkspace"]),
         commands: &[&["sourcekit-lsp"]],
         init: Init::None,
@@ -468,8 +469,10 @@ pub fn registry(config: &LspConfig) -> Vec<Server> {
 
 impl Server {
     pub fn handles(&self, file: &Path) -> bool {
-        let key = language::extension_key(file);
-        self.extensions.is_empty() || self.extensions.contains(&key)
+        self.extensions.is_empty()
+            || extension_keys(file)
+                .iter()
+                .any(|key| self.extensions.contains(key))
     }
 
     /// The project root this server would run in for `file`, if any.
@@ -532,22 +535,6 @@ fn tsserver(root: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// A program by name on PATH, or as given when it is a path already.
-pub fn which(program: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = |p: &Path| {
-        p.metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    };
-    if program.contains('/') {
-        let path = PathBuf::from(program);
-        return executable(&path).then_some(path);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(program))
-        .find(|p| executable(p))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,16 +587,6 @@ mod tests {
             ..Default::default()
         };
         assert!(registry(&config).is_empty());
-    }
-
-    #[test]
-    fn which_needs_an_executable() {
-        assert!(which("sh").is_some());
-        assert!(which("definitely-not-a-program-nth").is_none());
-        let tmp = tempfile::tempdir().unwrap();
-        let plain = tmp.path().join("plain");
-        std::fs::write(&plain, "").unwrap();
-        assert!(which(plain.to_str().unwrap()).is_none());
     }
 
     #[test]

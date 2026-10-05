@@ -9,13 +9,14 @@ mod registry;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Stdio,
     sync::{Mutex, MutexGuard},
     time::Duration,
 };
 
 pub use config::{FormatConfig, FormatterConfig};
+use nth_context::{extension_keys, project_root};
 use registry::Builtin;
 
 /// How long one formatter may run on one file.
@@ -115,21 +116,25 @@ impl Formatters {
     }
 
     /// Runs every formatter for `path` in turn, in `cwd`, which is also the
-    /// project directory the probes look from. Empty when none applies.
+    /// project directory the probes look from. Empty when none applies, and
+    /// for a file outside the project: its formatters are not this
+    /// project's business, and a probe from here would say nothing about
+    /// them anyway.
     pub async fn format(&self, path: &Path, cwd: &Path) -> Vec<Outcome> {
         let mut outcomes = Vec::new();
         if !self.enabled {
             return outcomes;
         }
-        let Some(extension) = path.extension() else {
+        let root = root_of(cwd).await;
+        if !normalize(&cwd.join(path)).starts_with(normalize(&root)) {
             return outcomes;
-        };
-        let extension = format!(".{}", extension.to_string_lossy());
+        }
+        let keys = extension_keys(path);
         for (index, formatter) in self.list.iter().enumerate() {
-            if !formatter.extensions.contains(&extension) {
+            if !keys.iter().any(|key| formatter.extensions.contains(key)) {
                 continue;
             }
-            if let Ok(command) = self.command(index, cwd).await {
+            if let Ok(command) = self.command(index, cwd, &root).await {
                 outcomes.push(Outcome {
                     name: formatter.name.clone(),
                     result: self.run(formatter, &command, path, cwd).await,
@@ -142,9 +147,10 @@ impl Formatters {
     /// Every formatter, in the order they run, as it stands for `cwd`.
     pub async fn status(&self, cwd: &Path) -> Vec<FormatterStatus> {
         let mut status = Vec::with_capacity(self.list.len());
+        let root = root_of(cwd).await;
         for (index, formatter) in self.list.iter().enumerate() {
             let command = match self.enabled {
-                true => self.command(index, cwd).await,
+                true => self.command(index, cwd, &root).await,
                 false => Err("formatting is off in the config".into()),
             };
             status.push(FormatterStatus {
@@ -159,14 +165,14 @@ impl Formatters {
     /// The command for a formatter, or why it does not run. One that
     /// yields to another (uv to ruff) is off while the other is enabled,
     /// and also when the other is disabled in the config, as in opencode.
-    async fn command(&self, index: usize, cwd: &Path) -> Result<Vec<String>, String> {
+    async fn command(&self, index: usize, cwd: &Path, root: &Path) -> Result<Vec<String>, String> {
         if let Kind::Builtin(Builtin {
             yields_to: Some(other),
             ..
         }) = self.list[index].kind
             && let Some(other) = self.list.iter().position(|f| f.name == *other)
         {
-            match self.probe(other, cwd).await {
+            match self.probe(other, cwd, root).await {
                 Ok(_) => return Err(format!("{} is enabled", self.list[other].name)),
                 Err(_) if matches!(self.list[other].kind, Kind::Disabled) => {
                     return Err(format!(
@@ -177,10 +183,10 @@ impl Formatters {
                 Err(_) => {}
             }
         }
-        self.probe(index, cwd).await
+        self.probe(index, cwd, root).await
     }
 
-    async fn probe(&self, index: usize, cwd: &Path) -> Result<Vec<String>, String> {
+    async fn probe(&self, index: usize, cwd: &Path, root: &Path) -> Result<Vec<String>, String> {
         let builtin = match &self.list[index].kind {
             Kind::Disabled => return Err("disabled in the config".into()),
             Kind::Command(command) => return Ok(command.clone()),
@@ -192,6 +198,7 @@ impl Formatters {
         }
         let env = probe::Env {
             cwd,
+            root,
             search_path: self.search_path.as_deref(),
         };
         let found = probe::check(builtin, &env).await;
@@ -254,6 +261,32 @@ impl Formatters {
         self.timeout = timeout;
         self
     }
+}
+
+/// The project `cwd` is in: its git checkout, or `cwd` itself outside one,
+/// as opencode's worktree is. Walking up is file IO, so it is done off the
+/// runtime.
+async fn root_of(cwd: &Path) -> PathBuf {
+    let (dir, fallback) = (cwd.to_path_buf(), cwd.to_path_buf());
+    tokio::task::spawn_blocking(move || project_root(&dir).unwrap_or(dir))
+        .await
+        .unwrap_or(fallback)
+}
+
+/// `.` and `..` resolved without the file system, so a path the model
+/// wrote compares with the root the same way `nested` instructions do.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -428,21 +461,24 @@ mod tests {
         );
     }
 
+    /// What the clang-format probe decided for `cwd`.
+    fn clang(status: Vec<FormatterStatus>) -> Result<Vec<String>, String> {
+        status
+            .into_iter()
+            .find(|s| s.name == "clang-format")
+            .expect("clang-format is built in")
+            .command
+    }
+
     #[tokio::test]
-    async fn marker_probe_looks_in_parent_directories() {
+    async fn marker_probe_looks_up_to_the_project_root() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bin = fake_program(dir.path(), "clang-format");
         let project = dir.path().join("project/src");
         std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::create_dir(dir.path().join("project/.git")).expect("git dir");
         let formatters = formatters([]).with_search_path(&bin);
 
-        let clang = |status: Vec<FormatterStatus>| {
-            status
-                .into_iter()
-                .find(|s| s.name == "clang-format")
-                .expect("clang-format is built in")
-                .command
-        };
         assert_eq!(
             clang(formatters.status(&project).await),
             Err("no .clang-format found".into())
@@ -453,6 +489,73 @@ mod tests {
         let command = clang(fresh.status(&project).await).expect("marker found");
         assert_eq!(command[0], bin.join("clang-format").to_string_lossy());
         assert_eq!(command[1..], ["-i", "$FILE"]);
+    }
+
+    #[tokio::test]
+    async fn marker_probe_stops_at_the_project_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = fake_program(dir.path(), "clang-format");
+        // A marker above the checkout is someone else's.
+        std::fs::write(dir.path().join(".clang-format"), "").expect("marker");
+        let project = dir.path().join("project/src");
+        std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::create_dir(dir.path().join("project/.git")).expect("git dir");
+
+        let formatters = formatters([]).with_search_path(&bin);
+        assert_eq!(
+            clang(formatters.status(&project).await),
+            Err("no .clang-format found".into())
+        );
+
+        // Outside a checkout the project is the directory itself.
+        let loose = dir.path().join("loose");
+        std::fs::create_dir_all(&loose).expect("loose dir");
+        assert_eq!(
+            clang(formatters.status(&loose).await),
+            Err("no .clang-format found".into())
+        );
+        std::fs::write(loose.join(".clang-format"), "").expect("marker");
+        let fresh = Formatters::new(&FormatConfig::default()).with_search_path(&bin);
+        assert!(clang(fresh.status(&loose).await).is_ok());
+    }
+
+    #[tokio::test]
+    async fn files_outside_the_project_are_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join(".git")).expect("git dir");
+        let outside = file(dir.path(), "a.txt", "aaa\n");
+        let inside = file(&project, "a.txt", "aaa\n");
+        let formatters = formatters([custom("sed", &["sed", "-i", "s/a/b/g", "$FILE"], ".txt")]);
+
+        assert!(formatters.format(&outside, &project).await.is_empty());
+        assert!(
+            formatters
+                .format(&project.join("../a.txt"), &project)
+                .await
+                .is_empty()
+        );
+        assert_eq!(std::fs::read_to_string(&outside).expect("read"), "aaa\n");
+
+        assert_eq!(formatters.format(&inside, &project).await.len(), 1);
+        assert_eq!(std::fs::read_to_string(&inside).expect("read"), "bbb\n");
+    }
+
+    #[tokio::test]
+    async fn multi_dot_extensions_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let erb = file(dir.path(), "view.html.erb", "a\n");
+        let plain = file(dir.path(), "view.erb", "a\n");
+        let formatters = formatters([custom(
+            "erb",
+            &["sed", "-i", "s/a/b/", "$FILE"],
+            ".html.erb",
+        )]);
+
+        assert_eq!(formatters.format(&erb, dir.path()).await.len(), 1);
+        assert!(formatters.format(&plain, dir.path()).await.is_empty());
+        assert_eq!(std::fs::read_to_string(&erb).expect("read"), "b\n");
+        assert_eq!(std::fs::read_to_string(&plain).expect("read"), "a\n");
     }
 
     #[tokio::test]
