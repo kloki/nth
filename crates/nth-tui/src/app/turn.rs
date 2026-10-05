@@ -280,12 +280,18 @@ mod tests {
     use nth_protocol::{
         BoxError, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
     };
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::chat::Entry;
 
-    /// A provider that never answers, and records when its request is dropped.
-    struct Hang(Arc<AtomicBool>);
+    /// A provider that never answers: it says when a request reaches it,
+    /// and records when that request is dropped.
+    #[derive(Default)]
+    struct Hang {
+        asked: Arc<Notify>,
+        dropped: Arc<AtomicBool>,
+    }
 
     struct SetOnDrop(Arc<AtomicBool>);
 
@@ -305,7 +311,10 @@ mod tests {
             _: Request<'a>,
         ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
         {
-            let guard = SetOnDrop(self.0.clone());
+            // A permit, so a test that looks after the request arrived
+            // still sees it.
+            self.asked.notify_one();
+            let guard = SetOnDrop(self.dropped.clone());
             async move {
                 let _guard = guard;
                 std::future::pending().await
@@ -317,18 +326,24 @@ mod tests {
     /// An app whose turn is running against [`Hang`], and the flag that
     /// shows when that turn's request was dropped.
     async fn busy_app() -> (App, Arc<AtomicBool>) {
-        let dropped = Arc::new(AtomicBool::new(false));
+        let hang = Arc::new(Hang::default());
+        let dropped = hang.dropped.clone();
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(dropped.clone())),
-            Arc::new(Vec::new()),
-        );
+        let mut app = App::new(session, hang, Arc::new(Vec::new()));
         app.prompt.insert_str("go");
         app.submit();
         tokio::task::yield_now().await;
         assert!(app.is_busy());
         (app, dropped)
+    }
+
+    /// Lets the running turn task finish before the app hears of it, as
+    /// when the loop is busy drawing.
+    async fn settle(app: &App) {
+        let handle = app.turn.abort_handle().expect("running");
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
     }
 
     #[tokio::test]
@@ -352,14 +367,15 @@ mod tests {
     #[tokio::test]
     async fn a_skill_command_sends_the_filled_in_skill() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let dropped = Arc::new(AtomicBool::new(false));
+        let hang = Arc::new(Hang::default());
         let session = Session::new("glm", dir.path().to_path_buf())
             .with_context(crate::app::tests::with_fix_skill(dir.path()));
-        let mut app = App::new(session, Arc::new(Hang(dropped)), Arc::new(Vec::new()));
+        let mut app = App::new(session, hang.clone(), Arc::new(Vec::new()));
 
         app.prompt.insert_str("/fix the build");
         app.submit();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The skill is read first; Esc before the request would lose it.
+        hang.asked.notified().await;
         app.on_key(KeyEvent::from(KeyCode::Esc));
         let ended = app.turn.join().await.expect("ends");
         app.end_turn(ended);
@@ -387,11 +403,7 @@ mod tests {
         let context = crate::app::tests::with_fix_skill(dir.path());
         std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
         let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(Arc::default())),
-            Arc::new(Vec::new()),
-        );
+        let mut app = App::new(session, Arc::new(Hang::default()), Arc::new(Vec::new()));
 
         app.prompt.insert_str("/fix it");
         app.submit();
@@ -412,12 +424,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nth/prompt-history.jsonl");
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(
-            session,
-            Arc::new(Hang(Arc::default())),
-            Arc::new(Vec::new()),
-        )
-        .with_history(crate::history::History::load(path.clone()).await);
+        let mut app = App::new(session, Arc::new(Hang::default()), Arc::new(Vec::new()))
+            .with_history(crate::history::History::load(path.clone()).await);
 
         app.prompt.insert_str("two\nlines");
         app.submit();
@@ -535,8 +543,7 @@ mod tests {
         let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
         send(&mut app, "one");
         send(&mut app, "two");
-        // Lets the turn finish `Ok` before Esc reaches it.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settle(&app).await;
 
         app.interrupt();
         end(&mut app).await;
