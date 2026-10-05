@@ -62,7 +62,7 @@ use turn::Ended;
 
 use crate::{
     Checkers,
-    chat::Chat,
+    chat::{Chat, Show},
     command::Command,
     diagnostics::{self, Diagnostics},
     git::GitStatus,
@@ -227,6 +227,11 @@ fn draw_scrollbar(frame: &mut Frame, content: Rect, mut state: ScrollbarState) {
     frame.render_stateful_widget(bar, column, &mut state);
 }
 
+/// What a toggle tells you it did.
+fn shown(what: &str, on: bool) -> String {
+    format!("{what} {}", if on { "shown" } else { "hidden" })
+}
+
 /// The next terminal event, or never while there is no stream.
 async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<TermEvent>> {
     match input {
@@ -345,6 +350,12 @@ impl App {
             quit_armed: false,
             quit: false,
         }
+    }
+
+    /// Which parts of the chat show their bodies until toggled.
+    pub fn with_show(mut self, show: Show) -> Self {
+        self.chat.set_show(show);
+        self
     }
 
     /// Saves sessions to `store`, and logs monitors next to them.
@@ -575,7 +586,9 @@ impl App {
                 session.max_steps = self.max_steps;
                 let plan_path = session.plan_path();
                 self.session = Some(session);
+                let show = self.chat.show();
                 self.chat = Chat::new(self.cwd.clone());
+                self.chat.set_show(show);
                 self.usage = None;
                 self.plan_for_session(plan_path);
                 self.left_session();
@@ -585,6 +598,18 @@ impl App {
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
+            Command::ToggleReasoning => {
+                let mut show = self.chat.show();
+                show.reasoning = !show.reasoning;
+                self.chat.set_show(show);
+                self.hint = Some(shown("reasoning", show.reasoning));
+            }
+            Command::ToggleToolOutput => {
+                let mut show = self.chat.show();
+                show.tool_output = !show.tool_output;
+                self.chat.set_show(show);
+                self.hint = Some(shown("tool output", show.tool_output));
+            }
         }
     }
 

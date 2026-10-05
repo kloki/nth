@@ -9,7 +9,10 @@ use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
 use nth_session::plan::edits::{self, PlanEdits};
 use ratatui::text::Line;
 
-use super::after_write::{self, Note};
+use super::{
+    Show,
+    after_write::{self, Note},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -64,6 +67,7 @@ pub struct Transcript {
     pub(super) items: Vec<Item>,
     /// Width the cached lines were wrapped for.
     pub(super) width: u16,
+    pub(super) show: Show,
 }
 
 pub(super) struct Item {
@@ -79,6 +83,15 @@ impl Transcript {
             cwd,
             items: Vec::new(),
             width: 0,
+            show: Show::default(),
+        }
+    }
+
+    /// Shows or hides parts of every entry, wrapping them all again.
+    pub fn set_show(&mut self, show: Show) {
+        if show != self.show {
+            self.show = show;
+            self.items.iter_mut().for_each(|item| item.lines = None);
         }
     }
 

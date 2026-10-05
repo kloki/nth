@@ -118,13 +118,15 @@ mod tests {
         app.apply(Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[4].starts_with("  /clear "), "{rows:#?}");
-        assert!(rows[5].starts_with("  /close "));
-        assert!(rows[6].starts_with("  /diagnostics "));
-        assert!(rows[7].starts_with("  /exit "));
-        assert!(rows[8].starts_with("  /models "));
+        assert!(rows[2].starts_with("  /approve "), "{rows:#?}");
+        assert!(rows[3].starts_with("  /clear "));
+        assert!(rows[4].starts_with("  /close "));
+        assert!(rows[5].starts_with("  /diagnostics "));
+        assert!(rows[6].starts_with("  /exit "));
+        assert!(rows[7].starts_with("  /models "));
+        assert!(rows[8].starts_with("  /resume "));
         assert!(
-            rows[9].starts_with("  /resume "),
+            rows[9].starts_with("  /toggle-reasoning "),
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));

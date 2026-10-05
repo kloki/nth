@@ -29,6 +29,12 @@ effort = "default"
 model = ""
 effort = "default"
 
+[chat]
+# Show the model's reasoning under its `∴ thought` line. /toggle-reasoning flips it until nth quits.
+reasoning = true
+# Show what each tool returned under its row. /toggle-tool-output flips it until nth quits.
+tool_output = true
+
 [tools.read]
 # Lines returned when the model gives no limit.
 default_limit = 2000

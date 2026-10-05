@@ -94,7 +94,9 @@ impl App {
         self.cwd = session.cwd.clone();
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());
+        let show = self.chat.show();
         self.chat = Chat::replay(session.cwd.clone(), &session.messages);
+        self.chat.set_show(show);
         self.chat.warn(&session.context().warnings);
         self.usage = None;
         self.files.clear();

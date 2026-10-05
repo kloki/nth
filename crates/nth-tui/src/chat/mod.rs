@@ -20,6 +20,25 @@ pub use transcript::Transcript;
 
 use crate::theme::dim;
 
+/// Which parts of the chat show their bodies. Off keeps the line that says
+/// they happened, so the turn still reads in order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Show {
+    /// The model's reasoning under `∴ thought`.
+    pub reasoning: bool,
+    /// What each tool returned, under its row.
+    pub tool_output: bool,
+}
+
+impl Default for Show {
+    fn default() -> Self {
+        Self {
+            reasoning: true,
+            tool_output: true,
+        }
+    }
+}
+
 pub struct Chat {
     pub transcript: Transcript,
     scroll: Scroll,
@@ -51,6 +70,14 @@ impl Chat {
         for warning in warnings {
             self.transcript.push_error(warning.clone());
         }
+    }
+
+    pub fn show(&self) -> Show {
+        self.transcript.show
+    }
+
+    pub fn set_show(&mut self, show: Show) {
+        self.transcript.set_show(show);
     }
 
     pub fn apply(&mut self, event: &Event) {
