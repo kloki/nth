@@ -4,7 +4,7 @@
 use hoodrich::Change;
 use nth_protocol::ToolCall;
 use ratatui::{
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
@@ -88,14 +88,23 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             let red = Style::new().fg(Color::Red);
             barred(&format!("✗ {e}"), width, red, red)
         }
-        Entry::Reasoning { started, took } => {
-            let text = match took {
+        Entry::Reasoning {
+            started,
+            took,
+            text,
+        } => {
+            let timing = match took {
                 None => format!("thinking · {:.1}s", started.elapsed().as_secs_f64()),
                 // A resumed session's reasoning; how long it took isn't saved.
                 Some(took) if took.is_zero() => "thought".to_string(),
                 Some(took) => format!("thought · {:.1}s", took.as_secs_f64()),
             };
-            vec![Line::styled(format!("{INDENT}∴ {text}"), dim)]
+            let mut lines = vec![Line::styled(format!("{INDENT}∴ {timing}"), dim)];
+            // Plain text rather than markdown: reasoning is raw prose, often
+            // with half-written markup.
+            let body = dim.add_modifier(Modifier::ITALIC);
+            lines.extend(prefixed(text, width, Span::raw(INDENT), body));
+            lines
         }
         Entry::Tool {
             call,
@@ -281,13 +290,22 @@ fn barred_markdown(text: &str, width: u16, bar: Style) -> Vec<Line<'static>> {
 /// Wraps `text` to fit beside the message bar, repeating the bar on every
 /// line. Blank lines inside the text keep the bar so a block reads as one.
 fn barred(text: &str, width: u16, bar: Style, body: Style) -> Vec<Line<'static>> {
-    let room = usize::from(width.saturating_sub(BAR_WIDTH).max(1));
+    prefixed(text, width, Span::styled(BAR, bar), body)
+}
+
+/// Wraps `text` to fit after `prefix`, repeating it on every line, blank
+/// ones too.
+fn prefixed(text: &str, width: u16, prefix: Span<'static>, body: Style) -> Vec<Line<'static>> {
+    let room = usize::from(width).saturating_sub(prefix.width()).max(1);
     let text = text.trim_matches('\n').replace('\t', "    ");
     let mut lines = Vec::new();
+    if text.is_empty() {
+        return lines;
+    }
     for raw in text.split('\n') {
         let raw = raw.trim_end();
         if raw.is_empty() {
-            lines.push(Line::from(Span::styled(BAR, bar)));
+            lines.push(Line::from(prefix.clone()));
             continue;
         }
         // Indented lines (code, nested lists) wrap under their own indent.
@@ -299,7 +317,7 @@ fn barred(text: &str, width: u16, bar: Style, body: Style) -> Vec<Line<'static>>
             .subsequent_indent(indent);
         for piece in textwrap::wrap(content, options) {
             lines.push(Line::from(vec![
-                Span::styled(BAR, bar),
+                prefix.clone(),
                 Span::styled(piece.into_owned(), body),
             ]));
         }
@@ -350,6 +368,29 @@ mod tests {
         assert_eq!(
             text(&t.visible(3, 3)),
             ["▎ ≡ read   src/a.rs", "", "▎ ≡ read   src/a.rs"]
+        );
+    }
+
+    #[test]
+    fn reasoning_wraps_in_italics_under_its_timing() {
+        let mut t = transcript();
+        t.apply(&Event::ReasoningDelta("look at the".into()));
+        t.apply(&Event::ReasoningDelta(" file\n\nthen".into()));
+        t.apply(&Event::TextDelta("ok".into()));
+
+        let total = t.layout(12);
+
+        let lines = t.visible(0, total);
+        assert!(text(&lines)[0].starts_with("  ∴ thought · "));
+        assert_eq!(
+            text(&lines)[1..],
+            ["  look at", "  the file", "  ", "  then", "", "▎ ok"]
+        );
+        assert!(
+            lines[1].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
         );
     }
 
