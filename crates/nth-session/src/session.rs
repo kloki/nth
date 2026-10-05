@@ -208,7 +208,7 @@ impl Session {
         self.loaded_instructions = ctx
             .instructions
             .lock()
-            .expect("only poisoned if a holder panicked")
+            .expect("loaded instructions lock poisoned")
             .clone();
         result
     }

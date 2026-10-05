@@ -195,7 +195,7 @@ impl Monitors {
 
 impl Inner {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().expect("monitor state lock poisoned")
     }
 }
 
