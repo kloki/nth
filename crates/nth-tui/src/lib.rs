@@ -1,4 +1,5 @@
-//! The interactive chat: one scrollable history above a prompt bar.
+//! The interactive chat: the content panel, the chat history by default,
+//! above the input panel and the status bar.
 
 mod app;
 mod chat;

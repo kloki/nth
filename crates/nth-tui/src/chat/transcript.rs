@@ -374,14 +374,14 @@ impl Transcript {
     }
 }
 
-/// Adds `text` to a call's output, keeping the lines worth seeing: the end
-/// of a command's output, where it has got to, but the top of a file, where
-/// it says what it is.
 /// The tools whose results end with format notes and LSP errors.
 fn writes_files(tool: &str) -> bool {
     matches!(tool, "write" | "edit" | "apply_patch")
 }
 
+/// Adds `text` to a call's output, keeping the lines worth seeing: the end
+/// of a command's output, where it has got to, but the top of a file, where
+/// it says what it is.
 fn keep_output(tool: &str, output: &mut Vec<String>, text: &str) {
     let lines = text.lines().map(|line| line.replace('\t', "    "));
     if tool == "bash" {

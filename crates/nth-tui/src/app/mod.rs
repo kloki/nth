@@ -1,7 +1,7 @@
-//! The app: its state, the loop that drives it, and the layout of four
-//! bands: the header, the content panel, the input panel and the status
-//! bar. Row heights never depend on content, so nothing shifts while a turn
-//! runs.
+//! The app: its state, the loop that drives it, and the layout of the
+//! three bands: the content panel under its tab header, the input panel
+//! and the status bar. Row heights never depend on content, so nothing
+//! shifts while a turn runs.
 
 mod checks;
 mod completion;
