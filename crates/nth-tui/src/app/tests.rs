@@ -13,7 +13,7 @@ use nth_protocol::{
 use nth_session::Session;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
-use super::{App, Tab, input::Input, keys::Action};
+use super::{App, Queued, Tab, input::Input, keys::Action};
 use crate::llm_picker::tests::model;
 
 pub(crate) struct Idle;
@@ -150,7 +150,11 @@ fn a_scrollbar_shows_only_while_scrolled_up() {
 #[test]
 fn the_status_bar_shows_the_queue_on_its_second_line() {
     let mut app = app();
-    app.queue = ["\nfix the build\nand the tests".into(), "then lint".into()].into();
+    app.queue = [
+        Queued::Prompt("\nfix the build\nand the tests".into()),
+        Queued::Prompt("then lint".into()),
+    ]
+    .into();
     let rows = rows(&mut app);
 
     assert_eq!(rows[14].trim_end(), " glm · /repo", "the first line stays");

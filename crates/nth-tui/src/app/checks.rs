@@ -72,7 +72,10 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
-    use crate::app::tests::{app, buffer, rows};
+    use crate::app::{
+        Queued,
+        tests::{app, buffer, rows},
+    };
 
     fn server(id: &str, state: ServerState) -> ServerStatus {
         ServerStatus {
@@ -117,7 +120,7 @@ mod tests {
         assert_eq!(after[(dot(&row, 0), 15)].fg, Color::Green, "connected");
         assert_eq!(after[(dot(&row, 1), 15)].fg, Color::Red, "broken");
 
-        app.queue = ["lint".into()].into();
+        app.queue = [Queued::Prompt("lint".into())].into();
         let row = rows(&mut app)[15].clone();
         assert!(row.starts_with(" ⏵ 1 queued · lint "), "{row:?}");
         assert!(
@@ -125,7 +128,7 @@ mod tests {
             "the queue shares it: {row:?}"
         );
 
-        app.queue = ["fix the build".into()].into();
+        app.queue = [Queued::Prompt("fix the build".into())].into();
         let row = rows(&mut app)[15].clone();
         assert!(
             row.starts_with(" ⏵ 1 queued · fix the build "),

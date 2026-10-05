@@ -225,7 +225,7 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 | Panel        | Accent                            | Title                             |
 | ------------ | --------------------------------- | --------------------------------- |
-| Prompt       | the mode's colour: magenta for plan, blue for act | the mode label, or the spinner |
+| Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command | the mode label (`cmd` for a command), or the spinner |
 | Model picker | magenta                           | `switch model`                    |
 | Question     | cyan                              | `question`, or a tab per question |
 
@@ -245,6 +245,7 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Switching modes.** Tab and shift+Tab at the prompt switch between plan and act. Each mode keeps its own model and effort, from `[mode.plan]` and `[mode.act]` in the config, and the model picker changes the current mode's. A running turn keeps its mode; the next one runs in the new one.
 - **Plan mode.** The model may write only its plan file, `.nth/plans/<session>.md`; write, edit and apply_patch refuse any other path. Bash is not restricted, as in opencode, but the reminder the model gets on entering plan mode forbids changing anything with it. Switching to act tells the model so and points it at the plan file.
 - **Mode colour.** The bar and the mode label share one colour per mode: plan is magenta, act is blue. The typed text is the default fg.
+- **Commands.** `!` typed at the very start of the prompt makes it a command, as in opencode: the `!` is not kept, the label reads `cmd` and the bar turns yellow, and the placeholder becomes "Run a command.". Esc, ctrl+c on an empty prompt, or Backspace at the start goes back to the mode; Tab does nothing meanwhile. Enter runs the text with bash in the session's directory, with no timeout, and the model does not answer. The chat shows it as a bash row with its output, and the session keeps it the way opencode does: a user message saying the user ran a tool, then a bash call with its result, so the model sees it next turn. It runs like a turn: the spinner shows, Esc kills it, and a command sent while a turn runs is queued like a prompt. Prompt history keeps it with its `!`, and recalling it comes back as a command.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
 - **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.

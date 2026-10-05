@@ -219,16 +219,18 @@ impl App {
         }
         match action {
             Action::SelectPrev => {
-                if let Some(text) = self.history.prev(self.prompt.text()) {
-                    self.prompt.set(&text);
+                if let Some(entry) = self.history.prev(&self.prompt.entry()) {
+                    self.prompt.set_entry(&entry);
                 }
             }
             Action::SelectNext => {
-                if let Some(text) = self.history.next(self.prompt.text()) {
-                    self.prompt.set(&text);
+                if let Some(entry) = self.history.next(&self.prompt.entry()) {
+                    self.prompt.set_entry(&entry);
                 }
             }
             Action::Accept => {}
+            // A command runs without the model, so neither mode applies.
+            Action::NextTab | Action::PrevTab if self.prompt.shell() => {}
             Action::NextTab | Action::PrevTab => self.set_mode(self.mode.toggled()),
             // Taken before any input panel sees them.
             Action::NextContent
@@ -242,11 +244,28 @@ impl App {
             Action::LlmPicker => self.open_llm_picker(),
             Action::Edit => self.edit(),
             Action::Submit => self.submit(),
+            // Leaving command mode comes before cancelling the turn.
+            Action::Interrupt if self.prompt.shell() => self.prompt.set_shell(false),
             Action::Interrupt => self.interrupt(),
+            Action::ClearOrQuit if self.prompt.is_empty() && self.prompt.shell() => {
+                self.prompt.set_shell(false)
+            }
             Action::ClearOrQuit if self.prompt.is_empty() => self.ask_quit(),
             Action::ClearOrQuit => self.prompt.clear(),
+            // `!` at the start makes the prompt a command to run, as in
+            // opencode; anywhere else it is just text.
+            Action::Insert('!')
+                if self.prompt.cursor() == 0
+                    && !self.prompt.shell()
+                    && self.completion.is_none() =>
+            {
+                self.prompt.set_shell(true)
+            }
             Action::Insert(c) => self.prompt.insert(c),
             Action::Newline => self.prompt.insert('\n'),
+            Action::Backspace if self.prompt.cursor() == 0 && self.prompt.shell() => {
+                self.prompt.set_shell(false)
+            }
             Action::Backspace => self.prompt.backspace(),
             Action::Delete => self.prompt.delete(),
             Action::Left => self.prompt.left(),
@@ -281,9 +300,14 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
     use crate::{
-        app::{completion::Completion, tests::app},
+        app::{
+            completion::Completion,
+            tests::{app, buffer, rows},
+        },
         command::{Command, Entry},
     };
 
@@ -607,5 +631,57 @@ mod tests {
 
         app.apply(Action::ClearOrQuit);
         assert!(app.quit);
+    }
+
+    #[test]
+    fn bang_at_the_start_makes_the_prompt_a_command() {
+        let mut app = typed("!");
+        assert!(app.prompt.shell());
+        assert!(app.prompt.is_empty(), "the ! is not part of the command");
+        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ cmd");
+        assert_eq!(buffer(&mut app)[(1, 9)].fg, Color::Yellow);
+        assert_eq!(rows(&mut app)[10].trim_end(), " ▎ Run a command.");
+
+        app.apply(Action::Insert('!'));
+        assert_eq!(app.prompt.text(), "!", "a second ! is text");
+
+        let app = typed("hi!");
+        assert!(!app.prompt.shell());
+        assert_eq!(app.prompt.text(), "hi!");
+    }
+
+    #[test]
+    fn backspace_at_the_start_and_esc_leave_command_mode() {
+        let mut app = typed("!ls");
+        app.apply(Action::LineStart);
+        app.apply(Action::Backspace);
+        assert!(!app.prompt.shell());
+        assert_eq!(app.prompt.text(), "ls");
+
+        let mut app = typed("!ls");
+        app.apply(Action::Interrupt);
+        assert!(!app.prompt.shell());
+        assert_eq!(app.prompt.text(), "ls");
+    }
+
+    #[test]
+    fn tab_keeps_command_mode() {
+        let mut app = typed("!");
+        app.apply(Action::NextTab);
+        assert!(app.prompt.shell());
+        assert_eq!(app.mode, nth_protocol::Mode::Act);
+    }
+
+    #[test]
+    fn a_recalled_command_comes_back_in_command_mode() {
+        let mut app = recalling(&["!cargo test", "fix it"], "");
+        app.apply(Action::SelectPrev);
+        assert!(!app.prompt.shell());
+        app.apply(Action::SelectPrev);
+        assert!(app.prompt.shell());
+        assert_eq!(app.prompt.text(), "cargo test");
+        app.apply(Action::SelectNext);
+        assert!(!app.prompt.shell());
+        assert_eq!(app.prompt.text(), "fix it");
     }
 }

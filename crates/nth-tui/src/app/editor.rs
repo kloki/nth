@@ -12,7 +12,7 @@ use nth_session::plan::edits;
 use ratatui::DefaultTerminal;
 use tokio::task::JoinError;
 
-use super::{App, Tab};
+use super::{App, Queued, Tab};
 use crate::terminal;
 
 /// What the editor is open on.
@@ -153,7 +153,7 @@ impl App {
         let text = edits::render(&self.plan_path, original, &edited);
         self.hold_notices = false;
         if self.is_busy() {
-            self.queue.push_back(text);
+            self.queue.push_back(Queued::Prompt(text));
         } else {
             self.start_turn(text);
         }

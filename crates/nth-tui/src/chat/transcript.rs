@@ -6,7 +6,10 @@ use std::{
 };
 
 use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
-use nth_session::plan::edits::{self, PlanEdits};
+use nth_session::{
+    SHELL_PROMPT,
+    plan::edits::{self, PlanEdits},
+};
 use ratatui::text::Line;
 
 use super::after_write::{self, Note};
@@ -96,6 +99,8 @@ impl Transcript {
         for message in messages {
             match message {
                 Message::System(_) => {}
+                // A command you ran shows as its bash row alone, as it did live.
+                Message::User(text) if text == SHELL_PROMPT => {}
                 // A skill run as `/name args` shows as typed, as it did live.
                 Message::User(text) => match text.split_once("\n\n<skill_content ") {
                     Some((command, _)) => t.push_user(command.to_string()),
@@ -625,6 +630,30 @@ pub(super) mod tests {
         assert_eq!(
             users,
             [&Entry::User("plan it".into()), &Entry::User("go".into())]
+        );
+    }
+
+    #[test]
+    fn replays_a_command_you_ran_as_its_bash_row() {
+        let bash = tool("1", "bash", r#"{"command":"ls"}"#);
+        let messages = [
+            Message::User(SHELL_PROMPT.into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![bash],
+                ..Default::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "a.rs".into(),
+            },
+        ];
+
+        let t = Transcript::replay(PathBuf::from("/repo"), &messages);
+
+        let entries: Vec<_> = t.entries().collect();
+        assert!(
+            matches!(&entries[..], [Entry::Tool { call, state: ToolState::Done, .. }] if call.name == "bash"),
+            "{entries:?}"
         );
     }
 

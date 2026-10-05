@@ -38,11 +38,26 @@ impl Default for BashConfig {
 #[derive(Default)]
 pub struct Bash {
     config: BashConfig,
+    /// Runs until the command exits or the call is dropped, whatever
+    /// `timeout` says.
+    untimed: bool,
 }
 
 impl Bash {
     pub fn new(config: BashConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            untimed: false,
+        }
+    }
+
+    /// For commands the user runs: they watch it and stop it themselves,
+    /// so a long build is never cut off.
+    pub fn untimed(config: BashConfig) -> Self {
+        Self {
+            config,
+            untimed: true,
+        }
     }
 }
 
@@ -103,11 +118,12 @@ impl Tool for Bash {
 
             let mut buf = Vec::new();
             let mut streamed = Streamed::new(&ctx.output);
-            let run = tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                wait_for_exit(&mut child, &mut stdout, &mut buf, &mut streamed),
-            )
-            .await;
+            let exit = wait_for_exit(&mut child, &mut stdout, &mut buf, &mut streamed);
+            let run = if self.untimed {
+                Ok(exit.await)
+            } else {
+                tokio::time::timeout(Duration::from_millis(timeout_ms), exit).await
+            };
             abandoned.0 = None;
             let status = match run {
                 Ok(status) => status.map_err(|e| e.to_string())?,
@@ -289,6 +305,21 @@ mod tests {
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)
             .await;
         assert!(out.is_err_and(|e| e.contains("timeout 50 ms")));
+    }
+
+    #[tokio::test]
+    async fn untimed_runs_past_the_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let bash = Bash::untimed(BashConfig {
+            default_timeout_ms: 50,
+            max_timeout_ms: 50,
+            ..BashConfig::default()
+        });
+        let out = bash
+            .call(json!({ "command": "sleep 0.3; echo done" }), &ctx)
+            .await;
+        assert_eq!(out, Ok("done\n".to_string()));
     }
 
     #[tokio::test]

@@ -28,9 +28,43 @@ pub struct Prompt {
     /// Collapsed pastes, in the order they were made. Their ranges shift
     /// with every edit; an edit that crosses one drops it.
     pastes: Vec<Paste>,
+    /// The text is a command to run, not a prompt for the model: `!` at
+    /// the start switched to it, and it is not part of `text`.
+    shell: bool,
 }
 
 impl Prompt {
+    pub fn shell(&self) -> bool {
+        self.shell
+    }
+
+    pub fn set_shell(&mut self, shell: bool) {
+        self.shell = shell;
+    }
+
+    /// The text as prompt history keeps it: a command with its `!`.
+    pub fn entry(&self) -> String {
+        match self.shell {
+            true => format!("!{}", self.text),
+            false => self.text.clone(),
+        }
+    }
+
+    /// Replaces the text with a history entry; one starting with `!` is a
+    /// command.
+    pub fn set_entry(&mut self, entry: &str) {
+        match entry.strip_prefix('!') {
+            Some(command) => {
+                self.set(command);
+                self.shell = true;
+            }
+            None => {
+                self.set(entry);
+                self.shell = false;
+            }
+        }
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
