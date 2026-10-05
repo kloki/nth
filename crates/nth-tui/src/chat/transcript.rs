@@ -321,7 +321,7 @@ impl Transcript {
         let entry = match result {
             Ok(()) => Entry::TurnDone {
                 model: model.to_string(),
-                tool_calls: self.tool_calls_since_user(),
+                tool_calls: self.tool_calls_this_turn(),
                 elapsed,
             },
             Err(e) => Entry::TurnError(e),
@@ -365,10 +365,24 @@ impl Transcript {
         }
     }
 
-    fn tool_calls_since_user(&self) -> usize {
+    /// The tool calls of the turn being closed: back to whatever started
+    /// it, or ended the one before. A turn that only monitors' notices
+    /// started has no user row, so stopping at `User` alone would count
+    /// the previous turn's calls again.
+    fn tool_calls_this_turn(&self) -> usize {
         self.entries()
             .rev()
-            .take_while(|entry| !matches!(entry, Entry::User(_)))
+            .take_while(|entry| {
+                !matches!(
+                    entry,
+                    Entry::User(_)
+                        | Entry::Notice(_)
+                        | Entry::PlanEdits(_)
+                        | Entry::TurnDone { .. }
+                        | Entry::TurnError(_)
+                        | Entry::Interrupted { .. }
+                )
+            })
             .filter(|entry| matches!(entry, Entry::Tool { .. }))
             .count()
     }
@@ -499,6 +513,33 @@ pub(super) mod tests {
             ],
             "the retry's text starts a fresh answer block"
         );
+    }
+
+    #[test]
+    fn a_turn_counts_only_its_own_tool_calls() {
+        let mut t = transcript();
+        t.push_user("go".into());
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolStarted(call("2")));
+        t.finish_turn(Ok(()), "glm", Duration::from_secs(1));
+        // A turn that monitors' notices started has no user row.
+        t.push_user(
+            "<monitor id=\"2\" description=\"ci\" log=\"/l/2.log\">\nfailed\n</monitor>".into(),
+        );
+        t.apply(&Event::ToolStarted(call("3")));
+        t.finish_turn(Ok(()), "glm", Duration::from_secs(1));
+        // One that answered without tools, after a stopped one.
+        t.interrupt(Duration::from_secs(1));
+        t.finish_turn(Ok(()), "glm", Duration::from_secs(1));
+
+        let counts: Vec<_> = t
+            .entries()
+            .filter_map(|entry| match entry {
+                Entry::TurnDone { tool_calls, .. } => Some(*tool_calls),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts, [2, 1, 0]);
     }
 
     #[test]
