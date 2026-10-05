@@ -173,7 +173,16 @@ impl Session {
             text = format!("{text}\n\n{reminder}");
         }
         self.last_turn_mode = Some(self.mode);
-        self.messages.push(Message::User(text));
+        match self.messages.last_mut() {
+            // A turn that failed before the model said anything left the
+            // last prompt unanswered; for the same reason as the reminder,
+            // this one joins it rather than following it.
+            Some(Message::User(previous)) => {
+                previous.push_str("\n\n");
+                previous.push_str(&text);
+            }
+            _ => self.messages.push(Message::User(text)),
+        }
         self.updated_at = SystemTime::now();
         // The system prompt's files count as loaded, so read never repeats them.
         let mut loaded = self.loaded_instructions.clone();
@@ -281,7 +290,8 @@ fn default_max_steps() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, StreamEvent, ToolCall};
+    use futures::{future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{AssistantMessage, BoxError, ModelInfo, Request, StreamEvent, ToolCall};
 
     use super::*;
     use crate::agent_loop::INTERRUPTED;
@@ -512,6 +522,51 @@ mod tests {
         let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
         assert!(gitignore.contains("plans/"), "{gitignore}");
         assert!(gitignore.contains(".gitignore"), "{gitignore}");
+    }
+
+    /// Fails every request, as a provider that is down does.
+    struct Down;
+
+    impl Provider for Down {
+        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            Box::pin(async { Err("connection refused".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prompt_after_a_failed_turn_joins_the_unanswered_one() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let (tx, _rx) = mpsc::channel(64);
+
+        let failed = session
+            .prompt(
+                "first",
+                &Down,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(matches!(failed, Err(Error::Provider(_))));
+        assert_eq!(session.messages[1..], [Message::User("first".into())]);
+
+        // One user message, as endpoints that reject two in a row expect.
+        assert_eq!(send(&mut session, "second").await, "first\n\nsecond");
+        assert!(matches!(
+            session.messages[1..],
+            [Message::User(_), Message::Assistant(_)]
+        ));
+        assert_eq!(session.title().as_deref(), Some("first"));
     }
 
     #[tokio::test]
