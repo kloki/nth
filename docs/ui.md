@@ -160,7 +160,7 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | ------------ | ----- | --------------------------------------------------------- |
 | Your message | green | Wrapped text under the bar                                |
 | Model answer | cyan  | Wrapped text under the bar                                |
-| Thinking     | none  | `∴ thinking · 1.2s`, dim, one line                        |
+| Thinking     | none  | `∴ thinking · 1.2s`, dim; the reasoning in italic below   |
 | Tool call    | none  | The tool's icon, name in cyan, summary in dim; one line   |
 | Turn summary | none  | `∎ model · N tool calls · 14.2s`, dim, after a blank line |
 | Interrupted  | none  | `⏹ interrupted · 3.0s` in yellow, after a blank line      |

@@ -18,11 +18,11 @@ pub enum Entry {
     Notice(NoticeSummary),
     /// The plan as you edited it with ctrl+g.
     PlanEdits(PlanEdits),
-    /// Shown as one line; the reasoning text itself stays in the session,
-    /// where the model needs it.
+    /// The model's thinking, shown in full under a line timing it.
     Reasoning {
         started: Instant,
         took: Option<Duration>,
+        text: String,
     },
     Answer(String),
     Tool {
@@ -100,6 +100,7 @@ impl Transcript {
                         t.push(Entry::Reasoning {
                             started: Instant::now(),
                             took: Some(Duration::ZERO),
+                            text: reply.reasoning.clone(),
                         });
                     }
                     t.apply(&Event::TextDelta(reply.text.clone()));
@@ -190,14 +191,23 @@ impl Transcript {
 
     pub fn apply(&mut self, event: &Event) {
         match event {
-            Event::ReasoningDelta(_) => {
-                if !matches!(self.last(), Some(Entry::Reasoning { took: None, .. })) {
-                    self.push(Entry::Reasoning {
-                        started: Instant::now(),
-                        took: None,
-                    });
+            Event::ReasoningDelta(delta) => match self.items.last_mut() {
+                Some(Item {
+                    entry:
+                        Entry::Reasoning {
+                            took: None, text, ..
+                        },
+                    lines,
+                }) => {
+                    text.push_str(delta);
+                    *lines = None;
                 }
-            }
+                _ => self.push(Entry::Reasoning {
+                    started: Instant::now(),
+                    took: None,
+                    text: delta.clone(),
+                }),
+            },
             Event::TextDelta(text) => {
                 self.close_reasoning();
                 match self.items.last_mut() {
@@ -327,13 +337,9 @@ impl Transcript {
             .find(|item| matches!(&item.entry, Entry::Tool { call, .. } if call.id == id))
     }
 
-    fn last(&self) -> Option<&Entry> {
-        self.items.last().map(|item| &item.entry)
-    }
-
     fn close_reasoning(&mut self) {
         if let Some(item) = self.items.last_mut()
-            && let Entry::Reasoning { started, took } = &mut item.entry
+            && let Entry::Reasoning { started, took, .. } = &mut item.entry
             && took.is_none()
         {
             *took = Some(started.elapsed());
@@ -433,7 +439,10 @@ pub(super) mod tests {
 
         let entries: Vec<_> = t.entries().collect();
         assert_eq!(entries.len(), 5);
-        assert!(matches!(entries[1], Entry::Reasoning { took: Some(_), .. }));
+        assert!(matches!(
+            entries[1],
+            Entry::Reasoning { took: Some(_), text, .. } if text == "hmmm"
+        ));
         assert_eq!(
             entries[2],
             &Entry::Tool {
@@ -608,7 +617,10 @@ pub(super) mod tests {
 
         let entries: Vec<_> = t.entries().collect();
         assert_eq!(entries[0], &Entry::User("go".into()));
-        assert!(matches!(entries[1], Entry::Reasoning { took: Some(_), .. }));
+        assert!(matches!(
+            entries[1],
+            Entry::Reasoning { took: Some(_), text, .. } if text == "hm"
+        ));
         assert_eq!(entries[2], &Entry::Answer("looking".into()));
         assert_eq!(
             entries[3],
