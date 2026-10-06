@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
         assert!(rows[0].starts_with(" 1 chat  2 ● ci"), "{}", rows[0]);
-        assert!(rows[15].ends_with("∿ 1 monitor "), "{}", rows[15]);
+        assert!(rows[15].ends_with("» 1 monitor "), "{}", rows[15]);
     }
 
     #[tokio::test]

@@ -76,7 +76,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             };
             vec![Line::from(vec![
                 Span::raw(INDENT),
-                Span::styled("∿ ", Style::new().fg(Color::Magenta)),
+                Span::styled("» ", Style::new().fg(Color::Magenta)),
                 Span::styled(
                     format!("monitor {} · {} · {said}", notice.id, notice.description),
                     dim,
@@ -197,7 +197,7 @@ fn icon(tool: &str) -> &'static str {
         "skill" => "✦",
         "question" => "¿",
         "panel" => "▣",
-        "monitor" | "monitor_stop" => "∿",
+        "monitor" | "monitor_stop" => "»",
         _ => "•",
     }
 }
