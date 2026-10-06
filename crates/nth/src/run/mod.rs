@@ -3,11 +3,11 @@
 
 mod render;
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
-use nth_protocol::{FrontEnd, Mode};
-use nth_session::{CancellationToken, Store};
+use nth_protocol::{FrontEnd, Mode, Provider};
+use nth_session::{CancellationToken, Store, Subagents};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
@@ -15,10 +15,13 @@ use crate::{config::Config, post_write, setup};
 
 pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
     let (mut session, provider) = setup(&config, &config.paths(), mode).await?;
+    let provider: Arc<dyn Provider> = Arc::new(provider);
     let cwd = session.cwd.clone();
     let post_write = post_write(&config);
     let lsp = post_write.lsp().clone();
-    let tools = nth_tools::all(&config.tools, post_write);
+    // Without a front-end, a subagent's answer has nothing to wake the
+    // model, so the task tool waits for it.
+    let tools = crate::tools(&config, post_write, provider.clone(), Subagents::default());
     // `/name args` runs a skill, as in the chat.
     let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
         Some((skill, args)) => skill
@@ -42,7 +45,7 @@ pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
         // tool tells the model to decide for itself.
         .prompt(
             prompt,
-            &provider,
+            provider.as_ref(),
             &tools,
             &FrontEnd::default(),
             &tx,

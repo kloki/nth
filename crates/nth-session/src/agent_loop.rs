@@ -350,6 +350,14 @@ async fn confirm_doom_loop(ctx: &ToolContext, call: &ToolCall) -> bool {
 
 /// A tool result's content when the tool failed for `reason`: the shape
 /// front-ends read the reason back out of.
+/// A tool's arguments as the struct it expects, or what was wrong with
+/// them for the model.
+pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
+    args: serde_json::Value,
+) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
+}
+
 pub(crate) fn failed(reason: &str) -> String {
     format!("Error: {reason}")
 }

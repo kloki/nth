@@ -33,6 +33,14 @@ pub enum TaskOutcome {
     Interrupted,
 }
 
+impl TaskNotice {
+    /// The notice as the model reads it, for a caller that hands the answer
+    /// over itself rather than through the inbox.
+    pub fn render(&self) -> String {
+        render_task(self)
+    }
+}
+
 impl TaskOutcome {
     /// The `state` attribute, as opencode names it.
     pub fn state(&self) -> &'static str {

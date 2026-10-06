@@ -182,7 +182,8 @@ mod tests {
             "Instructions from: {}\nBe brief.\n",
             project.join("AGENTS.md").display()
         );
-        assert!(prompt.ends_with(&expected), "{prompt}");
+        // The built-in agents follow the instructions.
+        assert!(prompt.contains(&expected), "{prompt}");
     }
 
     #[test]

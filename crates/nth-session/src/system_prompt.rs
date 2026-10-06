@@ -13,6 +13,10 @@ const INSTRUCTION: &str = include_str!("prompts/system/instruction.md");
 /// The skills the model may load, after the instructions, as in opencode.
 const SKILLS: &str = include_str!("prompts/system/skills.md");
 const SKILL: &str = include_str!("prompts/system/skill.md");
+/// The agents the model may delegate to, after the skills; a subagent has
+/// no task tool, so it is not told of them.
+const AGENTS: &str = include_str!("prompts/system/agents.md");
+const AGENT: &str = include_str!("prompts/system/agent.md");
 
 /// Model-id substring → its own persona, first match wins, in opencode's
 /// `provider()` order; a model matching none gets the default. Drop a new file
@@ -109,6 +113,22 @@ fn render(role: Option<Option<&str>>, model: &str, cwd: &Path, context: &Context
     if !skills.is_empty() {
         prompt.push_str(&SKILLS.replace("{skills}", skills.concat().trim_end()));
     }
+    // An agent without a description gives the model nothing to choose by.
+    let agents: Vec<String> = context
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            let description = agent.description.as_deref()?;
+            Some(
+                AGENT
+                    .replace("{name}", &escape(&agent.name))
+                    .replace("{description}", &escape(description)),
+            )
+        })
+        .collect();
+    if role.is_none() && !agents.is_empty() {
+        prompt.push_str(&AGENTS.replace("{agents}", agents.concat().trim_end()));
+    }
     prompt
 }
 
@@ -184,18 +204,44 @@ mod tests {
         let prompt = system_prompt("glm", dir.path(), &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
+        let (skills, agents) = tail
+            .split_once("</available_skills>\n")
+            .expect("skills block");
         let location = dir.path().join(".agents/skills/deploy/SKILL.md");
         assert_eq!(
-            tail,
+            skills,
             format!(
                 "\nSkills provide specialized instructions and workflows for specific tasks.\n\
                  Use the skill tool to load a skill when a task matches its description.\n\
                  <available_skills>\n  <skill>\n    <name>deploy</name>\n    \
                  <description>Ship &lt;it&gt; &amp; tag</description>\n    \
-                 <location>{}</location>\n  </skill>\n</available_skills>\n",
+                 <location>{}</location>\n  </skill>\n",
                 location.display()
             )
         );
+        assert!(
+            agents.starts_with("Subagents handle work you delegate with the task tool."),
+            "{agents}"
+        );
+        assert!(
+            agents.contains("<agent>\n    <name>explore</name>\n    <description>Fast agent"),
+            "{agents}"
+        );
+        assert!(agents.ends_with("</available_agents>\n"), "{agents}");
+    }
+
+    #[test]
+    fn a_subagent_is_not_told_of_the_agents() {
+        let context = Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        );
+
+        let own = system_prompt("glm", "/repo".as_ref(), &context);
+        let child = subagent_system_prompt(None, "glm", "/repo".as_ref(), &context);
+
+        assert!(own.contains("<available_agents>"), "{own}");
+        assert!(!child.contains("<available_agents>"), "{child}");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::{
     DEFAULT_MAX_STEPS, Error, Route,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
-    run_turn, system_prompt,
+    run_turn, subagent, system_prompt,
 };
 
 fn first_line(text: &str) -> &str {
@@ -206,6 +206,13 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
+        // `@explore …` tells the model to delegate to that agent; a subagent
+        // has no task tool to do so with.
+        if !self.subagent
+            && let Some(mention) = subagent::resolve(&text, &self.context.agents, &self.cwd)
+        {
+            text.push_str(&mention);
+        }
         let plan_path = self.plan_path();
         if self.mode == Mode::Plan {
             // The `.nth` directory, with the `.gitignore` that keeps plan
