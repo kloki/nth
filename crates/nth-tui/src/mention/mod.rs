@@ -1,9 +1,12 @@
-//! File mentions: an `@` starting any word of the prompt, completed by fuzzy
-//! matching against the files under the working directory.
+//! Mentions: an `@` starting any word of the prompt, completed to an agent
+//! the model can delegate to, or by fuzzy matching to a file under the
+//! working directory. Agents come first: there are few, and one is what
+//! `@` at the start of a prompt usually means.
 
 mod index;
 
 pub use index::walk;
+use nth_context::Agents;
 use nucleo_matcher::{
     Config, Matcher,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
@@ -11,6 +14,77 @@ use nucleo_matcher::{
 
 /// Rows in the popup; typing narrows the list rather than scrolling it.
 pub const LIMIT: usize = 8;
+/// The most characters of an agent's description a row shows.
+const ABOUT_CHARS: usize = 48;
+
+/// One row of the `@` popup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Item {
+    Agent { name: String, about: String },
+    File(String),
+}
+
+impl Item {
+    /// What `@` is completed to.
+    pub fn name(&self) -> &str {
+        match self {
+            Item::Agent { name, .. } => name,
+            Item::File(path) => path,
+        }
+    }
+}
+
+/// The best `LIMIT` rows for `query`: the agents whose name starts with
+/// it, then the files that match it. A query with a `/` is a path.
+pub fn items(agents: &Agents, files: &[String], query: &str) -> Vec<Item> {
+    let mut items: Vec<Item> = Vec::new();
+    if !query.contains('/') {
+        let query = query.to_lowercase();
+        items.extend(
+            agents
+                .iter()
+                .filter(|agent| !agent.hidden && agent.name.to_lowercase().starts_with(&query))
+                .take(LIMIT)
+                .map(|agent| Item::Agent {
+                    name: agent.name.clone(),
+                    about: about(agent.description.as_deref().unwrap_or("agent")),
+                }),
+        );
+    }
+    let room = LIMIT.saturating_sub(items.len());
+    items.extend(matches(files, query, room).into_iter().map(Item::File));
+    items
+}
+
+/// How `items` show in the popup: `@name` with the description lined up
+/// for an agent, the path alone for a file.
+pub fn rows(items: &[Item]) -> Vec<(String, &str)> {
+    let width = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Agent { name, .. } => Some(name.len()),
+            Item::File(_) => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Agent { name, about } => (format!("@{name:<width$} "), about.as_str()),
+            Item::File(path) => (path.clone(), ""),
+        })
+        .collect()
+}
+
+/// The first line of a description, short enough for the popup.
+fn about(description: &str) -> String {
+    let line = description.lines().next().unwrap_or_default();
+    match line.char_indices().nth(ABOUT_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_string(),
+    }
+}
 
 /// The mention being typed: `start` is the byte offset of its `@`.
 #[derive(Debug, PartialEq)]
@@ -99,6 +173,61 @@ mod tests {
             })
         );
         assert_eq!(find("see @keys and more", 12), None);
+    }
+
+    #[test]
+    fn at_most_limit_agents_and_no_hidden_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join(".nth/agents");
+        std::fs::create_dir_all(&folder).expect("dirs");
+        for i in 0..LIMIT {
+            std::fs::write(folder.join(format!("a{i}.md")), "description: x\n").expect("writes");
+        }
+        std::fs::write(folder.join("secret.md"), "---\nhidden: true\n---\n").expect("writes");
+        let agents =
+            nth_context::Context::discover(dir.path(), &nth_context::Paths::default()).agents;
+        let files = vec!["src/main.rs".to_string()];
+
+        assert_eq!(items(&agents, &files, "").len(), LIMIT);
+        assert!(items(&agents, &files, "secret").is_empty());
+    }
+
+    #[test]
+    fn agents_come_before_files_and_a_path_skips_them() {
+        let agents = nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        )
+        .agents;
+        let files: Vec<String> = ["explorer.rs", "src/general.rs"].map(String::from).into();
+
+        let all = items(&agents, &files, "");
+        assert_eq!(all.len(), 4);
+        assert!(matches!(&all[0], Item::Agent { name, .. } if name == "explore"));
+        assert!(matches!(&all[1], Item::Agent { name, .. } if name == "general"));
+        assert_eq!(all[2], Item::File("explorer.rs".into()));
+        let rows = rows(&all);
+        assert_eq!(rows[0].0, "@explore  ", "names lined up, then a space");
+        assert!(
+            rows[0]
+                .1
+                .starts_with("Fast agent specialized for exploring codebases.")
+        );
+        assert_eq!(rows[2], ("explorer.rs".to_string(), ""));
+
+        let ex = items(&agents, &files, "ex");
+        assert!(matches!(&ex[0], Item::Agent { name, .. } if name == "explore"));
+        assert_eq!(ex[1], Item::File("explorer.rs".into()));
+        // An agent's name matches whatever the case; a file's follows the
+        // fuzzy matcher's smart case.
+        assert!(matches!(
+            &items(&agents, &files, "Ex")[0],
+            Item::Agent { .. }
+        ));
+        assert_eq!(
+            items(&agents, &files, "src/gen"),
+            [Item::File("src/general.rs".into())]
+        );
     }
 
     #[test]

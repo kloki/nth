@@ -20,9 +20,15 @@ Items are grouped by the milestones in [design.md](design.md). Each item names t
 
 ### Subagents and orchestrations
 
-- [ ] Subagent
-- [ ] Subagent tabs
+- [x] Subagent: the task tool, async, answers as notices. `tool/task.ts`
+- [x] Subagent tabs, with the prompt talking to the showing one
 - [ ] Orchestrations view
+- [ ] Save subagent sessions under the parent's, so `/resume` brings them back
+- [ ] `[agents] paths` in the config, like `[skills] paths`
+- [ ] A global cap on concurrent model requests across subagents
+- [ ] Skills typed on a subagent's tab: expand them as the chat does, rather than send `/name args` as text
+- [ ] Name nested agent files by path (`group/name`) as opencode does, rather than by file alone
+- [ ] Rename `Monitors` to the model's inbox it has become
 
 ### Worktrees
 

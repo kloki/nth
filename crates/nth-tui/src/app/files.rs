@@ -20,7 +20,7 @@ impl App {
         if self.indexing.take_again() {
             self.index_files();
         }
-        if matches!(self.completion, Some(Completion::File { .. })) {
+        if matches!(self.completion, Some(Completion::Mention { .. })) {
             self.refresh_completion();
         }
     }
