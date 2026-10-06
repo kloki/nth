@@ -211,12 +211,12 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 | Kind            | How it starts                              | Worktree                            | Example                        |
 | --------------- | ------------------------------------------ | ----------------------------------- | ------------------------------ |
 | Session         | You open a tab, or a flow starts a task    | its own                             | two features in parallel       |
-| Subagent        | The task tool, called by a session's agent | the parent's, read-only             | Explore searching the codebase |
+| Subagent        | The task tool, called by a session's agent | the parent's; read-only while the parent plans | Explore searching the codebase |
 | Worker subagent | The task tool with write access            | its own, branched from the parent's | a flow fanning out edits       |
 
 **Coordination rules**
 
-- A subagent reports back through its task tool result. It never writes into the parent's transcript.
+- A subagent runs in the background and reports back through a notice in the model's inbox, as a monitor does; headless, through its task tool result. It never writes into the parent's transcript.
 - A worker subagent's branch lands on its parent's branch, never on base. Only the session lands on base, which keeps history clean.
 - Every agent has one status: running, waiting for you, idle, done or failed. "Waiting for you" covers permission prompts, questions and plan approvals.
 - A global limit on concurrent model requests stops ten agents from hitting provider rate limits at once.
@@ -224,7 +224,7 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 **How the UI shows it**
 
 - The agents sidebar lists every agent on the machine as a tree: session, then subagents. Each row shows a status marker and what the agent is doing right now, such as `edit src/client.rs`.
-- Selecting a subagent opens its transcript in the chat pane. Esc returns to the parent.
+- Each subagent has a tab with its transcript, and the prompt talks to the subagent whose tab shows (see [ui.md](ui.md#subagents)). Esc there stops its turn; the tab keys go back to the chat.
 - Tabs with an agent waiting for you are marked in yellow in the tab bar, and a desktop notification fires.
 - The same tree comes out of `nth agents --json`, so an agent can check on other agents.
 

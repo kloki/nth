@@ -1,5 +1,5 @@
 //! The completion popup over the prompt: nth's commands and the skills
-//! after `/`, files after `@`.
+//! after `/`, agents and files after `@`.
 
 use ratatui::{
     Frame,
@@ -16,9 +16,10 @@ use crate::{
 /// The open completion popup.
 pub(super) enum Completion {
     Command(Popup<Entry>),
-    /// `start` is the byte offset of the mention's `@` in the prompt.
-    File {
-        popup: Popup<String>,
+    /// An agent or a file; `start` is the byte offset of the mention's `@`
+    /// in the prompt.
+    Mention {
+        popup: Popup<mention::Item>,
         start: usize,
     },
 }
@@ -27,14 +28,14 @@ impl Completion {
     pub(super) fn next(&mut self) {
         match self {
             Completion::Command(popup) => popup.next(),
-            Completion::File { popup, .. } => popup.next(),
+            Completion::Mention { popup, .. } => popup.next(),
         }
     }
 
     pub(super) fn prev(&mut self) {
         match self {
             Completion::Command(popup) => popup.prev(),
-            Completion::File { popup, .. } => popup.prev(),
+            Completion::Mention { popup, .. } => popup.prev(),
         }
     }
 
@@ -43,17 +44,16 @@ impl Completion {
     pub(super) fn start(&self) -> usize {
         match self {
             Completion::Command(_) => 0,
-            Completion::File { start, .. } => *start,
+            Completion::Mention { start, .. } => *start,
         }
     }
 
     pub(super) fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
             Completion::Command(popup) => (Entry::rows(popup.items()), popup.selected_index()),
-            Completion::File { popup, .. } => (
-                popup.items().iter().map(|f| (f.clone(), "")).collect(),
-                popup.selected_index(),
-            ),
+            Completion::Mention { popup, .. } => {
+                (mention::rows(popup.items()), popup.selected_index())
+            }
         };
         popup::draw(frame, area, anchor, &rows, selected);
     }
@@ -66,18 +66,18 @@ impl App {
             .map(Completion::Command)
             .or_else(|| {
                 let mention = mention::find(text, self.prompt.cursor())?;
-                let files = mention::matches(&self.files, mention.query, mention::LIMIT);
-                Some(Completion::File {
-                    popup: Popup::new(files)?,
+                let items = mention::items(&self.context.agents, &self.files, mention.query);
+                Some(Completion::Mention {
+                    popup: Popup::new(items)?,
                     start: mention.start,
                 })
             });
     }
 
-    /// `submit` runs a highlighted command; a file is filled in either way,
-    /// since sending a half-typed mention is never what Enter meant. A
-    /// skill is filled in with room for its arguments, and runs once its
-    /// name is typed out.
+    /// `submit` runs a highlighted command; an agent or a file is filled in
+    /// either way, since sending a half-typed mention is never what Enter
+    /// meant. A skill is filled in with room for its arguments, and runs
+    /// once its name is typed out.
     pub(super) fn accept(&mut self, completion: Completion, submit: bool) {
         match completion {
             Completion::Command(popup) => match popup.selected().clone() {
@@ -94,12 +94,12 @@ impl App {
                 }
                 Entry::Skill { name, .. } => self.prompt.set(&format!("/{name} ")),
             },
-            Completion::File { popup, start } => {
+            Completion::Mention { popup, start } => {
                 let end = self.prompt.cursor();
                 let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
                 let gap = if spaced { "" } else { " " };
                 self.prompt
-                    .replace(start..end, &format!("@{}{gap}", popup.selected()));
+                    .replace(start..end, &format!("@{}{gap}", popup.selected().name()));
             }
         }
     }
@@ -128,6 +128,26 @@ mod tests {
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));
+    }
+
+    #[test]
+    fn at_lists_the_agents_first_and_fills_one_in() {
+        let mut app = app();
+        app.context = std::sync::Arc::new(nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        ));
+        app.files = vec!["src/explorer.rs".into()];
+        for c in "ask @ex".chars() {
+            app.apply(Action::Insert(c));
+        }
+        let rows = rows(&mut app);
+        // Too wide for the terminal, the popup is shifted to the margin.
+        assert!(rows[8].contains("@explore  Fast agent"), "{}", rows[8]);
+        assert!(rows[9].contains("src/explorer.rs"), "{}", rows[9]);
+
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "ask @explore ");
     }
 
     #[test]

@@ -403,7 +403,7 @@ mod tests {
 
     fn file(app: &App) -> &str {
         match &app.completion {
-            Some(Completion::File { popup, .. }) => popup.selected(),
+            Some(Completion::Mention { popup, .. }) => popup.selected().name(),
             _ => panic!("file popup not open"),
         }
     }

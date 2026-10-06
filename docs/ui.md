@@ -37,17 +37,18 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan and a tab per monitor are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
-- **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open.
+- **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                  |
 | ---------------- | ----------------------------------------------------- |
 | ctrl+t           | Shows the next tab, from the last back to chat        |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor, or the plan while there is one |
-| ctrl+w           | On a monitor's tab: stops it, or closes the tab once stopped |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor or subagent, or the plan while there is one |
+| ctrl+w           | On a monitor's or a subagent's tab: stops it, or closes the tab once stopped |
+| esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn |
 | ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan) |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
@@ -74,6 +75,30 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
 - **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `» monitor 1 · ci · 2 lines`.
 - **Status bar.** `» 2 monitors` on line 2's right while any run.
+
+## Subagents
+
+The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is the agent's name behind its state: `● explore` while its turn runs, `✓ explore` once it answered, `✗ explore` when it was stopped or failed.
+
+```
+@explore · find how tabs open · running · 12s · 3 tool calls · 1 queued
+
+▎ Find where the content panel's tabs are opened …
+  ≡ read   crates/nth-tui/src/app/content.rs
+▎ Tabs open in `Content::open` …
+```
+
+- **Header.** The agent, what the model asked of it, its state in colour (running yellow, done green, interrupted yellow, failed red), how long, how many tool calls this turn, and how many prompts wait in its inbox.
+- **Chat.** Its own transcript under the header, drawn like the main chat: the prompt it got, its tool calls with their output, its answer, and a turn summary.
+- **The prompt is its.** While a subagent's tab shows, the input panel talks to it: the label row reads the agent's name, `explore`, in cyan in place of `plan` or `act`, and the bar turns cyan with it. Enter sends what you typed to the subagent; it waits in its inbox behind whatever the subagent is doing, and the tab shows it once its turn starts. The spinner and `esc to cancel` follow the subagent's turn, not the main session's. Tab and shift+Tab do nothing: the mode belongs to the main session. The main session never hears what you say to a subagent; the model gets only the answers to its own tasks, and continues a subagent with `task_id`.
+- **Commands.** `/` commands work as everywhere. A `!` command belongs to the main session, so running one from a subagent's tab shows the chat tab where its output lands.
+- **Stopping.** Esc or ctrl+w stops the subagent's running turn; the tab stays, marked `✗`, and the subagent can be prompted again. Esc on the chat tab cancels the main session's turn only; subagents keep running, like monitors.
+- **Closing.** A subagent's tab only closes once its turn has ended. On a running one, ctrl+q and `/close` say on the status bar to stop it first.
+- **Leaving.** `/clear` and `/resume` end every subagent; their tabs close as each turn ends.
+- **Quitting.** With subagents running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 subagent running · ctrl+c again to quit`, counted with the monitors. The second ctrl+c stops them and saves their notices in the session, so a resumed model knows they are gone.
+- **In the chat.** The task call is one row, `↳ task  find how tabs open`, its result the id the model continues it with. The answer shows as a notice row when it arrives: `↳ subagent 1 · explore · completed` (or `failed`, `interrupted`); its text is for the model.
+- **Status bar.** `↳ 2 subagents` on line 2's right while any run, before the monitors.
+- **Headless.** `nth run` has nothing to wake the model, so there the task tool waits for the subagent and returns its answer in the call.
 
 ## Plan
 
@@ -199,7 +224,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 
 ## Input panel
 
-- **Default: the prompt.** See [Prompt](#prompt) below. The completion popup for `/` commands and `@` files floats right above the row being typed, lined up with the `/` or `@` it completes.
+- **Default: the prompt.** See [Prompt](#prompt) below. The completion popup for `/` commands and `@` agents and files floats right above the row being typed, lined up with the `/` or `@` it completes.
 - **One style.** Every input panel looks the same; see [Input panel style](#input-panel-style).
 - **Context swaps it.** Today that is the model picker. Later come question tool answers, permission prompts, the session list and similar. Each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model picker is a header plus a list, around 8. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
@@ -229,7 +254,7 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 | Panel        | Accent                            | Title                             |
 | ------------ | --------------------------------- | --------------------------------- |
-| Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command | the mode label (`cmd` for a command), or the spinner |
+| Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner |
 | Model picker | magenta                           | `switch model`                    |
 | Question     | cyan                              | `question`, or a tab per question |
 
@@ -252,6 +277,7 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Commands.** `!` typed at the very start of the prompt makes it a command, as in opencode: the `!` is not kept, the label reads `cmd` and the bar turns yellow, and the placeholder becomes "Run a command.". Esc, ctrl+c on an empty prompt, or Backspace at the start goes back to the mode; Tab does nothing meanwhile. Enter runs the text with bash in the session's directory, with no timeout, and the model does not answer. The chat shows it as a bash row with its output, and the session keeps it the way opencode does: a user message saying the user ran a tool, then a bash call with its result, so the model sees it next turn. It runs like a turn: the spinner shows, Esc kills it, and a command sent while a turn runs is queued like a prompt. Prompt history keeps it with its `!`, and recalling it comes back as a command.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
+- **Agents and files.** `@` starting a word lists the agents whose name starts with what follows, `@explore` with the first line of its description, then the files under the working directory that fuzzy-match it, at most 8 rows in all; a query with a `/` in it is a path and lists files only. Ctrl+N or Enter fills in `@name `. Sent, `@explore` tells the model to call the task tool with that agent, as in opencode: you pick the agent, the model writes the task. The chat shows the prompt as typed; a word that is also a file under the working directory is the file.
 - **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
 - **History.** Up and Down recall sent prompts, newest first, and Down past the newest gives back what was being typed. An edited recalled prompt is never replaced: Up and Down do nothing until it is sent or cleared. The last 100 prompts are kept across runs in `$XDG_DATA_HOME/nth/prompt-history.jsonl`, one JSON string per line. Builtin commands are not recorded.
 - **External editor.** ctrl+g opens the prompt in `$VISUAL`, else `$EDITOR`, else vi, as the plan does on its tab. The text you save and quit comes back into the prompt; an empty prompt opens an empty buffer. Saving with no change or quitting with an error (vim's `:cq`) leaves the prompt as it was, the latter with a hint. While the plan tab shows, ctrl+g edits the plan, not the prompt (see [Plan](#plan)).
