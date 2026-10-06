@@ -174,6 +174,9 @@ impl Inner {
 impl Inner {
     /// What a running monitor said goes to the inbox under its name; a
     /// forgotten one has no notice to join. Stderr is for the log only.
+    /// Posted under the registry's lock, which `forget_all` takes too, so
+    /// nothing slips into the inbox after a session was left. The inbox
+    /// never takes this lock, so the order is safe.
     fn record(&self, event: &MonitorEvent) {
         match event {
             MonitorEvent::Started { .. } => {}
@@ -182,27 +185,25 @@ impl Inner {
                 ..
             } => {}
             MonitorEvent::Output { id, line, .. } => {
-                if let Some((description, log)) = self.named(*id) {
+                let state = self.lock();
+                if let Some(running) = state.running.get(id) {
                     self.inbox
-                        .monitor_line(*id, &description, &log, line.clone());
+                        .monitor_line(*id, &running.description, &running.log, line.clone());
                 }
             }
             MonitorEvent::Ended { id, end, events } => {
-                if let Some((description, log)) = self.named(*id) {
-                    self.inbox
-                        .monitor_ended(*id, &description, &log, *end, *events);
+                let mut state = self.lock();
+                if let Some(running) = state.running.remove(id) {
+                    self.inbox.monitor_ended(
+                        *id,
+                        &running.description,
+                        &running.log,
+                        *end,
+                        *events,
+                    );
                 }
-                self.lock().running.remove(id);
             }
         }
-    }
-
-    /// The description and log of a running monitor, copied out so the
-    /// inbox is never locked under the registry's lock.
-    fn named(&self, id: MonitorId) -> Option<(String, PathBuf)> {
-        let state = self.lock();
-        let running = state.running.get(&id)?;
-        Some((running.description.clone(), running.log.clone()))
     }
 }
 

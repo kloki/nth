@@ -513,8 +513,7 @@ mod tests {
     async fn a_forgotten_subagent_runs_nothing_queued_and_tells_no_model() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let (monitor_tx, _monitor_rx) = mpsc::channel::<MonitorEvent>(4);
-        let inbox = Monitors::new(monitor_tx, "/logs".into());
+        let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
         let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
         subagents.prompt(id, job("one", Done::Notify(inbox.clone())).0);
