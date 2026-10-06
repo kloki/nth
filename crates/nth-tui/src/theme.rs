@@ -28,6 +28,9 @@ pub fn mode_colour(mode: Mode) -> Color {
 
 /// The prompt's colour while it holds a command to run.
 pub const SHELL_COLOUR: Color = Color::Yellow;
+/// The prompt's colour while it talks to a subagent: a model talking to
+/// you, as the question panel is.
+pub const SUBAGENT_COLOUR: Color = Color::Cyan;
 
 /// The highlighted item in any list: popup, picker.
 pub fn pick() -> Style {

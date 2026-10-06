@@ -69,6 +69,14 @@ impl App {
         self.save_history();
         let text = self.prompt.take();
         self.prompt.set_shell(false);
+        // On a subagent's tab the prompt is its; a command is the main
+        // session's, so its output shows on the chat tab.
+        if let Some(id) = self.showing_subagent() {
+            match shell {
+                true => self.open_content(super::Tab::Chat),
+                false => return self.prompt_subagent(id, text),
+            }
+        }
         // Sent when the running turn ends; the chat shows it only then, so
         // the transcript keeps the order the model saw.
         let next = match shell {

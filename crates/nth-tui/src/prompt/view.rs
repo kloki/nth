@@ -10,7 +10,9 @@ use ratatui::{
 };
 
 use super::Prompt;
-use crate::theme::{BAR_WIDTH, SHELL_COLOUR, dim, mode_colour, panel_row, panel_title};
+use crate::theme::{
+    BAR_WIDTH, SHELL_COLOUR, SUBAGENT_COLOUR, dim, mode_colour, panel_row, panel_title,
+};
 
 const PLACEHOLDER: &str = "Ask anything.";
 const SHELL_PLACEHOLDER: &str = "Run a command.";
@@ -24,11 +26,20 @@ const TEXT_ROWS: u16 = 3;
 
 /// `spinner` replaces the mode's label while a turn runs, and the label
 /// row says how to cancel. The text stays as it is: Enter queues it. A
-/// command to run shows as `cmd` in yellow instead of the mode.
-pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, spinner: Option<&str>) {
-    let (label, colour, placeholder) = match prompt.shell() {
-        true => (SHELL_LABEL, SHELL_COLOUR, SHELL_PLACEHOLDER),
-        false => (mode.label(), mode_colour(mode), PLACEHOLDER),
+/// command to run shows as `cmd` in yellow instead of the mode, and on a
+/// subagent's tab the label names the subagent, `target`, in cyan.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    prompt: &Prompt,
+    mode: Mode,
+    spinner: Option<&str>,
+    target: Option<&str>,
+) {
+    let (label, colour, placeholder) = match (prompt.shell(), target) {
+        (true, _) => (SHELL_LABEL, SHELL_COLOUR, SHELL_PLACEHOLDER),
+        (false, Some(agent)) => (agent, SUBAGENT_COLOUR, PLACEHOLDER),
+        (false, None) => (mode.label(), mode_colour(mode), PLACEHOLDER),
     };
     let label = spinner.unwrap_or(label);
     let wrapped = prompt.wrap(room(area));
