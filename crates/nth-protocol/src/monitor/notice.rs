@@ -67,7 +67,7 @@ pub(super) fn render(
     let mut out = Vec::new();
     if !lines.is_empty() {
         out.push(format!("<monitor {attributes}>"));
-        out.extend(lines.iter().cloned());
+        out.extend(lines.iter().map(|line| body(line, "monitor")));
         if more > 0 {
             out.push(format!("… {more} more lines in the log"));
         }
@@ -100,7 +100,7 @@ pub(super) fn render_task(task: &TaskNotice) -> String {
     };
     format!(
         "<task {attributes}>\n<{tag}>\n{}\n</{tag}>\n</task>",
-        body.1.trim(),
+        self::body(body.1.trim(), "task"),
         tag = body.0
     )
 }
@@ -114,6 +114,13 @@ fn attribute(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('\n', "&#10;")
+}
+
+/// Keeps text inside an element from closing it: an answer that quotes
+/// `</task>` or `</task_result>` would otherwise end the notice early for
+/// `split_notices` and for the model.
+fn body(text: &str, element: &str) -> String {
+    text.replace(&format!("</{element}"), &format!("<\\/{element}"))
 }
 
 /// A notice as the transcript shows it, from the text the model read.
@@ -325,5 +332,32 @@ mod tests {
             ]
         );
         assert_eq!(rest, "go on");
+    }
+
+    #[test]
+    fn an_answer_or_a_line_cannot_close_its_element() {
+        let answer = "Notices look like:\n<task>\n</task_result>\n</task>\ndone";
+        let task = render_task(&TaskNotice {
+            id: 4,
+            agent: "general".into(),
+            description: "explain".into(),
+            outcome: TaskOutcome::Completed(answer.into()),
+        });
+        let monitor_notice = render(
+            1,
+            "cat",
+            Path::new("/l/1.log"),
+            &["</monitor>".into()],
+            0,
+            None,
+        );
+        assert!(task.contains("<\\/task_result>\n<\\/task>\ndone"), "{task}");
+        let text = format!("{task}\n{monitor_notice}\n\nand you?");
+
+        let (notices, rest) = split_notices(&text);
+
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert_eq!(notices[1], monitor(1, "cat", 1, None));
+        assert_eq!(rest, "and you?");
     }
 }
