@@ -14,7 +14,7 @@ mod task;
 pub(crate) const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -97,8 +97,9 @@ pub struct Job {
 pub(crate) struct ChildState {
     /// The running job's token, for ctrl+w and Esc on the tab.
     running: Option<CancellationToken>,
-    /// Jobs in the inbox the actor has not started.
-    queued: usize,
+    /// The tokens of the jobs in the inbox the actor has not started, in
+    /// the order they wait, so stopping the subagent stops them too.
+    waiting: VecDeque<CancellationToken>,
     state: Option<State>,
 }
 
@@ -116,6 +117,8 @@ struct Inner {
 #[derive(Default)]
 struct Registry {
     next: SubagentId,
+    /// Every id up to this one was forgotten with its session.
+    forgotten: SubagentId,
     children: BTreeMap<SubagentId, Child>,
 }
 
@@ -199,19 +202,31 @@ impl Subagents {
         // Counted under the lock the actor takes to count it off, so it is
         // never taken off before it was put on.
         let mut state = child.lock();
+        let token = job.cancel.clone();
         let sent = child.inbox.send(job).is_ok();
-        state.queued += usize::from(sent);
+        if sent {
+            state.waiting.push_back(token);
+        }
         sent
     }
 
-    /// Stops the running turn of subagent `id`; `false` when none runs.
+    /// Stops the running turn of subagent `id` and every prompt waiting
+    /// for it, so stopping it leaves it idle; `false` when nothing ran or
+    /// waited.
     pub fn cancel(&self, id: SubagentId) -> bool {
         let registry = self.0.lock();
         let Some(child) = registry.children.get(&id) else {
             return false;
         };
-        let running = child.lock().running.clone();
-        running.map(|token| token.cancel()).is_some()
+        let state = child.lock();
+        let tokens: Vec<_> = state
+            .running
+            .iter()
+            .chain(&state.waiting)
+            .filter(|token| !token.is_cancelled())
+            .collect();
+        tokens.iter().for_each(|token| token.cancel());
+        !tokens.is_empty()
     }
 
     /// Ends every subagent, for a session that was left: the running turns
@@ -219,6 +234,7 @@ impl Subagents {
     /// posted to the model, so each actor ends on its own.
     pub fn forget_all(&self) {
         let mut registry = self.0.lock();
+        registry.forgotten = registry.next;
         for (_, child) in std::mem::take(&mut registry.children) {
             // Before looking for the running turn: an actor that has not
             // yet marked one running sees `closed` and skips it.
@@ -234,6 +250,12 @@ impl Subagents {
         let registry = self.0.lock();
         let child = registry.children.get(&id)?;
         Some((child.agent.clone(), child.description.clone()))
+    }
+
+    /// Whether subagent `id` belonged to a session that was left, for its
+    /// events still on their way.
+    pub fn forgotten(&self, id: SubagentId) -> bool {
+        id <= self.0.lock().forgotten
     }
 
     /// Whether subagent `id` has tools that change files.
@@ -260,13 +282,14 @@ impl Subagents {
             .count()
     }
 
-    /// Prompts waiting in the inbox of subagent `id`.
+    /// Prompts waiting in the inbox of subagent `id`, the stopped ones
+    /// left out: they will be skipped.
     pub fn queued(&self, id: SubagentId) -> usize {
         let registry = self.0.lock();
-        registry
-            .children
-            .get(&id)
-            .map_or(0, |child| child.lock().queued)
+        registry.children.get(&id).map_or(0, |child| {
+            let state = child.lock();
+            state.waiting.iter().filter(|t| !t.is_cancelled()).count()
+        })
     }
 
     pub fn ids(&self) -> Vec<SubagentId> {
@@ -442,7 +465,7 @@ mod tests {
         subagents.prompt(id, job("one", Done::Reply(first_tx)).0);
         subagents.prompt(id, skipped);
         subagents.prompt(id, job("two", Done::Reply(second_tx)).0);
-        assert_eq!(subagents.queued(id), 3);
+        assert_eq!(subagents.queued(id), 2, "the cancelled one will not run");
 
         assert_eq!(first_rx.await.unwrap().unwrap(), "first");
         assert!(matches!(skipped_rx.await.unwrap(), Err(Error::Interrupted)));
@@ -458,6 +481,33 @@ mod tests {
             .collect();
         assert_eq!(prompted, ["one", "two"], "the skipped job never started");
         assert_eq!(subagents.queued(id), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_what_waits_too() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
+        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let (reply_tx, reply_rx) = oneshot::channel();
+        subagents.prompt(id, job("one", Done::Nothing).0);
+        subagents.prompt(id, job("two", Done::Reply(reply_tx)).0);
+
+        assert!(subagents.cancel(id));
+
+        assert_eq!(subagents.queued(id), 0);
+        assert!(matches!(reply_rx.await.unwrap(), Err(Error::Interrupted)));
+        drop(subagents);
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, SubagentEvent::Prompted { .. })),
+            "neither ran: {events:?}"
+        );
     }
 
     #[tokio::test]

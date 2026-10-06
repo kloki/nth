@@ -2,9 +2,13 @@
 //! list of tabs, the chat always first, and shows one of them.
 
 use nth_protocol::{MonitorId, Panel};
+use nth_session::subagent::SubagentId;
 
 use super::App;
-use crate::{chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView};
+use crate::{
+    chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView,
+    subagent::SubagentView,
+};
 
 /// A view the content panel can show. Each view's state lives on the app,
 /// so it keeps up with the session while another view is shown.
@@ -16,6 +20,8 @@ pub(crate) enum Tab {
     Monitor(MonitorId),
     /// The plan file, open while there is one.
     Plan,
+    /// A subagent the model delegated to; its view is on the app.
+    Subagent(SubagentId),
 }
 
 impl Tab {
@@ -210,6 +216,32 @@ impl Scrollable for MonitorView {
     }
 }
 
+impl Scrollable for SubagentView {
+    fn scroll_up(&mut self, lines: usize) {
+        SubagentView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        SubagentView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        SubagentView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        SubagentView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        SubagentView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        SubagentView::jump_bottom(self);
+    }
+}
+
 impl Scrollable for PlanView {
     fn scroll_up(&mut self, lines: usize) {
         PlanView::scroll_up(self, lines);
@@ -244,6 +276,7 @@ impl App {
             Tab::Chat => &mut self.chat,
             Tab::Diagnostics => &mut self.diagnostics,
             Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
+            Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
             Tab::Plan => &mut self.plan,
         })
     }

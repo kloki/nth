@@ -18,6 +18,7 @@ mod mode;
 mod monitor;
 mod plan;
 mod resume;
+mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
 mod turn;
@@ -46,7 +47,10 @@ use nth_protocol::{
     Ask, BoxError, Effort, Event, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
     Provider, Tool, Usage, monitor_log_dir,
 };
-use nth_session::{Session, Store, Summary, store};
+use nth_session::{
+    Session, Store, Subagents, Summary, store,
+    subagent::{SubagentEvent, SubagentId},
+};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -73,6 +77,7 @@ use crate::{
     plan::PlanView,
     prompt::{self, Prompt},
     question, session_picker, spinner, status,
+    subagent::SubagentView,
 };
 
 const WHEEL_LINES: usize = 3;
@@ -184,6 +189,11 @@ pub struct App {
     monitor_rx: mpsc::Receiver<MonitorEvent>,
     /// Each monitor's tab, open from its start until you close it.
     monitor_views: BTreeMap<MonitorId, MonitorView>,
+    /// The subagents the task tool started, shared with it.
+    subagents: Subagents,
+    subagent_rx: mpsc::Receiver<SubagentEvent>,
+    /// Each subagent's tab, open from its start until you close it.
+    subagent_views: BTreeMap<SubagentId, SubagentView>,
     /// The session's plan file and what the plan tab shows of it.
     plan: PlanView,
     plan_path: PathBuf,
@@ -244,6 +254,7 @@ enum Step {
     Asked(Ask),
     Show(Panel),
     Monitor(MonitorEvent),
+    Subagent(SubagentEvent),
     NoticesDue,
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
@@ -271,6 +282,8 @@ impl App {
         let (asks_tx, asks_rx) = mpsc::channel(4);
         let (screen_tx, screen_rx) = mpsc::channel(4);
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
+        // Replaced by `with_subagents`; until then no subagent reports here.
+        let (_, subagent_rx) = mpsc::channel(1);
         let monitor_root = std::env::temp_dir().join("nth");
         let monitors = Monitors::new(
             monitor_tx,
@@ -335,6 +348,9 @@ impl App {
             monitors,
             monitor_rx,
             monitor_views: BTreeMap::new(),
+            subagents: Subagents::default(),
+            subagent_rx,
+            subagent_views: BTreeMap::new(),
             plan: PlanView::default(),
             plan_path,
             plan_reading: Job::default(),
@@ -354,6 +370,18 @@ impl App {
     /// Runs the commands typed after `!` on `shell`.
     pub fn with_shell(mut self, shell: Arc<dyn Tool>) -> Self {
         self.shell = Some(shell);
+        self
+    }
+
+    /// Hears from the subagents in `subagents`, which the task tool starts,
+    /// over `rx`.
+    pub fn with_subagents(
+        mut self,
+        subagents: Subagents,
+        rx: mpsc::Receiver<SubagentEvent>,
+    ) -> Self {
+        self.subagents = subagents;
+        self.subagent_rx = rx;
         self
     }
 
@@ -394,7 +422,8 @@ impl App {
             if !self.is_editing() {
                 terminal.draw(|frame| self.draw(frame))?;
             }
-            let ticking = self.is_busy() || self.running_monitors() > 0;
+            let ticking =
+                self.is_busy() || self.running_monitors() > 0 || self.running_subagents() > 0;
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -402,6 +431,7 @@ impl App {
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 Some(panel) = self.screen_rx.recv() => Step::Show(panel),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
+                Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
@@ -425,6 +455,7 @@ impl App {
                 Step::Asked(ask) => self.on_ask(ask),
                 Step::Show(panel) => self.open_content(panel.into()),
                 Step::Monitor(event) => self.on_monitor(event),
+                Step::Subagent(event) => self.on_subagent(event),
                 Step::NoticesDue => self.notices_due(),
                 Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
                 Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
@@ -458,7 +489,7 @@ impl App {
                 Step::Tick => {}
             }
         }
-        self.stop_monitors_for_exit().await;
+        self.stop_background_for_exit().await;
         Ok(())
     }
 
@@ -478,6 +509,14 @@ impl App {
             Tab::Monitor(id) => {
                 if let Some(view) = self.monitor_views.get_mut(&id) {
                     view.draw(frame, content, self.home.as_deref());
+                }
+            }
+            Tab::Subagent(id) => {
+                if let Some(view) = self.subagent_views.get_mut(&id) {
+                    let chat = view.draw(frame, content);
+                    if let Some(state) = view.chat.scrollbar() {
+                        draw_scrollbar(frame, chat, state);
+                    }
                 }
             }
             Tab::Plan => {
@@ -512,8 +551,18 @@ impl App {
         status::draw(frame, status, self);
         match &self.input {
             Input::Prompt => {
-                let spinner = self.busy_since.map(|since| spinner::frame(since.elapsed()));
-                prompt::draw(frame, input, &self.prompt, self.mode, spinner);
+                // On a subagent's tab the prompt is its: the label names it
+                // and the spinner follows its turn, not the main session's.
+                let target = self
+                    .showing_subagent()
+                    .and_then(|id| self.subagent_views.get(&id));
+                let since = match target {
+                    Some(view) => view.running_since(),
+                    None => self.busy_since,
+                };
+                let spinner = since.map(|since| spinner::frame(since.elapsed()));
+                let target = target.map(|view| view.agent.as_str());
+                prompt::draw(frame, input, &self.prompt, self.mode, spinner, target);
                 // Last, so it pops over the content panel; it sits right
                 // above the row being typed, lined up with the token it
                 // completes.

@@ -19,6 +19,7 @@ mod rich;
 mod session_picker;
 mod spinner;
 mod status;
+mod subagent;
 mod terminal;
 mod theme;
 
@@ -33,7 +34,8 @@ use nth_context::Paths;
 use nth_format::Formatters;
 use nth_lsp::Lsp;
 use nth_protocol::{Provider, Tool};
-use nth_session::{Session, Store};
+use nth_session::{Session, Store, Subagents, subagent::SubagentEvent};
+use tokio::sync::mpsc;
 
 /// What checks the tools' writes: the same language servers and formatters
 /// the tools use. The status bar shows the servers' states, and the
@@ -44,11 +46,14 @@ pub struct Checkers {
     pub formatters: Arc<Formatters>,
 }
 
-/// What the chat runs commands with: the model's tools, and the shell for
-/// the commands you type after `!`.
+/// What the chat runs commands with: the model's tools, the shell for the
+/// commands you type after `!`, and the subagents the task tool among the
+/// tools starts, with where they report.
 pub struct Tools {
     pub model: Arc<Vec<Box<dyn Tool>>>,
     pub shell: Arc<dyn Tool>,
+    pub subagents: Subagents,
+    pub subagent_rx: mpsc::Receiver<SubagentEvent>,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -77,6 +82,7 @@ pub async fn run(
     let mut terminal = terminal::enter()?;
     let result = app::App::new(session, provider, tools.model)
         .with_shell(tools.shell)
+        .with_subagents(tools.subagents, tools.subagent_rx)
         .with_store(store)
         .with_paths(paths)
         .with_history(history)

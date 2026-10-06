@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use nth_protocol::{Effort, Mode};
-use nth_session::Store;
+use nth_protocol::{Effort, Mode, Provider};
+use nth_session::{Store, Subagents};
 use nth_tui::{Llm, ModeLlms};
 
 use crate::{config::Config, context, post_write, setup};
@@ -47,13 +47,24 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         lsp: lsp.clone(),
         formatters: post_write.formatters().clone(),
     };
+    let provider: Arc<dyn Provider> = Arc::new(provider);
+    // The subagents the task tool starts report to the chat, a tab each.
+    let (subagent_tx, subagent_rx) = tokio::sync::mpsc::channel(256);
+    let subagents = Subagents::new(subagent_tx);
     let result = nth_tui::run(
         session,
-        Arc::new(provider),
+        provider.clone(),
         nth_tui::Tools {
-            model: Arc::new(nth_tools::all(&config.tools, post_write)),
+            model: Arc::new(crate::tools(
+                &config,
+                post_write,
+                provider,
+                subagents.clone(),
+            )),
             // You watch what you run and stop it yourself.
             shell: Arc::new(nth_tools::Bash::untimed(config.tools.bash.clone())),
+            subagents,
+            subagent_rx,
         },
         checkers,
         store,

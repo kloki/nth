@@ -232,8 +232,10 @@ impl App {
                 }
             }
             Action::Accept => {}
-            // A command runs without the model, so neither mode applies.
-            Action::NextTab | Action::PrevTab if self.prompt.shell() => {}
+            // A command runs without the model, so neither mode applies;
+            // nor does a subagent, whose tab the prompt talks to.
+            Action::NextTab | Action::PrevTab
+                if self.prompt.shell() || self.showing_subagent().is_some() => {}
             Action::NextTab | Action::PrevTab => self.set_mode(self.mode.toggled()),
             // Taken before any input panel sees them.
             Action::NextContent
@@ -249,7 +251,11 @@ impl App {
             Action::Submit => self.submit(),
             // Leaving command mode comes before cancelling the turn.
             Action::Interrupt if self.prompt.shell() => self.prompt.set_shell(false),
-            Action::Interrupt => self.interrupt(),
+            // On a subagent's tab, Esc is for it, never for the parent.
+            Action::Interrupt => match self.showing_subagent() {
+                Some(id) => self.interrupt_subagent(id),
+                None => self.interrupt(),
+            },
             Action::ClearOrQuit if self.prompt.is_empty() && self.prompt.shell() => {
                 self.prompt.set_shell(false)
             }

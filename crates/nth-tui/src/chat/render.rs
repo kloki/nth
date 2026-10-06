@@ -207,6 +207,7 @@ fn icon(tool: &str) -> &'static str {
         "question" => "¿",
         "panel" => "▣",
         "monitor" | "monitor_stop" => "»",
+        "task" => "↳",
         _ => "•",
     }
 }
