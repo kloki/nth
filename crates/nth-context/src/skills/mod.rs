@@ -3,7 +3,6 @@
 //! them where Claude Code, opencode and the open standard keep them, so a
 //! skill written for any of those works here too.
 
-mod frontmatter;
 mod template;
 
 use std::{
@@ -13,7 +12,7 @@ use std::{
 
 pub use template::parse;
 
-use crate::{Paths, project_root};
+use crate::{Paths, frontmatter, project_root};
 
 const FILE: &str = "SKILL.md";
 /// What the model gets when a skill is loaded, as in opencode.

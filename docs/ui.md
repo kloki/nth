@@ -128,9 +128,13 @@ instructions
 
 skills
   ✦ research-opencode  claude
+
+agents
+  ↳ explore  builtin
+  ↳ general  builtin
 ```
 
-- **Sections.** A bold title each, and rows under it: model, language servers, formatters, instructions, skills. Context warnings follow the skills in yellow.
+- **Sections.** A bold title each, and rows under it: model, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 

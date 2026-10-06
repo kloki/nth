@@ -16,14 +16,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - Single test: `cargo test -p nth-tui prompt_and_status_rows_never_move` (any substring of the test path works).
 - Run the TUI: `cargo run -p nth`. It needs `OPENCODE_GO_API_KEY`; `NTH_MODEL` and `NTH_BASE_URL` (or `--model`, `--base-url`) pick the endpoint.
-- Headless: `cargo run -p nth -- run "<prompt>"` (act mode; `--mode plan` to plan). List models: `cargo run -p nth -- models`. List skills: `cargo run -p nth -- skills`. List formatters: `cargo run -p nth -- formatters`. List language servers: `cargo run -p nth -- lsp`; what they say about a file: `cargo run -p nth -- lsp diagnostics <file>`.
+- Headless: `cargo run -p nth -- run "<prompt>"` (act mode; `--mode plan` to plan). List models: `cargo run -p nth -- models`. List skills: `cargo run -p nth -- skills`. List agents: `cargo run -p nth -- agents`. List formatters: `cargo run -p nth -- formatters`. List language servers: `cargo run -p nth -- lsp`; what they say about a file: `cargo run -p nth -- lsp diagnostics <file>`.
 - Config: optional `~/.config/nth/config.toml` (or `--config`, `NTH_CONFIG`); every key is in `docs/config.example.toml`, and `cargo run -p nth -- config` prints the resolved one. Flags and env vars win over it.
 
 ## Architecture
 
 Crates in `crates/`, from the bottom up:
 
-- **nth-context**: what nth reads about a project before the first prompt: instruction files (`AGENTS.md`, or `CLAUDE.md` where a project has none) and skills (`SKILL.md` folders in the Claude Code, opencode, open-standard and nth places), found by `Context::discover`, and the nested ones the read tool attaches (`instructions::nested`). `Paths` carries the home and config directories so tests never touch the real ones. Depends on nothing else in the workspace.
+- **nth-context**: what nth reads about a project before the first prompt: instruction files (`AGENTS.md`, or `CLAUDE.md` where a project has none), skills (`SKILL.md` folders in the Claude Code, opencode, open-standard and nth places) and agents (`agents/`: opencode's built-in `general` and `explore`, plus one markdown file per agent in the Claude Code, opencode and nth places, the body being its system prompt), found by `Context::discover`, and the nested ones the read tool attaches (`instructions::nested`). `frontmatter` reads the YAML block skills and agents share. `Paths` carries the home and config directories so tests never touch the real ones. Depends on nothing else in the workspace.
 - **nth-protocol**: types every crate shares: `Message`, `Event`, `Mode` (plan or act), and the `Provider` and `Tool` traits. Anything swappable sits behind one of these traits. Also the handles a tool reaches the front-end through, bundled as `FrontEnd` on `ToolContext`: `Asker` (questions), `Screen` (which tab shows) and `Monitors` (`monitor/`: the wire types, the registry of running commands and the notice text, kept together with its parser).
 - **nth-llm**: `Provider` impls, one module per wire protocol. Only `chat_completions` exists today (OpenCode Go).
 - **nth-format**: the formatters run after a tool writes a file: opencode's built-in table (`registry.rs`), each with a probe for whether it applies to the project, plus custom ones from `[format]` in the config. `Formatters::format` runs every match; `nth formatters` prints `Formatters::status`.
