@@ -16,9 +16,11 @@ pub use message::{AssistantMessage, Message, ToolCall};
 pub use mode::Mode;
 pub use monitor::{
     MonitorEnd, MonitorEvent, MonitorId, Monitors, NOTICE_LINES, NoticeSummary, Registered,
-    StoppedBy, Stream, log_dir as monitor_log_dir, split_notices,
+    StoppedBy, Stream, TaskId, TaskNotice, TaskOutcome, log_dir as monitor_log_dir, split_notices,
 };
-pub use provider::{BoxError, Effort, ModelInfo, Provider, Request, Retry, StreamEvent, Usage};
+pub use provider::{
+    BoxError, Effort, Llm, ModelInfo, Provider, Request, Retry, StreamEvent, Usage,
+};
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen};
 pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};

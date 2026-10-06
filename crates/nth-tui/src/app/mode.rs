@@ -1,16 +1,10 @@
 //! Plan and act: Tab switches between them, and each keeps its own model
 //! and effort, so planning can run on a different model than acting.
 
-use nth_protocol::{Effort, Mode};
+pub use nth_protocol::Llm;
+use nth_protocol::Mode;
 
 use super::App;
-
-/// A model and the effort it runs at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Llm {
-    pub model: String,
-    pub effort: Effort,
-}
 
 /// What each mode runs with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +72,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Effort;
+
     use super::*;
     use crate::app::{
         keys::Action,

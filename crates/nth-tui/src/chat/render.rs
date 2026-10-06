@@ -2,7 +2,7 @@
 //! caches them so only what changed is wrapped again.
 
 use hoodrich::Change;
-use nth_protocol::ToolCall;
+use nth_protocol::{NoticeSummary, ToolCall};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -68,8 +68,13 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
                 dim,
             ),
         ])],
-        Entry::Notice(notice) => {
-            let said = match (&notice.ended, notice.lines) {
+        Entry::Notice(NoticeSummary::Monitor {
+            id,
+            description,
+            lines,
+            ended,
+        }) => {
+            let said = match (ended, lines) {
                 (Some(ended), _) => ended.clone(),
                 (None, 1) => "1 line".to_string(),
                 (None, n) => format!("{n} lines"),
@@ -77,12 +82,16 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             vec![Line::from(vec![
                 Span::raw(INDENT),
                 Span::styled("» ", Style::new().fg(Color::Magenta)),
-                Span::styled(
-                    format!("monitor {} · {} · {said}", notice.id, notice.description),
-                    dim,
-                ),
+                Span::styled(format!("monitor {id} · {description} · {said}"), dim),
             ])]
         }
+        Entry::Notice(NoticeSummary::Task {
+            id, agent, state, ..
+        }) => vec![Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled("↳ ", Style::new().fg(Color::Magenta)),
+            Span::styled(format!("subagent {id} · {agent} · {state}"), dim),
+        ])],
         Entry::Answer(text) => barred_markdown(text, width, Style::new().fg(Color::Blue)),
         Entry::Retry { attempt, delay } => vec![Line::from(vec![
             Span::raw(INDENT),
