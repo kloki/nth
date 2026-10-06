@@ -1,6 +1,7 @@
 //! The completion popup over the prompt: nth's commands and the skills
 //! after `/`, agents and files after `@`.
 
+use nth_context::Agents;
 use ratatui::{
     Frame,
     layout::{Position, Rect},
@@ -66,7 +67,14 @@ impl App {
             .map(Completion::Command)
             .or_else(|| {
                 let mention = mention::find(text, self.prompt.cursor())?;
-                let items = mention::items(&self.context.agents, &self.files, mention.query);
+                // A subagent starts no subagents, so `@name` means nothing
+                // on its tab.
+                let none = Agents::default();
+                let agents = match self.showing_subagent() {
+                    Some(_) => &none,
+                    None => &self.context.agents,
+                };
+                let items = mention::items(agents, &self.files, mention.query);
                 Some(Completion::Mention {
                     popup: Popup::new(items)?,
                     start: mention.start,

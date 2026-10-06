@@ -43,7 +43,8 @@ pub fn items(agents: &Agents, files: &[String], query: &str) -> Vec<Item> {
         items.extend(
             agents
                 .iter()
-                .filter(|agent| agent.name.to_lowercase().starts_with(&query))
+                .filter(|agent| !agent.hidden && agent.name.to_lowercase().starts_with(&query))
+                .take(LIMIT)
                 .map(|agent| Item::Agent {
                     name: agent.name.clone(),
                     about: about(agent.description.as_deref().unwrap_or("agent")),
@@ -172,6 +173,23 @@ mod tests {
             })
         );
         assert_eq!(find("see @keys and more", 12), None);
+    }
+
+    #[test]
+    fn at_most_limit_agents_and_no_hidden_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let folder = dir.path().join(".nth/agents");
+        std::fs::create_dir_all(&folder).expect("dirs");
+        for i in 0..LIMIT {
+            std::fs::write(folder.join(format!("a{i}.md")), "description: x\n").expect("writes");
+        }
+        std::fs::write(folder.join("secret.md"), "---\nhidden: true\n---\n").expect("writes");
+        let agents =
+            nth_context::Context::discover(dir.path(), &nth_context::Paths::default()).agents;
+        let files = vec!["src/main.rs".to_string()];
+
+        assert_eq!(items(&agents, &files, "").len(), LIMIT);
+        assert!(items(&agents, &files, "secret").is_empty());
     }
 
     #[test]
