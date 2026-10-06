@@ -55,7 +55,7 @@ pub(super) async fn run(actor: Actor) {
         let Job { text, cancel, done } = job;
         {
             let mut state = lock(&shared);
-            state.queued = state.queued.saturating_sub(1);
+            state.waiting.pop_front();
             // Stopped while it waited: it never ran, so nothing to show.
             if cancel.is_cancelled() || closed.is_cancelled() {
                 drop(state);

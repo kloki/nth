@@ -25,6 +25,10 @@ impl App {
                 description,
                 ..
             } => {
+                // Forgotten before it got here: its session was left.
+                if self.subagents.forgotten(id) {
+                    return;
+                }
                 self.subagent_views
                     .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
                 // Opened, not shown: you keep looking at the chat while the
@@ -32,6 +36,15 @@ impl App {
                 self.content.add(Tab::Subagent(id));
             }
             SubagentEvent::Prompted { id, text } => {
+                // Its tab was closed and the model continued it: it opens
+                // again, so nothing runs out of sight.
+                if !self.subagent_views.contains_key(&id)
+                    && let Some((agent, description)) = self.subagents.describe(id)
+                {
+                    self.subagent_views
+                        .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
+                    self.content.add(Tab::Subagent(id));
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.prompted(text);
                     view.queued = self.subagents.queued(id);
@@ -97,9 +110,13 @@ impl App {
         }
     }
 
-    /// Esc on a subagent's tab: stops its running turn, never the parent's.
+    /// Esc or ctrl+w on a subagent's tab: stops its running turn and what
+    /// you queued for it, never the parent's.
     pub(super) fn interrupt_subagent(&mut self, id: SubagentId) {
         self.subagents.cancel(id);
+        if let Some(view) = self.subagent_views.get_mut(&id) {
+            view.queued = self.subagents.queued(id);
+        }
     }
 
     /// Ends the subagents of a session that was left, after `/clear` or a
@@ -349,6 +366,35 @@ mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(1)]);
 
         ended(&mut app, 1, TaskOutcome::Interrupted);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+    }
+
+    #[tokio::test]
+    async fn a_closed_tab_opens_again_when_its_subagent_is_prompted() {
+        let mut app = fronted();
+        let id = spawn(&mut app);
+        tokio::task::yield_now().await;
+        hear(&mut app);
+        app.apply(Action::Content(1));
+        app.apply(Action::CloseContent);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+
+        prompted(&mut app, id, "and now?");
+
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(id)]);
+        assert!(app.subagent_views[&id].is_running());
+    }
+
+    #[tokio::test]
+    async fn a_subagent_started_before_clear_gets_no_tab() {
+        let mut app = fronted();
+        let id = spawn(&mut app);
+
+        app.run_command(crate::command::Command::Clear);
+        tokio::task::yield_now().await;
+        hear(&mut app);
+        started(&mut app, id, "explore");
+
         assert_eq!(app.content.tabs(), [Tab::Chat]);
     }
 

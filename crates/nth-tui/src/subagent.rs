@@ -132,11 +132,14 @@ impl SubagentView {
         self.chat.jump_bottom();
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    /// Draws the header and the chat, and returns where the chat went, for
+    /// its scrollbar.
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         let [header, chat] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
         frame.render_widget(Paragraph::new(self.header()), header);
         self.chat.draw(frame, chat, "");
+        chat
     }
 
     /// `@explore · find tabs · running · 12s · 3 tool calls · 1 queued`.
