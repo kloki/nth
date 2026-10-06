@@ -178,7 +178,7 @@ pub async fn run_turn(
         }
         // What monitors said while the tools ran, so a model busy on a long
         // turn hears it at its next step rather than when the turn ends.
-        if let Some(notices) = ctx.monitors.take_notices() {
+        if let Some(notices) = ctx.inbox.take_notices() {
             messages.push(Message::User(notices.clone()));
             emit(events, Event::Notice(notices)).await;
         }
@@ -385,6 +385,7 @@ pub(crate) async fn run_call(
         asker: ctx.asker.for_call(call.id.clone()),
         screen: ctx.screen.clone(),
         monitors: ctx.monitors.clone(),
+        inbox: ctx.inbox.clone(),
         writable: ctx.writable.clone(),
         llm: ctx.llm.clone(),
     };
@@ -437,7 +438,8 @@ pub(crate) mod tests {
         stream::{self, BoxStream},
     };
     use nth_protocol::{
-        Answer, Asker, ModelInfo, MonitorEvent, Monitors, Question, Reply, Retry, Stream, ToolSpec,
+        Answer, Asker, Inbox, ModelInfo, MonitorEvent, Monitors, Question, Reply, Retry, Stream,
+        ToolSpec,
     };
 
     use super::*;
@@ -606,8 +608,10 @@ pub(crate) mod tests {
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch)];
         let (front_end, _monitor_events) = mpsc::channel(16);
+        let inbox = Inbox::new();
         let ctx = ToolContext {
-            monitors: Monitors::new(front_end, "/logs".into()),
+            monitors: Monitors::new(front_end, "/logs".into(), inbox.clone()),
+            inbox,
             ..ToolContext::new(".".into())
         };
         let (tx, mut rx) = mpsc::channel(16);

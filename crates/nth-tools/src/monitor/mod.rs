@@ -350,6 +350,7 @@ impl Tool for MonitorStop {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Inbox;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -364,8 +365,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (tx, events) = mpsc::channel(256);
         let ctx = ToolContext {
-            monitors: Monitors::new(tx, dir.path().join("logs")),
+            inbox: Inbox::new(),
             ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let ctx = ToolContext {
+            monitors: Monitors::new(tx, dir.path().join("logs"), ctx.inbox.clone()),
+            ..ctx
         };
         Fixture { dir, ctx, events }
     }
@@ -429,7 +434,7 @@ mod tests {
         assert!(log.contains("] one\n"), "{log}");
         assert!(log.contains("] stderr: oops\n"), "{log}");
         assert!(log.contains("] exited with code 3\n"), "{log}");
-        let notices = f.ctx.monitors.take_notices().expect("notices");
+        let notices = f.ctx.inbox.take_notices().expect("notices");
         assert!(notices.contains("\none\ntwo\n</monitor>"), "{notices}");
         assert!(!notices.contains("oops"), "stderr is only in the log");
         assert_eq!(f.ctx.monitors.running(), 0);

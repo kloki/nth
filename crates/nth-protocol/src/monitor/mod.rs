@@ -1,16 +1,12 @@
 //! Background monitors: commands the model leaves running whose output
-//! comes back to it as notices, between steps or as a turn of their own.
-//! The types here are what a monitor says; `registry` keeps the running
-//! ones and the model's inbox of what it has not heard yet, a subagent's
-//! answer included, and `notice` is the text that carries it, written for
-//! the model and read back by the transcript.
+//! comes back to it through the model's inbox, between steps or as a turn
+//! of their own. The types here are what a monitor says; `registry` keeps
+//! the running ones and puts what they say in the inbox.
 
-mod notice;
 mod registry;
 
 use std::{fmt, path::PathBuf};
 
-pub use notice::{NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, split_notices};
 pub use registry::{Monitors, log_dir};
 use tokio_util::sync::CancellationToken;
 

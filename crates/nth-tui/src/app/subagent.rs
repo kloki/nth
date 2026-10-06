@@ -71,7 +71,7 @@ impl App {
             }
         }
         // A task's answer waits in the inbox with the monitors' notices.
-        if self.notices_due.is_none() && self.monitors.has_notices() {
+        if self.notices_due.is_none() && self.inbox.has_notices() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
     }
@@ -158,7 +158,7 @@ impl App {
 mod tests {
     use std::sync::Arc;
 
-    use nth_protocol::{Event, Message, Monitors, TaskOutcome};
+    use nth_protocol::{Event, Message, TaskOutcome};
     use nth_session::{Session, Subagents};
     use tokio::sync::mpsc;
 
@@ -316,13 +316,11 @@ mod tests {
     #[test]
     fn a_task_answer_wakes_the_model_through_the_inbox() {
         let mut app = app();
-        let (tx, _rx) = mpsc::channel(4);
-        app.monitors = Monitors::new(tx, "/logs".into());
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         assert!(app.notices_due.is_none());
 
-        app.monitors.post_task(nth_protocol::TaskNotice {
+        app.inbox.post_task(nth_protocol::TaskNotice {
             id: 1,
             agent: "explore".into(),
             description: "find tabs".into(),
@@ -418,8 +416,6 @@ mod tests {
     #[tokio::test]
     async fn quitting_stops_the_subagents_and_tells_the_session() {
         let mut app = fronted();
-        let (tx, _rx) = mpsc::channel(4);
-        app.monitors = Monitors::new(tx, "/logs".into());
         let id = spawn(&mut app);
         // The provider errs at once, so the task ends failed rather than
         // interrupted; either way its notice reaches the session.
@@ -428,13 +424,13 @@ mod tests {
             Job {
                 text: "go".into(),
                 cancel: CancellationToken::new(),
-                done: Done::Notify(app.monitors.clone()),
+                done: Done::Notify(app.inbox.clone()),
             },
         );
         for _ in 0..20 {
             tokio::task::yield_now().await;
             hear(&mut app);
-            if app.monitors.has_notices() {
+            if app.inbox.has_notices() {
                 break;
             }
         }

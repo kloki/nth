@@ -181,13 +181,13 @@ impl Tool for Task {
                 false => args.prompt,
             };
             let cancel = CancellationToken::new();
-            // With a front-end the answer wakes the model as a notice. Headless,
-            // nothing would, so the call waits for it.
-            if ctx.monitors.reaches_front_end() {
+            // With an inbox the answer wakes the model as a notice. Headless
+            // there is none, so the call waits for it.
+            if ctx.inbox.reaches_model() {
                 let job = Job {
                     text,
                     cancel,
-                    done: Done::Notify(ctx.monitors.clone()),
+                    done: Done::Notify(ctx.inbox.clone()),
                 };
                 if !self.subagents.prompt(id, job) {
                     return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
@@ -233,7 +233,7 @@ impl Tool for Task {
 #[cfg(test)]
 mod tests {
     use nth_context::{Context, Paths};
-    use nth_protocol::{Llm, MonitorEvent, Monitors, StreamEvent, ToolSpec};
+    use nth_protocol::{Inbox, Llm, StreamEvent, ToolSpec};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -395,14 +395,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_a_front_end_it_returns_at_once_and_the_answer_becomes_a_notice() {
+    async fn with_an_inbox_it_returns_at_once_and_the_answer_becomes_a_notice() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let (monitor_tx, _monitor_rx) = mpsc::channel::<MonitorEvent>(4);
-        let inbox = Monitors::new(monitor_tx, "/logs".into());
+        let inbox = Inbox::new();
         let task = task(vec![says("found")], subagents);
         let ctx = ToolContext {
-            monitors: inbox.clone(),
+            inbox: inbox.clone(),
             ..ctx()
         };
         let args =
