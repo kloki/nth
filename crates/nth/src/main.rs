@@ -1,6 +1,7 @@
 //! The `nth` binary: the command line, and what every subcommand shares.
 //! Each subcommand is its own module.
 
+mod agents;
 mod chat;
 mod config;
 mod formatters;
@@ -55,6 +56,12 @@ enum Command {
     },
     /// List the skills nth finds for the working directory
     Skills {
+        /// Print JSON lines, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the agents the model can delegate to for the working directory
+    Agents {
         /// Print JSON lines, the default when stdout is not a terminal
         #[arg(long)]
         json: bool,
@@ -127,6 +134,7 @@ async fn dispatch(command: Command, config_path: Option<PathBuf>, config: Config
         },
         Command::Models { json } => models::run(json, config).await,
         Command::Skills { json } => skills::run(json, &config).await,
+        Command::Agents { json } => agents::run(json, &config).await,
         Command::Formatters { json } => formatters::run(json, &config).await,
         Command::Lsp { json, command } => lsp::run(command, json, &config).await,
         Command::Config => config::show(config_path, &config),

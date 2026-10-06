@@ -1,6 +1,6 @@
-//! The YAML block at the top of a `SKILL.md`, between two `---` lines.
-//! Only `name` and `description` are read; other keys, such as Claude
-//! Code's `allowed-tools`, are ignored.
+//! The YAML block at the top of a markdown file, between two `---` lines:
+//! a `SKILL.md`'s name and description, or an agent file's fields. Keys a
+//! reader does not know, such as Claude Code's `allowed-tools`, are ignored.
 
 use serde_norway::Value;
 
@@ -10,15 +10,27 @@ pub struct Frontmatter {
     pub description: Option<String>,
 }
 
-/// The frontmatter of `text` and the body after it. A file without one is
-/// all body.
+/// The name and description in `text`'s frontmatter, and the body after
+/// it. A file without one is all body.
 pub fn split(text: &str) -> Result<(Frontmatter, &str), String> {
+    let (value, body) = parse(text)?;
+    let frontmatter = Frontmatter {
+        name: field(&value, "name"),
+        description: field(&value, "description"),
+    };
+    Ok((frontmatter, body))
+}
+
+/// The frontmatter of `text` as YAML and the body after it, for readers
+/// that need more than a name and a description. A file without one gives
+/// `Value::Null` and is all body.
+pub fn parse(text: &str) -> Result<(Value, &str), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let Some(rest) = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))
     else {
-        return Ok((Frontmatter::default(), text));
+        return Ok((Value::Null, text));
     };
     let (yaml, body) = close(rest).ok_or("frontmatter has no closing ---")?;
     let value = match serde_norway::from_str::<Value>(yaml) {
@@ -28,18 +40,17 @@ pub fn split(text: &str) -> Result<(Frontmatter, &str), String> {
         Err(first) => serde_norway::from_str::<Value>(&sanitize(yaml))
             .map_err(|_| format!("frontmatter is not valid YAML: {first}"))?,
     };
-    let field = |key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    };
-    let frontmatter = Frontmatter {
-        name: field("name"),
-        description: field("description"),
-    };
-    Ok((frontmatter, body))
+    Ok((value, body))
+}
+
+/// A string field of the frontmatter, trimmed; `None` when missing, not a
+/// string, or blank.
+pub fn field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Splits at the closing `---` line into the YAML and the body after it.

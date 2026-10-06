@@ -1,6 +1,7 @@
 //! The diagnostics tab: nth's own state, for when something does not work
 //! as expected. The model, the language servers and formatters that check
-//! writes, and the instruction files and skills found for the project.
+//! writes, and the instruction files, skills and agents found for the
+//! project.
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
@@ -178,8 +179,8 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(note(listed));
 }
 
-/// The instruction files in the system prompt, the skills found, and what
-/// went wrong finding them.
+/// The instruction files in the system prompt, the skills and agents
+/// found, and what went wrong finding them.
 fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("instructions"));
     if facts.context.instructions.is_empty() {
@@ -208,6 +209,24 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
             Span::raw("✦"),
             format!("{:width$}", skill.name),
             skill.source.name().into(),
+        );
+        line.spans[2].style = Style::new().fg(Color::Cyan);
+        lines.push(line);
+    }
+    lines.push(Line::default());
+    lines.push(title("agents"));
+    let width = facts
+        .context
+        .agents
+        .iter()
+        .map(|a| a.name.len())
+        .max()
+        .unwrap_or(0);
+    for agent in facts.context.agents.iter() {
+        let mut line = row(
+            Span::raw("↳"),
+            format!("{:width$}", agent.name),
+            agent.source.name().into(),
         );
         line.spans[2].style = Style::new().fg(Color::Cyan);
         lines.push(line);
@@ -335,6 +354,24 @@ mod tests {
         assert_eq!(text[6], "  ✗ gopls  not on PATH");
         assert_eq!(text[9], "  ✓ rustfmt  rustfmt $FILE");
         assert!(text.contains(&"  none found".to_string()));
+    }
+
+    #[test]
+    fn lists_the_agents_after_the_skills() {
+        // Nothing to find anywhere, so only the built-in agents.
+        let context = Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        );
+
+        let text = text(&Diagnostics::default(), &facts(&context, &[]));
+        let agents = text
+            .iter()
+            .position(|l| l == "agents")
+            .expect("agents section");
+        assert!(text[..agents].contains(&"skills".to_string()));
+        assert_eq!(text[agents + 1], "  ↳ explore  builtin");
+        assert_eq!(text[agents + 2], "  ↳ general  builtin");
     }
 
     #[test]

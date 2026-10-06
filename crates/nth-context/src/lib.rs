@@ -1,7 +1,10 @@
 //! What nth learns about a project before the first prompt: the instruction
 //! files (`AGENTS.md`, or `CLAUDE.md` where there is none) that go into the
-//! system prompt, and the skills the model and the user can call on.
+//! system prompt, the skills the model and the user can call on, and the
+//! agents the model can delegate to.
 
+pub mod agents;
+mod frontmatter;
 pub mod instructions;
 pub mod skills;
 
@@ -10,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use agents::{Agent, Agents};
 pub use instructions::Instruction;
 pub use skills::{Skill, Skills};
 
@@ -59,6 +63,7 @@ pub struct Context {
     /// later keep to it, so a project with both is not read twice.
     pub instruction_name: Option<&'static str>,
     pub skills: Skills,
+    pub agents: Agents,
     /// Files that were found but could not be used, worth telling the user.
     pub warnings: Vec<String>,
 }
@@ -72,6 +77,7 @@ impl Context {
         context.instructions = instructions;
         context.instruction_name = name;
         context.skills = skills::discover(cwd, paths, &mut context.warnings);
+        context.agents = agents::discover(cwd, paths, &mut context.warnings);
         context
     }
 
