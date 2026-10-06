@@ -10,6 +10,9 @@ mod actor;
 mod mention;
 mod task;
 
+/// Tools that change files, kept from a subagent while its parent plans.
+pub(crate) const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -119,6 +122,13 @@ struct Registry {
 struct Child {
     agent: String,
     description: String,
+    /// Whether its tools can change files, which a planning parent may not
+    /// continue it with.
+    writes: bool,
+    /// Cancelled when the child is forgotten: the actor stops whatever
+    /// waits in its inbox and tells no model, since the session it would
+    /// tell was left.
+    closed: CancellationToken,
     /// Unbounded: the TUI sends from its synchronous loop and must never
     /// wait on an actor that may be waiting on the TUI. Prompts come at
     /// human speed, or one per task call.
@@ -148,6 +158,8 @@ impl Subagents {
     ) -> SubagentId {
         let (inbox, jobs) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(ChildState::default()));
+        let writes = tools.iter().any(|tool| WRITERS.contains(&tool.spec().name));
+        let closed = CancellationToken::new();
         let mut registry = self.0.lock();
         registry.next += 1;
         let id = registry.next;
@@ -160,6 +172,7 @@ impl Subagents {
             tools,
             front_end: self.0.front_end.clone(),
             shared: shared.clone(),
+            closed: closed.clone(),
             jobs,
         }));
         registry.children.insert(
@@ -167,6 +180,8 @@ impl Subagents {
             Child {
                 agent: agent.name.clone(),
                 description: description.to_string(),
+                writes,
+                closed,
                 inbox,
                 actor,
                 shared,
@@ -181,8 +196,12 @@ impl Subagents {
         let Some(child) = registry.children.get(&id) else {
             return false;
         };
-        child.lock().queued += 1;
-        child.inbox.send(job).is_ok()
+        // Counted under the lock the actor takes to count it off, so it is
+        // never taken off before it was put on.
+        let mut state = child.lock();
+        let sent = child.inbox.send(job).is_ok();
+        state.queued += usize::from(sent);
+        sent
     }
 
     /// Stops the running turn of subagent `id`; `false` when none runs.
@@ -196,10 +215,14 @@ impl Subagents {
     }
 
     /// Ends every subagent, for a session that was left: the running turns
-    /// are stopped and the inboxes closed, so each actor ends on its own.
+    /// are stopped, what waits in the inboxes is dropped and nothing is
+    /// posted to the model, so each actor ends on its own.
     pub fn forget_all(&self) {
         let mut registry = self.0.lock();
         for (_, child) in std::mem::take(&mut registry.children) {
+            // Before looking for the running turn: an actor that has not
+            // yet marked one running sees `closed` and skips it.
+            child.closed.cancel();
             if let Some(token) = &child.lock().running {
                 token.cancel();
             }
@@ -211,6 +234,11 @@ impl Subagents {
         let registry = self.0.lock();
         let child = registry.children.get(&id)?;
         Some((child.agent.clone(), child.description.clone()))
+    }
+
+    /// Whether subagent `id` has tools that change files.
+    pub fn writes(&self, id: SubagentId) -> bool {
+        self.0.lock().children.get(&id).is_some_and(|c| c.writes)
     }
 
     pub fn state(&self, id: SubagentId) -> Option<State> {
@@ -430,6 +458,33 @@ mod tests {
             .collect();
         assert_eq!(prompted, ["one", "two"], "the skipped job never started");
         assert_eq!(subagents.queued(id), 0);
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_subagent_runs_nothing_queued_and_tells_no_model() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let (monitor_tx, _monitor_rx) = mpsc::channel::<MonitorEvent>(4);
+        let inbox = Monitors::new(monitor_tx, "/logs".into());
+        let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
+        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        subagents.prompt(id, job("one", Done::Notify(inbox.clone())).0);
+        subagents.prompt(id, job("two", Done::Notify(inbox.clone())).0);
+
+        subagents.forget_all();
+        drop(subagents);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, SubagentEvent::Prompted { .. })),
+            "{events:?}"
+        );
+        assert!(!inbox.has_notices());
     }
 
     #[tokio::test]

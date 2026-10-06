@@ -8,6 +8,7 @@ use std::{
 
 use nth_protocol::{Event, FrontEnd, Message, Provider, TaskNotice, TaskOutcome, Tool};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId};
 use crate::{Error, Session};
@@ -22,6 +23,8 @@ pub(super) struct Actor {
     /// `None` without a front-end: nobody watches the tab.
     pub front_end: Option<mpsc::Sender<SubagentEvent>>,
     pub shared: Arc<Mutex<ChildState>>,
+    /// The registry forgot the child.
+    pub closed: CancellationToken,
     pub jobs: mpsc::UnboundedReceiver<Job>,
 }
 
@@ -36,6 +39,7 @@ pub(super) async fn run(actor: Actor) {
         tools,
         front_end,
         shared,
+        closed,
         mut jobs,
     } = actor;
     let started = SubagentEvent::Started {
@@ -53,8 +57,9 @@ pub(super) async fn run(actor: Actor) {
             let mut state = lock(&shared);
             state.queued = state.queued.saturating_sub(1);
             // Stopped while it waited: it never ran, so nothing to show.
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || closed.is_cancelled() {
                 drop(state);
+                let done = told(done, &closed);
                 settle(done, &agent, &description, id, Err(Error::Interrupted));
                 continue;
             }
@@ -100,6 +105,16 @@ pub(super) async fn run(actor: Actor) {
             Err(Error::Interrupted) => TaskOutcome::Interrupted,
             Err(e) => TaskOutcome::Failed(e.to_string()),
         };
+        // Before the turn counts as ended, so whoever looks for the answer
+        // once it has, on `TurnEnded` or when nothing runs any more, finds
+        // it.
+        settle(
+            told(done, &closed),
+            &agent,
+            &description,
+            id,
+            result.map(|()| answer(&session)),
+        );
         {
             let mut state = lock(&shared);
             state.running = None;
@@ -116,13 +131,6 @@ pub(super) async fn run(actor: Actor) {
             model: session.model.clone(),
         };
         heard &= send(&front_end, ended).await;
-        settle(
-            done,
-            &agent,
-            &description,
-            id,
-            result.map(|()| answer(&session)),
-        );
         if !heard {
             return;
         }
@@ -141,6 +149,15 @@ fn answer(session: &Session) -> String {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// Who still hears how a job ended: once the child is forgotten, its
+/// session was left, and the model of the one after it never asked.
+fn told(done: Done, closed: &CancellationToken) -> Done {
+    match done {
+        Done::Notify(_) if closed.is_cancelled() => Done::Nothing,
+        done => done,
+    }
 }
 
 /// Tells whoever waits on the job how it ended.

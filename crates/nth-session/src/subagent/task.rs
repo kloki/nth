@@ -14,14 +14,15 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Done, Job, SubagentId, Subagents};
+use super::{Done, Job, SubagentId, Subagents, WRITERS};
 use crate::{Error, Session};
 
 /// Tools a subagent never gets: another task would nest without end, and
 /// the rest need the front-end, which belongs to the parent.
 const WITHHELD: [&str; 5] = ["task", "question", "panel", "monitor", "monitor_stop"];
-/// Tools that change files, kept from a subagent while its parent plans.
-const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
+/// Goes with every prompt from a planning parent: its child has no tool
+/// that writes, but bash could still change files.
+const PLANNING: &str = "<system-reminder>\nThe agent that sent you this task is planning and may not change the project. Do not change any file, with bash or otherwise: research, then report what you found.\n</system-reminder>";
 
 pub struct Task {
     provider: Arc<dyn Provider>,
@@ -147,28 +148,50 @@ impl Tool for Task {
                     names.join(", ")
                 ));
             };
+            let planning = matches!(ctx.writable, Writable::Only(_));
             let (id, started) = match &args.task_id {
                 Some(id) => {
                     let id = id.parse()?;
-                    if self.subagents.describe(id).is_none() {
+                    match self.subagents.describe(id) {
+                        None => {
+                            return Err(format!(
+                                "no subagent with task_id {id}; leave task_id out to start a new one"
+                            ));
+                        }
+                        Some((other, _)) if other != agent.name => {
+                            return Err(format!(
+                                "subagent {id} is @{other}, not @{}; leave task_id out to start a new one",
+                                agent.name
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                    // Its tools were picked when it started, outside plan mode.
+                    if planning && self.subagents.writes(id) {
                         return Err(format!(
-                            "no subagent with task_id {id}; leave task_id out to start a new one"
+                            "subagent {id} can change files, which is not allowed while planning; leave task_id out to start a read-only one"
                         ));
                     }
                     (id, false)
                 }
                 None => (self.spawn(agent, &args.description, ctx), true),
             };
+            let text = match planning {
+                true => format!("{}\n\n{PLANNING}", args.prompt),
+                false => args.prompt,
+            };
             let cancel = CancellationToken::new();
             // With a front-end the answer wakes the model as a notice. Headless,
             // nothing would, so the call waits for it.
             if ctx.monitors.reaches_front_end() {
                 let job = Job {
-                    text: args.prompt,
+                    text,
                     cancel,
                     done: Done::Notify(ctx.monitors.clone()),
                 };
-                self.subagents.prompt(id, job);
+                if !self.subagents.prompt(id, job) {
+                    return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
+                }
                 let verb = match started {
                     true => format!("Started subagent {id} (@{}, \"{}\")", agent.name, args.description),
                     false => format!("Sent the prompt to subagent {id} (@{})", agent.name),
@@ -183,11 +206,13 @@ impl Tool for Task {
             // nobody.
             let _guard = cancel.clone().drop_guard();
             let job = Job {
-                text: args.prompt,
+                text,
                 cancel,
                 done: Done::Reply(reply),
             };
-            self.subagents.prompt(id, job);
+            if !self.subagents.prompt(id, job) {
+                return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
+            }
             match waiting.await {
                 Ok(Ok(text)) => Ok(TaskNotice {
                     id,
@@ -402,5 +427,37 @@ mod tests {
                 .unwrap()
                 .contains("<task_result>\nfound\n</task_result>")
         );
+    }
+
+    #[tokio::test]
+    async fn a_planning_parent_continues_no_writer_and_no_other_agent() {
+        let subagents = Subagents::default();
+        let task = task(
+            vec![says("one"), says("two"), says("three")],
+            subagents.clone(),
+        );
+        let start =
+            |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent });
+        let again = |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent, "task_id": 1 });
+        let planning = ToolContext {
+            writable: Writable::Only("/repo/.nth/plans/x.md".into()),
+            ..ctx()
+        };
+
+        task.call(start("general"), &ctx()).await.unwrap();
+
+        assert_eq!(
+            task.call(again("explore"), &ctx()).await.unwrap_err(),
+            "subagent 1 is @general, not @explore; leave task_id out to start a new one"
+        );
+        assert_eq!(
+            task.call(again("general"), &planning).await.unwrap_err(),
+            "subagent 1 can change files, which is not allowed while planning; leave task_id out to start a read-only one"
+        );
+        task.call(start("general"), &planning).await.unwrap();
+        assert!(!subagents.writes(2), "started while planning");
+        let reused =
+            json!({ "description": "d", "prompt": "p", "subagent_type": "general", "task_id": 2 });
+        assert!(task.call(reused, &planning).await.is_ok());
     }
 }
