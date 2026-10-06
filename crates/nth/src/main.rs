@@ -160,6 +160,32 @@ fn client(config: &Config) -> Result<ChatClient> {
     Ok(ChatClient::new(config.provider.base_url.clone(), api_key)?)
 }
 
+/// Every tool the model gets: nth-tools' list, and the task tool that
+/// hands each subagent its share of the same list.
+fn tools(
+    config: &Config,
+    post_write: nth_tools::PostWrite,
+    provider: Arc<dyn nth_protocol::Provider>,
+    subagents: nth_session::Subagents,
+) -> Vec<Box<dyn nth_protocol::Tool>> {
+    let shared: Vec<Arc<dyn nth_protocol::Tool>> = nth_tools::all(&config.tools, post_write)
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+    let task = nth_session::Task::new(
+        provider,
+        shared.clone(),
+        subagents,
+        config.session.max_steps,
+    );
+    let mut tools: Vec<Box<dyn nth_protocol::Tool>> = shared
+        .into_iter()
+        .map(|tool| Box::new(tool) as Box<dyn nth_protocol::Tool>)
+        .collect();
+    tools.push(Box::new(task));
+    tools
+}
+
 /// Runs after every tool that writes a file. Its language servers are the
 /// only ones this process starts: the read tool shares them.
 fn post_write(config: &Config) -> nth_tools::PostWrite {
