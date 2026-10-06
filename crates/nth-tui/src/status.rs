@@ -86,7 +86,7 @@ fn queued(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }
 
-/// Line 2, right, first: `∿ 2 monitors`, while any run.
+/// Line 2, right, first: `» 2 monitors`, while any run.
 fn monitors(app: &App) -> Vec<Span<'static>> {
     let running = app.running_monitors();
     if running == 0 {
@@ -94,7 +94,7 @@ fn monitors(app: &App) -> Vec<Span<'static>> {
     }
     let noun = if running == 1 { "monitor" } else { "monitors" };
     vec![
-        Span::styled("∿ ", Style::new().fg(Color::Magenta)),
+        Span::styled("» ", Style::new().fg(Color::Magenta)),
         Span::styled(format!("{running} {noun}"), Style::new().fg(Color::Gray)),
     ]
 }
