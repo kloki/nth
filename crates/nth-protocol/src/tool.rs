@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Event, Monitors, Screen, Writable};
+use crate::{Asker, Event, Llm, Monitors, Screen, Writable};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -36,6 +36,9 @@ pub struct ToolContext {
     /// The files the tools may write: all of them, or in plan mode only
     /// the plan file.
     pub writable: Writable,
+    /// The model and effort the session runs on, for a tool that starts
+    /// another session on the same.
+    pub llm: Llm,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -63,6 +66,7 @@ impl ToolContext {
             screen: Screen::default(),
             monitors: Monitors::default(),
             writable: Writable::Any,
+            llm: Llm::default(),
         }
     }
 }
@@ -101,4 +105,19 @@ pub trait Tool: Send + Sync {
         args: serde_json::Value,
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult>;
+}
+
+/// A shared tool is a tool, so one list can be handed to several sessions.
+impl<T: Tool + ?Sized> Tool for Arc<T> {
+    fn spec(&self) -> ToolSpec {
+        (**self).spec()
+    }
+
+    fn call<'a>(
+        &'a self,
+        args: serde_json::Value,
+        ctx: &'a ToolContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        (**self).call(args, ctx)
+    }
 }

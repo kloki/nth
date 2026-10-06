@@ -741,7 +741,10 @@ mod tests {
         assert_eq!(sent(&app), [NOTICE]);
         assert!(matches!(
             app.chat.transcript.entries().next(),
-            Some(Entry::Notice(notice)) if notice.lines == 1
+            Some(Entry::Notice(nth_protocol::NoticeSummary::Monitor {
+                lines: 1,
+                ..
+            }))
         ));
         assert_eq!(last_user(&app), None, "nothing typed");
     }

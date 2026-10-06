@@ -1,5 +1,7 @@
 //! The front-end's monitors: which are running, who stopped them, and what
-//! the model has not heard from them yet.
+//! the model has not heard yet. The last part is the model's inbox, and it
+//! takes a subagent's answer too, so the agent loop hands both over the
+//! same way, between steps or as a turn of their own.
 
 use std::{
     collections::HashMap,
@@ -10,12 +12,15 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{MonitorEnd, MonitorEvent, MonitorId, Registered, StoppedBy, Stream, notice};
+use super::{
+    MonitorEnd, MonitorEvent, MonitorId, Registered, StoppedBy, Stream, TaskNotice, notice,
+};
 
-/// The front-end's monitors, shared by the monitor tools, the agent loop
-/// that hands their notices to the model, and the front-end that shows
-/// them. The default has no front-end, as in a headless run, so nobody
-/// would hear from a monitor and none can start.
+/// The front-end's monitors and the model's inbox, shared by the monitor
+/// tools, whoever runs subagents, the agent loop that hands the notices to
+/// the model, and the front-end that shows them. The default has no
+/// front-end, as in a headless run, so nobody would hear from a monitor
+/// and none can start, and a posted notice has nobody to wake.
 #[derive(Debug, Clone, Default)]
 pub struct Monitors(Option<Arc<Inner>>);
 
@@ -42,8 +47,15 @@ struct Running {
     stopped_by: Option<StoppedBy>,
 }
 
+/// One notice waiting for the model.
 #[derive(Debug)]
-struct Pending {
+enum Pending {
+    Monitor(MonitorNotice),
+    Task(TaskNotice),
+}
+
+#[derive(Debug)]
+struct MonitorNotice {
     id: MonitorId,
     description: String,
     log: PathBuf,
@@ -174,6 +186,15 @@ impl Monitors {
         inner.front_end.send(event).await.is_ok()
     }
 
+    /// Puts a subagent's answer in the model's inbox. `false` without a
+    /// front-end: nothing would wake the model for it, so the caller hands
+    /// the answer over itself.
+    pub fn post_task(&self, task: TaskNotice) -> bool {
+        let Some(inner) = &self.0 else { return false };
+        inner.lock().pending.push(Pending::Task(task));
+        true
+    }
+
     /// Whether the model has notices waiting.
     pub fn has_notices(&self) -> bool {
         self.0
@@ -228,40 +249,41 @@ impl State {
 
     /// The monitor's notice still being filled: the last one, unless it has
     /// already ended.
-    fn pending_for(&mut self, id: MonitorId) -> Option<&mut Pending> {
+    fn pending_for(&mut self, id: MonitorId) -> Option<&mut MonitorNotice> {
         let open = self
             .pending
             .iter()
-            .rposition(|p| p.id == id && p.ended.is_none());
+            .rposition(|p| matches!(p, Pending::Monitor(m) if m.id == id && m.ended.is_none()));
         let index = match open {
             Some(index) => index,
             None => {
                 let running = self.running.get(&id)?;
-                self.pending.push(Pending {
+                self.pending.push(Pending::Monitor(MonitorNotice {
                     id,
                     description: running.description.clone(),
                     log: running.log.clone(),
                     lines: Vec::new(),
                     more: 0,
                     ended: None,
-                });
+                }));
                 self.pending.len() - 1
             }
         };
-        Some(&mut self.pending[index])
+        match &mut self.pending[index] {
+            Pending::Monitor(monitor) => Some(monitor),
+            Pending::Task(_) => None,
+        }
     }
 }
 
 impl Pending {
     fn notice(&self) -> String {
-        notice::render(
-            self.id,
-            &self.description,
-            &self.log,
-            &self.lines,
-            self.more,
-            self.ended,
-        )
+        match self {
+            Pending::Monitor(m) => {
+                notice::render(m.id, &m.description, &m.log, &m.lines, m.more, m.ended)
+            }
+            Pending::Task(task) => notice::render_task(task),
+        }
     }
 }
 
@@ -368,6 +390,33 @@ mod tests {
             monitors.take_notices().unwrap(),
             "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
              <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\" ended=\"exited with code 1\" events=\"1\"/>"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_posted_task_answer_waits_with_the_monitors_notices() {
+        let (monitors, _rx) = monitors();
+        let m = monitors.register("ci", "watch").await.unwrap();
+        line(&monitors, m.id, "build ok").await;
+        let task = TaskNotice {
+            id: 1,
+            agent: "explore".into(),
+            description: "find tabs".into(),
+            outcome: super::super::TaskOutcome::Completed("in content.rs".into()),
+        };
+        assert!(monitors.post_task(task.clone()));
+        line(&monitors, m.id, "tests ok").await;
+
+        assert_eq!(
+            monitors.take_notices().unwrap(),
+            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\ntests ok\n</monitor>\n\
+             <task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
+             <task_result>\nin content.rs\n</task_result>\n</task>",
+            "a monitor's later lines join its open notice; the answer keeps its place"
+        );
+        assert!(
+            !Monitors::default().post_task(task),
+            "headless has no inbox"
         );
     }
 

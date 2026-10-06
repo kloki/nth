@@ -7,7 +7,7 @@ use std::{
 
 use nth_context::Context;
 use nth_protocol::{
-    AssistantMessage, Effort, Event, FrontEnd, Message, Mode, Provider, Tool, ToolCall,
+    AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, Tool, ToolCall,
     ToolContext, Writable,
 };
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,14 @@ pub struct Session {
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
     pub max_steps: usize,
+    /// Runs for another session's model rather than for you: it has no
+    /// task tool, so it is told of no agents and `@name` means nothing.
+    #[serde(default)]
+    pub subagent: bool,
+    /// A subagent's own system prompt, in place of the model's persona;
+    /// `None` keeps the persona.
+    #[serde(default)]
+    persona: Option<String>,
     /// Not saved: it is read afresh for the working directory, so a resumed
     /// session sees the instruction files as they are now.
     #[serde(skip)]
@@ -85,8 +93,19 @@ impl Session {
             messages,
             loaded_instructions: BTreeSet::new(),
             max_steps: DEFAULT_MAX_STEPS,
+            subagent: false,
+            persona: None,
             context,
         }
+    }
+
+    /// Makes this a subagent's session, with `persona` as its system prompt
+    /// in place of the model's, or the model's when `None`.
+    pub fn as_subagent(mut self, persona: Option<String>) -> Self {
+        self.subagent = true;
+        self.persona = persona;
+        self.rewrite_system_prompt();
+        self
     }
 
     /// Builder form of [`Session::set_context`].
@@ -144,8 +163,21 @@ impl Session {
     }
 
     fn rewrite_system_prompt(&mut self) {
+        let prompt = self.system_prompt();
         if let Some(first @ Message::System(_)) = self.messages.first_mut() {
-            *first = Message::System(system_prompt(&self.model, &self.cwd, &self.context));
+            *first = Message::System(prompt);
+        }
+    }
+
+    fn system_prompt(&self) -> String {
+        match self.subagent {
+            true => system_prompt::subagent_system_prompt(
+                self.persona.as_deref(),
+                &self.model,
+                &self.cwd,
+                &self.context,
+            ),
+            false => system_prompt(&self.model, &self.cwd, &self.context),
         }
     }
 
@@ -210,6 +242,10 @@ impl Session {
             writable: match self.mode {
                 Mode::Plan => Writable::Only(plan_path),
                 Mode::Act => Writable::Any,
+            },
+            llm: Llm {
+                model: self.model.clone(),
+                effort: self.effort,
             },
             ..ToolContext::new(self.cwd.clone())
         };

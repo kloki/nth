@@ -378,6 +378,7 @@ pub(crate) async fn run_call(
         screen: ctx.screen.clone(),
         monitors: ctx.monitors.clone(),
         writable: ctx.writable.clone(),
+        llm: ctx.llm.clone(),
     };
     let run = async {
         match tool {

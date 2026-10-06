@@ -41,7 +41,28 @@ fn template(model: &str) -> &'static str {
         .map_or(TEMPLATE, |(_, template)| *template)
 }
 
+/// The system prompt of a session run for you: the model's persona, the
+/// environment, the instruction files and the skills.
 pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
+    render(None, model, cwd, context)
+}
+
+/// The system prompt of a subagent's session: `persona` in place of the
+/// model's, as opencode puts an agent's prompt where the provider's would
+/// go, or the model's when the agent has none; then the same environment,
+/// instructions and skills.
+pub fn subagent_system_prompt(
+    persona: Option<&str>,
+    model: &str,
+    cwd: &Path,
+    context: &Context,
+) -> String {
+    render(Some(persona), model, cwd, context)
+}
+
+/// `role` is `None` for your own session and `Some(persona)` for a
+/// subagent's.
+fn render(role: Option<Option<&str>>, model: &str, cwd: &Path, context: &Context) -> String {
     let root = project_root(cwd);
     let git = if root.is_some() { "yes" } else { "no" };
     // Outside a repository the workspace root is the working directory, as in
@@ -55,7 +76,12 @@ pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
         .replace("{platform}", std::env::consts::OS)
         .replace("{today}", &today());
     // The meta persona names the model itself; every other one leaves it out.
-    let persona = template(model).replace("{{MODEL_NAME}}", model);
+    let persona = match role {
+        // Ends in a newline as the template files do, so the environment
+        // block follows after a blank line either way.
+        Some(Some(persona)) => format!("{}\n", persona.trim()),
+        _ => template(model).replace("{{MODEL_NAME}}", model),
+    };
     let mut prompt = format!("{persona}\n{env}");
     for instruction in &context.instructions {
         prompt.push('\n');
@@ -247,6 +273,27 @@ mod tests {
 
         assert!(prompt.contains("powered by muse-glimmer,"), "{prompt}");
         assert!(!prompt.contains("{{MODEL_NAME}}"), "{prompt}");
+    }
+
+    #[test]
+    fn a_subagent_gets_its_persona_or_the_models() {
+        let own = subagent_system_prompt(
+            Some("You search.\n"),
+            "kimi-k3",
+            "/repo".as_ref(),
+            &Context::default(),
+        );
+        let models = subagent_system_prompt(None, "kimi-k3", "/repo".as_ref(), &Context::default());
+
+        assert!(
+            own.starts_with("You search.\n\nYou are powered by the model named kimi-k3."),
+            "{own}"
+        );
+        assert!(!own.contains("interactive general AI agent"), "{own}");
+        assert_eq!(
+            models,
+            system_prompt("kimi-k3", "/repo".as_ref(), &Context::default())
+        );
     }
 
     #[test]

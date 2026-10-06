@@ -448,7 +448,7 @@ pub(super) mod tests {
 
         let entries: Vec<_> = t.entries().collect();
         let notice = |lines, ended: Option<&str>| {
-            Entry::Notice(NoticeSummary {
+            Entry::Notice(NoticeSummary::Monitor {
                 id: 2,
                 description: "ci".into(),
                 lines,

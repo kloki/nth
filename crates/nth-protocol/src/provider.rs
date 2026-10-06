@@ -28,6 +28,13 @@ pub struct Request<'a> {
     pub tools: &'a [ToolSpec],
 }
 
+/// A model and the effort it runs at.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Llm {
+    pub model: String,
+    pub effort: Effort,
+}
+
 /// How hard a reasoning model thinks before it answers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
