@@ -23,6 +23,8 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
                 "description": agent.description,
                 "model": agent.model,
                 "tools": agent.tools,
+                "denied": agent.denied,
+                "hidden": agent.hidden,
                 "path": agent.path,
                 "source": agent.source.name(),
             });
