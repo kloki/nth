@@ -1,7 +1,5 @@
-//! The front-end's monitors: which are running, who stopped them, and what
-//! the model has not heard yet. The last part is the model's inbox, and it
-//! takes a subagent's answer too, so the agent loop hands both over the
-//! same way, between steps or as a turn of their own.
+//! The front-end's monitors: which are running and who stopped them. What
+//! they print goes into the model's inbox, which the front-end owns.
 
 use std::{
     collections::HashMap,
@@ -12,21 +10,21 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    MonitorEnd, MonitorEvent, MonitorId, Registered, StoppedBy, Stream, TaskNotice, notice,
-};
+use super::{MonitorEvent, MonitorId, Registered, StoppedBy, Stream};
+use crate::Inbox;
 
-/// The front-end's monitors and the model's inbox, shared by the monitor
-/// tools, whoever runs subagents, the agent loop that hands the notices to
-/// the model, and the front-end that shows them. The default has no
+/// The front-end's monitors, shared by the monitor tools that start and
+/// stop them and the front-end that shows them. The default has no
 /// front-end, as in a headless run, so nobody would hear from a monitor
-/// and none can start, and a posted notice has nobody to wake.
+/// and none can start.
 #[derive(Debug, Clone, Default)]
 pub struct Monitors(Option<Arc<Inner>>);
 
 #[derive(Debug)]
 struct Inner {
     front_end: mpsc::Sender<MonitorEvent>,
+    /// Where what the monitors print waits for the model.
+    inbox: Inbox,
     state: Mutex<State>,
 }
 
@@ -35,8 +33,6 @@ struct State {
     next: MonitorId,
     log_dir: PathBuf,
     running: HashMap<MonitorId, Running>,
-    /// What the model has not seen yet, in the order it happened.
-    pending: Vec<Pending>,
 }
 
 #[derive(Debug)]
@@ -47,29 +43,13 @@ struct Running {
     stopped_by: Option<StoppedBy>,
 }
 
-/// One notice waiting for the model.
-#[derive(Debug)]
-enum Pending {
-    Monitor(MonitorNotice),
-    Task(TaskNotice),
-}
-
-#[derive(Debug)]
-struct MonitorNotice {
-    id: MonitorId,
-    description: String,
-    log: PathBuf,
-    lines: Vec<String>,
-    /// Lines past [`notice::NOTICE_LINES`].
-    more: usize,
-    ended: Option<(MonitorEnd, usize)>,
-}
-
 impl Monitors {
-    /// Monitors that report to `front_end` and log under `log_dir`.
-    pub fn new(front_end: mpsc::Sender<MonitorEvent>, log_dir: PathBuf) -> Self {
+    /// Monitors that report to `front_end`, log under `log_dir`, and put
+    /// what they print in `inbox`.
+    pub fn new(front_end: mpsc::Sender<MonitorEvent>, log_dir: PathBuf, inbox: Inbox) -> Self {
         Self(Some(Arc::new(Inner {
             front_end,
+            inbox,
             state: Mutex::new(State {
                 log_dir,
                 ..State::default()
@@ -147,14 +127,12 @@ impl Monitors {
 
     /// Stops every running monitor for a session that was left: what they
     /// still say goes to the front-end only, never to the next session's
-    /// model.
+    /// model, since a forgotten monitor has no notice to join.
     pub fn forget_all(&self) {
         let Some(inner) = &self.0 else { return };
-        let mut state = inner.lock();
-        for (_, running) in state.running.drain() {
+        for (_, running) in inner.lock().running.drain() {
             running.stop.cancel();
         }
-        state.pending.clear();
     }
 
     /// Who stopped a monitor whose token was cancelled.
@@ -177,40 +155,13 @@ impl Monitors {
             .map_or(0, |inner| inner.lock().running.len())
     }
 
-    /// Records a monitor's output or end for the model and passes it on to
-    /// the front-end. `false` once the front-end is gone, when the monitor
-    /// should stop: nobody is left to hear from it.
+    /// Puts a monitor's output or end in the model's inbox and passes it
+    /// on to the front-end. `false` once the front-end is gone, when the
+    /// monitor should stop: nobody is left to hear from it.
     pub async fn event(&self, event: MonitorEvent) -> bool {
         let Some(inner) = &self.0 else { return false };
-        inner.lock().record(&event);
+        inner.record(&event);
         inner.front_end.send(event).await.is_ok()
-    }
-
-    /// Puts a subagent's answer in the model's inbox. `false` without a
-    /// front-end: nothing would wake the model for it, so the caller hands
-    /// the answer over itself.
-    pub fn post_task(&self, task: TaskNotice) -> bool {
-        let Some(inner) = &self.0 else { return false };
-        inner.lock().pending.push(Pending::Task(task));
-        true
-    }
-
-    /// Whether the model has notices waiting.
-    pub fn has_notices(&self) -> bool {
-        self.0
-            .as_ref()
-            .is_some_and(|inner| !inner.lock().pending.is_empty())
-    }
-
-    /// The notices the model has not seen, as one message, and forgets them.
-    pub fn take_notices(&self) -> Option<String> {
-        let inner = self.0.as_ref()?;
-        let pending = std::mem::take(&mut inner.lock().pending);
-        if pending.is_empty() {
-            return None;
-        }
-        let notices: Vec<String> = pending.iter().map(Pending::notice).collect();
-        Some(notices.join("\n"))
     }
 }
 
@@ -220,8 +171,13 @@ impl Inner {
     }
 }
 
-impl State {
-    fn record(&mut self, event: &MonitorEvent) {
+impl Inner {
+    /// What a running monitor said goes to the inbox under its name; a
+    /// forgotten one has no notice to join. Stderr is for the log only.
+    /// Posted under the registry's lock, which `forget_all` takes too, so
+    /// nothing slips into the inbox after a session was left. The inbox
+    /// never takes this lock, so the order is safe.
+    fn record(&self, event: &MonitorEvent) {
         match event {
             MonitorEvent::Started { .. } => {}
             MonitorEvent::Output {
@@ -229,60 +185,24 @@ impl State {
                 ..
             } => {}
             MonitorEvent::Output { id, line, .. } => {
-                let Some(pending) = self.pending_for(*id) else {
-                    return;
-                };
-                if pending.lines.len() < notice::NOTICE_LINES {
-                    pending.lines.push(line.clone());
-                } else {
-                    pending.more += 1;
+                let state = self.lock();
+                if let Some(running) = state.running.get(id) {
+                    self.inbox
+                        .monitor_line(*id, &running.description, &running.log, line.clone());
                 }
             }
             MonitorEvent::Ended { id, end, events } => {
-                if let Some(pending) = self.pending_for(*id) {
-                    pending.ended = Some((*end, *events));
+                let mut state = self.lock();
+                if let Some(running) = state.running.remove(id) {
+                    self.inbox.monitor_ended(
+                        *id,
+                        &running.description,
+                        &running.log,
+                        *end,
+                        *events,
+                    );
                 }
-                self.running.remove(id);
             }
-        }
-    }
-
-    /// The monitor's notice still being filled: the last one, unless it has
-    /// already ended.
-    fn pending_for(&mut self, id: MonitorId) -> Option<&mut MonitorNotice> {
-        let open = self
-            .pending
-            .iter()
-            .rposition(|p| matches!(p, Pending::Monitor(m) if m.id == id && m.ended.is_none()));
-        let index = match open {
-            Some(index) => index,
-            None => {
-                let running = self.running.get(&id)?;
-                self.pending.push(Pending::Monitor(MonitorNotice {
-                    id,
-                    description: running.description.clone(),
-                    log: running.log.clone(),
-                    lines: Vec::new(),
-                    more: 0,
-                    ended: None,
-                }));
-                self.pending.len() - 1
-            }
-        };
-        match &mut self.pending[index] {
-            Pending::Monitor(monitor) => Some(monitor),
-            Pending::Task(_) => None,
-        }
-    }
-}
-
-impl Pending {
-    fn notice(&self) -> String {
-        match self {
-            Pending::Monitor(m) => {
-                notice::render(m.id, &m.description, &m.log, &m.lines, m.more, m.ended)
-            }
-            Pending::Task(task) => notice::render_task(task),
         }
     }
 }
@@ -295,11 +215,12 @@ pub fn log_dir(data_dir: &Path, session_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monitor::NOTICE_LINES;
+    use crate::MonitorEnd;
 
-    fn monitors() -> (Monitors, mpsc::Receiver<MonitorEvent>) {
+    fn monitors() -> (Monitors, Inbox, mpsc::Receiver<MonitorEvent>) {
         let (tx, rx) = mpsc::channel(64);
-        (Monitors::new(tx, "/logs".into()), rx)
+        let inbox = Inbox::new();
+        (Monitors::new(tx, "/logs".into(), inbox.clone()), inbox, rx)
     }
 
     async fn line(monitors: &Monitors, id: MonitorId, line: &str) {
@@ -315,12 +236,12 @@ mod tests {
     async fn headless_has_no_monitors() {
         let monitors = Monitors::default();
         assert!(monitors.register("tail", "tail -f x").await.is_none());
-        assert_eq!(monitors.take_notices(), None);
+        assert!(!monitors.reaches_front_end());
     }
 
     #[tokio::test]
     async fn register_numbers_and_announces() {
-        let (monitors, mut rx) = monitors();
+        let (monitors, _inbox, mut rx) = monitors();
         let first = monitors.register("errors", "tail -f log").await.unwrap();
         let second = monitors.register("ci", "gh run watch").await.unwrap();
         assert_eq!((first.id, second.id), (1, 2));
@@ -339,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdout_lines_become_one_notice_and_stderr_none() {
-        let (monitors, _rx) = monitors();
+        let (monitors, inbox, _rx) = monitors();
         let m = monitors
             .register("errors \"in\" log", "tail")
             .await
@@ -353,29 +274,18 @@ mod tests {
         monitors.event(stderr).await;
         line(&monitors, m.id, "ERROR two").await;
 
-        assert!(monitors.has_notices());
+        assert!(inbox.has_notices());
         assert_eq!(
-            monitors.take_notices().unwrap(),
+            inbox.take_notices().unwrap(),
             "<monitor id=\"1\" description=\"errors &quot;in&quot; log\" log=\"/logs/1.log\">\n\
              ERROR one\nERROR two\n</monitor>"
         );
-        assert_eq!(monitors.take_notices(), None, "taken");
-    }
-
-    #[tokio::test]
-    async fn a_notice_caps_its_lines() {
-        let (monitors, _rx) = monitors();
-        let m = monitors.register("spam", "yes").await.unwrap();
-        for i in 0..NOTICE_LINES + 3 {
-            line(&monitors, m.id, &i.to_string()).await;
-        }
-        let notice = monitors.take_notices().unwrap();
-        assert!(notice.contains("\n49\n… 3 more lines in the log\n</monitor>"));
+        assert_eq!(inbox.take_notices(), None, "taken");
     }
 
     #[tokio::test]
     async fn ending_adds_an_end_notice_and_stops_running() {
-        let (monitors, _rx) = monitors();
+        let (monitors, inbox, _rx) = monitors();
         let m = monitors.register("ci", "watch").await.unwrap();
         line(&monitors, m.id, "build ok").await;
         let ended = MonitorEvent::Ended {
@@ -387,42 +297,15 @@ mod tests {
 
         assert_eq!(monitors.running(), 0);
         assert_eq!(
-            monitors.take_notices().unwrap(),
+            inbox.take_notices().unwrap(),
             "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
              <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\" ended=\"exited with code 1\" events=\"1\"/>"
         );
     }
 
     #[tokio::test]
-    async fn a_posted_task_answer_waits_with_the_monitors_notices() {
-        let (monitors, _rx) = monitors();
-        let m = monitors.register("ci", "watch").await.unwrap();
-        line(&monitors, m.id, "build ok").await;
-        let task = TaskNotice {
-            id: 1,
-            agent: "explore".into(),
-            description: "find tabs".into(),
-            outcome: super::super::TaskOutcome::Completed("in content.rs".into()),
-        };
-        assert!(monitors.post_task(task.clone()));
-        line(&monitors, m.id, "tests ok").await;
-
-        assert_eq!(
-            monitors.take_notices().unwrap(),
-            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\ntests ok\n</monitor>\n\
-             <task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
-             <task_result>\nin content.rs\n</task_result>\n</task>",
-            "a monitor's later lines join its open notice; the answer keeps its place"
-        );
-        assert!(
-            !Monitors::default().post_task(task),
-            "headless has no inbox"
-        );
-    }
-
-    #[tokio::test]
     async fn stop_remembers_who_stopped_it() {
-        let (monitors, _rx) = monitors();
+        let (monitors, _inbox, _rx) = monitors();
         let m = monitors.register("ci", "watch").await.unwrap();
         assert!(!monitors.stop(9, StoppedBy::Model), "no such monitor");
         assert!(monitors.stop(m.id, StoppedBy::User));
@@ -437,10 +320,11 @@ mod tests {
 
     #[tokio::test]
     async fn forgotten_monitors_say_nothing_more_to_the_model() {
-        let (monitors, mut rx) = monitors();
+        let (monitors, inbox, mut rx) = monitors();
         let m = monitors.register("ci", "watch").await.unwrap();
         line(&monitors, m.id, "before").await;
         monitors.forget_all();
+        inbox.clear();
         assert!(m.stop.is_cancelled());
         assert_eq!(monitors.running(), 0);
         let ended = MonitorEvent::Ended {
@@ -449,7 +333,7 @@ mod tests {
             events: 1,
         };
         assert!(monitors.event(ended.clone()).await, "the tab still hears");
-        assert_eq!(monitors.take_notices(), None);
+        assert_eq!(inbox.take_notices(), None);
         while let Ok(event) = rx.try_recv() {
             if matches!(event, MonitorEvent::Ended { .. }) {
                 return;

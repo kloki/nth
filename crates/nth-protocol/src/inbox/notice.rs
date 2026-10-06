@@ -5,7 +5,7 @@
 
 use std::{fmt, path::Path};
 
-use super::{MonitorEnd, MonitorId};
+use crate::{MonitorEnd, MonitorId};
 
 /// At most this many lines of one monitor go into a notice; the rest are
 /// counted, and the log has them.

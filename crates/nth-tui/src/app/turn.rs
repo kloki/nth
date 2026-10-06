@@ -156,13 +156,13 @@ impl App {
     /// Starts a turn with `text` after what monitors said since the last
     /// turn; `text` is empty when only the monitors have something to say.
     pub(super) fn start_turn(&mut self, text: String) {
-        if self.session.is_none() || (text.is_empty() && !self.monitors.has_notices()) {
+        if self.session.is_none() || (text.is_empty() && !self.inbox.has_notices()) {
             return;
         }
         let Some(mut session) = self.session.take() else {
             return;
         };
-        let notices = self.monitors.take_notices();
+        let notices = self.inbox.take_notices();
         self.notices_due = None;
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
@@ -192,6 +192,7 @@ impl App {
             asker: Asker::new(self.asks_tx.clone()),
             screen: Screen::new(self.screen_tx.clone()),
             monitors: self.monitors.clone(),
+            inbox: self.inbox.clone(),
         };
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -807,7 +808,7 @@ mod tests {
         app.run_command(Command::Clear);
 
         assert_eq!(app.monitors.running(), 0);
-        assert!(!app.monitors.has_notices());
+        assert!(!app.inbox.has_notices());
     }
 
     #[tokio::test]

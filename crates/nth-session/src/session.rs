@@ -246,6 +246,7 @@ impl Session {
             asker: front_end.asker.clone(),
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
+            inbox: front_end.inbox.clone(),
             writable: match self.mode {
                 Mode::Plan => Writable::Only(plan_path),
                 Mode::Act => Writable::Any,

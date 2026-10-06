@@ -44,7 +44,7 @@ use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
+    Ask, BoxError, Effort, Event, Inbox, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
     Provider, Tool, Usage, monitor_log_dir,
 };
 use nth_session::{
@@ -186,6 +186,8 @@ pub struct App {
     turn: Job<Ended>,
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
+    /// What the model has not heard yet from the monitors and subagents.
+    inbox: Inbox,
     monitor_rx: mpsc::Receiver<MonitorEvent>,
     /// Each monitor's tab, open from its start until you close it.
     monitor_views: BTreeMap<MonitorId, MonitorView>,
@@ -285,9 +287,11 @@ impl App {
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
         let monitor_root = std::env::temp_dir().join("nth");
+        let inbox = Inbox::new();
         let monitors = Monitors::new(
             monitor_tx,
             monitor_log_dir(&monitor_root, &session.id.to_string()),
+            inbox.clone(),
         );
         let home = std::env::var("HOME").ok();
         let plan_path = session.plan_path();
@@ -346,6 +350,7 @@ impl App {
             screen_rx,
             turn: Job::default(),
             monitors,
+            inbox,
             monitor_rx,
             monitor_views: BTreeMap::new(),
             subagents: Subagents::default(),

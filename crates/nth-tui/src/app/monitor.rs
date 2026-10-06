@@ -43,7 +43,7 @@ impl App {
                 }
             }
         }
-        if self.notices_due.is_none() && self.monitors.has_notices() {
+        if self.notices_due.is_none() && self.inbox.has_notices() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
     }
@@ -52,7 +52,7 @@ impl App {
     /// running, which hands them over itself, or you stopped the last one.
     pub(super) fn notices_due(&mut self) {
         self.notices_due = None;
-        if !self.is_busy() && !self.hold_notices && self.monitors.has_notices() {
+        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
             self.start_turn(String::new());
         }
     }
@@ -63,6 +63,7 @@ impl App {
     pub(super) fn left_session(&mut self) {
         self.left_subagents();
         self.monitors.forget_all();
+        self.inbox.clear();
         self.notices_due = None;
         self.hold_notices = false;
         self.log_monitors_for_session();
@@ -208,7 +209,7 @@ impl App {
         let Some(session) = &mut self.session else {
             return;
         };
-        let Some(notices) = self.monitors.take_notices() else {
+        let Some(notices) = self.inbox.take_notices() else {
             return;
         };
         session.messages.push(Message::User(notices));
@@ -362,7 +363,7 @@ mod tests {
 
         ended(&mut app, running.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
-        assert!(!app.monitors.has_notices(), "not for the new session");
+        assert!(!app.inbox.has_notices(), "not for the new session");
     }
 
     #[tokio::test]

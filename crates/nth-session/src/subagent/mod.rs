@@ -21,7 +21,7 @@ use std::{
 
 pub use mention::resolve;
 use nth_context::Agent;
-use nth_protocol::{Event, Monitors, Provider, TaskId, TaskOutcome, Tool};
+use nth_protocol::{Event, Inbox, Provider, TaskId, TaskOutcome, Tool};
 pub use task::Task;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -78,7 +78,7 @@ pub enum Done {
     /// The task tool, waiting inline in a headless run.
     Reply(oneshot::Sender<Turn>),
     /// The model, through its inbox, as a `<task>` notice.
-    Notify(Monitors),
+    Notify(Inbox),
     /// Nobody but the tab: you typed the prompt and are looking at it.
     Nothing,
 }
@@ -331,7 +331,7 @@ impl Drop for Inner {
 #[cfg(test)]
 mod tests {
     use nth_context::{Context, Paths};
-    use nth_protocol::{MonitorEvent, StreamEvent};
+    use nth_protocol::StreamEvent;
 
     use super::*;
     use crate::agent_loop::tests::Scripted;
@@ -437,8 +437,7 @@ mod tests {
     async fn a_notified_task_posts_its_answer_in_the_models_inbox() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let (monitor_tx, _monitor_rx) = mpsc::channel::<MonitorEvent>(4);
-        let inbox = Monitors::new(monitor_tx, "/logs".into());
+        let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![says("done")]));
         let id = subagents.spawn(&explore(), "find tabs", session(), provider, Vec::new());
         subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
@@ -514,8 +513,7 @@ mod tests {
     async fn a_forgotten_subagent_runs_nothing_queued_and_tells_no_model() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let (monitor_tx, _monitor_rx) = mpsc::channel::<MonitorEvent>(4);
-        let inbox = Monitors::new(monitor_tx, "/logs".into());
+        let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
         let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
         subagents.prompt(id, job("one", Done::Notify(inbox.clone())).0);
