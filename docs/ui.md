@@ -244,7 +244,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 | Input panel        | Height   | Opens on              | Returns on    |
 | ------------------ | -------- | --------------------- | ------------- |
 | Prompt             | 4        | default               | —             |
-| Model picker       | ~8       | `/model`              | enter, esc    |
+| Model picker       | ~8       | `/models`, ctrl+m     | enter, esc    |
 | Question           | per call | the agent asks        | answer, esc   |
 | Permission (later) | ~4       | a tool needs approval | allow, reject |
 
@@ -254,9 +254,14 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 ```
 ▎ switch model                         ↑↓ model · ←→ effort · enter · esc
+▎ Lyceum
 ▎ → glm   ✓ GLM 5.3  128k
 ▎   plain   Plain    32k
+▎ OpenCode Go
+▎   kimi    Kimi     256k
 ```
+
+With models from more than one provider, the picker puts each provider's rows under its name, dim, and shows the ids without their `provider/` prefix; a provider that could not be listed is one red `✗ Lyceum: 401 …` row after the models. The chosen model is still `provider/model`, as the status bar shows it.
 
 - **No border, default background.** The panel stands out by its bar, not by a box or a fill.
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
