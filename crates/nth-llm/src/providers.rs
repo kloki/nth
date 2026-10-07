@@ -99,6 +99,11 @@ impl Providers {
         }
     }
 
+    /// Whether `model` can run: an id of an unavailable provider cannot.
+    pub fn check(&self, model: &str) -> Result<(), Error> {
+        self.route(model).map(|_| ())
+    }
+
     /// The client `model` is for, and the id it knows the model by.
     fn route<'a>(&self, model: &'a str) -> Result<(usize, &'a str), Error> {
         if let Some((prefix, wire)) = model.split_once('/') {

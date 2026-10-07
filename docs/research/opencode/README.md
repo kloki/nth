@@ -16,17 +16,18 @@ pinned to an older SHA keep their own SHA in their header.
 | #   | Topic                                 | Commit    |
 | --- | ------------------------------------- | --------- |
 | 01  | [Paste summary](01-paste-summary.md)  | `03e6717` |
+| 02  | [Providers and models](02-providers.md) | `03e6717` |
 
 ## Coverage checklist
 
 - [ ] Architecture overview
 - [ ] Agent loop
 - [ ] Tool system (built-in tools)
-- [ ] LLM provider abstraction
+- [x] LLM provider abstraction
 - [ ] Sessions & persistence
 - [ ] Client/server + TUI
 - [ ] Permissions
-- [ ] Config
+- [x] Config (providers and model only)
 - [ ] Agents/modes & prompts
 - [ ] Context management & compaction
 - [ ] MCP
