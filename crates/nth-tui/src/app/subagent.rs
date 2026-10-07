@@ -268,7 +268,6 @@ mod tests {
             "the spinner stands in for @ while it runs: {}",
             rows[0]
         );
-        assert!(rows[15].ends_with("↳ 1 subagent "), "{}", rows[15]);
         assert!(app.chat.transcript.is_empty(), "nothing in the main chat");
     }
 

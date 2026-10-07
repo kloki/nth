@@ -63,18 +63,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Some(hint) => vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))],
         None => queued(app),
     };
-    let mut right = subagents(app);
-    let monitors = monitors(app);
-    if !right.is_empty() && !monitors.is_empty() {
-        right.push(Span::raw("  "));
-    }
-    right.extend(monitors);
-    let servers = servers(app);
-    if !right.is_empty() && !servers.is_empty() {
-        right.push(Span::raw("  "));
-    }
-    right.extend(servers);
-    split_line(frame, checks, left, right);
+    split_line(frame, checks, left, servers(app));
 }
 
 /// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`.
@@ -89,36 +78,6 @@ fn queued(app: &App) -> Vec<Span<'static>> {
         .unwrap_or_default();
     let line = format!("⏵ {} queued · {first}", app.queue.len());
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
-}
-
-/// Line 2, right, first: `↳ 2 subagents`, while any run.
-fn subagents(app: &App) -> Vec<Span<'static>> {
-    let running = app.running_subagents();
-    if running == 0 {
-        return Vec::new();
-    }
-    let noun = if running == 1 {
-        "subagent"
-    } else {
-        "subagents"
-    };
-    vec![
-        Span::styled("↳ ", Style::new().fg(Color::Magenta)),
-        Span::styled(format!("{running} {noun}"), Style::new().fg(Color::Gray)),
-    ]
-}
-
-/// Line 2, right, then: `» 2 monitors`, while any run.
-fn monitors(app: &App) -> Vec<Span<'static>> {
-    let running = app.running_monitors();
-    if running == 0 {
-        return Vec::new();
-    }
-    let noun = if running == 1 { "monitor" } else { "monitors" };
-    vec![
-        Span::styled("» ", Style::new().fg(Color::Magenta)),
-        Span::styled(format!("{running} {noun}"), Style::new().fg(Color::Gray)),
-    ]
 }
 
 /// Line 2, right: `● rust  ● typescript`.

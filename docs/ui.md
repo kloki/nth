@@ -85,7 +85,6 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 - **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
 - **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `» monitor 1 · ci · 2 lines`.
-- **Status bar.** `» 2 monitors` on line 2's right while any run.
 
 ## Subagents
 
@@ -108,7 +107,6 @@ The `task` tool starts a subagent: an agent nth-context found (`nth agents` list
 - **Leaving.** `/clear` and `/resume` end every subagent: what they had queued never runs, and what they answer does not reach the next session's model. Their tabs close as each turn ends.
 - **Quitting.** With subagents running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 subagent running · ctrl+c again to quit`, counted with the monitors. The second ctrl+c stops them and saves their notices in the session, so a resumed model knows they are gone.
 - **In the chat.** The task call is one row, `↳ task  find how tabs open`, its result the id the model continues it with. The answer shows as a notice row when it arrives: `↳ subagent 1 · explore · completed` (or `failed`, `interrupted`); its text is for the model.
-- **Status bar.** `↳ 2 subagents` on line 2's right while any run, before the monitors.
 - **Headless.** `nth run` has nothing to wake the model, so there the task tool waits for the subagent and returns its answer in the call.
 
 ## Plan

@@ -235,7 +235,6 @@ mod tests {
         let rows = rows(&mut app);
         assert!(rows[0].starts_with(" [› chat] $ ci "), "{}", rows[0]);
         assert_eq!(tab_colour(&mut app, "$ ci"), Color::Blue, "running");
-        assert!(rows[15].ends_with("» 1 monitor "), "{}", rows[15]);
     }
 
     #[tokio::test]
