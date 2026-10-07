@@ -231,7 +231,12 @@ mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" [› chat] @ explore "), "{}", rows[0]);
+        assert!(rows[0].starts_with(" [› chat] "), "{}", rows[0]);
+        assert!(
+            rows[0].contains(" explore · find tabs ") && !rows[0].contains("@ explore"),
+            "the spinner stands in for @ while it runs: {}",
+            rows[0]
+        );
         assert!(rows[15].ends_with("↳ 1 subagent "), "{}", rows[15]);
         assert!(app.chat.transcript.is_empty(), "nothing in the main chat");
     }
@@ -267,7 +272,7 @@ mod tests {
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
         let after = rows(&mut app);
-        assert!(after[0].contains("[@ explore]"), "{}", after[0]);
+        assert!(after[0].contains("[@ explore · find tabs]"), "{}", after[0]);
         assert_eq!(
             tab_colour(&mut app, "@ explore"),
             Color::Reset,

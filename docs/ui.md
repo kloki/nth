@@ -38,7 +38,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
 - **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
-- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ explore`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
+- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ explore · find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
   | Colour  | State                              | Chat                    | Plan         | Monitor                      | Subagent            |
@@ -89,7 +89,7 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 
 ## Subagents
 
-The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is `@` and the agent's name, `@ explore`, coloured by its state: blue while its turn runs, green once it answered, red when it was stopped or failed.
+The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is `@`, the agent's name and what it was asked, cut at 20 characters: `@ explore · find how tabs open`, coloured by its state: blue while its turn runs, green once it answered, red when it was stopped or failed. While its turn runs, the spinner stands in for the `@`.
 
 ```
 @explore · find how tabs open · running · 12s · 3 tool calls · 1 queued

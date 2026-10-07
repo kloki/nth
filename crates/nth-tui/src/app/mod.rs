@@ -521,7 +521,7 @@ impl App {
             .map(|tab| {
                 let state = self.tab_state(tab);
                 header::TabLabel {
-                    icon: tab.icon(),
+                    icon: self.tab_icon(tab),
                     name: self.tab_label(tab),
                     state: self.content.shown_state(tab, state),
                     active: tab == self.content.active(),

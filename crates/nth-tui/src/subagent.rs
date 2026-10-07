@@ -14,10 +14,12 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{app::TabState, chat::Chat, theme};
+use crate::{app::TabState, chat::Chat, spinner, theme};
 
 /// The header row above the chat.
 const HEADER_ROWS: u16 = 2;
+/// The most characters of what it was asked the tab's label shows.
+const TITLE_CHARS: usize = 20;
 
 pub struct SubagentView {
     pub agent: String,
@@ -96,6 +98,22 @@ impl SubagentView {
     /// When the running turn began, for the prompt's spinner.
     pub fn running_since(&self) -> Option<Instant> {
         self.running_since
+    }
+
+    /// The tab's name in the header: the agent and what it was asked, cut
+    /// short.
+    pub fn label(&self) -> String {
+        let mut title: String = self.description.chars().take(TITLE_CHARS).collect();
+        if self.description.chars().count() > TITLE_CHARS {
+            title.push('…');
+        }
+        format!("{} · {title}", self.agent)
+    }
+
+    /// In front of the label: the spinner while its turn runs.
+    pub fn icon(&self) -> Option<&'static str> {
+        self.running_since
+            .map(|since| spinner::frame(since.elapsed()))
     }
 
     pub fn state(&self) -> TabState {
@@ -178,9 +196,12 @@ mod tests {
     #[test]
     fn the_state_follows_the_turn() {
         let mut view = view();
+        assert_eq!(view.label(), "explore · find tabs");
         assert_eq!(view.state(), TabState::Working);
+        assert_eq!(view.icon(), None, "no turn to spin for yet");
         view.prompted("go".into());
         assert_eq!(view.state(), TabState::Working);
+        assert!(view.icon().is_some(), "spins while running");
         assert!(view.is_running());
         view.ended(
             &TaskOutcome::Completed("ok".into()),
@@ -188,6 +209,7 @@ mod tests {
             "glm",
         );
         assert_eq!(view.state(), TabState::Done);
+        assert_eq!(view.icon(), None);
         assert!(!view.is_running());
         view.prompted("again".into());
         view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");

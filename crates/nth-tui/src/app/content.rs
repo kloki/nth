@@ -194,7 +194,20 @@ impl App {
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
-                .map_or_else(|| format!("subagent {id}"), |view| view.agent.clone()),
+                .map_or_else(|| format!("subagent {id}"), SubagentView::label),
+        }
+    }
+
+    /// In front of the tab's name: what kind it is, or a subagent's
+    /// spinner while its turn runs.
+    pub(super) fn tab_icon(&self, tab: Tab) -> &'static str {
+        match tab {
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .and_then(SubagentView::icon)
+                .unwrap_or(tab.icon()),
+            _ => tab.icon(),
         }
     }
 
