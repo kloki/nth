@@ -2,7 +2,7 @@
 //! that touches it: hoodrich gives one line per source line and borrows
 //! the source, so what comes out of here is owned, and wrapped where asked.
 
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 use hoodrich::{Change, Mode, Renderer};
 use ratatui::{
@@ -11,15 +11,58 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
+/// Markdown as wrapped rows, with where the links in it ended up.
+pub struct Markdown {
+    pub lines: Vec<Line<'static>>,
+    pub links: Vec<Link>,
+}
+
+/// A link's visible text on one wrapped row, and where it points. A link
+/// that wraps is one of these per row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub row: usize,
+    /// Display columns of the text on that row.
+    pub columns: Range<usize>,
+    pub url: String,
+}
+
+impl Link {
+    /// The same link `by` columns to the right, as a prefix put in front
+    /// of its row moves it.
+    pub fn shifted(mut self, by: usize) -> Self {
+        self.columns = self.columns.start + by..self.columns.end + by;
+        self
+    }
+}
+
 /// Markdown with its syntax hidden, wrapped to `width`.
-pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
+pub fn markdown(text: &str, width: usize) -> Markdown {
     let text = text.replace('\t', "    ");
-    renderer(Mode::Concealed, width)
-        .render(&text)
-        .lines
-        .into_iter()
-        .flat_map(|line| wrap(line, width))
-        .collect()
+    let rendered = renderer(Mode::Concealed, width).render_with_links(&text);
+    let mut lines = Vec::new();
+    let mut links = Vec::new();
+    for (source, line) in rendered.text.lines.into_iter().enumerate() {
+        let first = lines.len();
+        for (offset, row) in wrap_rows(line, width).into_iter().enumerate() {
+            // hoodrich's columns are of the unwrapped line; the part of a
+            // link this row shows is where they overlap.
+            for link in rendered.links.iter().filter(|link| link.line == source) {
+                let start = link.columns.start.max(row.columns.start);
+                let end = link.columns.end.min(row.columns.end);
+                if start < end {
+                    links.push(Link {
+                        row: first + offset,
+                        columns: start - row.columns.start + row.hang
+                            ..end - row.columns.start + row.hang,
+                        url: link.url.clone(),
+                    });
+                }
+            }
+            lines.push(row.line);
+        }
+    }
+    Markdown { lines, links }
 }
 
 /// A file's content, one line per line of `source`, highlighted by the
@@ -90,20 +133,41 @@ pub fn owned(line: Line<'_>) -> Line<'static> {
 /// background, as code has, keeps it across every row. Every row carries
 /// its style on its spans, none on the line.
 pub fn wrap(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
+    wrap_rows(line, width)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+/// One row of a wrapped line and where in the line it came from.
+struct Row {
+    line: Line<'static>,
+    /// Display columns of the unwrapped line this row shows.
+    columns: Range<usize>,
+    /// Columns of indent put in front of the text.
+    hang: usize,
+}
+
+fn wrap_rows(line: Line<'_>, width: usize) -> Vec<Row> {
     let width = width.max(1);
     if line.width() <= width {
         // The line's own style goes onto its spans, so a caller can put
         // them behind its own.
         let style = line.style;
+        let columns = 0..line.width();
         let spans = owned(line).spans.into_iter();
-        return vec![Line::from(
-            spans
-                .map(|span| {
-                    let patched = style.patch(span.style);
-                    span.style(patched)
-                })
-                .collect::<Vec<_>>(),
-        )];
+        return vec![Row {
+            line: Line::from(
+                spans
+                    .map(|span| {
+                        let patched = style.patch(span.style);
+                        span.style(patched)
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            columns,
+            hang: 0,
+        }];
     }
     let chars: Vec<(char, Style)> = line
         .spans
@@ -123,8 +187,10 @@ pub fn wrap(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         hang => hang,
     };
 
-    let mut rows = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     let mut start = 0;
+    // Display column of `chars[start]` in the unwrapped line.
+    let mut column = 0;
     while start < chars.len() {
         let room = if rows.is_empty() { width } else { width - hang };
         let mut end = start;
@@ -157,8 +223,10 @@ pub fn wrap(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
                 row = rest;
             }
         }
+        let shown = width_of(row);
+        let hang = if rows.is_empty() { 0 } else { hang };
         let mut spans = Vec::new();
-        if !rows.is_empty() && hang > 0 {
+        if hang > 0 {
             spans.push(Span::styled(" ".repeat(hang), fill.unwrap_or_default()));
         }
         spans.extend(spans_of(row));
@@ -169,10 +237,19 @@ pub fn wrap(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
                 out.spans.push(Span::styled(" ".repeat(pad), fill));
             }
         }
-        rows.push(out);
+        rows.push(Row {
+            line: out,
+            columns: column..column + shown,
+            hang,
+        });
+        column += width_of(&chars[start..next]);
         start = next;
     }
     rows
+}
+
+fn width_of(chars: &[(char, Style)]) -> usize {
+    chars.iter().map(|(c, _)| c.width().unwrap_or(0)).sum()
 }
 
 /// How far rows after the first sit in: the leading spaces, then a list
@@ -226,8 +303,60 @@ mod tests {
     }
 
     #[test]
+    fn a_link_that_fits_keeps_its_columns() {
+        let md = markdown("see [docs](https://x.y) now", 40);
+
+        assert_eq!(text(&md.lines), ["see docs now"]);
+        assert_eq!(
+            md.links,
+            [Link {
+                row: 0,
+                columns: 4..8,
+                url: "https://x.y".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_on_a_wrapped_row_hangs_with_it() {
+        let md = markdown("- alpha beta [gamma](u) delta", 14);
+
+        assert_eq!(text(&md.lines), ["• alpha beta", "  gamma delta"]);
+        assert_eq!(
+            md.links,
+            [Link {
+                row: 1,
+                columns: 2..7,
+                url: "u".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_broken_by_wrapping_is_reported_on_both_rows() {
+        let md = markdown("[one two](u)", 4);
+
+        assert_eq!(text(&md.lines), ["one", "two"]);
+        assert_eq!(
+            md.links,
+            [
+                Link {
+                    row: 0,
+                    columns: 0..3,
+                    url: "u".into()
+                },
+                Link {
+                    row: 1,
+                    columns: 0..3,
+                    url: "u".into()
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn wrapping_keeps_each_fragments_style() {
-        let lines = markdown("one **two** three four", 10);
+        let lines = markdown("one **two** three four", 10).lines;
 
         assert_eq!(text(&lines), ["one two", "three four"]);
         let two = lines[0]
@@ -240,7 +369,7 @@ mod tests {
 
     #[test]
     fn rows_hang_under_a_bullet() {
-        let lines = markdown("- alpha beta gamma", 12);
+        let lines = markdown("- alpha beta gamma", 12).lines;
 
         assert_eq!(text(&lines), ["• alpha beta", "  gamma"]);
     }
@@ -259,7 +388,7 @@ mod tests {
 
     #[test]
     fn wrapped_code_keeps_its_background_on_every_row() {
-        let lines = markdown("```\nlet value = something_long;\n```", 12);
+        let lines = markdown("```\nlet value = something_long;\n```", 12).lines;
         let code: Vec<_> = lines
             .iter()
             .filter(|l| l.spans.iter().any(|s| s.content.contains("let")))

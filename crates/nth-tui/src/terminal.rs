@@ -1,9 +1,11 @@
 //! Puts the terminal into the modes the chat needs, and back again on every
-//! exit path, including a panic.
+//! exit path, including a panic. Also the clipboard, which is the terminal's
+//! too.
 
-use std::io::stdout;
+use std::io::{Write, stdout};
 
 use anyhow::Result;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use crossterm::{
     cursor::Show,
     event::{
@@ -75,4 +77,31 @@ fn release() {
         DisableBracketedPaste,
         DisableMouseCapture
     );
+}
+
+/// The most text `copy` sends. Terminals drop an OSC 52 payload over their
+/// limit without a word, so a bigger copy would look done and not be.
+pub const COPY_LIMIT: usize = 64 * 1024;
+
+/// Puts `text` on the clipboard through the terminal (OSC 52), which works
+/// over ssh too; tmux needs `set-clipboard on`. There is no acknowledgement,
+/// so `Ok` means the terminal was told.
+pub fn copy(text: &str) -> std::io::Result<()> {
+    let mut out = stdout();
+    out.write_all(osc52(text).as_bytes())?;
+    out.flush()
+}
+
+fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", STANDARD.encode(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clipboard_sequence_carries_the_text_in_base64() {
+        assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
+    }
 }
