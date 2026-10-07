@@ -577,6 +577,9 @@ impl App {
                     home: self.home.as_deref(),
                 };
                 self.diagnostics.draw(frame, content, &facts);
+                if let Some(state) = self.diagnostics.scrollbar() {
+                    draw_scrollbar(frame, content, state);
+                }
             }
             Tab::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
