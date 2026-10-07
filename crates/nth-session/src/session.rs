@@ -349,7 +349,7 @@ fn default_max_steps() -> usize {
 #[cfg(test)]
 mod tests {
     use futures::{future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{AssistantMessage, BoxError, ModelInfo, Request, StreamEvent, ToolCall};
+    use nth_protocol::{AssistantMessage, BoxError, Listing, Request, StreamEvent, ToolCall};
 
     use super::*;
     use crate::agent_loop::INTERRUPTED;
@@ -586,8 +586,8 @@ mod tests {
     struct Down;
 
     impl Provider for Down {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            Box::pin(async { Ok(Vec::new()) })
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            Box::pin(async { Ok(Listing::default()) })
         }
 
         fn stream<'a>(

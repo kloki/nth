@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use nth_protocol::{BoxError, ModelInfo};
+use nth_protocol::{BoxError, Listing};
 
 use super::{App, input::Input};
 use crate::llm_picker::LlmPicker;
@@ -34,11 +34,11 @@ impl App {
     /// The context window of the model in use, when the provider says.
     pub fn context_window(&self) -> Option<u64> {
         let llms = self.llms.as_ref()?;
-        llms.iter().find(|llm| llm.id == self.model)?.context
+        llms.models.iter().find(|llm| llm.id == self.model)?.context
     }
 
     /// Only a list is kept; after a failure the next open asks again.
-    pub(super) fn llms_listed(&mut self, llms: Result<Vec<ModelInfo>, BoxError>) {
+    pub(super) fn llms_listed(&mut self, llms: Result<Listing, BoxError>) {
         let llms = llms.map_err(|e| e.to_string());
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
@@ -113,7 +113,7 @@ mod tests {
     };
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{Effort, Provider, Request, StreamEvent};
+    use nth_protocol::{Effort, Failed, Origin, Provider, Request, StreamEvent};
     use nth_session::Session;
 
     use super::*;
@@ -129,7 +129,7 @@ mod tests {
     /// asks the provider for nothing.
     fn llm_listed_app() -> App {
         let mut app = app();
-        app.llms = Some(vec![model("glm", true), model("plain", false)]);
+        app.llms = Some(vec![model("glm", true), model("plain", false)].into());
         app
     }
 
@@ -248,11 +248,33 @@ mod tests {
         assert!(picker(&app).chosen().is_none(), "still loading");
 
         let listing = app.llm_listing.take().expect("listing");
-        app.llms_listed(Ok(vec![model("glm", true)]));
+        app.llms_listed(Ok(vec![model("glm", true)].into()));
         listing.abort();
 
         assert_eq!(picker(&app).chosen(), Some(("glm".into(), Effort::Default)));
         assert!(app.llms.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_could_not_list_shows_why_after_the_models() {
+        let mut app = app();
+        app.apply(Action::LlmPicker);
+        let listing = app.llm_listing.take().expect("listing");
+        listing.abort();
+        app.llms_listed(Ok(Listing {
+            models: vec![model("glm", true)],
+            failed: vec![Failed {
+                origin: Origin {
+                    id: "lyceum".into(),
+                    name: "Lyceum".into(),
+                },
+                error: "401: bad key".into(),
+            }],
+        }));
+        let rows = rows(&mut app);
+
+        assert!(rows[6].starts_with(" ▎ → glm"), "{:?}", rows[6]);
+        assert!(rows[7].contains("✗ Lyceum: 401: bad key"), "{:?}", rows[7]);
     }
 
     #[tokio::test]
@@ -282,7 +304,7 @@ mod tests {
     }
 
     impl Provider for SlowList {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
             let guard = SetOnDrop(self.0.clone());
             async move {
                 let _guard = guard;

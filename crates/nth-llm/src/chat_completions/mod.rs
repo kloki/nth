@@ -11,9 +11,13 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use nth_protocol::{BoxError, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage};
+use nth_protocol::{
+    BoxError, Listing, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage,
+};
 
-const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
+use crate::catalog;
+
+pub(crate) const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 /// A server that does not answer the handshake this fast is down or
 /// unreachable; waiting longer only delays the retry.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,18 +62,51 @@ pub struct ChatClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// The models to offer instead of asking the endpoint's `/models`, for
+    /// an endpoint without one; empty asks.
+    only: Vec<String>,
 }
 
 impl ChatClient {
     pub fn new(base_url: String, api_key: String) -> Result<Self, Error> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()?;
-        Ok(Self {
+        Ok(Self::with_http(http()?, base_url, api_key))
+    }
+
+    /// On a client shared with others, so several endpoints need one pool.
+    pub fn with_http(http: reqwest::Client, base_url: String, api_key: String) -> Self {
+        Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-        })
+            only: Vec::new(),
+        }
+    }
+
+    /// Offers these models rather than the ones the endpoint lists.
+    pub fn only(mut self, models: Vec<String>) -> Self {
+        self.only = models;
+        self
+    }
+
+    /// The ids of the models to offer: the configured ones, else what the
+    /// endpoint lists.
+    pub(crate) async fn ids(&self) -> Result<Vec<String>, Error> {
+        if !self.only.is_empty() {
+            return Ok(self.only.clone());
+        }
+        models::listed(&self.http, &self.base_url, &self.api_key).await
+    }
+
+    /// What the catalogue knows about `ids`, which this client serves.
+    pub(crate) fn describe(
+        &self,
+        ids: Vec<String>,
+        catalog: Option<&catalog::Catalog>,
+    ) -> Vec<ModelInfo> {
+        models::select(
+            ids,
+            catalog.and_then(|c| catalog::provider_for(c, &self.base_url)),
+        )
     }
 
     async fn open(
@@ -100,9 +137,16 @@ impl ChatClient {
     }
 }
 
+/// How every endpoint is reached; `Providers` shares one between them.
+pub(crate) fn http() -> Result<reqwest::Client, Error> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()?)
+}
+
 /// Turns a non-2xx response into an error that carries the server's body
 /// and its `Retry-After`, if any.
-async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
+pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -133,11 +177,12 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 }
 
 impl Provider for ChatClient {
-    fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
+    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
         async move {
-            models::list(&self.http, &self.base_url, &self.api_key)
-                .await
-                .map_err(BoxError::from)
+            // Both at once; the catalogue only refines the list, so failing
+            // to get it is not failing to list.
+            let (catalog, ids) = futures::join!(catalog::fetch(&self.http), self.ids());
+            Ok(Listing::from(self.describe(ids?, catalog.ok().as_ref())))
         }
         .boxed()
     }
@@ -150,32 +195,38 @@ impl Provider for ChatClient {
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
-        let error = error.downcast_ref::<Error>()?;
-        match error {
-            // A rate limit or a transient server failure; the server may
-            // have said how long to wait.
-            Error::Status {
-                status,
-                retry_after,
-                ..
-            } if transient(*status) => Some(Retry {
-                after: *retry_after,
-            }),
-            // The same, reported inside the stream after a 200 status.
-            Error::Provider {
-                status: Some(status),
-                ..
-            } if transient(*status) => Some(Retry { after: None }),
-            // The connection failed or timed out, possibly part-way through
-            // the stream. Other HTTP errors (a bad URL, an undecodable
-            // body) fail the same way every time.
-            Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
-                Some(Retry { after: None })
-            }
-            // The stream ended, or went quiet, before the reply did.
-            Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
-            _ => None,
+        retry(error)
+    }
+}
+
+/// Whether `error`, one a `ChatClient` produced, may be retried. Reads only
+/// the error, so whatever fronts the clients answers the same way.
+pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
+    let error = error.downcast_ref::<Error>()?;
+    match error {
+        // A rate limit or a transient server failure; the server may
+        // have said how long to wait.
+        Error::Status {
+            status,
+            retry_after,
+            ..
+        } if transient(*status) => Some(Retry {
+            after: *retry_after,
+        }),
+        // The same, reported inside the stream after a 200 status.
+        Error::Provider {
+            status: Some(status),
+            ..
+        } if transient(*status) => Some(Retry { after: None }),
+        // The connection failed or timed out, possibly part-way through
+        // the stream. Other HTTP errors (a bad URL, an undecodable
+        // body) fail the same way every time.
+        Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
+            Some(Retry { after: None })
         }
+        // The stream ended, or went quiet, before the reply did.
+        Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
+        _ => None,
     }
 }
 

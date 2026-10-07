@@ -6,6 +6,7 @@
 use nth_context::Context;
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerState, ServerStatus};
+use nth_protocol::Failed;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -34,8 +35,10 @@ pub struct Facts<'a> {
     pub model: &'a str,
     pub effort: Option<&'a str>,
     pub context_window: Option<u64>,
-    /// How many LLMs the endpoint lists, once listed.
+    /// How many LLMs the provider lists, once listed.
     pub llms: Option<usize>,
+    /// The providers that could not be asked for theirs.
+    pub failed: &'a [Failed],
     pub listing: bool,
     /// Whether the app checks writes at all; a bare app has no servers or
     /// formatters to look up.
@@ -181,6 +184,12 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         None => "models not listed".to_string(),
     };
     lines.push(note(listed));
+    for failed in facts.failed {
+        lines.push(unavailable(
+            failed.origin.name.clone(),
+            failed.error.clone(),
+        ));
+    }
 }
 
 /// Cells the busiest model's bar fills.
@@ -350,6 +359,7 @@ mod tests {
             effort: Some("high"),
             context_window: Some(128_000),
             llms: Some(3),
+            failed: &[],
             listing: false,
             checks: true,
             running,
