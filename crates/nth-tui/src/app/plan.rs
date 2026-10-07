@@ -71,7 +71,7 @@ impl App {
             return;
         }
         self.set_mode(Mode::Act);
-        self.plan.accept();
+        self.plan.approve();
         // Acting happens in the chat.
         self.content.select(0);
         self.send(Queued::Approve);
@@ -97,10 +97,14 @@ mod tests {
 
     use nth_protocol::Message;
     use nth_session::Session;
+    use ratatui::style::Color;
 
     use super::*;
     use crate::{
-        app::{keys::Action, tests::Idle},
+        app::{
+            keys::Action,
+            tests::{Idle, tab_colour},
+        },
         chat::Entry,
     };
 
@@ -180,7 +184,7 @@ mod tests {
 
         let rows = crate::app::tests::rows(&mut app);
 
-        assert!(rows[0].starts_with(" 1 chat  2 plan +1 -1 "), "{rows:#?}");
+        assert!(rows[0].starts_with("  › chat [≡ plan +1 -1] "), "{rows:#?}");
         assert!(rows[2].starts_with(" .nth/plans/"));
         assert_eq!(rows[4].trim_end(), "   Plan");
         assert_eq!(rows[5].trim_end(), " - step");
@@ -224,6 +228,7 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Chat, "acting shows in the chat");
         assert_eq!(app.mode, Mode::Act);
         assert_eq!(app.tab_label(Tab::Plan), "plan");
+        assert_eq!(tab_colour(&mut app, "≡ plan"), Color::Green, "approved");
         assert!(app.is_busy());
         app.interrupt();
         let ended = app.turn.join().await.expect("ends");

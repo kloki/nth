@@ -6,7 +6,7 @@ use std::sync::Arc;
 use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
-use super::{App, input::Input};
+use super::{App, TabState, input::Input};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
 impl App {
@@ -96,6 +96,7 @@ impl App {
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());
         self.chat = Chat::replay(session.cwd.clone(), &session.messages);
+        self.last_turn = TabState::Idle;
         self.chat.warn(&session.context().warnings);
         self.usage = None;
         self.files.clear();

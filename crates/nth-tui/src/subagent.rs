@@ -14,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{chat::Chat, theme};
+use crate::{app::TabState, chat::Chat, theme};
 
 /// The header row above the chat.
 const HEADER_ROWS: u16 = 2;
@@ -98,14 +98,12 @@ impl SubagentView {
         self.running_since
     }
 
-    /// The tab's name in the header: its state's mark and the agent.
-    pub fn label(&self) -> String {
-        let mark = match self.state {
-            None | Some(State::Running) => "●",
-            Some(State::Idle) => "✓",
-            Some(State::Interrupted) | Some(State::Failed) => "✗",
-        };
-        format!("{mark} {}", self.agent)
+    pub fn state(&self) -> TabState {
+        match self.state {
+            None | Some(State::Running) => TabState::Working,
+            Some(State::Idle) => TabState::Done,
+            Some(State::Interrupted) | Some(State::Failed) => TabState::Failed,
+        }
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -178,29 +176,29 @@ mod tests {
     }
 
     #[test]
-    fn the_label_marks_the_state() {
+    fn the_state_follows_the_turn() {
         let mut view = view();
-        assert_eq!(view.label(), "● explore");
+        assert_eq!(view.state(), TabState::Working);
         view.prompted("go".into());
-        assert_eq!(view.label(), "● explore");
+        assert_eq!(view.state(), TabState::Working);
         assert!(view.is_running());
         view.ended(
             &TaskOutcome::Completed("ok".into()),
             Duration::from_secs(2),
             "glm",
         );
-        assert_eq!(view.label(), "✓ explore");
+        assert_eq!(view.state(), TabState::Done);
         assert!(!view.is_running());
         view.prompted("again".into());
         view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");
-        assert_eq!(view.label(), "✗ explore");
+        assert_eq!(view.state(), TabState::Failed);
         view.prompted("once more".into());
         view.ended(
             &TaskOutcome::Failed("boom".into()),
             Duration::from_secs(1),
             "glm",
         );
-        assert_eq!(view.label(), "✗ explore");
+        assert_eq!(view.state(), TabState::Failed);
     }
 
     #[test]

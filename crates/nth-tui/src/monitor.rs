@@ -16,7 +16,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::theme;
+use crate::{app::TabState, theme};
 
 /// The most lines a tab keeps; the log has all of them.
 const KEPT_LINES: usize = 2000;
@@ -84,18 +84,21 @@ impl MonitorView {
         self.ended.is_none()
     }
 
-    /// The tab's name in the header: its state's mark and description.
+    /// The tab's name in the header: its description, cut short.
     pub fn label(&self) -> String {
-        let mark = match self.ended {
-            None => "●",
-            Some((end, _)) if end.is_success() => "✓",
-            Some(_) => "✗",
-        };
         let mut description: String = self.description.chars().take(LABEL_CHARS).collect();
         if self.description.chars().count() > LABEL_CHARS {
             description.push('…');
         }
-        format!("{mark} {description}")
+        description
+    }
+
+    pub fn state(&self) -> TabState {
+        match self.ended {
+            None => TabState::Working,
+            Some((end, _)) if end.is_success() => TabState::Done,
+            Some(_) => TabState::Failed,
+        }
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -191,13 +194,14 @@ mod tests {
     }
 
     #[test]
-    fn the_label_marks_the_state() {
+    fn the_state_follows_the_process() {
         let mut view = view();
-        assert_eq!(view.label(), "● errors in the deploy…");
+        assert_eq!(view.label(), "errors in the deploy…");
+        assert_eq!(view.state(), TabState::Working);
         view.end(MonitorEnd::Exited(Some(0)));
-        assert!(view.label().starts_with('✓'));
+        assert_eq!(view.state(), TabState::Done);
         view.end(MonitorEnd::TimedOut { after_ms: 1000 });
-        assert!(view.label().starts_with('✗'));
+        assert_eq!(view.state(), TabState::Failed);
         assert!(!view.is_running());
     }
 

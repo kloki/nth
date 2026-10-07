@@ -96,22 +96,6 @@ impl App {
             .count()
     }
 
-    pub(super) fn tab_label(&self, tab: Tab) -> String {
-        match tab {
-            Tab::Chat => "chat".into(),
-            Tab::Diagnostics => "diagnostics".into(),
-            Tab::Plan => self.plan.label(),
-            Tab::Monitor(id) => self
-                .monitor_views
-                .get(&id)
-                .map_or_else(|| format!("monitor {id}"), MonitorView::label),
-            Tab::Subagent(id) => self
-                .subagent_views
-                .get(&id)
-                .map_or_else(|| format!("subagent {id}"), SubagentView::label),
-        }
-    }
-
     /// ctrl+w: stops the monitor or subagent showing, or closes its tab
     /// once stopped.
     pub(super) fn stop_content(&mut self) {
@@ -231,11 +215,12 @@ pub(super) async fn due(at: Option<tokio::time::Instant>) {
 #[cfg(test)]
 mod tests {
     use nth_protocol::{MonitorEnd, MonitorId, Registered, Stream};
+    use ratatui::style::Color;
 
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{app, rows},
+        tests::{app, rows, tab_colour},
     };
 
     /// Starts a monitor as the tool would, and lets the app hear of it.
@@ -280,8 +265,22 @@ mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" 1 chat  2 ● ci"), "{}", rows[0]);
+        assert!(rows[0].starts_with(" [› chat] $ ci "), "{}", rows[0]);
+        assert_eq!(tab_colour(&mut app, "$ ci"), Color::Blue, "running");
         assert!(rows[15].ends_with("» 1 monitor "), "{}", rows[15]);
+    }
+
+    #[tokio::test]
+    async fn a_finished_tab_is_green_until_seen() {
+        let mut app = app();
+        let m = start(&mut app, "ci").await;
+        ended(&mut app, m.id, MonitorEnd::Exited(Some(0))).await;
+        assert_eq!(tab_colour(&mut app, "$ ci"), Color::Green);
+
+        app.apply(Action::Content(1));
+        assert_eq!(tab_colour(&mut app, "[$ ci"), Color::Reset);
+        app.apply(Action::Content(0));
+        assert_eq!(tab_colour(&mut app, "$ ci"), Color::Reset, "stays seen");
     }
 
     #[tokio::test]
@@ -333,7 +332,12 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Monitor(1), "until it stopped");
 
         ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::User)).await;
-        assert!(rows(&mut app)[0].contains("2 ✗ ci"));
+        assert!(rows(&mut app)[0].contains("[$ ci]"));
+        assert_eq!(
+            tab_colour(&mut app, "$ ci"),
+            Color::Red,
+            "stays red once seen"
+        );
         app.apply(Action::StopContent);
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.monitor_views.is_empty());

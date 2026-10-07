@@ -9,7 +9,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 | Status bar    | What is true right now | Always 2 lines                          |
 
 ```
- 1 chat  2 diagnostics                                     nth 0.2.0  header
+ [› chat] ● diagnostics                                    nth 0.2.0  header
  nth · glm-5.3 · ~/repos/nth                                          ┐
  ▎ you  add retry to the fetch client                                 │ content
  ▎ read  src/client.rs                                                │
@@ -38,7 +38,18 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 - **Default: chat history.** The transcript, scrolled, with the banner on top as today.
 - **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
-- **Tab strip.** On the left of the header, always shown: `1 chat  2 diagnostics`, numbered in the order the tabs were opened. The showing tab is bold magenta (`theme::pick`), the others dim. `nth` and its version stay on the right.
+- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ explore`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
+- **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
+
+  | Colour  | State                              | Chat                    | Plan         | Monitor                      | Subagent            |
+  | ------- | ---------------------------------- | ----------------------- | ------------ | ---------------------------- | ------------------- |
+  | default | nothing to tell                    | idle, or you stopped it | not approved |                              |                     |
+  | blue    | working                            | turn running            |              | running                      | starting or running |
+  | green   | done, until the tab has shown      | turn ended while away   | approved     | exited 0                     | answered            |
+  | red     | failed, until it is something else | turn failed             |              | non-zero, stopped, timed out | stopped or failed   |
+  | magenta | needs you                          | a question waits        |              |                              |                     |
+
+  Diagnostics is always the default. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
@@ -57,7 +68,7 @@ Ctrl with a digit only arrives as its own key in terminals that disambiguate esc
 
 ## Monitors
 
-The `monitor` tool leaves a command running; each one gets its own tab, opened without being shown so the chat keeps the focus. The label is the monitor's description behind its state: `● ci` while running, `✓ ci` after exiting 0, `✗ ci` otherwise.
+The `monitor` tool leaves a command running; each one gets its own tab, opened without being shown so the chat keeps the focus. The label is `$` and the monitor's description, `$ ci`, coloured by its state: blue while running, green after exiting 0, red otherwise.
 
 ```
 $ tail -f deploy.log | grep --line-buffered ERROR
@@ -69,7 +80,7 @@ warning: slow query        (stderr, dim)
 
 The tab follows the newest line unless scrolled up, and keeps the last 2000 lines; the log has all of them.
 
-- **Stopping.** ctrl+w stops the showing monitor; the tab stays, marked ✗, so its output can still be read. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
+- **Stopping.** ctrl+w stops the showing monitor; the tab stays, red, so its output can still be read. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
 - **Closing.** A monitor's tab only closes once its process has stopped. On a running one, ctrl+q and `/close` leave it open and say on the status bar to stop it first; ctrl+w again, ctrl+q or `/close` close it after.
 - **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
@@ -78,7 +89,7 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 
 ## Subagents
 
-The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is the agent's name behind its state: `● explore` while its turn runs, `✓ explore` once it answered, `✗ explore` when it was stopped or failed.
+The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is `@` and the agent's name, `@ explore`, coloured by its state: blue while its turn runs, green once it answered, red when it was stopped or failed.
 
 ```
 @explore · find how tabs open · running · 12s · 3 tool calls · 1 queued
@@ -92,7 +103,7 @@ The `task` tool starts a subagent: an agent nth-context found (`nth agents` list
 - **Chat.** Its own transcript under the header, drawn like the main chat: the prompt it got, its tool calls with their output, its answer, and a turn summary.
 - **The prompt is its.** While a subagent's tab shows, the input panel talks to it: the label row reads the agent's name, `explore`, in cyan in place of `plan` or `act`, and the bar turns cyan with it. Enter sends what you typed to the subagent; it waits in its inbox behind whatever the subagent is doing, and the tab shows it once its turn starts. The spinner and `esc to cancel` follow the subagent's turn, not the main session's. Tab and shift+Tab do nothing: the mode belongs to the main session. The main session never hears what you say to a subagent; the model gets only the answers to its own tasks, and continues a subagent with `task_id`.
 - **Commands.** `/` commands work as everywhere. A `!` command belongs to the main session, so running one from a subagent's tab shows the chat tab where its output lands.
-- **Stopping.** Esc or ctrl+w stops the subagent's running turn and drops the prompts queued behind it; the tab stays, marked `✗`, and the subagent can be prompted again. Esc on the chat tab cancels the main session's turn only; subagents keep running, like monitors.
+- **Stopping.** Esc or ctrl+w stops the subagent's running turn and drops the prompts queued behind it; the tab stays, red, and the subagent can be prompted again. Esc on the chat tab cancels the main session's turn only; subagents keep running, like monitors.
 - **Closing.** A subagent's tab only closes once its turn has ended. On a running one, ctrl+q and `/close` say on the status bar to stop it first. A closed tab opens again when the model continues its subagent, so nothing runs out of sight.
 - **Leaving.** `/clear` and `/resume` end every subagent: what they had queued never runs, and what they answer does not reach the next session's model. Their tabs close as each turn ends.
 - **Quitting.** With subagents running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 subagent running · ctrl+c again to quit`, counted with the monitors. The second ctrl+c stops them and saves their notices in the session, so a resumed model knows they are gone.
@@ -114,7 +125,7 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
   ## Verification
 ```
 
-- **Label.** `plan` in the tab strip, or `plan +3 -1` while lines are marked.
+- **Label.** `≡ plan` in the tab strip, or `≡ plan +3 -1` while lines are marked; green once approved, until the plan changes.
 - **Header.** The file, what changed, and the keys, dim.
 - **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the plan is longer than the tab.
 - **Lines.** Every line of the plan, wrapped at the tab's width. An added line is green behind `+`, a removed one red behind `-`, and an unchanged one has no mark.

@@ -11,7 +11,7 @@ use nth_protocol::{
     Usage,
 };
 use nth_session::Session;
-use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
 use super::{App, Queued, Tab, input::Input, keys::Action};
 use crate::llm_picker::tests::model;
@@ -56,6 +56,18 @@ pub(crate) fn buffer(app: &mut App) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// The colour of the tab in the header whose text starts with `tab`.
+pub(crate) fn tab_colour(app: &mut App, tab: &str) -> Color {
+    let buffer = buffer(app);
+    let row: Vec<&str> = (0..buffer.area.width)
+        .map(|x| buffer[(x, 0)].symbol())
+        .collect();
+    let x = (0..row.len())
+        .find(|&x| row[x..].concat().starts_with(tab))
+        .unwrap_or_else(|| panic!("no {tab:?} in {:?}", row.concat()));
+    buffer[(u16::try_from(x).expect("fits"), 0)].fg
+}
+
 pub(crate) fn rows(app: &mut App) -> Vec<String> {
     let buffer = buffer(app);
     (0..buffer.area.height)
@@ -71,7 +83,7 @@ pub(crate) fn rows(app: &mut App) -> Vec<String> {
 fn prompt_and_status_rows_never_move() {
     let mut app = app();
     let idle = rows(&mut app);
-    assert!(idle[0].starts_with(" 1 chat "), "tabs on the left");
+    assert!(idle[0].starts_with(" [› chat] "), "tabs on the left");
     assert!(
         idle[0].ends_with(&format!(" nth {} ", env!("CARGO_PKG_VERSION"))),
         "right-aligned inside the margin"
@@ -274,7 +286,7 @@ async fn tabs_open_switch_and_close() {
     app.submit();
     let opened = rows(&mut app);
     assert!(
-        opened[0].starts_with(" 1 chat  2 diagnostics "),
+        opened[0].starts_with("  › chat [● diagnostics] "),
         "{opened:#?}"
     );
     assert_eq!(opened[2].trim_end(), " model");
@@ -289,7 +301,7 @@ async fn tabs_open_switch_and_close() {
 
     app.apply(Action::CloseContent);
     assert_eq!(app.content.active(), Tab::Chat);
-    assert!(rows(&mut app)[0].trim_end().starts_with(" 1 chat "));
+    assert!(rows(&mut app)[0].trim_end().starts_with(" [› chat] "));
     assert!(!rows(&mut app)[0].contains("diagnostics"));
 
     app.open_content(Tab::Diagnostics);

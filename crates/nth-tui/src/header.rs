@@ -1,6 +1,6 @@
 //! The header above the content panel: one line with the content panel's
-//! tabs on the left, the one showing highlighted, and the app's name and
-//! version on the right.
+//! tabs on the left, each coloured by how it is doing and the one showing
+//! bracketed, and the app's name and version on the right.
 
 use ratatui::{
     Frame,
@@ -9,28 +9,35 @@ use ratatui::{
     text::Span,
 };
 
-use crate::{
-    app::{Content, Tab},
-    status, theme,
-};
+use crate::{app::TabState, status, theme};
 
 /// Always this tall.
 pub const ROWS: u16 = 1;
 
-/// `label` names each tab, since a monitor's tab shows its state.
-pub fn draw(frame: &mut Frame, area: Rect, content: &Content, label: &dyn Fn(Tab) -> String) {
-    let mut tabs = Vec::new();
-    for (i, &tab) in content.tabs().iter().enumerate() {
-        if i > 0 {
-            tabs.push(Span::raw("  "));
-        }
-        let style = if tab == content.active() {
-            theme::pick()
-        } else {
-            theme::dim()
-        };
-        tabs.push(Span::styled(format!("{} {}", i + 1, label(tab)), style));
-    }
+/// One tab as the header shows it.
+pub struct TabLabel {
+    pub icon: &'static str,
+    pub name: String,
+    pub state: TabState,
+    /// It is the one showing.
+    pub active: bool,
+}
+
+/// Each tab is `icon name` in its state's colour, the showing one inside
+/// `[ ]` and the others inside spaces, so moving between them never shifts
+/// the strip.
+pub fn draw(frame: &mut Frame, area: Rect, tabs: &[TabLabel]) {
+    let tabs = tabs
+        .iter()
+        .map(|tab| {
+            let (open, close) = if tab.active { ("[", "]") } else { (" ", " ") };
+            let style = match theme::tab_colour(tab.state) {
+                Some(colour) => Style::new().fg(colour),
+                None => Style::new(),
+            };
+            Span::styled(format!("{open}{} {}{close}", tab.icon, tab.name), style)
+        })
+        .collect();
     let name = vec![
         Span::styled(
             "nth",

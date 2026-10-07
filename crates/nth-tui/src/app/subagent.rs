@@ -160,12 +160,13 @@ mod tests {
 
     use nth_protocol::{Event, Message, TaskOutcome};
     use nth_session::{Session, Subagents};
+    use ratatui::style::Color;
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{Idle, app, rows},
+        tests::{Idle, app, rows, tab_colour},
     };
 
     /// An app with a front-end for subagents, as the chat has.
@@ -230,7 +231,7 @@ mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" 1 chat  2 ● explore"), "{}", rows[0]);
+        assert!(rows[0].starts_with(" [› chat] @ explore "), "{}", rows[0]);
         assert!(rows[15].ends_with("↳ 1 subagent "), "{}", rows[15]);
         assert!(app.chat.transcript.is_empty(), "nothing in the main chat");
     }
@@ -266,7 +267,12 @@ mod tests {
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
         let after = rows(&mut app);
-        assert!(after[0].contains("2 ✓ explore"), "{}", after[0]);
+        assert!(after[0].contains("[@ explore]"), "{}", after[0]);
+        assert_eq!(
+            tab_colour(&mut app, "@ explore"),
+            Color::Reset,
+            "done fades on the tab showing"
+        );
         assert!(
             after[9].starts_with(" ▎ explore "),
             "the label names it: {}",
@@ -345,7 +351,7 @@ mod tests {
         app.apply(Action::Interrupt);
         assert!(!app.interrupted, "the parent's turn is left alone");
         ended(&mut app, 1, TaskOutcome::Interrupted);
-        assert!(rows(&mut app)[0].contains("2 ✗ explore"));
+        assert_eq!(tab_colour(&mut app, "@ explore"), Color::Red);
         app.apply(Action::CloseContent);
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.subagent_views.is_empty());
