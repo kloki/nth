@@ -233,7 +233,9 @@ mod tests {
         let rows = rows(&mut app);
         assert!(rows[0].starts_with(" [› chat] "), "{}", rows[0]);
         assert!(
-            rows[0].contains(" explore · find tabs ") && !rows[0].contains("@ explore"),
+            rows[0].contains(" find tabs ")
+                && !rows[0].contains('@')
+                && !rows[0].contains("explore"),
             "the spinner stands in for @ while it runs: {}",
             rows[0]
         );
@@ -272,9 +274,16 @@ mod tests {
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
         let after = rows(&mut app);
-        assert!(after[0].contains("[@ explore · find tabs]"), "{}", after[0]);
+        assert!(after[0].contains("[@    find tabs]"), "{}", after[0]);
         assert_eq!(
-            tab_colour(&mut app, "@ explore"),
+            after[0].find(']').map(|i| after[0][..i].chars().count()),
+            before[0].find(']').map(|i| before[0][..i].chars().count()),
+            "running and done take the same width: {} / {}",
+            before[0],
+            after[0]
+        );
+        assert_eq!(
+            tab_colour(&mut app, "@    find tabs"),
             Color::Reset,
             "done fades on the tab showing"
         );
@@ -356,7 +365,7 @@ mod tests {
         app.apply(Action::Interrupt);
         assert!(!app.interrupted, "the parent's turn is left alone");
         ended(&mut app, 1, TaskOutcome::Interrupted);
-        assert_eq!(tab_colour(&mut app, "@ explore"), Color::Red);
+        assert_eq!(tab_colour(&mut app, "@    find tabs"), Color::Red);
         app.apply(Action::CloseContent);
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.subagent_views.is_empty());

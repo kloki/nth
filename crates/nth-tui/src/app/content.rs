@@ -205,8 +205,7 @@ impl App {
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
-                .and_then(SubagentView::icon)
-                .unwrap_or(tab.icon()),
+                .map_or(tab.icon(), SubagentView::icon),
             _ => tab.icon(),
         }
     }

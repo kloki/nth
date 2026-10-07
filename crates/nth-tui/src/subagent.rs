@@ -100,20 +100,22 @@ impl SubagentView {
         self.running_since
     }
 
-    /// The tab's name in the header: the agent and what it was asked, cut
-    /// short.
+    /// The tab's name in the header: what it was asked, cut short.
     pub fn label(&self) -> String {
         let mut title: String = self.description.chars().take(TITLE_CHARS).collect();
         if self.description.chars().count() > TITLE_CHARS {
             title.push('…');
         }
-        format!("{} · {title}", self.agent)
+        title
     }
 
-    /// In front of the label: the spinner while its turn runs.
-    pub fn icon(&self) -> Option<&'static str> {
-        self.running_since
-            .map(|since| spinner::frame(since.elapsed()))
+    /// In front of the label: the spinner while its turn runs, else `@`
+    /// padded to the spinner's width, so the tab keeps its width.
+    pub fn icon(&self) -> &'static str {
+        match self.running_since {
+            Some(since) => spinner::frame(since.elapsed()),
+            None => "@   ",
+        }
     }
 
     pub fn state(&self) -> TabState {
@@ -196,12 +198,17 @@ mod tests {
     #[test]
     fn the_state_follows_the_turn() {
         let mut view = view();
-        assert_eq!(view.label(), "explore · find tabs");
+        assert_eq!(view.label(), "find tabs");
         assert_eq!(view.state(), TabState::Working);
-        assert_eq!(view.icon(), None, "no turn to spin for yet");
+        assert_eq!(view.icon(), "@   ", "no turn to spin for yet");
         view.prompted("go".into());
         assert_eq!(view.state(), TabState::Working);
-        assert!(view.icon().is_some(), "spins while running");
+        assert_ne!(view.icon(), "@   ", "spins while running");
+        assert_eq!(
+            view.icon().chars().count(),
+            "@   ".chars().count(),
+            "as wide as when it is not"
+        );
         assert!(view.is_running());
         view.ended(
             &TaskOutcome::Completed("ok".into()),
@@ -209,7 +216,7 @@ mod tests {
             "glm",
         );
         assert_eq!(view.state(), TabState::Done);
-        assert_eq!(view.icon(), None);
+        assert_eq!(view.icon(), "@   ");
         assert!(!view.is_running());
         view.prompted("again".into());
         view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");
