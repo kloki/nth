@@ -134,6 +134,21 @@ fn scrollbar(rows: &[String]) -> String {
         .collect()
 }
 
+#[tokio::test]
+async fn diagnostics_that_overflow_have_a_scrollbar() {
+    let mut app = app();
+    app.open_content(Tab::Diagnostics);
+    let bar = scrollbar(&rows(&mut app));
+    assert!(bar.starts_with('┃'), "at the top: {bar:?}");
+
+    app.diagnostics.jump_bottom();
+    let bar = scrollbar(&rows(&mut app));
+    assert!(
+        bar.ends_with('┃') && !bar.starts_with('┃'),
+        "at the bottom: {bar:?}"
+    );
+}
+
 #[test]
 fn a_scrollbar_shows_only_while_scrolled_up() {
     let mut app = app();
@@ -289,7 +304,7 @@ async fn tabs_open_switch_and_close() {
         opened[0].starts_with("  › chat [● diagnostics] "),
         "{opened:#?}"
     );
-    assert_eq!(opened[2].trim_end(), " model");
+    assert!(opened[2].starts_with(" model "), "{:?}", opened[2]);
     assert!(opened[3].trim_start().starts_with("glm"));
 
     app.apply(Action::Content(0));

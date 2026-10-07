@@ -142,7 +142,7 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 
 ## Diagnostics
 
-Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat.
+Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat, with the same scrollbar while it does not all fit.
 
 ```
 model
