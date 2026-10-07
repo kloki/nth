@@ -1,5 +1,7 @@
 //! The LLMs the endpoint serves: listed for the context window on the
-//! status bar, and picked from in the model picker.
+//! status bar, and picked from in the model picker, the most used first.
+
+use std::path::Path;
 
 use nth_protocol::{BoxError, ModelInfo};
 
@@ -12,7 +14,7 @@ impl App {
         self.completion = None;
         let mut picker = LlmPicker::new(&self.model, self.effort);
         match &self.llms {
-            Some(llms) => picker.load(Ok(llms.clone())),
+            Some(llms) => picker.load(Ok(self.by_usage(llms))),
             // The answer fills this picker when it comes.
             None => self.list_llms(),
         }
@@ -41,8 +43,48 @@ impl App {
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
         }
+        let llms = llms.map(|llms| self.by_usage(&llms));
         if let Input::LlmPicker(picker) = &mut self.input {
             picker.load(llms);
+        }
+    }
+
+    /// The LLMs as the picker lists them; `llms` stays in the endpoint's
+    /// order.
+    fn by_usage(&self, llms: &[ModelInfo]) -> Vec<ModelInfo> {
+        let mut llms = llms.to_vec();
+        self.llm_usage.order(&mut llms);
+        llms
+    }
+
+    /// Writes the counts in the background, as the prompt history is.
+    pub(super) fn save_llm_usage(&mut self) {
+        let Some(path) = self.llm_usage.saved_at().map(Path::to_path_buf) else {
+            return;
+        };
+        let json = self.llm_usage.to_json();
+        self.llm_usage_saving.start_or_queue(|_| {
+            tokio::spawn(async move {
+                if let Some(dir) = path.parent() {
+                    tokio::fs::create_dir_all(dir).await?;
+                }
+                tokio::fs::write(&path, json).await
+            })
+        });
+    }
+
+    /// A failed save is told once; the counts stay in memory for this run.
+    pub(super) fn llm_usage_saved(&mut self, saved: std::io::Result<()>) {
+        if self.llm_usage_saving.take_again() {
+            self.save_llm_usage();
+        }
+        if let Err(e) = saved {
+            let path = self.llm_usage.saved_at().map(|p| p.display().to_string());
+            self.chat.transcript.push_error(format!(
+                "model usage not saved to {}: {e}",
+                path.unwrap_or_default()
+            ));
+            self.llm_usage.forget_path();
         }
     }
 
@@ -80,7 +122,7 @@ mod tests {
             keys::Action,
             tests::{app, rows},
         },
-        llm_picker::tests::model,
+        llm_picker::{tests::model, usage::LlmUsage},
     };
 
     /// An idle app whose model list is already in, so opening the picker
@@ -136,6 +178,36 @@ mod tests {
         app.apply(Action::SelectNext);
         app.apply(Action::Submit);
         assert_eq!((app.model.as_str(), app.effort), ("plain", Effort::Default));
+    }
+
+    #[test]
+    fn the_most_used_model_is_listed_first() {
+        let mut app = llm_listed_app();
+        app.llm_usage.count("plain");
+        app.apply(Action::LlmPicker);
+        let rows = rows(&mut app);
+
+        assert!(rows[6].starts_with(" ▎   plain"), "{:?}", rows[6]);
+        assert!(
+            rows[7].starts_with(" ▎ → glm   ✓"),
+            "still on the model in use"
+        );
+        assert_eq!(app.llms.as_ref().map(|l| l[0].id.as_str()), Some("glm"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_counts_for_its_model_and_is_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nth/llm-usage.json");
+        let mut app = llm_listed_app().with_llm_usage(LlmUsage::load(path.clone()).await);
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let saved = app.llm_usage_saving.join().await.expect("save finished");
+        app.llm_usage_saved(saved);
+        app.turn.join().await.expect("turn task finished");
+
+        assert_eq!(LlmUsage::load(path).await.ranked(), [("glm", 1)]);
     }
 
     #[test]

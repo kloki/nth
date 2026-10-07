@@ -1,6 +1,7 @@
 //! The LLM picker: which LLM later turns go to, and how hard it
 //! reasons. Opened over the prompt, it waits for the list if it isn't in yet.
 
+pub mod usage;
 mod view;
 
 use nth_protocol::{Effort, ModelInfo};

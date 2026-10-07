@@ -1,6 +1,6 @@
 //! The diagnostics tab: nth's own state, for when something does not work
-//! as expected. The model, the language servers and formatters that check
-//! writes, and the instruction files, skills and agents found for the
+//! as expected. The model and the turns run on each, the language servers
+//! and formatters that check writes, and the instruction files, skills and agents found for the
 //! project.
 
 use nth_context::Context;
@@ -43,6 +43,8 @@ pub struct Facts<'a> {
     pub running: &'a [ServerStatus],
     pub context: &'a Context,
     pub home: Option<&'a str>,
+    /// Turns run on each model, most first.
+    pub usage: Vec<(&'a str, u64)>,
 }
 
 impl Diagnostics {
@@ -82,6 +84,8 @@ impl Diagnostics {
     fn lines(&self, facts: &Facts) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         model(&mut lines, facts);
+        lines.push(Line::default());
+        usage(&mut lines, facts);
         lines.push(Line::default());
         self.servers(&mut lines, facts);
         lines.push(Line::default());
@@ -177,6 +181,44 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         None => "models not listed".to_string(),
     };
     lines.push(note(listed));
+}
+
+/// Cells the busiest model's bar fills.
+const BAR_WIDTH: u64 = 30;
+
+/// A bar per model, scaled to the busiest one, then its turns.
+fn usage(lines: &mut Vec<Line<'static>>, facts: &Facts) {
+    lines.push(title("model usage"));
+    let Some(most) = facts.usage.iter().map(|(_, turns)| *turns).max() else {
+        lines.push(note("no turns yet".into()));
+        return;
+    };
+    let width = facts.usage.iter().map(|(m, _)| m.len()).max().unwrap_or(0);
+    let digits = most.to_string().len();
+    for (model, turns) in &facts.usage {
+        lines.push(Line::from(vec![
+            Span::raw(theme::INDENT),
+            Span::raw(format!("{model:width$}  ")),
+            Span::styled(
+                format!("{:bar$}", bar(*turns, most), bar = BAR_WIDTH as usize),
+                Style::new().fg(Color::Blue),
+            ),
+            Span::styled(format!("  {turns:>digits$}"), theme::dim()),
+        ]));
+    }
+}
+
+/// `turns` of `most` in eighths of a cell, at least one so every used
+/// model shows.
+fn bar(turns: u64, most: u64) -> String {
+    const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    let eighths = (turns * BAR_WIDTH * 8 / most.max(1)).max(1);
+    let mut bar = "█".repeat((eighths / 8) as usize);
+    let rest = (eighths % 8) as usize;
+    if rest > 0 {
+        bar.push(EIGHTHS[rest]);
+    }
+    bar
 }
 
 /// The instruction files in the system prompt, the skills and agents
@@ -313,6 +355,7 @@ mod tests {
             running,
             context,
             home: None,
+            usage: Vec::new(),
         }
     }
 
@@ -350,9 +393,9 @@ mod tests {
         let text = text(&diagnostics, &facts(&context, &running));
         assert_eq!(text[1], "  glm · high · 128k context");
         assert_eq!(text[2], "  3 models served");
-        assert_eq!(text[5], "  ● rust   /bin/rust-analyzer  → /repo  exited");
-        assert_eq!(text[6], "  ✗ gopls  not on PATH");
-        assert_eq!(text[9], "  ✓ rustfmt  rustfmt $FILE");
+        assert_eq!(text[8], "  ● rust   /bin/rust-analyzer  → /repo  exited");
+        assert_eq!(text[9], "  ✗ gopls  not on PATH");
+        assert_eq!(text[12], "  ✓ rustfmt  rustfmt $FILE");
         assert!(text.contains(&"  none found".to_string()));
     }
 
@@ -379,10 +422,25 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
         let checking = text(&Diagnostics::default(), &facts);
-        assert_eq!(checking[5], "  checking…");
+        assert_eq!(checking[8], "  checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
-        assert_eq!(unchecked[5], "  not checked in this session");
+        assert_eq!(unchecked[8], "  not checked in this session");
+    }
+
+    #[test]
+    fn graphs_the_turns_on_each_model() {
+        let context = Context::default();
+        let mut facts = facts(&context, &[]);
+        let empty = text(&Diagnostics::default(), &facts);
+        assert_eq!(empty[4..6], ["model usage", "  no turns yet"]);
+
+        facts.usage = vec![("glm", 120), ("kimi", 30), ("qwen", 1)];
+        let text = text(&Diagnostics::default(), &facts);
+        let row = |model: &str, bar: &str, turns: &str| format!("  {model}  {bar:30}  {turns}");
+        assert_eq!(text[5], row("glm ", &"█".repeat(30), "120"));
+        assert_eq!(text[6], row("kimi", "███████▌", " 30"));
+        assert_eq!(text[7], row("qwen", "▎", "  1"), "every used model shows");
     }
 }
