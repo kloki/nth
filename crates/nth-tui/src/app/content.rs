@@ -220,10 +220,8 @@ impl App {
             Tab::Chat => self.last_turn,
             Tab::Diagnostics => TabState::Idle,
             Tab::Plan => self.plan.state(),
-            Tab::Monitor(id) => self
-                .monitor_views
-                .get(&id)
-                .map_or(TabState::Idle, MonitorView::state),
+            // Its tab closes once the process stops.
+            Tab::Monitor(_) => TabState::Working,
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)

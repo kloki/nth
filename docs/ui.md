@@ -41,15 +41,15 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @    find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
-  | Colour  | State                              | Chat                    | Plan         | Monitor                      | Subagent            |
-  | ------- | ---------------------------------- | ----------------------- | ------------ | ---------------------------- | ------------------- |
-  | default | nothing to tell                    | idle, or you stopped it | not approved |                              |                     |
-  | blue    | working                            | turn running            |              | running                      | starting or running |
-  | green   | done, until the tab has shown      | turn ended while away   | approved     | exited 0                     | answered            |
-  | red     | failed, until it is something else | turn failed             |              | non-zero, stopped, timed out | stopped or failed   |
-  | magenta | needs you                          | a question waits        |              |                              |                     |
+  | Colour  | State                              | Chat                    | Plan         | Monitor | Subagent            |
+  | ------- | ---------------------------------- | ----------------------- | ------------ | ------- | ------------------- |
+  | default | nothing to tell                    | idle, or you stopped it | not approved |         |                     |
+  | blue    | working                            | turn running            |              | running | starting or running |
+  | green   | done, until the tab has shown      | turn ended while away   | approved     |         | answered            |
+  | red     | failed, until it is something else | turn failed             |              |         | stopped or failed   |
+  | magenta | needs you                          | a question waits        |              |         |                     |
 
-  Diagnostics is always the default. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
+  Diagnostics is always the default. A monitor's tab closes once its process stops, so it is only ever blue. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
@@ -57,8 +57,8 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ---------------- | ----------------------------------------------------- |
 | ctrl+t           | Shows the next tab, from the last back to chat        |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a running monitor or subagent, or the plan while there is one |
-| ctrl+w           | On a monitor's or a subagent's tab: stops it, or closes the tab once stopped |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the plan while there is one |
+| ctrl+w           | On a monitor's tab: stops it, and the tab closes. On a subagent's: stops it, or closes the tab once stopped |
 | esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn |
 | ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan) |
 
@@ -68,7 +68,7 @@ Ctrl with a digit only arrives as its own key in terminals that disambiguate esc
 
 ## Monitors
 
-The `monitor` tool leaves a command running; each one gets its own tab, opened without being shown so the chat keeps the focus. The label is `$` and the monitor's description, `$ ci`, coloured by its state: blue while running, green after exiting 0, red otherwise.
+The `monitor` tool leaves a command running; each one gets its own tab, opened without being shown so the chat keeps the focus. The label is `$` and the monitor's description, `$ ci`, in blue.
 
 ```
 $ tail -f deploy.log | grep --line-buffered ERROR
@@ -80,8 +80,8 @@ warning: slow query        (stderr, dim)
 
 The tab follows the newest line unless scrolled up, and keeps the last 2000 lines; the log has all of them.
 
-- **Stopping.** ctrl+w stops the showing monitor; the tab stays, red, so its output can still be read. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
-- **Closing.** A monitor's tab only closes once its process has stopped. On a running one, ctrl+q and `/close` leave it open and say on the status bar to stop it first; ctrl+w again, ctrl+q or `/close` close it after.
+- **Stopping.** ctrl+w stops the showing monitor. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
+- **Closing.** A monitor's tab closes by itself the moment its process stops, however it ended; the log keeps all of its output, and the model hears how it ended. ctrl+q and `/close` leave a running one open and say on the status bar to stop it first.
 - **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
 - **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `» monitor 1 · ci · 2 lines`.
