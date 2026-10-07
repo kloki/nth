@@ -20,6 +20,7 @@ pub struct Config {
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
     pub lsp: nth_lsp::LspConfig,
+    pub notify: nth_notify::NotifyConfig,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]

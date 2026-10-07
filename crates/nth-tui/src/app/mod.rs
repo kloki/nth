@@ -17,6 +17,7 @@ mod llms;
 mod mode;
 mod monitor;
 mod mouse;
+mod notify;
 mod plan;
 mod resume;
 mod subagent;
@@ -44,6 +45,7 @@ use monitor::due;
 use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
+use nth_notify::Notifier;
 use nth_protocol::{
     Ask, BoxError, Effort, Event, Inbox, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
     Provider, Tool, Usage, monitor_log_dir,
@@ -228,6 +230,11 @@ pub struct App {
     editing: Option<editor::Editing>,
     editor: Job<std::io::Result<std::process::ExitStatus>>,
     /// ctrl+c was pressed once with monitors running; again quits.
+    notifier: Notifier,
+    notify_errors: watch::Receiver<Option<String>>,
+    /// A turn that ended in plan mode, waiting for the plan to be read to
+    /// say whether it left a plan to approve.
+    plan_notice: Option<nth_notify::Context>,
     quit_armed: bool,
     quit: bool,
 }
@@ -278,6 +285,8 @@ enum Step {
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
+    /// The notification backend failed for the first time.
+    NotifyFailed,
     Tick,
 }
 
@@ -301,6 +310,8 @@ impl App {
             inbox.clone(),
         );
         let home = std::env::var("HOME").ok();
+        // Replaced by `with_notifier`.
+        let notifier = Notifier::off();
         let plan_path = session.plan_path();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
@@ -377,6 +388,9 @@ impl App {
             pending_editor: None,
             editing: None,
             editor: Job::default(),
+            notify_errors: notifier.errors(),
+            notifier,
+            plan_notice: None,
             quit_armed: false,
             quit: false,
         }
@@ -444,6 +458,7 @@ impl App {
                 ended = self.editor.join() => Step::EditorClosed(ended),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
+                Ok(()) = self.notify_errors.changed() => Step::NotifyFailed,
                 Some(panel) = self.screen_rx.recv() => Step::Show(panel),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
@@ -467,7 +482,11 @@ impl App {
                     self.on_terminal(event.context("reading terminal input")?)
                 }
                 Step::Session(event) => self.on_session(event),
-                Step::Asked(ask) => self.on_ask(ask),
+                Step::Asked(ask) => {
+                    self.notify_ask(&ask);
+                    self.on_ask(ask)
+                }
+                Step::NotifyFailed => self.notify_failed(),
                 Step::Show(panel) => self.open_content(panel.into()),
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::Subagent(event) => self.on_subagent(event),

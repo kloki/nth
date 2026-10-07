@@ -7,6 +7,7 @@ mod config;
 mod formatters;
 mod lsp;
 mod models;
+mod notify;
 mod run;
 mod skills;
 
@@ -82,6 +83,15 @@ enum Command {
     },
     /// Print the config in use, with every default filled in
     Config,
+    /// Send a sample notification through the configured backend
+    Notify {
+        /// Which notification to show
+        #[arg(long, value_enum, default_value_t = notify::Sample::Done)]
+        event: notify::Sample,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Overrides for the `[provider]` section of the config.
@@ -138,6 +148,7 @@ async fn dispatch(command: Command, config_path: Option<PathBuf>, config: Config
         Command::Formatters { json } => formatters::run(json, &config).await,
         Command::Lsp { json, command } => lsp::run(command, json, &config).await,
         Command::Config => config::show(config_path, &config),
+        Command::Notify { event, json } => notify::run(event, json, &config).await,
     }
 }
 
