@@ -24,7 +24,17 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         let context = context(session.cwd.clone(), &paths).await;
         session.set_context(context);
         session.max_steps = config.session.max_steps;
+        // Saved before there were several providers, perhaps: shown and
+        // compared as provider/model like the listed ones.
+        let model = provider.qualify(&session.model);
+        if model != session.model {
+            session.set_model(model);
+        }
     }
+    let llm = |(model, effort): (String, Effort)| Llm {
+        model: provider.qualify(&model),
+        effort,
+    };
     let mut mode_llms = ModeLlms {
         plan: llm(config.llm_for(Mode::Plan)),
         act: llm(config.llm_for(Mode::Act)),
@@ -79,8 +89,4 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
     // their own before the process ends and kills them.
     lsp.shutdown().await;
     result
-}
-
-fn llm((model, effort): (String, Effort)) -> Llm {
-    Llm { model, effort }
 }

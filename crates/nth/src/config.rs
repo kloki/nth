@@ -1,19 +1,25 @@
 use std::{
+    collections::BTreeMap,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nth_context::Paths;
 use nth_protocol::{Effort, Mode};
 use serde::{Deserialize, Serialize};
 
 /// Everything in `config.toml`. Every key is optional: a missing key keeps
 /// the default below, so a config file only lists what it changes.
-#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub provider: ProviderConfig,
+    /// The model a new chat starts on, as `provider/model`. Before the
+    /// tables, since TOML has values ahead of tables.
+    pub model: String,
+    /// The endpoints by id; the id prefixes their models. OpenCode Go is
+    /// built in as `opencode` and listed only to change it.
+    pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
     pub mode: ModeConfig,
     pub tools: nth_tools::ToolsConfig,
@@ -23,23 +29,74 @@ pub struct Config {
     pub notify: nth_notify::NotifyConfig,
 }
 
-#[derive(Debug, PartialEq, Deserialize, Serialize)]
+/// An OpenAI-compatible chat completions endpoint, the one protocol nth
+/// speaks, so there is no kind to pick.
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// Any OpenAI-compatible chat completions endpoint.
+    /// What listings call it; the id when empty.
+    pub name: String,
     pub base_url: String,
-    pub model: String,
     /// The environment variable holding the API key, so the key itself
     /// never has to live in the config file.
     pub api_key_env: String,
+    /// The models to offer instead of asking the endpoint's `/models`: for
+    /// an endpoint without one, or to offer only these.
+    pub models: Vec<String>,
 }
 
-impl Default for ProviderConfig {
+pub const BUILT_IN_PROVIDER: &str = "opencode";
+
+impl ProviderConfig {
+    fn opencode() -> Self {
+        Self {
+            name: "OpenCode Go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+            api_key_env: "OPENCODE_API_KEY".into(),
+            models: Vec::new(),
+        }
+    }
+
+    /// Fills what `id`'s block left out: the built-in values for the
+    /// built-in provider, and the id as the name for any.
+    fn complete(&mut self, id: &str) -> Result<()> {
+        if id == BUILT_IN_PROVIDER {
+            let built_in = Self::opencode();
+            for (field, default) in [
+                (&mut self.name, built_in.name),
+                (&mut self.base_url, built_in.base_url),
+                (&mut self.api_key_env, built_in.api_key_env),
+            ] {
+                if field.is_empty() {
+                    *field = default;
+                }
+            }
+        }
+        if self.name.is_empty() {
+            self.name = id.to_string();
+        }
+        if self.base_url.is_empty() {
+            bail!("provider {id} has no base_url");
+        }
+        if self.api_key_env.is_empty() {
+            bail!("provider {id} has no api_key_env");
+        }
+        Ok(())
+    }
+}
+
+impl Default for Config {
     fn default() -> Self {
         Self {
-            base_url: "https://opencode.ai/zen/go/v1".into(),
-            model: "deepseek-v4.1-flash".into(),
-            api_key_env: "OPENCODE_GO_API_KEY".into(),
+            model: "opencode/deepseek-v4.1-flash".into(),
+            provider: BTreeMap::from([(BUILT_IN_PROVIDER.into(), ProviderConfig::opencode())]),
+            session: SessionConfig::default(),
+            mode: ModeConfig::default(),
+            tools: nth_tools::ToolsConfig::default(),
+            skills: SkillsConfig::default(),
+            format: nth_format::FormatConfig::default(),
+            lsp: nth_lsp::LspConfig::default(),
+            notify: nth_notify::NotifyConfig::default(),
         }
     }
 }
@@ -82,7 +139,7 @@ impl Default for ModeConfig {
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModeDefaults {
-    /// Empty means the provider's model, so `--model` reaches every mode
+    /// Empty means the config's model, so `--model` reaches every mode
     /// that has none of its own.
     pub model: String,
     pub effort: Effort,
@@ -108,7 +165,7 @@ impl Config {
     /// The model from `--model` or `NTH_MODEL`. It is for every mode, so
     /// the per-mode models go: those only fill in when nothing was given.
     pub fn set_model(&mut self, model: String) {
-        self.provider.model = model;
+        self.model = model;
         self.mode.plan.model.clear();
         self.mode.act.model.clear();
     }
@@ -120,7 +177,7 @@ impl Config {
             Mode::Act => &self.mode.act,
         };
         let model = match defaults.model.as_str() {
-            "" => self.provider.model.clone(),
+            "" => self.model.clone(),
             model => model.to_string(),
         };
         (model, defaults.effort)
@@ -159,8 +216,15 @@ impl Config {
         Self::parse(&text).with_context(|| format!("invalid config {}", path.display()))
     }
 
+    /// The built-in provider is always there, so a file that only adds
+    /// another keeps it.
     fn parse(text: &str) -> Result<Self> {
-        Ok(toml::from_str(text)?)
+        let mut config: Self = toml::from_str(text)?;
+        config.provider.entry(BUILT_IN_PROVIDER.into()).or_default();
+        for (id, provider) in &mut config.provider {
+            provider.complete(id)?;
+        }
+        Ok(config)
     }
 
     pub fn to_toml(&self) -> Result<String> {
@@ -215,7 +279,6 @@ mod tests {
     fn partial_file_changes_only_its_keys() {
         let config = Config::parse(
             r#"
-            [provider]
             model = "kimi-k3"
 
             [tools.bash]
@@ -223,15 +286,18 @@ mod tests {
             "#,
         )
         .expect("parses");
-        let mut expected = Config::default();
-        expected.provider.model = "kimi-k3".into();
+        let mut expected = Config {
+            model: "kimi-k3".into(),
+            ..Default::default()
+        };
         expected.tools.bash.max_output_chars = 10;
         assert_eq!(config, expected);
     }
 
     #[test]
     fn unknown_keys_are_errors() {
-        let err = Config::parse("[provider]\nmodle = \"x\"").expect_err("typo is rejected");
+        let err =
+            Config::parse("[provider.opencode]\nmodle = \"x\"").expect_err("typo is rejected");
         assert!(format!("{err:#}").contains("modle"), "{err:#}");
         assert!(Config::parse("[nope]").is_err());
     }
@@ -304,7 +370,7 @@ mod tests {
         assert_eq!(config.mode.default, Mode::Act);
         assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
 
-        config.provider.model = "from-file".into();
+        config.model = "from-file".into();
         assert_eq!(
             config.llm_for(Mode::Act),
             ("from-file".into(), Effort::Default)
@@ -330,6 +396,47 @@ mod tests {
             ("from-flag".into(), Effort::High)
         );
         assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
+    }
+
+    #[test]
+    fn another_provider_keeps_the_built_in_one() {
+        let config = Config::parse(
+            r#"
+            [provider.lyceum]
+            base_url = "https://api.lyceum.technology/api/v2/external/serverless"
+            api_key_env = "LYCEUM_API_KEY"
+            "#,
+        )
+        .expect("parses");
+        assert_eq!(
+            config.provider.keys().collect::<Vec<_>>(),
+            ["lyceum", "opencode"]
+        );
+        assert_eq!(config.provider["opencode"], ProviderConfig::opencode());
+        assert_eq!(config.provider["lyceum"].name, "lyceum", "named by id");
+        assert_eq!(config.provider["lyceum"].api_key_env, "LYCEUM_API_KEY");
+    }
+
+    #[test]
+    fn the_built_in_provider_block_changes_only_its_keys() {
+        let config =
+            Config::parse("[provider.opencode]\napi_key_env = \"GO_KEY\"").expect("parses");
+        let expected = ProviderConfig {
+            api_key_env: "GO_KEY".into(),
+            ..ProviderConfig::opencode()
+        };
+        assert_eq!(config.provider["opencode"], expected);
+    }
+
+    #[test]
+    fn a_provider_needs_an_endpoint_and_a_key_variable() {
+        let err = Config::parse("[provider.lyceum]\napi_key_env = \"K\"").expect_err("no url");
+        assert!(err.to_string().contains("lyceum has no base_url"), "{err}");
+        let err = Config::parse("[provider.lyceum]\nbase_url = \"https://x\"").expect_err("no key");
+        assert!(
+            err.to_string().contains("lyceum has no api_key_env"),
+            "{err}"
+        );
     }
 
     #[test]

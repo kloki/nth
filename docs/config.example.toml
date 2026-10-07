@@ -2,13 +2,28 @@
 # Every key is optional and shows its default. Keep only the ones you change.
 # `nth config` prints the config nth actually uses.
 
-[provider]
-# Any OpenAI-compatible chat completions endpoint. --base-url / NTH_BASE_URL override it.
+# The model a new chat starts on, as provider/model. --model / NTH_MODEL override it.
+model = "opencode/deepseek-v4.1-flash"
+
+# One [provider.<id>] block per endpoint; the id prefixes its models. Every one is
+# an OpenAI-compatible chat completions endpoint. A provider whose key is not set
+# is left out, and nth needs at least one that is.
+[provider.opencode]
+# Built in: this block is here only to change it.
+name = "OpenCode Go"
 base_url = "https://opencode.ai/zen/go/v1"
-# --model / NTH_MODEL override it.
-model = "deepseek-v4.1-flash"
 # Name of the environment variable that holds the API key. The key itself stays out of this file.
-api_key_env = "OPENCODE_GO_API_KEY"
+api_key_env = "OPENCODE_API_KEY"
+# Normally nth asks the endpoint's /models. List ids here for an endpoint without
+# one, or to offer only these.
+models = []
+
+# Another provider, say:
+#
+# [provider.lyceum]
+# name = "Lyceum"
+# base_url = "https://api.lyceum.technology/api/v2/external/serverless"
+# api_key_env = "LYCEUM_API_KEY"
 
 [session]
 # Stop a turn after this many model requests without a final answer.
@@ -20,7 +35,7 @@ max_steps = 100
 default = "plan"
 
 [mode.plan]
-# Model and effort for plan mode. An empty model means the provider's model.
+# Model and effort for plan mode, as provider/model. An empty model means the one above.
 model = ""
 # "default", "low", "medium" or "high".
 effort = "default"
