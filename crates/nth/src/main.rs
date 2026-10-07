@@ -84,6 +84,12 @@ enum Command {
     },
     /// Print the config in use, with every default filled in
     Config,
+    /// Write a config file with every default to ~/.config/nth/config.toml
+    Init {
+        /// Replace the file if there is one
+        #[arg(long)]
+        force: bool,
+    },
     /// Send a sample notification through the configured backend
     Notify {
         /// Which notification to show
@@ -98,17 +104,12 @@ enum Command {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match Config::load(cli.config.as_deref()) {
-        Err(e) => Err(e),
-        Ok(mut config) => {
-            if let Some(model) = cli.model {
-                config.set_model(model);
-            }
-            match cli.command {
-                None => chat::run(cli.resume, config).await,
-                Some(command) => dispatch(command, cli.config, config).await,
-            }
-        }
+    let result = match cli.command {
+        None => match load(cli.config.as_deref(), cli.model) {
+            Ok(config) => chat::run(cli.resume, config).await,
+            Err(e) => Err(e),
+        },
+        Some(command) => dispatch(command, cli.config, cli.model).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -119,19 +120,36 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn dispatch(command: Command, config_path: Option<PathBuf>, config: Config) -> Result<()> {
+/// The config, with `--model` applied over it.
+fn load(path: Option<&std::path::Path>, model: Option<String>) -> Result<Config> {
+    let mut config = Config::load(path)?;
+    if let Some(model) = model {
+        config.set_model(model);
+    }
+    Ok(config)
+}
+
+async fn dispatch(
+    command: Command,
+    config_path: Option<PathBuf>,
+    model: Option<String>,
+) -> Result<()> {
+    // Each command loads the config itself, so init can run without one:
+    // the file may not exist yet, or be the broken one --force replaces.
+    let config = || load(config_path.as_deref(), model.clone());
     match command {
         Command::Run { prompt, mode } => match mode.parse() {
-            Ok(mode) => run::run(prompt, mode, config).await,
+            Ok(mode) => run::run(prompt, mode, config()?).await,
             Err(e) => Err(anyhow::anyhow!(e)),
         },
-        Command::Models { json } => models::run(json, config).await,
-        Command::Skills { json } => skills::run(json, &config).await,
-        Command::Agents { json } => agents::run(json, &config).await,
-        Command::Formatters { json } => formatters::run(json, &config).await,
-        Command::Lsp { json, command } => lsp::run(command, json, &config).await,
-        Command::Config => config::show(config_path, &config),
-        Command::Notify { event, json } => notify::run(event, json, &config).await,
+        Command::Models { json } => models::run(json, config()?).await,
+        Command::Skills { json } => skills::run(json, &config()?).await,
+        Command::Agents { json } => agents::run(json, &config()?).await,
+        Command::Formatters { json } => formatters::run(json, &config()?).await,
+        Command::Lsp { json, command } => lsp::run(command, json, &config()?).await,
+        Command::Config => config::show(config_path.clone(), &config()?),
+        Command::Init { force } => config::init(config_path.clone(), force),
+        Command::Notify { event, json } => notify::run(event, json, &config()?).await,
     }
 }
 

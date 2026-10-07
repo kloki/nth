@@ -1,4 +1,4 @@
-# nth config: copy to ~/.config/nth/config.toml (or $XDG_CONFIG_HOME/nth/config.toml).
+# nth config, written by `nth init`.
 # Every key is optional and shows its default. Keep only the ones you change.
 # `nth config` prints the config nth actually uses.
 

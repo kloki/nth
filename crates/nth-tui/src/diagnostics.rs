@@ -12,7 +12,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, ScrollbarState},
 };
 
 use crate::{status, theme};
@@ -73,6 +73,15 @@ impl Diagnostics {
 
     pub fn jump_bottom(&mut self) {
         self.top = self.max_top;
+    }
+
+    /// Where the view sits in the tab, while it doesn't all fit.
+    pub fn scrollbar(&self) -> Option<ScrollbarState> {
+        (self.max_top > 0).then(|| {
+            ScrollbarState::new(self.max_top + 1)
+                .position(self.top)
+                .viewport_content_length(self.height)
+        })
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, facts: &Facts) {

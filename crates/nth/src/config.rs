@@ -47,6 +47,10 @@ pub struct ProviderConfig {
 
 pub const BUILT_IN_PROVIDER: &str = "opencode";
 
+/// What `nth init` writes: every key at its default, with a comment on
+/// each. A test keeps it equal to `Config::default()`.
+const TEMPLATE: &str = include_str!("config.toml");
+
 impl ProviderConfig {
     fn opencode() -> Self {
         Self {
@@ -256,6 +260,37 @@ pub fn show(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// `nth init`: writes the template to the config path, unless a file is
+/// there already and `force` is not set.
+pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
+    use owo_colors::OwoColorize;
+
+    let Some(path) = explicit.or_else(Config::default_path) else {
+        bail!("no home dir to put the config in; pass --config");
+    };
+    write_template(&path, force)?;
+    eprintln!("{} wrote {}", "✓".green().bold(), path.display().dimmed());
+    let key = ProviderConfig::opencode().api_key_env;
+    if std::env::var_os(&key).is_none() {
+        eprintln!(
+            "{} {}",
+            "→".cyan().bold(),
+            format!("set {key} to use OpenCode Go").dimmed()
+        );
+    }
+    Ok(())
+}
+
+fn write_template(path: &Path, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!("{} exists; --force overwrites it", path.display());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    std::fs::write(path, TEMPLATE).with_context(|| format!("cannot write {}", path.display()))
+}
+
 /// `~/x` is `x` in the home directory. Everything else, relative paths
 /// included, is left for the caller to resolve.
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
@@ -303,9 +338,32 @@ mod tests {
     }
 
     #[test]
-    fn example_file_matches_the_defaults() {
-        let example = include_str!("../../../docs/config.example.toml");
-        assert_eq!(Config::parse(example).expect("parses"), Config::default());
+    fn template_matches_the_defaults() {
+        assert_eq!(Config::parse(TEMPLATE).expect("parses"), Config::default());
+    }
+
+    #[test]
+    fn init_writes_the_template_and_creates_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a/b/config.toml");
+
+        write_template(&path, false).expect("writes");
+
+        assert_eq!(Config::load(Some(&path)).expect("loads"), Config::default());
+    }
+
+    #[test]
+    fn init_refuses_to_overwrite_without_force() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "mine").expect("write");
+
+        let err = write_template(&path, false).expect_err("file exists");
+        assert!(err.to_string().contains("--force"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "mine");
+
+        write_template(&path, true).expect("overwrites");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), TEMPLATE);
     }
 
     #[test]
