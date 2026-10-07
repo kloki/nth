@@ -60,30 +60,10 @@ impl LlmUsage {
         *self.turns.entry(model.to_string()).or_default() += 1;
     }
 
-    /// Most used first, keeping each provider's models together for the
-    /// picker's groups: the providers with the most turns first, then the
-    /// most used of each. The sort is stable, so ties keep the listing's
-    /// order.
+    /// Most used first, across providers; the sort is stable, so models
+    /// used equally often keep the listing's order.
     pub fn order(&self, models: &mut [ModelInfo]) {
-        let turns = |m: &ModelInfo| self.turns.get(&m.id).copied().unwrap_or(0);
-        // Per provider: its turns, and where the listing first has it.
-        let mut providers: Vec<(Option<String>, u64, usize)> = Vec::new();
-        for (i, model) in models.iter().enumerate() {
-            let origin = model.origin.as_ref().map(|o| o.id.clone());
-            match providers.iter_mut().find(|(o, ..)| *o == origin) {
-                Some((_, total, _)) => *total += turns(model),
-                None => providers.push((origin, turns(model), i)),
-            }
-        }
-        models.sort_by_cached_key(|m| {
-            let origin = m.origin.as_ref().map(|o| o.id.as_str());
-            let (_, total, first) = providers
-                .iter()
-                .find(|(o, ..)| o.as_deref() == origin)
-                .cloned()
-                .unwrap_or_default();
-            (Reverse(total), first, Reverse(turns(m)))
-        });
+        models.sort_by_key(|m| Reverse(self.turns.get(&m.id).copied().unwrap_or(0)));
     }
 
     /// The models that ran a turn, most used first, then by name.
@@ -139,17 +119,16 @@ mod tests {
     }
 
     #[test]
-    fn each_provider_stays_together_the_most_used_first() {
+    fn orders_across_providers() {
         let mut models = vec![
-            served("go", "a"),
-            served("go", "b"),
-            served("ly", "c"),
-            served("ly", "d"),
-            served("zen", "e"),
+            served("ly", "a"),
+            served("ly", "b"),
+            served("go", "c"),
+            served("go", "hy3"),
         ];
-        usage(&[("go/b", 1), ("ly/d", 3), ("zen/e", 1)]).order(&mut models);
+        usage(&[("go/hy3", 7), ("ly/b", 2)]).order(&mut models);
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["ly/d", "ly/c", "go/b", "go/a", "zen/e"]);
+        assert_eq!(ids, ["go/hy3", "ly/b", "ly/a", "go/c"]);
     }
 
     #[test]
