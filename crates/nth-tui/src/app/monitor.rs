@@ -1,7 +1,7 @@
 //! The commands the model left running: a tab each, their notices start a
 //! turn when the app is idle, and leaving a session or quitting stops them.
-//! A monitor's tab only closes once its process has stopped, so nothing
-//! keeps running out of sight.
+//! A monitor's tab closes by itself once its process has stopped, and only
+//! then, so nothing keeps running out of sight; the log keeps its output.
 
 use std::time::Duration;
 
@@ -33,14 +33,9 @@ impl App {
                     view.push(stream, line);
                 }
             }
-            MonitorEvent::Ended { id, end, .. } => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.end(end);
-                    if view.closing {
-                        self.monitor_views.remove(&id);
-                        self.content.remove(Tab::Monitor(id));
-                    }
-                }
+            MonitorEvent::Ended { id, .. } => {
+                self.monitor_views.remove(&id);
+                self.content.remove(Tab::Monitor(id));
             }
         }
         if self.notices_due.is_none() && self.inbox.has_notices() {
@@ -59,7 +54,7 @@ impl App {
 
     /// Stops the monitors of a session that was left, after `/clear` or a
     /// resume: they were watching for that conversation. Their tabs close
-    /// as each process stops.
+    /// as each process stops, as they always do.
     pub(super) fn left_session(&mut self) {
         self.left_subagents();
         self.monitors.forget_all();
@@ -67,18 +62,6 @@ impl App {
         self.notices_due = None;
         self.hold_notices = false;
         self.log_monitors_for_session();
-        let mut stopped = Vec::new();
-        for (&id, view) in &mut self.monitor_views {
-            if view.is_running() {
-                view.closing = true;
-            } else {
-                stopped.push(id);
-            }
-        }
-        for id in stopped {
-            self.monitor_views.remove(&id);
-            self.content.remove(Tab::Monitor(id));
-        }
     }
 
     pub(super) fn log_monitors_for_session(&self) {
@@ -88,40 +71,19 @@ impl App {
         }
     }
 
-    /// Monitors whose process runs, as far as their tabs have heard.
+    /// Monitors whose process runs, as far as the app has heard: each has
+    /// a tab until it stops.
     pub(crate) fn running_monitors(&self) -> usize {
-        self.monitor_views
-            .values()
-            .filter(|v| v.is_running())
-            .count()
+        self.monitor_views.len()
     }
 
-    pub(super) fn tab_label(&self, tab: Tab) -> String {
-        match tab {
-            Tab::Chat => "chat".into(),
-            Tab::Diagnostics => "diagnostics".into(),
-            Tab::Plan => self.plan.label(),
-            Tab::Monitor(id) => self
-                .monitor_views
-                .get(&id)
-                .map_or_else(|| format!("monitor {id}"), MonitorView::label),
-            Tab::Subagent(id) => self
-                .subagent_views
-                .get(&id)
-                .map_or_else(|| format!("subagent {id}"), SubagentView::label),
-        }
-    }
-
-    /// ctrl+w: stops the monitor or subagent showing, or closes its tab
-    /// once stopped.
+    /// ctrl+w: stops the monitor showing, whose tab then closes, or the
+    /// subagent showing, or closes its tab once stopped.
     pub(super) fn stop_content(&mut self) {
         match self.content.active() {
-            Tab::Monitor(id) => match self.monitor_views.get(&id) {
-                Some(view) if view.is_running() => {
-                    self.monitors.stop(id, StoppedBy::User);
-                }
-                _ => self.close_content(),
-            },
+            Tab::Monitor(id) => {
+                self.monitors.stop(id, StoppedBy::User);
+            }
             Tab::Subagent(id) => match self.subagent_views.get(&id) {
                 Some(view) if view.is_running() => self.interrupt_subagent(id),
                 _ => self.close_content(),
@@ -138,10 +100,7 @@ impl App {
             return;
         }
         let running = match self.content.active() {
-            Tab::Monitor(id) => self
-                .monitor_views
-                .get(&id)
-                .is_some_and(MonitorView::is_running),
+            Tab::Monitor(id) => self.monitor_views.contains_key(&id),
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
@@ -152,15 +111,8 @@ impl App {
             self.hint = Some("still running · ctrl+w stops it first".into());
             return;
         }
-        match self.content.active() {
-            Tab::Monitor(id) => {
-                self.monitor_views.remove(&id);
-            }
-            Tab::Subagent(id) => {
-                self.subagent_views.remove(&id);
-            }
-            _ => {}
-        }
+        // A monitor's tab is only here while it runs, and a subagent's view
+        // stays: continued, it opens again with its turns.
         self.content.close();
     }
 
@@ -231,11 +183,12 @@ pub(super) async fn due(at: Option<tokio::time::Instant>) {
 #[cfg(test)]
 mod tests {
     use nth_protocol::{MonitorEnd, MonitorId, Registered, Stream};
+    use ratatui::style::Color;
 
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{app, rows},
+        tests::{app, rows, tab_colour},
     };
 
     /// Starts a monitor as the tool would, and lets the app hear of it.
@@ -280,8 +233,21 @@ mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" 1 chat  2 ● ci"), "{}", rows[0]);
-        assert!(rows[15].ends_with("» 1 monitor "), "{}", rows[15]);
+        assert!(rows[0].starts_with(" [› chat] $ ci "), "{}", rows[0]);
+        assert_eq!(tab_colour(&mut app, "$ ci"), Color::Blue, "running");
+    }
+
+    #[tokio::test]
+    async fn the_tab_closes_once_the_process_exits() {
+        let mut app = app();
+        let m = start(&mut app, "ci").await;
+        start(&mut app, "logs").await;
+        app.apply(Action::Content(1));
+
+        ended(&mut app, m.id, MonitorEnd::Exited(Some(0))).await;
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(2)]);
+        assert_eq!(app.content.active(), Tab::Chat, "the one before shows");
+        assert!(!app.monitor_views.contains_key(&m.id));
     }
 
     #[tokio::test]
@@ -333,29 +299,14 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Monitor(1), "until it stopped");
 
         ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::User)).await;
-        assert!(rows(&mut app)[0].contains("2 ✗ ci"));
-        app.apply(Action::StopContent);
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.monitor_views.is_empty());
-    }
-
-    #[tokio::test]
-    async fn ctrl_q_closes_a_stopped_monitor_tab() {
-        let mut app = app();
-        let m = start(&mut app, "ci").await;
-        ended(&mut app, m.id, MonitorEnd::Exited(Some(0))).await;
-        app.apply(Action::Content(1));
-
-        app.apply(Action::CloseContent);
-        assert_eq!(app.content.tabs(), [Tab::Chat]);
     }
 
     #[tokio::test]
     async fn clear_closes_the_tabs_as_their_processes_stop() {
         let mut app = app();
         let running = start(&mut app, "ci").await;
-        let done = start(&mut app, "logs").await;
-        ended(&mut app, done.id, MonitorEnd::Exited(Some(0))).await;
 
         app.run_command(crate::command::Command::Clear);
         assert!(running.stop.is_cancelled());

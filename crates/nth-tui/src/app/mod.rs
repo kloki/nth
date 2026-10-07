@@ -33,7 +33,7 @@ use std::{
 use anyhow::{Context, Result};
 use checks::lsp_changed;
 use completion::Completion;
-pub(crate) use content::{Content, Tab};
+pub(crate) use content::{Content, Tab, TabState};
 use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use input::Input;
@@ -109,6 +109,9 @@ pub struct App {
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
+    /// How the chat's last turn ended, for its tab: done, failed, or idle
+    /// when you stopped it or there was none.
+    last_turn: TabState,
     /// The content panel's tabs, and which one fills it.
     content: Content,
     diagnostics: Diagnostics,
@@ -309,6 +312,7 @@ impl App {
             history_saving: Job::default(),
             queue: VecDeque::new(),
             interrupted: false,
+            last_turn: TabState::Idle,
             content: Content::default(),
             diagnostics: Diagnostics::default(),
             checkers: None,
@@ -509,7 +513,23 @@ impl App {
         .spacing(1)
         .areas(area);
 
-        header::draw(frame, header, &self.content, &|tab| self.tab_label(tab));
+        self.close_answered_subagents();
+        let tabs: Vec<_> = self
+            .content
+            .tabs()
+            .to_vec()
+            .into_iter()
+            .map(|tab| {
+                let state = self.tab_state(tab);
+                header::TabLabel {
+                    icon: self.tab_icon(tab),
+                    name: self.tab_label(tab),
+                    state: self.content.shown_state(tab, state),
+                    active: tab == self.content.active(),
+                }
+            })
+            .collect();
+        header::draw(frame, header, &tabs);
         match self.content.active() {
             Tab::Monitor(id) => {
                 if let Some(view) = self.monitor_views.get_mut(&id) {
@@ -632,6 +652,7 @@ impl App {
             Command::Clear if self.is_busy() => self.hint = Some("a turn is running".into()),
             Command::Clear => {
                 self.chat = Chat::new(self.cwd.clone());
+                self.last_turn = TabState::Idle;
                 self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),

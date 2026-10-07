@@ -7,7 +7,7 @@ use nth_protocol::{Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
-use super::App;
+use super::{App, TabState};
 use crate::command::Command;
 
 /// What a turn task hands back: the session, how its turn ended, and
@@ -260,6 +260,11 @@ impl App {
         // Esc after the reply ended still comes back `Ok`, but it still
         // means stop.
         let send_next = result.is_ok() && !std::mem::take(&mut self.interrupted);
+        self.last_turn = match &result {
+            Ok(()) if send_next => TabState::Done,
+            Ok(()) | Err(nth_session::Error::Interrupted) => TabState::Idle,
+            Err(_) => TabState::Failed,
+        };
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
             // The bash row says how a command went; no model answered.

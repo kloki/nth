@@ -14,10 +14,12 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{chat::Chat, theme};
+use crate::{app::TabState, chat::Chat, spinner, theme};
 
 /// The header row above the chat.
 const HEADER_ROWS: u16 = 2;
+/// The most characters of what it was asked the tab's label shows.
+const TITLE_CHARS: usize = 20;
 
 pub struct SubagentView {
     pub agent: String,
@@ -98,14 +100,30 @@ impl SubagentView {
         self.running_since
     }
 
-    /// The tab's name in the header: its state's mark and the agent.
+    /// The tab's name in the header: what it was asked, cut short.
     pub fn label(&self) -> String {
-        let mark = match self.state {
-            None | Some(State::Running) => "●",
-            Some(State::Idle) => "✓",
-            Some(State::Interrupted) | Some(State::Failed) => "✗",
-        };
-        format!("{mark} {}", self.agent)
+        let mut title: String = self.description.chars().take(TITLE_CHARS).collect();
+        if self.description.chars().count() > TITLE_CHARS {
+            title.push('…');
+        }
+        title
+    }
+
+    /// In front of the label: the tabs' spinner while its turn runs, else
+    /// `@`.
+    pub fn icon(&self) -> &'static str {
+        match self.running_since {
+            Some(since) => spinner::dot(since.elapsed()),
+            None => "@",
+        }
+    }
+
+    pub fn state(&self) -> TabState {
+        match self.state {
+            None | Some(State::Running) => TabState::Working,
+            Some(State::Idle) => TabState::Done,
+            Some(State::Interrupted) | Some(State::Failed) => TabState::Failed,
+        }
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -178,29 +196,34 @@ mod tests {
     }
 
     #[test]
-    fn the_label_marks_the_state() {
+    fn the_state_follows_the_turn() {
         let mut view = view();
-        assert_eq!(view.label(), "● explore");
+        assert_eq!(view.label(), "find tabs");
+        assert_eq!(view.state(), TabState::Working);
+        assert_eq!(view.icon(), "@", "no turn to spin for yet");
         view.prompted("go".into());
-        assert_eq!(view.label(), "● explore");
+        assert_eq!(view.state(), TabState::Working);
+        assert_ne!(view.icon(), "@", "spins while running");
+        assert_eq!(view.icon().chars().count(), 1, "as wide as `@`");
         assert!(view.is_running());
         view.ended(
             &TaskOutcome::Completed("ok".into()),
             Duration::from_secs(2),
             "glm",
         );
-        assert_eq!(view.label(), "✓ explore");
+        assert_eq!(view.state(), TabState::Done);
+        assert_eq!(view.icon(), "@");
         assert!(!view.is_running());
         view.prompted("again".into());
         view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");
-        assert_eq!(view.label(), "✗ explore");
+        assert_eq!(view.state(), TabState::Failed);
         view.prompted("once more".into());
         view.ended(
             &TaskOutcome::Failed("boom".into()),
             Duration::from_secs(1),
             "glm",
         );
-        assert_eq!(view.label(), "✗ explore");
+        assert_eq!(view.state(), TabState::Failed);
     }
 
     #[test]

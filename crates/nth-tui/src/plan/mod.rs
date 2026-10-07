@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Paragraph, ScrollbarState},
 };
 
-use crate::{rich, theme};
+use crate::{app::TabState, rich, theme};
 
 /// The plan as last read, and the version its diff is against.
 #[derive(Debug, Default)]
@@ -35,6 +35,8 @@ pub struct PlanView {
     height: usize,
     /// Lines added and removed since the baseline.
     counts: (usize, usize),
+    /// `/approve` took the plan as it reads now.
+    approved: bool,
     /// The plan as drawn last, and the width it was wrapped for, so a frame
     /// renders it only after it or the width changed.
     rendered: Option<(usize, Vec<Line<'static>>)>,
@@ -62,6 +64,7 @@ impl PlanView {
             self.changed_this_turn = true;
         }
         self.current = text;
+        self.approved = false;
         if self.created_this_turn {
             self.baseline = self.current.clone().unwrap_or_default();
         }
@@ -73,12 +76,27 @@ impl PlanView {
     /// opened.
     pub fn settle(&mut self, text: Option<String>) {
         self.current = text;
+        self.approved = false;
         self.accept();
+    }
+
+    /// `/approve` takes the plan as it reads now.
+    pub fn approve(&mut self) {
+        self.accept();
+        self.approved = true;
+    }
+
+    pub fn state(&self) -> TabState {
+        if self.approved {
+            TabState::Done
+        } else {
+            TabState::Idle
+        }
     }
 
     /// Clears the marks: what the plan reads now is what later changes are
     /// shown against.
-    pub fn accept(&mut self) {
+    fn accept(&mut self) {
         self.baseline = self.current.clone().unwrap_or_default();
         self.changed_this_turn = false;
         self.changed();
@@ -213,6 +231,18 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn approved_until_the_plan_changes() {
+        let mut view = PlanView::default();
+        view.settle(Some("# Plan\n".into()));
+        assert_eq!(view.state(), TabState::Idle);
+        view.approve();
+        assert_eq!(view.state(), TabState::Done);
+        view.turn_started();
+        view.update(Some("# Plan\nmore\n".into()));
+        assert_eq!(view.state(), TabState::Idle);
     }
 
     #[test]

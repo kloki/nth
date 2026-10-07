@@ -72,12 +72,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use nth_protocol::{Answer, Question};
+    use ratatui::style::Color;
 
     use super::*;
     use crate::{
         app::{
             keys::Action,
-            tests::{app, rows},
+            tests::{app, rows, tab_colour},
         },
         question::tests::question,
     };
@@ -91,6 +92,15 @@ mod tests {
             reply,
         };
         (ask, replied)
+    }
+
+    #[test]
+    fn a_question_turns_the_chat_tab_magenta() {
+        let mut app = app();
+        assert_eq!(tab_colour(&mut app, "› chat"), Color::Reset);
+        let (ask, _replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
+        app.on_ask(ask);
+        assert_eq!(tab_colour(&mut app, "› chat"), Color::Magenta);
     }
 
     #[test]

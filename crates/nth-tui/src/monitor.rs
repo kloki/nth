@@ -1,13 +1,9 @@
 //! A monitor's tab: the command the model left running, how it is doing,
 //! and the lines it printed, following the newest unless scrolled up.
 
-use std::{
-    collections::VecDeque,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, path::PathBuf, time::Instant};
 
-use nth_protocol::{MonitorEnd, Stream};
+use nth_protocol::Stream;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -29,15 +25,11 @@ pub struct MonitorView {
     pub command: String,
     pub log: PathBuf,
     started: Instant,
-    /// How it ended, and after how long; `None` while its process runs.
-    ended: Option<(MonitorEnd, Duration)>,
     /// Stdout lines so far, which are the model's events.
     events: usize,
     lines: VecDeque<(Stream, String)>,
     /// Lines dropped from the front to keep at most [`KEPT_LINES`].
     dropped: usize,
-    /// Its session was left: the tab closes once the process has stopped.
-    pub closing: bool,
     top: usize,
     max_top: usize,
     height: usize,
@@ -52,11 +44,9 @@ impl MonitorView {
             command,
             log,
             started: Instant::now(),
-            ended: None,
             events: 0,
             lines: VecDeque::new(),
             dropped: 0,
-            closing: false,
             top: 0,
             max_top: 0,
             height: 0,
@@ -75,27 +65,13 @@ impl MonitorView {
         self.lines.push_back((stream, line));
     }
 
-    pub fn end(&mut self, end: MonitorEnd) {
-        self.ended = Some((end, self.started.elapsed()));
-    }
-
-    /// Whether its process still runs, as far as the tab has heard.
-    pub fn is_running(&self) -> bool {
-        self.ended.is_none()
-    }
-
-    /// The tab's name in the header: its state's mark and description.
+    /// The tab's name in the header: its description, cut short.
     pub fn label(&self) -> String {
-        let mark = match self.ended {
-            None => "●",
-            Some((end, _)) if end.is_success() => "✓",
-            Some(_) => "✗",
-        };
         let mut description: String = self.description.chars().take(LABEL_CHARS).collect();
         if self.description.chars().count() > LABEL_CHARS {
             description.push('…');
         }
-        format!("{mark} {description}")
+        description
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -140,11 +116,8 @@ impl MonitorView {
 
     fn render(&self, home: Option<&str>) -> Vec<Line<'static>> {
         let dim = theme::dim();
-        let (state, colour, elapsed) = match self.ended {
-            None => ("running".to_string(), Color::Yellow, self.started.elapsed()),
-            Some((end, took)) if end.is_success() => (end.to_string(), Color::Green, took),
-            Some((end, took)) => (end.to_string(), Color::Red, took),
-        };
+        // The tab closes once the process stops, so it is always running.
+        let elapsed = self.started.elapsed();
         let events = match self.events {
             1 => "1 event".to_string(),
             n => format!("{n} events"),
@@ -159,7 +132,7 @@ impl MonitorView {
                 Span::raw(self.command.clone()),
             ]),
             Line::from(vec![
-                Span::styled(state, Style::new().fg(colour)),
+                Span::styled("running", Style::new().fg(Color::Yellow)),
                 Span::styled(format!(" · {}s · {events} · {log}", elapsed.as_secs()), dim),
             ]),
             Line::default(),
@@ -191,14 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn the_label_marks_the_state() {
-        let mut view = view();
-        assert_eq!(view.label(), "● errors in the deploy…");
-        view.end(MonitorEnd::Exited(Some(0)));
-        assert!(view.label().starts_with('✓'));
-        view.end(MonitorEnd::TimedOut { after_ms: 1000 });
-        assert!(view.label().starts_with('✗'));
-        assert!(!view.is_running());
+    fn the_label_is_the_description_cut_short() {
+        assert_eq!(view().label(), "errors in the deploy…");
     }
 
     #[test]

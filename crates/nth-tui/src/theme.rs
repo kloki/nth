@@ -7,6 +7,8 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::app::TabState;
+
 /// Marks a message block: chat entries and the prompt share it.
 pub const BAR: &str = "▎ ";
 pub const BAR_WIDTH: u16 = 2;
@@ -31,6 +33,17 @@ pub const SHELL_COLOUR: Color = Color::Yellow;
 /// The prompt's colour while it talks to a subagent: a model talking to
 /// you, as the question panel is.
 pub const SUBAGENT_COLOUR: Color = Color::Cyan;
+
+/// A tab's colour in the header; `None` leaves the terminal's own.
+pub fn tab_colour(state: TabState) -> Option<Color> {
+    match state {
+        TabState::Idle => None,
+        TabState::Working => Some(Color::Blue),
+        TabState::Done => Some(Color::Green),
+        TabState::Failed => Some(Color::Red),
+        TabState::NeedsYou => Some(Color::Magenta),
+    }
+}
 
 /// The highlighted item in any list: popup, picker.
 pub fn pick() -> Style {

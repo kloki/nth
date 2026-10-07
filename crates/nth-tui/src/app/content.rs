@@ -1,10 +1,12 @@
 //! The content panel above the input panel: what you look at. It holds a
 //! list of tabs, the chat always first, and shows one of them.
 
+use std::collections::HashSet;
+
 use nth_protocol::{MonitorId, Panel};
 use nth_session::subagent::SubagentId;
 
-use super::App;
+use super::{App, input::Input};
 use crate::{
     chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView,
     subagent::SubagentView,
@@ -12,7 +14,7 @@ use crate::{
 
 /// A view the content panel can show. Each view's state lives on the app,
 /// so it keeps up with the session while another view is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tab {
     Chat,
     Diagnostics,
@@ -29,6 +31,35 @@ impl Tab {
     fn closable(self) -> bool {
         self != Tab::Chat
     }
+
+    /// What kind of tab it is, in front of its name in the header.
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Tab::Chat => "›",
+            Tab::Diagnostics => "●",
+            Tab::Plan => "≡",
+            // Their own headers start with these too.
+            Tab::Monitor(_) => "$",
+            Tab::Subagent(_) => "@",
+        }
+    }
+
+    /// A finished tab turns back to plain once you have seen it, except
+    /// the plan, whose approval stays a fact about it until it changes.
+    fn fades(self) -> bool {
+        self != Tab::Plan
+    }
+}
+
+/// How a tab is doing, which the header shows as its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabState {
+    Idle,
+    Working,
+    Done,
+    Failed,
+    /// Waiting on an answer from you.
+    NeedsYou,
 }
 
 impl From<Panel> for Tab {
@@ -46,6 +77,8 @@ impl From<Panel> for Tab {
 pub(crate) struct Content {
     tabs: Vec<Tab>,
     active: usize,
+    /// Finished tabs that have shown since they finished.
+    seen: HashSet<Tab>,
 }
 
 impl Default for Content {
@@ -53,6 +86,7 @@ impl Default for Content {
         Self {
             tabs: vec![Tab::Chat],
             active: 0,
+            seen: HashSet::new(),
         }
     }
 }
@@ -64,6 +98,23 @@ impl Content {
 
     pub(crate) fn active(&self) -> Tab {
         self.tabs[self.active]
+    }
+
+    /// What the header shows for `tab` doing `state`: done turns idle once
+    /// the tab has shown, until it is something else and finishes again.
+    pub(super) fn shown_state(&mut self, tab: Tab, state: TabState) -> TabState {
+        if state != TabState::Done || !tab.fades() {
+            self.seen.remove(&tab);
+            return state;
+        }
+        if tab == self.active() {
+            self.seen.insert(tab);
+        }
+        if self.seen.contains(&tab) {
+            TabState::Idle
+        } else {
+            state
+        }
     }
 
     /// Shows `tab`, opening it after the others unless it is open already.
@@ -100,6 +151,7 @@ impl Content {
             return;
         }
         self.tabs.remove(i);
+        self.seen.remove(&tab);
         if i <= self.active {
             self.active = self.active.saturating_sub(1);
         }
@@ -121,8 +173,59 @@ impl Content {
     /// the chat.
     pub(super) fn close(&mut self) {
         if self.active().closable() {
-            self.tabs.remove(self.active);
+            let tab = self.tabs.remove(self.active);
+            self.seen.remove(&tab);
             self.active -= 1;
+        }
+    }
+}
+
+impl App {
+    /// The tab's name in the header, after its icon.
+    pub(super) fn tab_label(&self, tab: Tab) -> String {
+        match tab {
+            Tab::Chat => "chat".into(),
+            Tab::Diagnostics => "diagnostics".into(),
+            Tab::Plan => self.plan.label(),
+            Tab::Monitor(id) => self
+                .monitor_views
+                .get(&id)
+                .map_or_else(|| format!("monitor {id}"), MonitorView::label),
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .map_or_else(|| format!("subagent {id}"), SubagentView::label),
+        }
+    }
+
+    /// In front of the tab's name: what kind it is, or a subagent's
+    /// spinner while its turn runs.
+    pub(super) fn tab_icon(&self, tab: Tab) -> &'static str {
+        match tab {
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .map_or(tab.icon(), SubagentView::icon),
+            _ => tab.icon(),
+        }
+    }
+
+    /// How the tab is doing, before [`Content::shown_state`] fades what
+    /// you have seen.
+    pub(super) fn tab_state(&self, tab: Tab) -> TabState {
+        match tab {
+            // A question stops the turn until you answer, so it comes first.
+            Tab::Chat if matches!(self.input, Input::Question(_)) => TabState::NeedsYou,
+            Tab::Chat if self.is_busy() => TabState::Working,
+            Tab::Chat => self.last_turn,
+            Tab::Diagnostics => TabState::Idle,
+            Tab::Plan => self.plan.state(),
+            // Its tab closes once the process stops.
+            Tab::Monitor(_) => TabState::Working,
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .map_or(TabState::Idle, SubagentView::state),
         }
     }
 }
