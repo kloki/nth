@@ -1,0 +1,3 @@
+nth · plan ready
+{title}
+Review the Plan tab, then /approve.

@@ -1,0 +1,12 @@
+[package]
+name = "nth-notify"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+futures.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

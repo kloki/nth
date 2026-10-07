@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use nth_notify::Event;
 use nth_protocol::{Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
@@ -260,6 +261,10 @@ impl App {
         // Esc after the reply ended still comes back `Ok`, but it still
         // means stop.
         let send_next = result.is_ok() && !std::mem::take(&mut self.interrupted);
+        let error = match &result {
+            Err(nth_session::Error::Interrupted) | Ok(()) => None,
+            Err(e) => Some(e.to_string()),
+        };
         self.last_turn = match &result {
             Ok(()) if send_next => TabState::Done,
             Ok(()) | Err(nth_session::Error::Interrupted) => TabState::Idle,
@@ -294,6 +299,7 @@ impl App {
             None if send_next => self.start_turn(String::new()),
             None => {}
         }
+        self.notify_turn_ended(shell, error, elapsed);
     }
 
     /// Events sent just before the task returned may still be queued, and
@@ -313,8 +319,13 @@ impl App {
     pub(super) fn turn_task_failed(&mut self, error: JoinError) {
         self.drain_events();
         self.drop_asks();
-        self.busy_since = None;
+        let elapsed = self
+            .busy_since
+            .take()
+            .map_or(Duration::ZERO, |t| t.elapsed());
         self.interrupted = false;
+        let cx = self.notify_context(elapsed);
+        self.notify(Event::Failed(format!("turn task failed: {error}")), &cx);
         self.chat.transcript.fail_turn(format!(
             "turn task failed: {error} · continuing in a new session; \
              the old one was last saved after its previous turn, /resume brings it back"
