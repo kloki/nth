@@ -1,6 +1,6 @@
 //! The subagents the model delegated to: a tab each, which the prompt talks
 //! to while it shows, and which closes only once its turn has ended, so
-//! nothing keeps running out of sight. A task's answer waits in the model's
+//! nothing keeps running out of sight; by itself once it answered. A task's answer waits in the model's
 //! inbox and wakes it as a monitor's notice does.
 
 use std::time::Duration;
@@ -10,7 +10,7 @@ use nth_session::{
     subagent::{Done, Job, SubagentEvent, SubagentId},
 };
 
-use super::{App, NOTICE_DELAY, Tab};
+use super::{App, NOTICE_DELAY, Tab, TabState};
 use crate::subagent::SubagentView;
 
 /// How long quitting waits for the stopped subagents to report back.
@@ -36,13 +36,16 @@ impl App {
                 self.content.add(Tab::Subagent(id));
             }
             SubagentEvent::Prompted { id, text } => {
-                // Its tab was closed and the model continued it: it opens
-                // again, so nothing runs out of sight.
                 if !self.subagent_views.contains_key(&id)
                     && let Some((agent, description)) = self.subagents.describe(id)
                 {
                     self.subagent_views
                         .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
+                }
+                // Its tab was closed and the model continued it: it opens
+                // again, with its earlier turns, so nothing runs out of
+                // sight.
+                if self.subagent_views.contains_key(&id) {
                     self.content.add(Tab::Subagent(id));
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
@@ -84,6 +87,29 @@ impl App {
             .count()
     }
 
+    /// Closes the tabs of subagents that answered, once you are not looking
+    /// at them. Their views stay, so a continued one opens again with its
+    /// earlier turns; a failed or stopped one stays open to say why.
+    pub(super) fn close_answered_subagents(&mut self) {
+        let answered: Vec<Tab> = self
+            .content
+            .tabs()
+            .iter()
+            .copied()
+            .filter(|&tab| tab != self.content.active())
+            .filter(|tab| match tab {
+                Tab::Subagent(id) => self
+                    .subagent_views
+                    .get(id)
+                    .is_some_and(|view| view.state() == TabState::Done),
+                _ => false,
+            })
+            .collect();
+        for tab in answered {
+            self.content.remove(tab);
+        }
+    }
+
     /// The subagent whose tab shows, if one does.
     pub(super) fn showing_subagent(&self) -> Option<SubagentId> {
         match self.content.active() {
@@ -121,7 +147,7 @@ impl App {
 
     /// Ends the subagents of a session that was left, after `/clear` or a
     /// resume: they worked for that conversation. Their tabs close as each
-    /// turn ends.
+    /// turn ends, and their views go with them, closed tab or not.
     pub(super) fn left_subagents(&mut self) {
         self.subagents.forget_all();
         let mut ended = Vec::new();
@@ -164,9 +190,12 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::app::{
-        keys::Action,
-        tests::{Idle, app, rows, tab_colour},
+    use crate::{
+        app::{
+            keys::Action,
+            tests::{Idle, app, rows, tab_colour},
+        },
+        chat::Entry,
     };
 
     /// An app with a front-end for subagents, as the chat has.
@@ -365,10 +394,72 @@ mod tests {
         app.apply(Action::Interrupt);
         assert!(!app.interrupted, "the parent's turn is left alone");
         ended(&mut app, 1, TaskOutcome::Interrupted);
-        assert_eq!(tab_colour(&mut app, "@    find tabs"), Color::Red);
+        app.apply(Action::Content(0));
+        assert_eq!(
+            tab_colour(&mut app, "@    find tabs"),
+            Color::Red,
+            "stays open to say why"
+        );
+        app.apply(Action::Content(1));
         app.apply(Action::CloseContent);
         assert_eq!(app.content.tabs(), [Tab::Chat]);
-        assert!(app.subagent_views.is_empty());
+        assert!(
+            app.subagent_views.contains_key(&1),
+            "kept for when it is continued"
+        );
+    }
+
+    #[test]
+    fn an_answered_tab_closes_by_itself() {
+        let mut app = app();
+        started(&mut app, 1, "explore");
+        prompted(&mut app, 1, "go");
+        ended(&mut app, 1, TaskOutcome::Completed("found".into()));
+
+        rows(&mut app);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+        assert!(app.subagent_views.contains_key(&1));
+    }
+
+    #[test]
+    fn an_answered_tab_showing_closes_once_left() {
+        let mut app = app();
+        started(&mut app, 1, "explore");
+        prompted(&mut app, 1, "go");
+        app.apply(Action::Content(1));
+        ended(&mut app, 1, TaskOutcome::Completed("found".into()));
+
+        rows(&mut app);
+        assert_eq!(app.content.active(), Tab::Subagent(1), "you are reading it");
+        app.apply(Action::Content(0));
+        rows(&mut app);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+    }
+
+    #[test]
+    fn a_continued_subagent_opens_again_with_its_turns() {
+        let mut app = app();
+        started(&mut app, 1, "explore");
+        prompted(&mut app, 1, "first question");
+        ended(&mut app, 1, TaskOutcome::Completed("found".into()));
+        rows(&mut app);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+
+        prompted(&mut app, 1, "second question");
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(1)]);
+        let asked: Vec<&Entry> = app.subagent_views[&1]
+            .chat
+            .transcript
+            .entries()
+            .filter(|entry| matches!(entry, Entry::User(_)))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                &Entry::User("first question".into()),
+                &Entry::User("second question".into())
+            ]
+        );
     }
 
     #[tokio::test]

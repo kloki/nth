@@ -111,15 +111,8 @@ impl App {
             self.hint = Some("still running · ctrl+w stops it first".into());
             return;
         }
-        match self.content.active() {
-            Tab::Monitor(id) => {
-                self.monitor_views.remove(&id);
-            }
-            Tab::Subagent(id) => {
-                self.subagent_views.remove(&id);
-            }
-            _ => {}
-        }
+        // A monitor's tab is only here while it runs, and a subagent's view
+        // stays: continued, it opens again with its turns.
         self.content.close();
     }
 

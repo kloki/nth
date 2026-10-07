@@ -513,6 +513,7 @@ impl App {
         .spacing(1)
         .areas(area);
 
+        self.close_answered_subagents();
         let tabs: Vec<_> = self
             .content
             .tabs()
