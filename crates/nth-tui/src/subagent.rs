@@ -109,12 +109,12 @@ impl SubagentView {
         title
     }
 
-    /// In front of the label: the spinner while its turn runs, else `@`
-    /// padded to the spinner's width, so the tab keeps its width.
+    /// In front of the label: the tabs' spinner while its turn runs, else
+    /// `@`.
     pub fn icon(&self) -> &'static str {
         match self.running_since {
-            Some(since) => spinner::frame(since.elapsed()),
-            None => "@   ",
+            Some(since) => spinner::dot(since.elapsed()),
+            None => "@",
         }
     }
 
@@ -200,15 +200,11 @@ mod tests {
         let mut view = view();
         assert_eq!(view.label(), "find tabs");
         assert_eq!(view.state(), TabState::Working);
-        assert_eq!(view.icon(), "@   ", "no turn to spin for yet");
+        assert_eq!(view.icon(), "@", "no turn to spin for yet");
         view.prompted("go".into());
         assert_eq!(view.state(), TabState::Working);
-        assert_ne!(view.icon(), "@   ", "spins while running");
-        assert_eq!(
-            view.icon().chars().count(),
-            "@   ".chars().count(),
-            "as wide as when it is not"
-        );
+        assert_ne!(view.icon(), "@", "spins while running");
+        assert_eq!(view.icon().chars().count(), 1, "as wide as `@`");
         assert!(view.is_running());
         view.ended(
             &TaskOutcome::Completed("ok".into()),
@@ -216,7 +212,7 @@ mod tests {
             "glm",
         );
         assert_eq!(view.state(), TabState::Done);
-        assert_eq!(view.icon(), "@   ");
+        assert_eq!(view.icon(), "@");
         assert!(!view.is_running());
         view.prompted("again".into());
         view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");

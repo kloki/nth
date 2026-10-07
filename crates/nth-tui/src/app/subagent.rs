@@ -303,7 +303,7 @@ mod tests {
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
         let after = rows(&mut app);
-        assert!(after[0].contains("[@    find tabs]"), "{}", after[0]);
+        assert!(after[0].contains("[@ find tabs]"), "{}", after[0]);
         assert_eq!(
             after[0].find(']').map(|i| after[0][..i].chars().count()),
             before[0].find(']').map(|i| before[0][..i].chars().count()),
@@ -312,7 +312,7 @@ mod tests {
             after[0]
         );
         assert_eq!(
-            tab_colour(&mut app, "@    find tabs"),
+            tab_colour(&mut app, "@ find tabs"),
             Color::Reset,
             "done fades on the tab showing"
         );
@@ -396,7 +396,7 @@ mod tests {
         ended(&mut app, 1, TaskOutcome::Interrupted);
         app.apply(Action::Content(0));
         assert_eq!(
-            tab_colour(&mut app, "@    find tabs"),
+            tab_colour(&mut app, "@ find tabs"),
             Color::Red,
             "stays open to say why"
         );
