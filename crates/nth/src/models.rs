@@ -1,4 +1,5 @@
-//! `nth models`: the models the endpoint serves, with the one in use marked.
+//! `nth models`: the models the providers serve, with the one in use marked,
+//! and on stderr the providers that could not be asked.
 
 use std::io::{IsTerminal, Write};
 
@@ -10,7 +11,16 @@ use crate::{client, config::Config};
 
 pub async fn run(json: bool, config: Config) -> Result<()> {
     let provider = client(&config)?;
-    let models = provider.models().await.map_err(|e| anyhow!(e))?;
+    let listing = provider.models().await.map_err(|e| anyhow!(e))?;
+    for failed in &listing.failed {
+        eprintln!(
+            "{} {}: {}",
+            "✗".red().bold(),
+            failed.origin.name.bold(),
+            failed.error
+        );
+    }
+    let models = listing.models;
 
     let mut out = std::io::stdout().lock();
     if json || !out.is_terminal() {

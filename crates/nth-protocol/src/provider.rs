@@ -105,9 +105,20 @@ impl Usage {
     }
 }
 
+/// The provider a model is served by, when the `Provider` fronts several.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Origin {
+    /// The config's key for it, and the prefix of its models' ids.
+    pub id: String,
+    /// What a listing shows.
+    pub name: String,
+}
+
 /// A model a provider can serve, with limits when they are known.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelInfo {
+    /// What a session names: `provider/model` when the model has an origin,
+    /// else the id the endpoint knows it by.
     pub id: String,
     pub name: Option<String>,
     /// Context window in tokens.
@@ -116,9 +127,46 @@ pub struct ModelInfo {
     pub output: Option<u64>,
     /// Whether it takes a reasoning effort.
     pub reasoning: bool,
+    pub origin: Option<Origin>,
+}
+
+/// What listing the models gave: the models, and the providers that could
+/// not be asked, so a wrong key shows up rather than a missing group.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Listing {
+    pub models: Vec<ModelInfo>,
+    pub failed: Vec<Failed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Failed {
+    pub origin: Origin,
+    pub error: String,
+}
+
+impl From<Vec<ModelInfo>> for Listing {
+    fn from(models: Vec<ModelInfo>) -> Self {
+        Self {
+            models,
+            failed: Vec::new(),
+        }
+    }
 }
 
 impl ModelInfo {
+    /// The id the endpoint knows the model by: `id` without the origin's
+    /// prefix. The one place that knows the two are joined by a `/`.
+    pub fn wire_id(&self) -> &str {
+        match &self.origin {
+            Some(origin) => self
+                .id
+                .strip_prefix(origin.id.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(&self.id),
+            None => &self.id,
+        }
+    }
+
     /// The known limits, such as `1M ctx · 128k out`; empty when none are.
     pub fn limits(&self) -> String {
         // Rounded to the nearest, with a decimal only where a window like
@@ -143,8 +191,10 @@ impl ModelInfo {
 }
 
 pub trait Provider: Send + Sync {
-    /// Only models this provider can actually talk to.
-    fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>>;
+    /// Only models this provider can actually talk to. An error means
+    /// nothing could be listed; a provider fronting several reports the
+    /// ones that failed in the listing.
+    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>>;
 
     fn stream<'a>(
         &'a self,
@@ -181,6 +231,7 @@ mod tests {
             context: Some(1_000_000),
             output: Some(131_072),
             reasoning: true,
+            origin: None,
         };
         assert_eq!(model.limits(), "1M ctx · 131k out");
         let unknown = ModelInfo {
@@ -201,5 +252,32 @@ mod tests {
             ..model
         };
         assert_eq!(rounded.limits(), "1M ctx · 66k out");
+    }
+
+    #[test]
+    fn the_wire_id_drops_the_origin_prefix_only() {
+        let bare = ModelInfo {
+            id: "z-ai/glm-5.2".into(),
+            name: None,
+            context: None,
+            output: None,
+            reasoning: false,
+            origin: None,
+        };
+        assert_eq!(bare.wire_id(), "z-ai/glm-5.2");
+        let served = ModelInfo {
+            id: "lyceum/z-ai/glm-5.2".into(),
+            origin: Some(Origin {
+                id: "lyceum".into(),
+                name: "Lyceum".into(),
+            }),
+            ..bare.clone()
+        };
+        assert_eq!(served.wire_id(), "z-ai/glm-5.2");
+        let mismatched = ModelInfo {
+            id: "lyceumx".into(),
+            ..served
+        };
+        assert_eq!(mismatched.wire_id(), "lyceumx", "no slash, so no prefix");
     }
 }

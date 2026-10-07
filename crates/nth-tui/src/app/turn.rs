@@ -373,7 +373,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Event, Message, ModelInfo, MonitorEvent, Provider, Request, Stream, StreamEvent,
+        BoxError, Event, Listing, Message, MonitorEvent, Provider, Request, Stream, StreamEvent,
         Usage,
     };
     use tokio::sync::Notify;
@@ -398,8 +398,8 @@ mod tests {
     }
 
     impl Provider for Hang {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
@@ -540,8 +540,8 @@ mod tests {
     struct Answer;
 
     impl Provider for Answer {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
@@ -830,7 +830,7 @@ mod tests {
     #[tokio::test]
     async fn closing_the_picker_leaves_the_turn_running() {
         let (mut app, _) = busy_app().await;
-        app.llms = Some(Vec::new());
+        app.llms = Some(Listing::default());
         app.apply(crate::app::keys::Action::LlmPicker);
 
         app.on_key(KeyEvent::from(KeyCode::Esc));

@@ -106,7 +106,7 @@ mod tests {
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
     use nth_notify::{Backend, BoxError as NotifyError, Notification, Urgency};
-    use nth_protocol::{BoxError, ModelInfo, Provider, Question, Request, StreamEvent};
+    use nth_protocol::{BoxError, Listing, Provider, Question, Request, StreamEvent};
     use nth_session::Session;
     use tokio::sync::{mpsc, oneshot};
 
@@ -119,8 +119,8 @@ mod tests {
     }
 
     impl Provider for Reply {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(

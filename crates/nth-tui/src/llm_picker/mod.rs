@@ -3,7 +3,7 @@
 
 mod view;
 
-use nth_protocol::{Effort, ModelInfo};
+use nth_protocol::{Effort, Failed, Listing, ModelInfo};
 pub use view::draw;
 
 #[derive(Debug)]
@@ -22,6 +22,8 @@ enum State {
     Failed(String),
     Ready {
         models: Vec<ModelInfo>,
+        /// The providers that could not be asked, shown after the models.
+        failed: Vec<Failed>,
         selected: usize,
     },
 }
@@ -36,28 +38,42 @@ impl LlmPicker {
     }
 
     /// Fills in the list, highlighting the model in use when it is listed.
-    pub fn load(&mut self, models: Result<Vec<ModelInfo>, String>) {
-        self.state = match models {
-            Ok(models) if models.is_empty() => State::Failed("the endpoint lists no models".into()),
-            Ok(models) => State::Ready {
-                selected: models
+    /// With no model at all, the first provider's failure, if any, is why.
+    pub fn load(&mut self, listing: Result<Listing, String>) {
+        self.state = match listing {
+            Ok(listing) if listing.models.is_empty() => {
+                State::Failed(match listing.failed.first() {
+                    Some(failed) => format!("{}: {}", failed.origin.name, failed.error),
+                    None => "the endpoint lists no models".into(),
+                })
+            }
+            Ok(listing) => State::Ready {
+                selected: listing
+                    .models
                     .iter()
                     .position(|m| m.id == self.current)
                     .unwrap_or(0),
-                models,
+                models: listing.models,
+                failed: listing.failed,
             },
             Err(error) => State::Failed(error),
         };
     }
 
     pub fn next(&mut self) {
-        if let State::Ready { models, selected } = &mut self.state {
+        if let State::Ready {
+            models, selected, ..
+        } = &mut self.state
+        {
             *selected = (*selected + 1) % models.len();
         }
     }
 
     pub fn prev(&mut self) {
-        if let State::Ready { models, selected } = &mut self.state {
+        if let State::Ready {
+            models, selected, ..
+        } = &mut self.state
+        {
             *selected = (*selected + models.len() - 1) % models.len();
         }
     }
@@ -88,7 +104,9 @@ impl LlmPicker {
 
     fn selected(&self) -> Option<&ModelInfo> {
         match &self.state {
-            State::Ready { models, selected } => models.get(*selected),
+            State::Ready {
+                models, selected, ..
+            } => models.get(*selected),
             _ => None,
         }
     }
@@ -105,12 +123,13 @@ pub(crate) mod tests {
             context: None,
             output: None,
             reasoning,
+            origin: None,
         }
     }
 
     fn ready(current: &str) -> LlmPicker {
         let mut picker = LlmPicker::new(current, Effort::Default);
-        picker.load(Ok(vec![model("glm", true), model("plain", false)]));
+        picker.load(Ok(vec![model("glm", true), model("plain", false)].into()));
         picker
     }
 
@@ -153,7 +172,7 @@ pub(crate) mod tests {
         picker.next();
         assert_eq!(picker.chosen(), None);
 
-        picker.load(Ok(Vec::new()));
+        picker.load(Ok(Listing::default()));
         assert!(matches!(picker.state, State::Failed(_)));
         picker.load(Err("offline".into()));
         assert!(matches!(picker.state, State::Failed(ref e) if e == "offline"));

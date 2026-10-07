@@ -47,7 +47,7 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, Inbox, Mode, ModelInfo, MonitorEvent, MonitorId, Monitors, Panel,
+    Ask, BoxError, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId, Monitors, Panel,
     Provider, Tool, Usage, monitor_log_dir,
 };
 use nth_session::{
@@ -154,8 +154,8 @@ pub struct App {
     git_loading: Job<Result<Option<GitStatus>, String>>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
-    llms: Option<Vec<ModelInfo>>,
-    llm_listing: Job<Result<Vec<ModelInfo>, BoxError>>,
+    llms: Option<Listing>,
+    llm_listing: Job<Result<Listing, BoxError>>,
     /// Where sessions are saved after every turn; `None` keeps them in
     /// memory only.
     store: Option<Arc<Store>>,
@@ -275,7 +275,7 @@ enum Step {
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
-    LlmsListed(Result<Result<Vec<ModelInfo>, BoxError>, JoinError>),
+    LlmsListed(Result<Result<Listing, BoxError>, JoinError>),
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
@@ -568,7 +568,8 @@ impl App {
                     model: &self.model,
                     effort: self.effort.wire(),
                     context_window: self.context_window(),
-                    llms: self.llms.as_ref().map(Vec::len),
+                    llms: self.llms.as_ref().map(|l| l.models.len()),
+                    failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
                     listing: self.llm_listing.is_running(),
                     checks: self.checkers.is_some(),
                     running: &self.servers,
