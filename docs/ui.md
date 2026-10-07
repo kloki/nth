@@ -151,7 +151,7 @@ model
 
 model usage
   opencode/glm-5.3  ██████████████████████████████  142
-  lyceum/kimi-k3    ███████▍                         35
+  openrouter/kimi   ███████▍                         35
   opencode/qwen-4   ▏                                 1
 
 language servers
@@ -261,12 +261,12 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 ```
 ▎ switch model                         ↑↓ model · ←→ effort · enter · esc
-▎   opencode/kimi    Kimi     256k
-▎ → lyceum/glm     ✓ GLM 5.3  128k
-▎   lyceum/plain     Plain    32k
+▎   opencode/kimi      Kimi     256k
+▎ → openrouter/glm   ✓ GLM 5.3  128k
+▎   openrouter/plain   Plain    32k
 ```
 
-With models from more than one provider, the picker shows ids with their `provider/` prefix in one list; with one, without it. A provider that could not be listed is one red `✗ Lyceum: 401 …` row after the models.
+With models from more than one provider, the picker shows ids with their `provider/` prefix in one list; with one, without it. A provider that could not be listed is one red `✗ OpenRouter: 401 …` row after the models.
 
 - **No border, default background.** The panel stands out by its bar, not by a box or a fill.
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
