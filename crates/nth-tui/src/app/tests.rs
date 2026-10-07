@@ -7,7 +7,7 @@ use crossterm::event::Event as TermEvent;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{
-    BoxError, Event, Message, ModelInfo, Panel, Provider, Request, Screen, StreamEvent, ToolCall,
+    BoxError, Event, Listing, Message, Panel, Provider, Request, Screen, StreamEvent, ToolCall,
     Usage,
 };
 use nth_session::Session;
@@ -19,8 +19,8 @@ use crate::llm_picker::tests::model;
 pub(crate) struct Idle;
 
 impl Provider for Idle {
-    fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-        async { Ok(Vec::new()) }.boxed()
+    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+        async { Ok(Listing::default()) }.boxed()
     }
 
     fn stream<'a>(
@@ -200,7 +200,7 @@ fn the_context_bar_fills_with_usage() {
 
     let mut glm = model("glm", true);
     glm.context = Some(1000);
-    app.llms = Some(vec![glm]);
+    app.llms = Some(vec![glm].into());
     let empty = rows(&mut app);
     assert!(
         empty[14].starts_with(&format!("{place} {} ", " ".repeat(13))),

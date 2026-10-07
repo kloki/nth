@@ -1,7 +1,7 @@
 //! Draws the picker in the prompt's place: a header with its keys, then the
 //! models, scrolled to the highlighted one.
 
-use nth_protocol::ModelInfo;
+use nth_protocol::{Failed, ModelInfo};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -37,9 +37,11 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
             format!("✗ {error}"),
             Style::new().fg(Color::Red),
         ))],
-        State::Ready { models, selected } => {
-            rows(picker, models, *selected, usize::from(list.height))
-        }
+        State::Ready {
+            models,
+            failed,
+            selected,
+        } => rows(picker, models, failed, *selected, usize::from(list.height)),
     };
     frame.render_widget(Paragraph::new(lines), list);
 }
@@ -49,10 +51,13 @@ fn note(text: Span<'_>) -> Line<'_> {
 }
 
 /// One row per model: id, a ✓ on the one in use, name and limits, and on
-/// the highlighted reasoning model the effort ←→ changes.
+/// the highlighted reasoning model the effort ←→ changes. The providers
+/// that could not be listed follow, each a row saying why. The window
+/// scrolls over all of them to keep the highlighted model in view.
 fn rows<'a>(
     picker: &'a LlmPicker,
     models: &'a [ModelInfo],
+    failed: &'a [Failed],
     selected: usize,
     height: usize,
 ) -> Vec<Line<'a>> {
@@ -66,14 +71,11 @@ fn rows<'a>(
         .map(|m| m.name.as_deref().unwrap_or("").chars().count())
         .max()
         .unwrap_or(0);
-    let first = selected.saturating_sub(height.saturating_sub(1));
     let pick = pick();
 
-    models
+    let mut lines: Vec<Line<'a>> = models
         .iter()
         .enumerate()
-        .skip(first)
-        .take(height)
         .map(|(i, model)| {
             let here = i == selected;
             let (arrow, id) = if here {
@@ -101,5 +103,18 @@ fn rows<'a>(
             }
             panel_row(ACCENT, spans)
         })
-        .collect()
+        .collect();
+    lines.extend(failed.iter().map(|failed| {
+        panel_row(
+            ACCENT,
+            [Span::styled(
+                format!("  ✗ {}: {}", failed.origin.name, failed.error),
+                Style::new().fg(Color::Red),
+            )],
+        )
+    }));
+    let first = selected.saturating_sub(height.saturating_sub(1));
+    lines.drain(..first);
+    lines.truncate(height);
+    lines
 }

@@ -438,7 +438,7 @@ pub(crate) mod tests {
         stream::{self, BoxStream},
     };
     use nth_protocol::{
-        Answer, Asker, Inbox, ModelInfo, MonitorEvent, Monitors, Question, Reply, Retry, Stream,
+        Answer, Asker, Inbox, Listing, MonitorEvent, Monitors, Question, Reply, Retry, Stream,
         ToolSpec,
     };
 
@@ -468,8 +468,8 @@ pub(crate) mod tests {
     }
 
     impl Provider for Scripted {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
@@ -538,8 +538,8 @@ pub(crate) mod tests {
     struct Unfinished(Vec<StreamEvent>);
 
     impl Provider for Unfinished {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
@@ -897,8 +897,8 @@ pub(crate) mod tests {
     }
 
     impl Provider for Flaky {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
@@ -1231,8 +1231,8 @@ pub(crate) mod tests {
     struct Recorder(Mutex<Vec<Message>>);
 
     impl Provider for Recorder {
-        fn models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, BoxError>> {
-            async { Ok(Vec::new()) }.boxed()
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
         }
 
         fn stream<'a>(
