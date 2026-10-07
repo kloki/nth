@@ -1,4 +1,4 @@
-nth · {project} — needs you
+nth · needs you
 {header}: {question}
 {more}
 {title}

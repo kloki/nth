@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Result, anyhow};
 use clap::ValueEnum;
 use nth_notify::{Context, Event};
 use owo_colors::OwoColorize;
@@ -41,9 +41,7 @@ pub async fn run(sample: Sample, json: bool, config: &Config) -> Result<()> {
         .notify
         .backend()
         .ok_or_else(|| anyhow!("notifications are off: [notify] enabled = false"))?;
-    let cwd = std::env::current_dir().context("no working directory")?;
     let cx = Context {
-        project: Context::project(&cwd),
         title: "nth notify".into(),
         elapsed: Duration::from_secs(83),
         reply: Some("A sample of what a finished turn looks like.".into()),

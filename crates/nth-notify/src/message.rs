@@ -1,7 +1,7 @@
 //! The text of each notification, from the files in `templates/`: the first
 //! line is the summary, the rest the body, with `{name}` filled in.
 
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use crate::{Notification, Urgency};
 
@@ -31,12 +31,9 @@ pub enum Event {
     },
 }
 
-/// Where it happened, so the notification says which of your sessions it
-/// is about.
+/// Which of your sessions it is about, and how its turn went.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Context {
-    /// The working directory's name.
-    pub project: String,
     /// The session's title: its first prompt.
     pub title: String,
     /// How long the turn ran.
@@ -45,25 +42,11 @@ pub struct Context {
     pub reply: Option<String>,
 }
 
-impl Context {
-    /// The project's name from its directory, or the whole path for `/`.
-    pub fn project(cwd: &Path) -> String {
-        cwd.file_name()
-            .unwrap_or(cwd.as_os_str())
-            .to_string_lossy()
-            .into_owned()
-    }
-}
-
 impl Event {
     pub fn notification(&self, cx: &Context) -> Notification {
         let elapsed = elapsed(cx.elapsed);
         let title = clip(&cx.title);
-        let mut values = vec![
-            ("project", cx.project.clone()),
-            ("title", title),
-            ("elapsed", elapsed),
-        ];
+        let mut values = vec![("title", title), ("elapsed", elapsed)];
         let (template, urgency) = match self {
             Event::Done => {
                 values.push(("reply", cx.reply.as_deref().map(clip).unwrap_or_default()));
@@ -170,7 +153,6 @@ mod tests {
 
     fn cx() -> Context {
         Context {
-            project: "nth".into(),
             title: "add notification support".into(),
             elapsed: Duration::from_secs(134),
             reply: Some("# Done\n\nAdded `nth-notify`.\nIt uses {title}.\nline 4".into()),
@@ -180,7 +162,7 @@ mod tests {
     #[test]
     fn done_says_where_how_long_and_how_it_ended() {
         let n = Event::Done.notification(&cx());
-        assert_eq!(n.summary, "nth · nth — done in 2m 14s");
+        assert_eq!(n.summary, "nth · done in 2m 14s");
         assert_eq!(
             n.body,
             "add notification support\n# Done\nAdded `nth-notify`.\nIt uses {title}.…"
@@ -203,7 +185,7 @@ mod tests {
     #[test]
     fn plan_ready_points_at_approve() {
         let n = Event::PlanReady.notification(&cx());
-        assert_eq!(n.summary, "nth · nth — plan ready");
+        assert_eq!(n.summary, "nth · plan ready");
         assert_eq!(
             n.body,
             "add notification support\nReview the Plan tab, then /approve."
@@ -213,7 +195,7 @@ mod tests {
     #[test]
     fn failed_is_critical_with_the_error() {
         let n = Event::Failed("rate limited".into()).notification(&cx());
-        assert_eq!(n.summary, "nth · nth — failed after 2m 14s");
+        assert_eq!(n.summary, "nth · failed after 2m 14s");
         assert_eq!(n.body, "add notification support\nrate limited");
         assert_eq!(n.urgency, Urgency::Critical);
     }
@@ -226,7 +208,7 @@ mod tests {
             more: 2,
         };
         let n = event.notification(&cx());
-        assert_eq!(n.summary, "nth · nth — needs you");
+        assert_eq!(n.summary, "nth · needs you");
         assert_eq!(
             n.body,
             "Doom loop: Keep going?\nand 2 more questions\nadd notification support"
