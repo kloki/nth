@@ -11,8 +11,10 @@ use nth_session::{
     plan::edits::{self, PlanEdits},
 };
 use ratatui::text::Line;
+use unicode_width::UnicodeWidthChar;
 
 use super::after_write::{self, Note};
+use crate::rich::Link;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -55,6 +57,33 @@ pub enum Entry {
     },
 }
 
+/// The run of non-blanks under display `column` of `text`; a click in a
+/// gap is on nothing.
+fn word_at(text: &str, column: usize) -> Option<&str> {
+    let mut at = 0;
+    // Byte and display column where the word being read started.
+    let mut word: Option<(usize, usize)> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some((start, from)) = word.take()
+                && (from..at).contains(&column)
+            {
+                return Some(&text[start..i]);
+            }
+            if column < at {
+                return None;
+            }
+        } else if word.is_none() {
+            word = Some((i, at));
+        }
+        at += c.width().unwrap_or(0);
+    }
+    match word {
+        Some((start, from)) if (from..at).contains(&column) => Some(&text[start..]),
+        _ => None,
+    }
+}
+
 /// The most output a tool row keeps.
 pub(super) const OUTPUT_LINES: usize = 10;
 /// Where the session appends a reminder about the mode to what you typed.
@@ -77,9 +106,34 @@ pub struct Transcript {
 
 pub(super) struct Item {
     pub(super) entry: Entry,
-    /// Wrapped lines, including the blank line that separates this entry
+    /// How the entry wraps, including the blank line that separates it
     /// from the previous one. Dropped whenever the entry or width changes.
-    pub(super) lines: Option<Vec<Line<'static>>>,
+    pub(super) lines: Option<Wrapped>,
+}
+
+/// An entry's rows for one width, and the links on them.
+pub(super) struct Wrapped {
+    pub(super) lines: Vec<Line<'static>>,
+    /// `row` counts from the entry's first line, the blank one included.
+    pub(super) links: Vec<Link>,
+}
+
+impl Entry {
+    /// What a right click on the entry copies: what it says, as written,
+    /// so an answer comes out as markdown. Rows that only report on the
+    /// turn copy nothing.
+    pub fn clipboard(&self) -> Option<String> {
+        match self {
+            Entry::User(text) | Entry::Answer(text) | Entry::TurnError(text) => Some(text.clone()),
+            Entry::Reasoning { text, .. } => Some(text.clone()),
+            Entry::Tool { output, .. } => Some(output.join("\n")),
+            Entry::Notice(_)
+            | Entry::PlanEdits(_)
+            | Entry::Retry { .. }
+            | Entry::TurnDone { .. }
+            | Entry::Interrupted { .. } => None,
+        }
+    }
 }
 
 impl Transcript {
@@ -175,6 +229,45 @@ impl Transcript {
 
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> {
         self.items.iter().map(|item| &item.entry)
+    }
+
+    /// The entry on `line` of the last layout.
+    pub fn entry_at(&self, line: usize) -> Option<&Entry> {
+        self.locate(line).map(|(item, _)| &item.entry)
+    }
+
+    /// The web address on `line` at display `column` of the last layout: a
+    /// markdown link's, or a bare `http(s)://` word's. Nothing else opens,
+    /// as the model writes the targets.
+    pub fn link_at(&self, line: usize, column: usize) -> Option<String> {
+        let (item, row) = self.locate(line)?;
+        let wrapped = item.lines.as_ref()?;
+        let linked = wrapped
+            .links
+            .iter()
+            .find(|link| link.row == row && link.columns.contains(&column))
+            .map(|link| link.url.clone());
+        let url = linked.or_else(|| {
+            let text = wrapped.lines.get(row)?.to_string();
+            word_at(&text, column).map(|word| {
+                word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\''])
+                    .to_string()
+            })
+        })?;
+        (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+    }
+
+    /// The item holding `line`, and which of its rows that is.
+    fn locate(&self, line: usize) -> Option<(&Item, usize)> {
+        let mut first = 0;
+        for item in &self.items {
+            let rows = item.lines.as_ref().map_or(0, |w| w.lines.len());
+            if line < first + rows {
+                return Some((item, line - first));
+            }
+            first += rows;
+        }
+        None
     }
 
     /// What the model got as a user message: what monitors said, shown as
@@ -438,6 +531,75 @@ pub(super) mod tests {
 
     pub(in crate::chat) fn text(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn a_word_is_only_under_its_own_columns() {
+        assert_eq!(word_at("a  bb c", 0), Some("a"));
+        assert_eq!(word_at("a  bb c", 1), None);
+        assert_eq!(word_at("a  bb c", 2), None);
+        assert_eq!(word_at("a  bb c", 3), Some("bb"));
+        assert_eq!(word_at("a  bb c", 6), Some("c"));
+        assert_eq!(word_at("a  bb c", 7), None);
+        assert_eq!(word_at("日本 x", 1), Some("日本"));
+    }
+
+    #[test]
+    fn entries_are_found_by_line_with_their_blank_separators() {
+        let mut t = transcript();
+        t.push_user("one".into());
+        t.apply(&Event::TextDelta("two".into()));
+        t.push_error("three".into());
+        t.layout(40);
+
+        assert_eq!(t.entry_at(0), Some(&Entry::User("one".into())));
+        // The blank line above an entry counts as its own.
+        assert_eq!(t.entry_at(1), Some(&Entry::Answer("two".into())));
+        assert_eq!(t.entry_at(2), Some(&Entry::Answer("two".into())));
+        assert_eq!(t.entry_at(4), Some(&Entry::TurnError("three".into())));
+        assert_eq!(t.entry_at(5), None);
+    }
+
+    #[test]
+    fn links_are_found_by_their_drawn_columns() {
+        let mut t = transcript();
+        t.apply(&Event::TextDelta(
+            "see [docs](https://x.y) or https://a.b/c. and [no](file:///etc/passwd)".into(),
+        ));
+        t.layout(60);
+        assert_eq!(
+            text(&t.visible(0, 1)),
+            ["▎ see docs or https://a.b/c. and no"]
+        );
+
+        // `docs` sits after the bar and `see `.
+        assert_eq!(t.link_at(0, 6).as_deref(), Some("https://x.y"));
+        assert_eq!(t.link_at(0, 9).as_deref(), Some("https://x.y"));
+        assert_eq!(t.link_at(0, 10), None);
+        // A bare address, without the full stop after it.
+        assert_eq!(t.link_at(0, 14).as_deref(), Some("https://a.b/c"));
+        // The gap before it opens nothing, nor does a file link.
+        assert_eq!(t.link_at(0, 13), None);
+        assert_eq!(t.link_at(0, 35), None);
+        assert_eq!(t.link_at(1, 6), None);
+    }
+
+    #[test]
+    fn a_link_on_a_wrapped_row_is_found_there() {
+        let mut t = transcript();
+        t.apply(&Event::TextDelta(
+            "alpha beta gamma [delta](https://d) epsilon".into(),
+        ));
+        t.layout(20);
+        assert_eq!(
+            text(&t.visible(0, 3)),
+            ["▎ alpha beta gamma", "▎ delta epsilon"]
+        );
+
+        assert_eq!(t.link_at(1, 2).as_deref(), Some("https://d"));
+        assert_eq!(t.link_at(1, 6).as_deref(), Some("https://d"));
+        assert_eq!(t.link_at(1, 7), None);
+        assert_eq!(t.link_at(0, 2), None);
     }
 
     #[test]

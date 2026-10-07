@@ -11,6 +11,7 @@ nth-notify.workspace = true
 nth-protocol.workspace = true
 nth-session.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 braille-bar.workspace = true
 crossterm.workspace = true
 futures.workspace = true

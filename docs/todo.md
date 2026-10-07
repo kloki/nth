@@ -42,8 +42,8 @@ A more flexible todo that uses the tab view
 
 Allow mouse control
 
-- [ ] Switching tabs
-- [ ] Clicking to copy
+- [x] Switching tabs
+- [x] Clicking to copy
 
 ### TUI
 

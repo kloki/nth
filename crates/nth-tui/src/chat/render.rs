@@ -8,9 +8,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::transcript::{Entry, OUTPUT_LINES, ToolState, Transcript};
+use super::transcript::{Entry, OUTPUT_LINES, ToolState, Transcript, Wrapped};
 use crate::{
-    rich,
+    rich::{self, Link, Markdown},
     theme::{BAR, BAR_WIDTH, INDENT, dim},
 };
 
@@ -25,15 +25,18 @@ impl Transcript {
         let mut total = 0;
         for item in &mut self.items {
             if item.lines.is_none() || is_live(&item.entry) {
-                let mut lines = Vec::new();
+                let mut wrapped = Wrapped {
+                    lines: Vec::new(),
+                    links: Vec::new(),
+                };
                 // Every entry stands apart from the one before it.
                 if previous.is_some() {
-                    lines.push(Line::default());
+                    wrapped.lines.push(Line::default());
                 }
-                lines.extend(render(&item.entry, &self.cwd, width));
-                item.lines = Some(lines);
+                wrapped.extend(render(&item.entry, &self.cwd, width));
+                item.lines = Some(wrapped);
             }
-            total += item.lines.as_ref().map_or(0, Vec::len);
+            total += item.lines.as_ref().map_or(0, |w| w.lines.len());
             previous = Some(&item.entry);
         }
         total
@@ -43,11 +46,51 @@ impl Transcript {
     pub fn visible(&self, top: usize, height: usize) -> Vec<Line<'static>> {
         self.items
             .iter()
-            .flat_map(|item| item.lines.iter().flatten())
+            .flat_map(|item| item.lines.iter().flat_map(|w| &w.lines))
             .skip(top)
             .take(height)
             .cloned()
             .collect()
+    }
+}
+
+impl Wrapped {
+    /// Appends `more` below what is there, its links' rows moved down.
+    fn extend(&mut self, more: Wrapped) {
+        let below = self.lines.len();
+        self.lines.extend(more.lines);
+        self.links.extend(more.links.into_iter().map(|link| Link {
+            row: link.row + below,
+            ..link
+        }));
+    }
+
+    fn plain(lines: Vec<Line<'static>>) -> Self {
+        Self {
+            lines,
+            links: Vec::new(),
+        }
+    }
+
+    /// `prefix` columns put in front of every row.
+    fn indented(self, prefix: usize) -> Self {
+        Self {
+            lines: self.lines,
+            links: self
+                .links
+                .into_iter()
+                .map(|link| link.shifted(prefix))
+                .collect(),
+        }
+    }
+}
+
+impl From<Markdown> for Wrapped {
+    fn from(markdown: Markdown) -> Self {
+        Self {
+            lines: markdown.lines,
+            links: markdown.links,
+        }
     }
 }
 
@@ -56,10 +99,10 @@ fn is_live(entry: &Entry) -> bool {
     matches!(entry, Entry::Reasoning { took: None, .. })
 }
 
-fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>> {
+fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Wrapped {
     let dim = dim();
-    match entry {
-        Entry::User(text) => barred_markdown(text, width, Style::new().fg(Color::Green)),
+    let lines = match entry {
+        Entry::User(text) => return barred_markdown(text, width, Style::new().fg(Color::Green)),
         Entry::PlanEdits(edits) => vec![Line::from(vec![
             Span::raw(INDENT),
             Span::styled("✎ ", Style::new().fg(Color::Magenta)),
@@ -92,7 +135,9 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             Span::styled("↳ ", Style::new().fg(Color::Magenta)),
             Span::styled(format!("subagent {id} · {agent} · {state}"), dim),
         ])],
-        Entry::Answer(text) => barred_markdown(text, width, Style::new().fg(Color::Blue)),
+        Entry::Answer(text) => {
+            return barred_markdown(text, width, Style::new().fg(Color::Blue));
+        }
         Entry::Retry { attempt, delay } => vec![Line::from(vec![
             Span::raw(INDENT),
             Span::styled("⟳ ", Style::new().fg(Color::Yellow)),
@@ -125,45 +170,7 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             state,
             output,
             notes,
-        } => {
-            // A call is told apart by its tool's icon, not by a success
-            // mark: only a failure stands out, in red.
-            let name_style = match state {
-                ToolState::Failed(_) => Style::new().fg(Color::Red),
-                ToolState::Running | ToolState::Done => Style::new().fg(Color::Cyan),
-            };
-            let icon_style = match state {
-                ToolState::Running => dim,
-                ToolState::Done | ToolState::Failed(_) => name_style,
-            };
-            // One bar down the call and its output, so they read as one block.
-            let bar = Style::new().fg(Color::Cyan);
-            let mut spans = vec![
-                Span::styled(BAR, bar),
-                Span::styled(icon(&call.name), icon_style),
-                Span::raw(" "),
-                Span::styled(format!("{:<6} ", call.name), name_style),
-                Span::styled(call.summary(cwd), dim),
-            ];
-            if let ToolState::Failed(e) = state {
-                spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
-            }
-            let mut lines = vec![Line::from(spans)];
-            let room = usize::from(width.saturating_sub(BAR_WIDTH)).saturating_sub(INDENT.len());
-            lines.extend(output_lines(call, output, room).into_iter().map(|line| {
-                let mut spans = vec![Span::styled(BAR, bar), Span::raw(INDENT)];
-                spans.extend(line.spans);
-                Line::from(spans)
-            }));
-            lines.extend(notes.iter().map(|note| {
-                Line::from(vec![
-                    Span::styled(BAR, bar),
-                    Span::raw(INDENT),
-                    note.span(cwd),
-                ])
-            }));
-            lines
-        }
+        } => return tool(call, state, output, notes, cwd, width),
         Entry::TurnDone {
             model,
             tool_calls,
@@ -188,7 +195,60 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Vec<Line<'static>
             Span::styled("⏹ ", Style::new().fg(Color::Yellow)),
             Span::styled(format!("interrupted · {:.1}s", elapsed.as_secs_f64()), dim),
         ])],
+    };
+    Wrapped::plain(lines)
+}
+
+/// A call as a row naming it, then its output and notes under one bar, so
+/// they read as one block.
+fn tool(
+    call: &ToolCall,
+    state: &ToolState,
+    output: &[String],
+    notes: &[super::after_write::Note],
+    cwd: &std::path::Path,
+    width: u16,
+) -> Wrapped {
+    let dim = dim();
+    // A call is told apart by its tool's icon, not by a success mark: only
+    // a failure stands out, in red.
+    let name_style = match state {
+        ToolState::Failed(_) => Style::new().fg(Color::Red),
+        ToolState::Running | ToolState::Done => Style::new().fg(Color::Cyan),
+    };
+    let icon_style = match state {
+        ToolState::Running => dim,
+        ToolState::Done | ToolState::Failed(_) => name_style,
+    };
+    let bar = Style::new().fg(Color::Cyan);
+    let mut spans = vec![
+        Span::styled(BAR, bar),
+        Span::styled(icon(&call.name), icon_style),
+        Span::raw(" "),
+        Span::styled(format!("{:<6} ", call.name), name_style),
+        Span::styled(call.summary(cwd), dim),
+    ];
+    if let ToolState::Failed(e) = state {
+        spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));
     }
+    let mut wrapped = Wrapped::plain(vec![Line::from(spans)]);
+    let room = usize::from(width.saturating_sub(BAR_WIDTH)).saturating_sub(INDENT.len());
+    let mut shown =
+        output_lines(call, output, room).indented(usize::from(BAR_WIDTH) + INDENT.len());
+    for line in &mut shown.lines {
+        let mut spans = vec![Span::styled(BAR, bar), Span::raw(INDENT)];
+        spans.append(&mut line.spans);
+        line.spans = spans;
+    }
+    wrapped.extend(shown);
+    wrapped.lines.extend(notes.iter().map(|note| {
+        Line::from(vec![
+            Span::styled(BAR, bar),
+            Span::raw(INDENT),
+            note.span(cwd),
+        ])
+    }));
+    wrapped
 }
 
 /// The mark a tool's row starts with, so calls can be told apart at a glance.
@@ -216,20 +276,22 @@ fn icon(tool: &str) -> &'static str {
 /// language, an edit as a diff, a fetched page as markdown, anything else
 /// as it came. Lines are not wrapped, except a page's prose: a row shows
 /// the start of each.
-fn output_lines(call: &ToolCall, output: &[String], room: usize) -> Vec<Line<'static>> {
+fn output_lines(call: &ToolCall, output: &[String], room: usize) -> Wrapped {
     let args = serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default();
     let arg = |key: &str| args[key].as_str().unwrap_or_default();
-    match call.name.as_str() {
+    let lines = match call.name.as_str() {
         "read" => read_lines(output, arg("filePath"), room),
         "write" => rich::code(&output.join("\n"), arg("filePath"), room),
         "edit" => edit_lines(arg("oldString"), arg("newString"), arg("filePath"), room),
         "webfetch" if matches!(arg("format"), "" | "markdown") => {
-            let mut lines = rich::markdown(&output.join("\n"), room);
-            lines.truncate(OUTPUT_LINES);
-            lines
+            let mut page = Wrapped::from(rich::markdown(&output.join("\n"), room));
+            page.lines.truncate(OUTPUT_LINES);
+            page.links.retain(|link| link.row < OUTPUT_LINES);
+            return page;
         }
         _ => plain(output),
-    }
+    };
+    Wrapped::plain(lines)
 }
 
 fn plain(output: &[String]) -> Vec<Line<'static>> {
@@ -290,16 +352,16 @@ const GUTTER: &str = "  ";
 
 /// Markdown beside the message bar, wrapped to fit, the bar repeated on
 /// every row, blank ones too, so a block reads as one.
-fn barred_markdown(text: &str, width: u16, bar: Style) -> Vec<Line<'static>> {
+fn barred_markdown(text: &str, width: u16, bar: Style) -> Wrapped {
     let room = usize::from(width.saturating_sub(BAR_WIDTH).max(1));
-    rich::markdown(text.trim_matches('\n'), room)
-        .into_iter()
-        .map(|line| {
-            let mut spans = vec![Span::styled(BAR, bar)];
-            spans.extend(line.spans);
-            Line::from(spans)
-        })
-        .collect()
+    let mut wrapped =
+        Wrapped::from(rich::markdown(text.trim_matches('\n'), room)).indented(BAR_WIDTH.into());
+    for line in &mut wrapped.lines {
+        let mut spans = vec![Span::styled(BAR, bar)];
+        spans.append(&mut line.spans);
+        line.spans = spans;
+    }
+    wrapped
 }
 
 /// Wraps `text` to fit beside the message bar, repeating the bar on every

@@ -16,6 +16,7 @@ mod keys;
 mod llms;
 mod mode;
 mod monitor;
+mod mouse;
 mod notify;
 mod plan;
 mod resume;
@@ -35,7 +36,7 @@ use anyhow::{Context, Result};
 use checks::lsp_changed;
 use completion::Completion;
 pub(crate) use content::{Content, Tab, TabState};
-use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
+use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind};
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -82,7 +83,6 @@ use crate::{
     subagent::SubagentView,
 };
 
-const WHEEL_LINES: usize = 3;
 /// How often the app redraws with nothing else happening, while a turn
 /// runs or a monitor does: the spinner shows every frame, and the
 /// reasoning timer and the monitors' running time advance.
@@ -218,6 +218,10 @@ pub struct App {
     /// A word on what the last key did not do, on the status bar until the
     /// next key.
     pub hint: Option<String>,
+    /// Where the last draw put the header, so a click knows it landed there.
+    areas: mouse::Areas,
+    /// How a right click's text reaches the clipboard; tests put it nowhere.
+    clipboard: fn(&str) -> std::io::Result<()>,
     /// ctrl+g asked for the editor, on this target; the loop opens it
     /// after this step.
     pending_editor: Option<editor::Target>,
@@ -379,6 +383,8 @@ impl App {
             notices_due: None,
             hold_notices: false,
             hint: None,
+            areas: mouse::Areas::default(),
+            clipboard: crate::terminal::copy,
             pending_editor: None,
             editing: None,
             editor: Job::default(),
@@ -533,21 +539,8 @@ impl App {
         .areas(area);
 
         self.close_answered_subagents();
-        let tabs: Vec<_> = self
-            .content
-            .tabs()
-            .to_vec()
-            .into_iter()
-            .map(|tab| {
-                let state = self.tab_state(tab);
-                header::TabLabel {
-                    icon: self.tab_icon(tab),
-                    name: self.tab_label(tab),
-                    state: self.content.shown_state(tab, state),
-                    active: tab == self.content.active(),
-                }
-            })
-            .collect();
+        self.areas = mouse::Areas { header };
+        let tabs = self.tab_labels();
         header::draw(frame, header, &tabs);
         match self.content.active() {
             Tab::Monitor(id) => {
@@ -621,19 +614,28 @@ impl App {
         }
     }
 
+    /// The header's tabs as it shows them now.
+    fn tab_labels(&mut self) -> Vec<header::TabLabel> {
+        self.content
+            .tabs()
+            .to_vec()
+            .into_iter()
+            .map(|tab| {
+                let state = self.tab_state(tab);
+                header::TabLabel {
+                    icon: self.tab_icon(tab),
+                    name: self.tab_label(tab),
+                    state: self.content.shown_state(tab, state),
+                    active: tab == self.content.active(),
+                }
+            })
+            .collect()
+    }
+
     fn on_terminal(&mut self, event: TermEvent) {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-            TermEvent::Mouse(mouse) => {
-                let Some(view) = self.active_view() else {
-                    return;
-                };
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => view.scroll_up(WHEEL_LINES),
-                    MouseEventKind::ScrollDown => view.scroll_down(WHEEL_LINES),
-                    _ => {}
-                }
-            }
+            TermEvent::Mouse(mouse) => self.on_mouse(mouse),
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt.paste(&text);
                 self.refresh_completion();

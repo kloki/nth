@@ -872,9 +872,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hoodrich"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c54f6ba6ff17bbee931e7375a36dbe83c0b8cff23fcabe9572c553a1f63fa8"
+checksum = "d554da83800c4fb97894e48b19b46df7d11a9137d6b36aab34e281d35e0162cf"
 dependencies = [
  "pulldown-cmark",
  "ratatui",
@@ -1640,6 +1640,7 @@ name = "nth-tui"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "braille-bar",
  "crossterm",
  "futures",

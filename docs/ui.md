@@ -51,6 +51,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
   Diagnostics is always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
+- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                  |

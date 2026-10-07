@@ -15,9 +15,7 @@ use ratatui::{
     widgets::{Paragraph, ScrollbarState},
 };
 use scroll::Scroll;
-#[cfg(test)]
-pub use transcript::Entry;
-pub use transcript::Transcript;
+pub use transcript::{Entry, Transcript};
 
 use crate::theme::dim;
 
@@ -28,6 +26,10 @@ pub struct Chat {
     height: usize,
     /// First line of the last full screen, from the last draw.
     max_top: usize,
+    /// Where the last draw put the history and which line it started at,
+    /// so a click finds what it landed on.
+    area: Rect,
+    top: usize,
 }
 
 impl Chat {
@@ -37,6 +39,8 @@ impl Chat {
             scroll: Scroll::default(),
             height: 0,
             max_top: 0,
+            area: Rect::default(),
+            top: 0,
         }
     }
 
@@ -117,10 +121,33 @@ impl Chat {
         }
 
         let top = self.scroll.top(self.max_top);
+        self.area = area;
+        self.top = top;
         frame.render_widget(
             Paragraph::new(self.transcript.visible(top, self.height)),
             area,
         );
+    }
+
+    /// The entry drawn at screen position (`column`, `row`) by the last draw.
+    pub fn entry_at(&self, column: u16, row: u16) -> Option<&Entry> {
+        let (line, _) = self.line_at(column, row)?;
+        self.transcript.entry_at(line)
+    }
+
+    /// The web address drawn at screen position (`column`, `row`), if any.
+    pub fn link_at(&self, column: u16, row: u16) -> Option<String> {
+        let (line, column) = self.line_at(column, row)?;
+        self.transcript.link_at(line, column)
+    }
+
+    /// The history line and the column into it under a screen position.
+    fn line_at(&self, column: u16, row: u16) -> Option<(usize, usize)> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        let line = self.top + usize::from(row.checked_sub(self.area.y)?);
+        Some((line, usize::from(column.checked_sub(self.area.x)?)))
     }
 
     fn half_page(&self) -> usize {
