@@ -150,9 +150,9 @@ model
   25 models served
 
 model usage
-  glm-5.3  ██████████████████████████████  142
-  kimi-k3  ███████▍                         35
-  qwen-4   ▏                                 1
+  opencode/glm-5.3  ██████████████████████████████  142
+  lyceum/kimi-k3    ███████▍                         35
+  opencode/qwen-4   ▏                                 1
 
 language servers
   ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
@@ -175,7 +175,7 @@ agents
 ```
 
 - **Sections.** A bold title each, and rows under it: model, model usage, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
-- **Model usage.** A bar per model that ran a turn, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
+- **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 
@@ -244,7 +244,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 - **One style.** Every input panel looks the same; see [Input panel style](#input-panel-style).
 - **Context swaps it.** Today that is the model picker. Later come question tool answers, permission prompts, the session list and similar. Each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model picker is a header plus a list, around 8. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
-- **The model picker lists the most used first.** By turns run on each model, counted across runs in `$XDG_DATA_HOME/nth/llm-usage.json`; models used equally often, and the unused ones, keep the endpoint's order. It still opens on the model in use.
+- **The model picker lists the most used first.** By turns run on each model, counted across runs in `$XDG_DATA_HOME/nth/llm-usage.json` by `provider/model` id. A provider's models stay together under its name: the providers with the most turns come first, then the most used of each. Ties, and the unused models, keep the listing's order. It still opens on the model in use.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
 

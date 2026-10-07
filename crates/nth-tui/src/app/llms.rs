@@ -51,9 +51,9 @@ impl App {
 
     /// The LLMs as the picker lists them; `llms` stays in the endpoint's
     /// order.
-    fn by_usage(&self, llms: &[ModelInfo]) -> Vec<ModelInfo> {
-        let mut llms = llms.to_vec();
-        self.llm_usage.order(&mut llms);
+    fn by_usage(&self, llms: &Listing) -> Listing {
+        let mut llms = llms.clone();
+        self.llm_usage.order(&mut llms.models);
         llms
     }
 
@@ -192,7 +192,10 @@ mod tests {
             rows[7].starts_with(" ▎ → glm   ✓"),
             "still on the model in use"
         );
-        assert_eq!(app.llms.as_ref().map(|l| l[0].id.as_str()), Some("glm"));
+        assert_eq!(
+            app.llms.as_ref().map(|l| l.models[0].id.as_str()),
+            Some("glm")
+        );
     }
 
     #[tokio::test]
