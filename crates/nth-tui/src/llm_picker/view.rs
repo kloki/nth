@@ -1,6 +1,5 @@
 //! Draws the picker in the prompt's place: a header with its keys, then the
-//! models, grouped under their providers when there are several, scrolled
-//! to the highlighted one.
+//! models, the most used first, scrolled to the highlighted one.
 
 use std::collections::BTreeSet;
 
@@ -55,10 +54,9 @@ fn note(text: Span<'_>) -> Line<'_> {
 
 /// One row per model: id, a ✓ on the one in use, name and limits, and on
 /// the highlighted reasoning model the effort ←→ changes. With models from
-/// several providers, each provider's rows sit under its name. The
-/// providers that could not be listed follow, each a row saying why. The
-/// window scrolls over all of them to keep the highlighted model in view,
-/// with its provider's name when it is the first under it.
+/// several providers, ids keep their `provider/` prefix. The providers that
+/// could not be listed follow, each a row saying why. The window scrolls
+/// over all of them to keep the highlighted model in view.
 fn rows<'a>(
     picker: &'a LlmPicker,
     models: &'a [ModelInfo],
@@ -70,10 +68,16 @@ fn rows<'a>(
         .iter()
         .filter_map(|m| m.origin.as_ref().map(|o| o.id.as_str()))
         .collect();
-    let grouped = origins.len() > 1;
+    let shown_id = |m: &'a ModelInfo| {
+        if origins.len() > 1 {
+            m.id.as_str()
+        } else {
+            m.wire_id()
+        }
+    };
     let id_width = models
         .iter()
-        .map(|m| m.wire_id().chars().count())
+        .map(|m| shown_id(m).chars().count())
         .max()
         .unwrap_or(0);
     let name_width = models
@@ -83,77 +87,48 @@ fn rows<'a>(
         .unwrap_or(0);
     let pick = pick();
 
-    // Each line with whether it is a provider's name, and where the
-    // highlighted model's line is.
-    let mut lines: Vec<(Line<'a>, bool)> = Vec::new();
-    let mut selected_line = 0;
-    let mut shown: Option<&str> = None;
-    for (i, model) in models.iter().enumerate() {
-        if grouped {
-            let origin = model.origin.as_ref().map(|o| o.id.as_str());
-            if origin != shown {
-                let name = model.origin.as_ref().map_or("", |o| o.name.as_str());
-                lines.push((panel_row(ACCENT, [Span::styled(name, dim())]), true));
-                shown = origin;
+    let mut lines: Vec<Line<'a>> = models
+        .iter()
+        .enumerate()
+        .map(|(i, model)| {
+            let here = i == selected;
+            let (arrow, id) = if here {
+                ("→ ", pick)
+            } else {
+                ("  ", Style::new().fg(Color::Blue))
+            };
+            let active = if model.id == picker.current {
+                "✓"
+            } else {
+                " "
+            };
+            let name = model.name.as_deref().unwrap_or("");
+            let mut spans = vec![
+                Span::styled(arrow, pick),
+                Span::styled(format!("{:<id_width$} ", shown_id(model)), id),
+                Span::styled(active, Style::new().fg(Color::Green)),
+                Span::styled(format!(" {name:<name_width$}  {}", model.limits()), dim()),
+            ];
+            if here && model.reasoning {
+                spans.push(Span::styled(
+                    format!("  ◂ {} ▸", picker.effort.name()),
+                    pick,
+                ));
             }
-        }
-        if i == selected {
-            selected_line = lines.len();
-        }
-        lines.push((
-            {
-                let here = i == selected;
-                let (arrow, id) = if here {
-                    ("→ ", pick)
-                } else {
-                    ("  ", Style::new().fg(Color::Blue))
-                };
-                let active = if model.id == picker.current {
-                    "✓"
-                } else {
-                    " "
-                };
-                let name = model.name.as_deref().unwrap_or("");
-                let mut spans = vec![
-                    Span::styled(arrow, pick),
-                    Span::styled(format!("{:<id_width$} ", model.wire_id()), id),
-                    Span::styled(active, Style::new().fg(Color::Green)),
-                    Span::styled(format!(" {name:<name_width$}  {}", model.limits()), dim()),
-                ];
-                if here && model.reasoning {
-                    spans.push(Span::styled(
-                        format!("  ◂ {} ▸", picker.effort.name()),
-                        pick,
-                    ));
-                }
-                panel_row(ACCENT, spans)
-            },
-            false,
-        ));
-    }
+            panel_row(ACCENT, spans)
+        })
+        .collect();
     lines.extend(failed.iter().map(|failed| {
-        (
-            panel_row(
-                ACCENT,
-                [Span::styled(
-                    format!("  ✗ {}: {}", failed.origin.name, failed.error),
-                    Style::new().fg(Color::Red),
-                )],
-            ),
-            false,
+        panel_row(
+            ACCENT,
+            [Span::styled(
+                format!("  ✗ {}: {}", failed.origin.name, failed.error),
+                Style::new().fg(Color::Red),
+            )],
         )
     }));
-    let mut first = (selected_line + 1).saturating_sub(height);
-    let under_name = selected_line > 0 && lines[selected_line - 1].1;
-    if under_name && first == selected_line && height > 1 {
-        first -= 1;
-    }
-    lines
-        .into_iter()
-        .skip(first)
-        .take(height)
-        .map(|(line, _)| line)
-        .collect()
+    let first = (selected + 1).saturating_sub(height);
+    lines.into_iter().skip(first).take(height).collect()
 }
 
 #[cfg(test)]
@@ -192,37 +167,35 @@ mod tests {
     }
 
     #[test]
-    fn models_from_several_providers_sit_under_their_names() {
-        let models = vec![model("lyceum", "glm"), model("opencode", "kimi")];
+    fn models_from_several_providers_keep_their_prefix() {
+        let models = vec![model("opencode", "kimi"), model("lyceum", "glm")];
         let picker = picker(models.clone(), "opencode/kimi");
 
         let lines: Vec<_> = rows(&picker, &models, &[], 1, 8).iter().map(text).collect();
 
-        assert_eq!(lines, ["▎ LYCEUM", "▎   glm", "▎ OPENCODE", "▎ → kimi ✓"]);
+        assert_eq!(lines, ["▎   opencode/kimi ✓", "▎ → lyceum/glm"]);
     }
 
     #[test]
-    fn one_provider_needs_no_name() {
+    fn one_provider_needs_no_prefix() {
         let models = vec![model("lyceum", "glm"), model("lyceum", "kimi")];
         let picker = picker(models.clone(), "x");
 
         let lines: Vec<_> = rows(&picker, &models, &[], 0, 8).iter().map(text).collect();
 
-        assert_eq!(lines, ["▎ → glm", "▎   kimi"], "ids without the prefix");
+        assert_eq!(lines, ["▎ → glm", "▎   kimi"]);
     }
 
     #[test]
-    fn the_window_keeps_the_highlighted_model_and_its_name_in_view() {
-        let models = vec![model("lyceum", "glm"), model("opencode", "kimi")];
+    fn the_window_keeps_the_highlighted_model_in_view() {
+        let models = vec![
+            model("lyceum", "glm"),
+            model("lyceum", "kimi"),
+            model("lyceum", "qwen"),
+        ];
         let picker = picker(models.clone(), "x");
 
-        let lines: Vec<_> = rows(&picker, &models, &[], 1, 3).iter().map(text).collect();
-        assert_eq!(lines, ["▎   glm", "▎ OPENCODE", "▎ → kimi"]);
-
-        let lines: Vec<_> = rows(&picker, &models, &[], 1, 2).iter().map(text).collect();
-        assert_eq!(lines, ["▎ OPENCODE", "▎ → kimi"], "the name comes along");
-
-        let lines: Vec<_> = rows(&picker, &models, &[], 1, 1).iter().map(text).collect();
-        assert_eq!(lines, ["▎ → kimi"], "but never instead of the model");
+        let lines: Vec<_> = rows(&picker, &models, &[], 2, 2).iter().map(text).collect();
+        assert_eq!(lines, ["▎   kimi", "▎ → qwen"]);
     }
 }

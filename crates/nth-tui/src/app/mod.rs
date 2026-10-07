@@ -75,7 +75,7 @@ use crate::{
     git::GitStatus,
     header,
     history::History,
-    llm_picker,
+    llm_picker::{self, usage::LlmUsage},
     monitor::MonitorView,
     plan::PlanView,
     prompt::{self, Prompt},
@@ -105,6 +105,10 @@ pub struct App {
     /// after it, since an aborted task can't stop a write already on the
     /// blocking pool.
     history_saving: Job<std::io::Result<()>>,
+    /// Turns run on each model, which orders the picker.
+    llm_usage: LlmUsage,
+    /// Saved like the history, one write at a time.
+    llm_usage_saving: Job<std::io::Result<()>>,
     /// Prompts sent while a turn runs, oldest first; each runs as its own
     /// turn once the one before ends well. Always empty while idle.
     pub queue: VecDeque<Queued>,
@@ -279,6 +283,7 @@ enum Step {
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
+    LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
@@ -325,6 +330,8 @@ impl App {
             }),
             history: History::default(),
             history_saving: Job::default(),
+            llm_usage: LlmUsage::default(),
+            llm_usage_saving: Job::default(),
             queue: VecDeque::new(),
             interrupted: false,
             last_turn: TabState::Idle,
@@ -434,6 +441,11 @@ impl App {
         self
     }
 
+    pub fn with_llm_usage(mut self, usage: LlmUsage) -> Self {
+        self.llm_usage = usage;
+        self
+    }
+
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         // `None` while your editor has the terminal.
         let mut input = Some(EventStream::new());
@@ -470,6 +482,7 @@ impl App {
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
+                saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
@@ -506,6 +519,9 @@ impl App {
                 }
                 Step::HistorySaved(saved) => {
                     self.history_saved(saved.context("saving prompt history failed")?)
+                }
+                Step::LlmUsageSaved(saved) => {
+                    self.llm_usage_saved(saved.context("saving model usage failed")?)
                 }
                 Step::EditorClosed(ended) => {
                     self.editor_closed(terminal, &mut input, ended).await?
@@ -575,6 +591,7 @@ impl App {
                     running: &self.servers,
                     context: &self.context,
                     home: self.home.as_deref(),
+                    usage: self.llm_usage.ranked(),
                 };
                 self.diagnostics.draw(frame, content, &facts);
                 if let Some(state) = self.diagnostics.scrollbar() {

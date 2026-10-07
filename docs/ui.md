@@ -149,6 +149,11 @@ model
   glm-5.3 · high · 128k context
   25 models served
 
+model usage
+  opencode/glm-5.3  ██████████████████████████████  142
+  openrouter/kimi   ███████▍                         35
+  opencode/qwen-4   ▏                                 1
+
 language servers
   ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
   ● ruff      ~/.local/bin/ruff  → ~/repos/nth
@@ -169,7 +174,8 @@ agents
   ↳ general  builtin
 ```
 
-- **Sections.** A bold title each, and rows under it: model, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
+- **Sections.** A bold title each, and rows under it: model, model usage, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
+- **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 
@@ -238,6 +244,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 - **One style.** Every input panel looks the same; see [Input panel style](#input-panel-style).
 - **Context swaps it.** Today that is the model picker. Later come question tool answers, permission prompts, the session list and similar. Each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model picker is a header plus a list, around 8. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
+- **The model picker lists the most used first.** By turns run on each model, across providers, counted across runs in `$XDG_DATA_HOME/nth/llm-usage.json` by `provider/model` id. Ties, and the unused models, keep the listing's order. It still opens on the model in use.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
 
@@ -254,14 +261,12 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 
 ```
 ▎ switch model                         ↑↓ model · ←→ effort · enter · esc
-▎ Lyceum
-▎ → glm   ✓ GLM 5.3  128k
-▎   plain   Plain    32k
-▎ OpenCode Go
-▎   kimi    Kimi     256k
+▎   opencode/kimi      Kimi     256k
+▎ → openrouter/glm   ✓ GLM 5.3  128k
+▎   openrouter/plain   Plain    32k
 ```
 
-With models from more than one provider, the picker puts each provider's rows under its name, dim, and shows the ids without their `provider/` prefix; a provider that could not be listed is one red `✗ Lyceum: 401 …` row after the models. The chosen model is still `provider/model`, as the status bar shows it.
+With models from more than one provider, the picker shows ids with their `provider/` prefix in one list; with one, without it. A provider that could not be listed is one red `✗ OpenRouter: 401 …` row after the models.
 
 - **No border, default background.** The panel stands out by its bar, not by a box or a fill.
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.

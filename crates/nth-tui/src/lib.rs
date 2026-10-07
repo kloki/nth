@@ -91,6 +91,10 @@ pub async fn run(
         Ok(path) => history::History::load(path).await,
         Err(_) => history::History::default(),
     };
+    let llm_usage = match llm_picker::usage::LlmUsage::path() {
+        Ok(path) => llm_picker::usage::LlmUsage::load(path).await,
+        Err(_) => llm_picker::usage::LlmUsage::default(),
+    };
     let mut terminal = terminal::enter()?;
     let result = app::App::new(session, provider, tools.model)
         .with_shell(tools.shell)
@@ -98,6 +102,7 @@ pub async fn run(
         .with_store(store)
         .with_paths(paths)
         .with_history(history)
+        .with_llm_usage(llm_usage)
         .with_checkers(checkers)
         .with_mode_llms(mode_llms)
         .with_notifier(notifier)

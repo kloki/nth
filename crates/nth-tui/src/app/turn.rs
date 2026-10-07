@@ -169,6 +169,8 @@ impl App {
         if session.model != self.model {
             session.set_model(self.model.clone());
         }
+        self.llm_usage.count(&self.model);
+        self.save_llm_usage();
         session.effort = self.effort;
         session.mode = self.mode;
         // `/name args` runs a skill: the chat shows it as typed, and the
