@@ -1648,6 +1648,7 @@ dependencies = [
  "nth-context",
  "nth-format",
  "nth-lsp",
+ "nth-notify",
  "nth-protocol",
  "nth-session",
  "nth-tools",

@@ -68,8 +68,11 @@ pub async fn run(resume: bool, config: Config) -> Result<()> {
         },
         checkers,
         store,
-        paths,
-        mode_llms,
+        nth_tui::Settings {
+            paths,
+            mode_llms,
+            notifier: config.notify.notifier(),
+        },
     )
     .await;
     // After the terminal is back: the servers get a moment to leave on
