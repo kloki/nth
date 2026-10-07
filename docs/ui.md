@@ -84,7 +84,7 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 - **Closing.** A monitor's tab closes by itself the moment its process stops, however it ended; the log keeps all of its output, and the model hears how it ended. ctrl+q and `/close` leave a running one open and say on the status bar to stop it first.
 - **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
 - **Quitting.** With monitors running, ctrl+c on an empty prompt (or `/exit`) only warns on the status bar: `1 monitor running · ctrl+c again to quit`. The second ctrl+c stops them and saves their end notices in the session, so a resumed model knows they are gone.
-- **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `» monitor 1 · ci · 2 lines`.
+- **Notices.** What a monitor says reaches the model between its steps, or starts a turn when idle; after Esc it waits for your next prompt. The chat shows each as a row: `& monitor 1 · ci · 2 lines`.
 
 ## Subagents
 
