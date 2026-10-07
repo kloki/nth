@@ -49,6 +49,9 @@ impl App {
         }
         if self.plan_reading.take_again() {
             self.read_plan();
+        } else {
+            // Only once the read that came after the turn is back.
+            self.notify_plan_read();
         }
     }
 
