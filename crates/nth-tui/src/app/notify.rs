@@ -80,7 +80,6 @@ impl App {
     pub(super) fn notify_context(&self, elapsed: Duration) -> Context {
         let session = self.session.as_ref();
         Context {
-            project: Context::project(&self.cwd),
             title: session.and_then(|s| s.title()).unwrap_or_default(),
             elapsed,
             reply: session.and_then(|s| last_reply(&s.messages)),
@@ -201,7 +200,7 @@ mod tests {
         end(&mut app).await;
 
         let n = next(&mut rx).await;
-        assert_eq!(n.summary, "nth · repo — done in 0s");
+        assert_eq!(n.summary, "nth · done in 0s");
         assert_eq!(n.body, "go\nall done");
         assert_eq!(n.urgency, Urgency::Normal);
     }
@@ -242,11 +241,7 @@ mod tests {
         end(&mut app).await;
 
         let n = next(&mut rx).await;
-        assert!(
-            n.summary.starts_with("nth · repo — failed"),
-            "{}",
-            n.summary
-        );
+        assert!(n.summary.starts_with("nth · failed"), "{}", n.summary);
         assert!(n.body.contains("rate limited"), "{}", n.body);
         assert_eq!(n.urgency, Urgency::Critical);
     }
@@ -294,7 +289,7 @@ mod tests {
         });
 
         let n = next(&mut rx).await;
-        assert_eq!(n.summary, "nth · repo — needs you");
+        assert_eq!(n.summary, "nth · needs you");
         assert_eq!(n.body, "Doom loop: Keep going?\nand 1 more question");
         assert_eq!(n.urgency, Urgency::Critical);
     }
