@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Backend, Notifier, NotifySend};
+use crate::{Backend, Notifier, NotifySend, Osascript};
 
 /// The `[notify]` section.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -21,11 +21,21 @@ impl Default for NotifyConfig {
 }
 
 /// Where notifications go.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackendKind {
-    #[default]
     NotifySend,
+    Osascript,
+}
+
+impl Default for BackendKind {
+    /// The one the platform has.
+    fn default() -> Self {
+        match cfg!(target_os = "macos") {
+            true => Self::Osascript,
+            false => Self::NotifySend,
+        }
+    }
 }
 
 impl NotifyConfig {
@@ -36,6 +46,7 @@ impl NotifyConfig {
         }
         Some(match self.backend {
             BackendKind::NotifySend => Box::new(NotifySend),
+            BackendKind::Osascript => Box::new(Osascript),
         })
     }
 
@@ -51,9 +62,10 @@ mod tests {
 
     #[test]
     fn parses_the_backend_by_its_command_name() {
-        let config: NotifyConfig = toml::from_str("backend = \"notify-send\"").unwrap();
-        assert_eq!(config, NotifyConfig::default());
-        assert_eq!(config.backend().unwrap().name(), "notify-send");
+        for name in ["notify-send", "osascript"] {
+            let config: NotifyConfig = toml::from_str(&format!("backend = \"{name}\"")).unwrap();
+            assert_eq!(config.backend().unwrap().name(), name);
+        }
     }
 
     #[test]

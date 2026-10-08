@@ -230,7 +230,7 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 
 - The agents sidebar lists every agent on the machine as a tree: session, then subagents. Each row shows a status marker and what the agent is doing right now, such as `edit src/client.rs`.
 - Each subagent has a tab with its transcript, and the prompt talks to the subagent whose tab shows (see [ui.md](ui.md#subagents)). Esc there stops its turn; the tab keys go back to the chat.
-- Tabs with an agent waiting for you are marked in magenta in the tab bar, and a desktop notification fires. Notifications also fire when the chat's model is done, has a plan ready or failed. They fire only while the terminal does not have focus, all at normal urgency; each names the session and what happened (the question, the reply's first lines, the error). They go through `nth-notify` (`[notify]` in the config; `notify-send` today, more backends behind its `Backend` trait), and `nth notify` sends a sample.
+- Tabs with an agent waiting for you are marked in magenta in the tab bar, and a desktop notification fires. Notifications also fire when the chat's model is done, has a plan ready or failed. They fire only while the terminal does not have focus, all at normal urgency; each names the session and what happened (the question, the reply's first lines, the error). They go through `nth-notify` (`[notify]` in the config; `notify-send` on Linux and `osascript` on macOS, more backends behind its `Backend` trait), and `nth notify` sends a sample.
 - The same tree comes out of `nth agents --json`, so an agent can check on other agents.
 
 ## TUI

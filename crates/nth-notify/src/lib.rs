@@ -1,12 +1,13 @@
 //! Desktop notifications: what nth tells you when you are looking elsewhere.
 //! `Event::notification` writes the text from `templates/`, a `Backend`
 //! shows it, and `Notifier` is the handle a front-end sends through without
-//! waiting. `notify-send` is the only backend today; another is one module
-//! and one `BackendKind` variant.
+//! waiting. `notify-send` (Linux) and `osascript` (macOS) are the backends;
+//! another is one module and one `BackendKind` variant.
 
 mod config;
 mod message;
 mod notify_send;
+mod osascript;
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ pub use config::{BackendKind, NotifyConfig};
 use futures::future::BoxFuture;
 pub use message::{Context, Event};
 pub use notify_send::NotifySend;
+pub use osascript::Osascript;
 use tokio::sync::{mpsc, watch};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
