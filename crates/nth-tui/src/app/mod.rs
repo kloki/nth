@@ -221,7 +221,7 @@ pub struct App {
     /// When the notices waiting start a turn, if the app is idle by then.
     notices_due: Option<tokio::time::Instant>,
     /// Notices wait for your next prompt rather than start a turn, after
-    /// you stopped one or it failed.
+    /// you stopped one.
     hold_notices: bool,
     /// A word on what the last key did not do, on the status bar until the
     /// next key.

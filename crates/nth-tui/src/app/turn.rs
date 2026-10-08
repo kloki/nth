@@ -8,7 +8,7 @@ use nth_protocol::{Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
-use super::{App, TabState};
+use super::{App, NOTICE_DELAY, TabState};
 use crate::command::Command;
 
 /// What a turn task hands back: the session, how its turn ended, and
@@ -163,7 +163,18 @@ impl App {
         let Some(mut session) = self.session.take() else {
             return;
         };
-        let notices = self.inbox.take_notices();
+        // `/name args` runs a skill: the chat shows it as typed, and the
+        // model gets the skill filled in.
+        let skill = nth_context::skills::parse(&text, &self.context.skills)
+            .map(|(skill, args)| (skill.clone(), args.to_string()));
+        // A skill is filled in before the model is asked, and that can
+        // fail; notices taken now would be lost with the turn. They stay
+        // in the inbox, where the loop hands them over between steps and
+        // the end of the turn wakes the model for the rest.
+        let notices = match skill {
+            Some(_) => None,
+            None => self.inbox.take_notices(),
+        };
         self.notices_due = None;
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
@@ -173,10 +184,6 @@ impl App {
         self.save_llm_usage();
         session.effort = self.effort;
         session.mode = self.mode;
-        // `/name args` runs a skill: the chat shows it as typed, and the
-        // model gets the skill filled in.
-        let skill = nth_context::skills::parse(&text, &self.context.skills)
-            .map(|(skill, args)| (skill.clone(), args.to_string()));
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }
@@ -262,7 +269,9 @@ impl App {
         let transcript = &mut self.chat.transcript;
         // Esc after the reply ended still comes back `Ok`, but it still
         // means stop.
-        let send_next = result.is_ok() && !std::mem::take(&mut self.interrupted);
+        let interrupted = std::mem::take(&mut self.interrupted)
+            || matches!(result, Err(nth_session::Error::Interrupted));
+        let send_next = result.is_ok() && !interrupted;
         let error = match &result {
             Err(nth_session::Error::Interrupted) | Ok(()) => None,
             Err(e) => Some(e.to_string()),
@@ -290,8 +299,9 @@ impl App {
         self.load_git();
         self.read_plan();
         // Notices that came after the model's last step go with the next
-        // prompt, or wake it on their own.
-        self.hold_notices = !send_next;
+        // prompt once you stopped it, else wake it on their own: a turn
+        // that failed is no reason to keep a subagent's answer from it.
+        self.hold_notices = interrupted;
         match self.queue.pop_front() {
             Some(next) if send_next => self.start(next),
             Some(next) => {
@@ -300,6 +310,11 @@ impl App {
             }
             None if send_next => self.start_turn(String::new()),
             None => {}
+        }
+        // What waited through a failed turn: no new notice will come to
+        // arm the timer for it.
+        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+            self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);
     }
@@ -816,6 +831,65 @@ mod tests {
         // it rather than following it as a second user message.
         assert_eq!(sent(&app), [format!("go\n\n{NOTICE}\n\nfix it")]);
         assert_eq!(last_user(&app), Some("fix it"));
+    }
+
+    #[tokio::test]
+    async fn after_a_failed_turn_a_notice_wakes_the_model() {
+        let mut app = app_logging_to_tmp(Arc::new(crate::app::tests::Idle));
+        send(&mut app, "go");
+        end(&mut app).await;
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::TurnError(_))
+        ));
+
+        monitor_says(&mut app, "build failed").await;
+        app.notices_due();
+
+        assert!(app.is_busy(), "a failure is not a stop");
+        end(&mut app).await;
+        // The failed "go" was never answered, so the notice joins it.
+        assert_eq!(sent(&app), [format!("go\n\n{NOTICE}")]);
+    }
+
+    #[tokio::test]
+    async fn a_notice_during_a_failed_turn_wakes_the_model_after_it() {
+        let mut app = app_logging_to_tmp(Arc::new(crate::app::tests::Idle));
+        send(&mut app, "go");
+        monitor_says(&mut app, "build failed").await;
+        app.notices_due();
+        end(&mut app).await;
+
+        assert!(app.notices_due.is_some(), "nothing else will arm it");
+        app.notices_due();
+        assert!(app.is_busy());
+        end(&mut app).await;
+        assert_eq!(sent(&app), [format!("go\n\n{NOTICE}")]);
+    }
+
+    #[tokio::test]
+    async fn a_skill_that_cannot_be_read_keeps_the_notices() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::app::tests::with_fix_skill(dir.path());
+        std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
+        let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
+        let mut app = App::new(session, Arc::new(Hang::default()), Arc::new(Vec::new()));
+        app.monitors.set_log_dir("/tmp/logs".into());
+        monitor_says(&mut app, "build failed").await;
+
+        send(&mut app, "/fix it");
+        end(&mut app).await;
+
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::TurnError(_))
+        ));
+        assert!(
+            app.inbox.has_notices(),
+            "not taken by a turn that never ran"
+        );
+        assert!(app.notices_due.is_some(), "and still wake the model");
+        assert_eq!(sent(&app), Vec::<&str>::new());
     }
 
     #[tokio::test]
