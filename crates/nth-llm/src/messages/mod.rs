@@ -1,7 +1,7 @@
 //! Anthropic messages over SSE, for the models the catalogue says need it
 //! (Claude on OpenCode Zen, MiniMax on Go).
 
-mod sse;
+mod event;
 mod wire;
 
 use std::{
@@ -45,7 +45,7 @@ pub enum Error {
     #[error("bad stream event: {source} in {line:?}")]
     Parse {
         source: serde_json::Error,
-        /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
+        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
         line: String,
     },
     /// An `error` event, sent after the 200 status.
@@ -119,7 +119,7 @@ async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error
     }
     let retry_after = retry_after(response.headers());
     let body = response.text().await.unwrap_or_default();
-    let message = match serde_json::from_str::<sse::ErrorResponse>(&body) {
+    let message = match serde_json::from_str::<event::ErrorResponse>(&body) {
         Ok(error) => error.error.message,
         Err(_) => body,
     };
@@ -160,11 +160,11 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
 
 struct State<S> {
     bytes: S,
-    parser: sse::Parser,
+    parser: event::Parser,
     pending: VecDeque<Result<StreamEvent, Error>>,
     /// Tool calls by the index of their content block.
     calls: BTreeMap<usize, ToolCall>,
-    usage: sse::Usage,
+    usage: event::Usage,
     stop_reason: Option<String>,
     finished: bool,
 }
@@ -177,10 +177,10 @@ where
 {
     let state = State {
         bytes,
-        parser: sse::Parser::default(),
+        parser: event::parser(),
         pending: VecDeque::new(),
         calls: BTreeMap::new(),
-        usage: sse::Usage::default(),
+        usage: event::Usage::default(),
         stop_reason: None,
         finished: false,
     };
@@ -233,14 +233,14 @@ where
 
 impl<S> State<S> {
     /// Takes in one event; true once the message is over.
-    fn apply(&mut self, event: sse::Event) -> bool {
+    fn apply(&mut self, event: event::Event) -> bool {
         match event {
-            sse::Event::MessageStart { message } => {
+            event::Event::MessageStart { message } => {
                 self.usage.update(message.usage.unwrap_or_default());
             }
-            sse::Event::ContentBlockStart {
+            event::Event::ContentBlockStart {
                 index,
-                content_block: sse::Block::ToolUse { id, name },
+                content_block: event::Block::ToolUse { id, name },
             } => {
                 self.calls.insert(
                     index,
@@ -251,22 +251,22 @@ impl<S> State<S> {
                     },
                 );
             }
-            sse::Event::ContentBlockDelta { index, delta } => match delta {
-                sse::Delta::Text { text } if !text.is_empty() => {
+            event::Event::ContentBlockDelta { index, delta } => match delta {
+                event::Delta::Text { text } if !text.is_empty() => {
                     self.pending.push_back(Ok(StreamEvent::TextDelta(text)));
                 }
-                sse::Delta::Thinking { thinking } if !thinking.is_empty() => {
+                event::Delta::Thinking { thinking } if !thinking.is_empty() => {
                     self.pending
                         .push_back(Ok(StreamEvent::ReasoningDelta(thinking)));
                 }
-                sse::Delta::InputJson { partial_json } => {
+                event::Delta::InputJson { partial_json } => {
                     if let Some(call) = self.calls.get_mut(&index) {
                         call.arguments.push_str(&partial_json);
                     }
                 }
                 _ => {}
             },
-            sse::Event::MessageDelta { delta, usage } => {
+            event::Event::MessageDelta { delta, usage } => {
                 self.stop_reason = delta.stop_reason;
                 self.usage.update(usage.unwrap_or_default());
                 self.pending.push_back(Ok(StreamEvent::Usage(Usage {
@@ -274,9 +274,10 @@ impl<S> State<S> {
                     output: self.usage.output(),
                 })));
             }
-            sse::Event::MessageStop => return true,
-            sse::Event::ContentBlockStart { .. } | sse::Event::Error { .. } | sse::Event::Other => {
-            }
+            event::Event::MessageStop => return true,
+            event::Event::ContentBlockStart { .. }
+            | event::Event::Error { .. }
+            | event::Event::Other => {}
         }
         false
     }
@@ -303,6 +304,7 @@ impl<S> State<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{chunks, runs_no_tools, until};
 
     /// Recorded from OpenCode Zen's claude-haiku-4-5, thinking enabled.
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/zen_messages.sse");
@@ -321,23 +323,8 @@ mod tests {
             .await
     }
 
-    fn chunks(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, Error>> {
-        input
-            .chunks(chunk_size)
-            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
-            .collect()
-    }
-
     fn fixture_until(marker: &str) -> &'static [u8] {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let end = text.find(marker).expect("marker in fixture");
-        &FIXTURE[..end]
-    }
-
-    fn runs_no_tools(events: &[Result<StreamEvent, Error>]) -> bool {
-        !events
-            .iter()
-            .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
+        until(FIXTURE, marker)
     }
 
     #[tokio::test]

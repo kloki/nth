@@ -5,7 +5,7 @@
 use serde::Deserialize;
 
 use super::Error;
-use crate::sse::{Lines, data, excerpt};
+use crate::sse::{self, data, excerpt};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -48,10 +48,11 @@ pub struct FunctionDelta {
     pub arguments: Option<String>,
 }
 
-/// Turns raw response bytes into SSE events.
-#[derive(Default)]
-pub struct Parser {
-    lines: Lines,
+/// Turns raw response bytes into events.
+pub(super) type Parser = sse::Parser<fn(&str) -> Result<Vec<Event>, Error>>;
+
+pub(super) fn parser() -> Parser {
+    sse::Parser::new(parse_line)
 }
 
 #[derive(Deserialize)]
@@ -70,30 +71,14 @@ struct Choice {
     finish_reason: Option<String>,
 }
 
-impl Parser {
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, Error> {
-        let mut events = Vec::new();
-        for line in self.lines.push(bytes) {
-            parse_line(&line, &mut events)?;
-        }
-        Ok(events)
-    }
-
-    /// Parses what is left once the bytes end.
-    pub fn finish(&mut self) -> Result<Vec<Event>, Error> {
-        let mut events = Vec::new();
-        parse_line(&self.lines.finish(), &mut events)?;
-        Ok(events)
-    }
-}
-
-fn parse_line(line: &str, events: &mut Vec<Event>) -> Result<(), Error> {
+fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
+    let mut events = Vec::new();
     let Some(data) = data(line) else {
-        return Ok(());
+        return Ok(events);
     };
     if data == "[DONE]" {
         events.push(Event::Done);
-        return Ok(());
+        return Ok(events);
     }
     let chunk: Chunk = serde_json::from_str(data).map_err(|source| Error::Parse {
         source,
@@ -111,11 +96,11 @@ fn parse_line(line: &str, events: &mut Vec<Event>) -> Result<(), Error> {
     }
     events.extend(chunk.usage.map(Event::Usage));
     let Some(choice) = chunk.choices.into_iter().flatten().next() else {
-        return Ok(());
+        return Ok(events);
     };
     events.extend(choice.delta.map(Event::Delta));
     events.extend(choice.finish_reason.map(Event::Finish));
-    Ok(())
+    Ok(events)
 }
 
 /// The HTTP status an in-stream error stands for, so that a rate limit or
@@ -141,13 +126,13 @@ mod tests {
 
     #[test]
     fn bad_json_is_an_error() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         assert!(parser.push(b"data: {nope\n").is_err());
     }
 
     #[test]
     fn a_parse_error_quotes_only_the_start_of_the_line() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let long = format!("data: {{{}\n", "x".repeat(1000));
         let err = parser.push(long.as_bytes()).expect_err("bad json");
         let Error::Parse { line, .. } = err else {
@@ -159,7 +144,7 @@ mod tests {
 
     #[test]
     fn finish_parses_a_last_line_without_a_newline() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         assert_eq!(parser.push(b"data: [DONE]").expect("valid"), vec![]);
         assert_eq!(parser.finish().expect("valid"), vec![Event::Done]);
         assert_eq!(parser.finish().expect("valid"), vec![], "nothing left");
@@ -167,7 +152,7 @@ mod tests {
 
     #[test]
     fn empty_data_is_a_heartbeat() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let events = parser
             .push(b"data:\n\ndata: \n\ndata: [DONE]\n")
             .expect("valid");
@@ -176,7 +161,7 @@ mod tests {
 
     #[test]
     fn ignores_comments_and_reads_usage_chunks() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let events = parser
             .push(b": ping\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":8,\"total_tokens\":128}}\n\ndata: [DONE]\n")
             .expect("valid");
@@ -194,7 +179,7 @@ mod tests {
 
     #[test]
     fn in_stream_error_is_an_error() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let err = parser
             .push(b"data: {\"error\":{\"message\":\"rate limited\",\"code\":429}}\n")
             .expect_err("error chunk");
@@ -203,7 +188,7 @@ mod tests {
 
     #[test]
     fn in_stream_error_carries_its_status() {
-        let status = |chunk: &[u8]| match Parser::default().push(chunk) {
+        let status = |chunk: &[u8]| match parser().push(chunk) {
             Err(Error::Provider { status, .. }) => status,
             other => panic!("expected a provider error, got {other:?}"),
         };
@@ -224,7 +209,7 @@ mod tests {
 
     #[test]
     fn null_tool_calls_parse() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let events = parser
             .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":null},\"finish_reason\":null}]}\n")
             .expect("valid");
