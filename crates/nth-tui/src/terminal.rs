@@ -9,8 +9,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crossterm::{
     cursor::Show,
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement},
@@ -49,9 +50,16 @@ pub fn resume(terminal: &mut DefaultTerminal) -> Result<()> {
 }
 
 /// The modes on top of what `ratatui::init` enables: the mouse, pasting,
-/// and keys told apart.
+/// focus reports and keys told apart.
 fn capture() {
-    let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
+    // Focus reports decide whether a notification goes out; tmux passes
+    // them on only with `focus-events on`.
+    let _ = execute!(
+        stdout(),
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange
+    );
     // Tells the keys apart that share a byte without it, where the terminal
     // supports it: shift+Enter and ctrl+Enter from Enter, ctrl+m from
     // Enter, ctrl+1 to ctrl+4 from the digits.
@@ -74,6 +82,7 @@ fn release() {
     let _ = execute!(
         stdout(),
         PopKeyboardEnhancementFlags,
+        DisableFocusChange,
         DisableBracketedPaste,
         DisableMouseCapture
     );

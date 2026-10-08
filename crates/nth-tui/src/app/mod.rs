@@ -233,12 +233,16 @@ pub struct App {
     /// runs.
     editing: Option<editor::Editing>,
     editor: Job<std::io::Result<std::process::ExitStatus>>,
-    /// ctrl+c was pressed once with monitors running; again quits.
     notifier: Notifier,
     notify_errors: watch::Receiver<Option<String>>,
     /// A turn that ended in plan mode, waiting for the plan to be read to
     /// say whether it left a plan to approve.
     plan_notice: Option<nth_notify::Context>,
+    /// Whether the terminal has focus, as it last reported; nth starts
+    /// focused because you just started it. Notifications go out only
+    /// without it.
+    focused: bool,
+    /// ctrl+c was pressed once with monitors running; again quits.
     quit_armed: bool,
     quit: bool,
 }
@@ -398,6 +402,7 @@ impl App {
             notify_errors: notifier.errors(),
             notifier,
             plan_notice: None,
+            focused: true,
             quit_armed: false,
             quit: false,
         }
@@ -657,6 +662,8 @@ impl App {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
+            TermEvent::FocusGained => self.focused = true,
+            TermEvent::FocusLost => self.focused = false,
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt.paste(&text);
                 self.refresh_completion();

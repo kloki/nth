@@ -110,7 +110,9 @@ enabled = true
 
 [notify]
 # Desktop notifications when the model is done, fails, has a plan ready or
-# asks you something. false turns them off. `nth notify` sends a sample.
+# asks you something, sent only while the terminal does not have focus (in
+# tmux, `set -g focus-events on`). false turns them off. `nth notify` sends
+# a sample.
 enabled = true
 # Where they go. Only "notify-send" (libnotify) today.
 backend = "notify-send"
