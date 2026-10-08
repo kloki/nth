@@ -1,6 +1,7 @@
-//! Lists the models an endpoint serves over chat completions. The endpoint's
-//! own `/models` says what exists; the catalogue says which protocol each
-//! one speaks and what its limits are.
+//! Lists the models an endpoint serves. The endpoint's own `/models` (a
+//! chat completions route, which every endpoint nth knows has) says what
+//! exists; the catalogue says which protocol each one speaks and what its
+//! limits are.
 
 use std::time::Duration;
 
@@ -12,7 +13,6 @@ use crate::catalog;
 
 /// The list is one small JSON body, so unlike a reply it can have a deadline.
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
-const CHAT_COMPLETIONS_NPM: &str = "@ai-sdk/openai-compatible";
 
 #[derive(Deserialize)]
 struct ModelList {
@@ -41,10 +41,11 @@ pub(crate) async fn listed(
     Ok(list.data.into_iter().map(|m| m.id).collect())
 }
 
-/// Without a catalogue entry for the endpoint, everything it lists is assumed
-/// to speak chat completions, since that is what the endpoint is for. An
-/// unknown model may reason, so it is offered an effort; a known one only
-/// when the catalogue says it reasons.
+/// Only the models whose protocol nth speaks. Without a catalogue entry for
+/// the endpoint, everything it lists is assumed to speak chat completions,
+/// since that is what the endpoint is for. An unknown model may reason, so
+/// it is offered an effort; a known one only when the catalogue says it
+/// reasons.
 pub(crate) fn select(
     endpoint: Vec<String>,
     provider: Option<&catalog::Provider>,
@@ -62,14 +63,8 @@ pub(crate) fn select(
                     origin: None,
                 });
             };
-            let npm = model
-                .provider
-                .as_ref()
-                .and_then(|o| o.npm.as_deref())
-                .or(provider.and_then(|p| p.npm.as_deref()));
-            if npm.is_some_and(|npm| npm != CHAT_COMPLETIONS_NPM) {
-                return None;
-            }
+            // A model nth cannot talk to is not offered.
+            provider?.wire(&id)?;
             Some(ModelInfo {
                 id,
                 name: model.name.clone(),
@@ -102,13 +97,16 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_chat_completions_models_with_their_limits() {
+    fn keeps_only_models_nth_speaks_with_their_limits() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
         let provider = catalog::provider_for(&catalog, &format!("{GO}/"));
 
         let models = select(endpoint(), provider);
 
-        assert_eq!(ids(&models), ["glm-5.3", "kimi-k3", "unlisted"]);
+        assert_eq!(
+            ids(&models),
+            ["glm-5.3", "kimi-k3", "minimax-m3", "unlisted"]
+        );
         assert_eq!(
             models[0],
             ModelInfo {
@@ -124,8 +122,13 @@ mod tests {
             !models[1].reasoning,
             "the catalog does not say kimi reasons"
         );
-        assert_eq!(models[2].context, None);
-        assert!(models[2].reasoning, "unlisted models may reason");
+        assert_eq!(
+            models[2].name.as_deref(),
+            Some("MiniMax M3"),
+            "over messages"
+        );
+        assert_eq!(models[3].context, None);
+        assert!(models[3].reasoning, "unlisted models may reason");
     }
 
     #[test]

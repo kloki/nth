@@ -25,7 +25,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// reply may take minutes, so there is no overall deadline, but a live
 /// stream keeps sending (if only keep-alive comments), while a dead
 /// connection would otherwise hang the turn forever.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -41,7 +41,7 @@ pub enum Error {
     #[error("bad stream chunk: {source} in {line:?}")]
     Parse {
         source: serde_json::Error,
-        /// The start of the offending line; see `sse::EXCERPT_CHARS`.
+        /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
         line: String,
     },
     #[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
@@ -163,7 +163,7 @@ pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Resp
 /// How long the server asked to wait, from `Retry-After-Ms` or the usual
 /// `Retry-After` in seconds; the HTTP-date form is not supported, and a
 /// value no `Duration` holds (negative, `inf`, huge) counts as absent.
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let number = |name: &str| {
         headers
             .get(name)
@@ -230,7 +230,7 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
     }
 }
 
-fn transient(status: reqwest::StatusCode) -> bool {
+pub(crate) fn transient(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 

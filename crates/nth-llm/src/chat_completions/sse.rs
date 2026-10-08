@@ -5,10 +5,7 @@
 use serde::Deserialize;
 
 use super::Error;
-
-/// How much of an unparseable line an error quotes. Enough to see what the
-/// server sent, little enough that the error still fits in the TUI.
-const EXCERPT_CHARS: usize = 200;
+use crate::sse::{Lines, data, excerpt};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -51,11 +48,10 @@ pub struct FunctionDelta {
     pub arguments: Option<String>,
 }
 
-/// Turns raw response bytes into SSE events. Network chunks can end anywhere,
-/// even inside a UTF-8 character, so bytes are buffered until a full line arrives.
+/// Turns raw response bytes into SSE events.
 #[derive(Default)]
 pub struct Parser {
-    buf: Vec<u8>,
+    lines: Lines,
 }
 
 #[derive(Deserialize)]
@@ -76,35 +72,25 @@ struct Choice {
 
 impl Parser {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, Error> {
-        self.buf.extend_from_slice(bytes);
         let mut events = Vec::new();
-        while let Some(end) = self.buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.buf.drain(..=end).collect();
-            let line = String::from_utf8_lossy(&line);
-            parse_line(line.trim_end(), &mut events)?;
+        for line in self.lines.push(bytes) {
+            parse_line(&line, &mut events)?;
         }
         Ok(events)
     }
 
-    /// Parses what is left once the bytes end. Some servers close the
-    /// connection right after the last line, without its newline.
+    /// Parses what is left once the bytes end.
     pub fn finish(&mut self) -> Result<Vec<Event>, Error> {
-        let line = String::from_utf8_lossy(&std::mem::take(&mut self.buf)).into_owned();
         let mut events = Vec::new();
-        parse_line(line.trim_end(), &mut events)?;
+        parse_line(&self.lines.finish(), &mut events)?;
         Ok(events)
     }
 }
 
 fn parse_line(line: &str, events: &mut Vec<Event>) -> Result<(), Error> {
-    let Some(data) = line.strip_prefix("data:") else {
+    let Some(data) = data(line) else {
         return Ok(());
     };
-    let data = data.trim_start();
-    // SSE allows an empty data field; some servers send one as a heartbeat.
-    if data.is_empty() {
-        return Ok(());
-    }
     if data == "[DONE]" {
         events.push(Event::Done);
         return Ok(());
@@ -148,16 +134,10 @@ fn error_status(error: &serde_json::Value) -> Option<reqwest::StatusCode> {
         .and_then(|code| reqwest::StatusCode::from_u16(code).ok())
 }
 
-fn excerpt(data: &str) -> String {
-    match data.char_indices().nth(EXCERPT_CHARS) {
-        Some((end, _)) => format!("{}…", &data[..end]),
-        None => data.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sse::EXCERPT_CHARS;
 
     #[test]
     fn bad_json_is_an_error() {

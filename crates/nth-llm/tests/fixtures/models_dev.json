@@ -33,6 +33,16 @@
   "other": {
     "id": "other",
     "npm": "@ai-sdk/anthropic",
-    "models": {}
+    "models": {
+      "claude-x": {
+        "id": "claude-x",
+        "name": "Claude X",
+        "reasoning": true,
+        "limit": {
+          "context": 200000,
+          "output": 64000
+        }
+      }
+    }
   }
 }
