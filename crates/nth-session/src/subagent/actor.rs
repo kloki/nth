@@ -3,7 +3,7 @@
 
 use std::{
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use nth_protocol::{Event, FrontEnd, Message, Provider, TaskNotice, TaskOutcome, Tool};
@@ -52,7 +52,12 @@ pub(super) async fn run(actor: Actor) {
         return;
     }
     while let Some(job) = jobs.recv().await {
-        let Job { text, cancel, done } = job;
+        let Job {
+            text,
+            cancel,
+            done,
+            timeout,
+        } = job;
         {
             let mut state = lock(&shared);
             state.waiting.pop_front();
@@ -80,20 +85,35 @@ pub(super) async fn run(actor: Actor) {
         let began = Instant::now();
         let (tx, mut rx) = mpsc::channel::<Event>(256);
         let mut heard = true;
+        let mut timed_out = false;
         // Nobody at the tab answers questions or looks at panels, and a
         // monitor's notices would go to the parent's model: headless.
         let front = FrontEnd::default();
         let result = {
             let turn = session.prompt(text, provider.as_ref(), &tools, &front, &tx, &cancel);
             tokio::pin!(turn);
+            let deadline = budget(timeout);
+            tokio::pin!(deadline);
             loop {
                 tokio::select! {
                     result = &mut turn => break result,
                     Some(event) = rx.recv() => {
                         heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
                     }
+                    // Cancelling is cooperative: the turn still ends on its
+                    // own, with every call answered, and the session stays
+                    // valid to continue from.
+                    _ = &mut deadline, if !timed_out => {
+                        timed_out = true;
+                        cancel.cancel();
+                    }
                 }
             }
+        };
+        // Its own cancel is what ran out, not a stop: the parent hears why.
+        let result = match (result, timeout) {
+            (Err(Error::Interrupted), Some(timeout)) if timed_out => Err(Error::TimedOut(timeout)),
+            (result, _) => result,
         };
         // Sent just before the turn returned, and they belong before the
         // footer.
@@ -134,6 +154,14 @@ pub(super) async fn run(actor: Actor) {
         if !heard {
             return;
         }
+    }
+}
+
+/// Over once a job's time is up; never, for a job without a budget.
+async fn budget(timeout: Option<Duration>) {
+    match timeout {
+        Some(timeout) => tokio::time::sleep(timeout).await,
+        None => std::future::pending().await,
     }
 }
 

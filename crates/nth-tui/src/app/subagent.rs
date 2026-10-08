@@ -126,6 +126,7 @@ impl App {
             text,
             cancel: CancellationToken::new(),
             done: Done::Nothing,
+            timeout: None,
         };
         if !self.subagents.prompt(id, job) {
             self.hint = Some("this subagent is gone".into());
@@ -535,6 +536,7 @@ mod tests {
                 text: "go".into(),
                 cancel: CancellationToken::new(),
                 done: Done::Notify(app.inbox.clone()),
+                timeout: None,
             },
         );
         for _ in 0..20 {

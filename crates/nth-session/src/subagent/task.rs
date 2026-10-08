@@ -2,7 +2,7 @@
 //! `task_id`. With a front-end the call returns at once and the answer
 //! comes back as a notice; headless it waits and returns the answer.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_context::Agent;
@@ -29,8 +29,18 @@ pub struct Task {
     /// Every tool the model has; each subagent gets its share of them.
     tools: Vec<Arc<dyn Tool>>,
     subagents: Subagents,
-    /// Steps a subagent's turn may take, the same as its parent's.
-    max_steps: usize,
+    limits: Limits,
+}
+
+/// What one task may spend before it fails: a child works on one
+/// delegated question, and a parent waiting on it should hear back.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Steps a subagent's turn may take.
+    pub max_steps: usize,
+    /// How long a turn the model started may run; `None` leaves it to its
+    /// steps.
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Deserialize)]
@@ -66,13 +76,13 @@ impl Task {
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         subagents: Subagents,
-        max_steps: usize,
+        limits: Limits,
     ) -> Self {
         Self {
             provider,
             tools,
             subagents,
-            max_steps,
+            limits,
         }
     }
 
@@ -104,7 +114,7 @@ impl Task {
             .as_subagent(agent.prompt.clone());
         session.effort = ctx.llm.effort;
         session.mode = Mode::Act;
-        session.max_steps = self.max_steps;
+        session.max_steps = self.limits.max_steps;
         let tools = self.tools_for(agent, &ctx.writable);
         self.subagents
             .spawn(agent, description, session, self.provider.clone(), tools)
@@ -188,6 +198,7 @@ impl Tool for Task {
                     text,
                     cancel,
                     done: Done::Notify(ctx.inbox.clone()),
+                    timeout: self.limits.timeout,
                 };
                 if !self.subagents.prompt(id, job) {
                     return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
@@ -209,6 +220,7 @@ impl Tool for Task {
                 text,
                 cancel,
                 done: Done::Reply(reply),
+                timeout: self.limits.timeout,
             };
             if !self.subagents.prompt(id, job) {
                 return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
@@ -239,7 +251,16 @@ mod tests {
     use super::*;
     use crate::{
         agent_loop::tests::Scripted,
-        subagent::{SubagentEvent, tests::says},
+        subagent::{
+            SubagentEvent,
+            tests::{Stalled, says},
+        },
+    };
+
+    /// Ten steps and no clock, as the tests here need.
+    const LIMITS: Limits = Limits {
+        max_steps: 10,
+        timeout: None,
     };
 
     /// A tool that is only a name.
@@ -293,7 +314,7 @@ mod tests {
             Arc::new(Scripted::new(replies)),
             named(&["read", "write"]),
             subagents,
-            10,
+            LIMITS,
         )
     }
 
@@ -319,7 +340,7 @@ mod tests {
             Arc::new(Scripted::new(vec![])),
             named(&all),
             Subagents::default(),
-            10,
+            LIMITS,
         );
         let agents = context();
         let general = agents.agents.get("general").unwrap();
@@ -368,6 +389,25 @@ mod tests {
         );
         assert!(result.contains("And close there too."), "{result}");
         assert_eq!(subagents.ids(), [1]);
+    }
+
+    #[tokio::test]
+    async fn headless_a_task_past_its_budget_fails_and_says_so() {
+        let task = Task::new(
+            Arc::new(Stalled),
+            Vec::new(),
+            Subagents::default(),
+            Limits {
+                max_steps: 10,
+                timeout: Some(Duration::from_millis(20)),
+            },
+        );
+        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+
+        assert_eq!(
+            task.call(args, &ctx()).await.unwrap_err(),
+            "Subagent failed (task_id: 1): no answer after 20ms; its task_id continues it"
+        );
     }
 
     #[tokio::test]
