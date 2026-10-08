@@ -1,16 +1,19 @@
 //! Several endpoints behind one `Provider`. A model id is `provider/model`:
 //! the prefix picks the endpoint, the rest goes on the wire. An id without
 //! a known prefix goes whole to the default provider, so sessions saved
-//! before there were several keep working.
+//! before there were several keep working. The catalogue then says which
+//! protocol the model speaks there.
 
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_protocol::{
     BoxError, Failed, Listing, ModelInfo, Origin, Provider, Request, Retry, StreamEvent,
 };
+use tokio::task::JoinHandle;
 
 use crate::{
-    catalog,
+    catalog::{self, Snapshot, Wire},
     chat_completions::{self, ChatClient},
+    messages,
 };
 
 /// A configured endpoint whose key is set.
@@ -38,13 +41,17 @@ pub enum Error {
     NoProviders,
     #[error("{id} is configured but {api_key_env} is not set")]
     Unavailable { id: String, api_key_env: String },
-    #[error(transparent)]
-    Http(#[from] chat_completions::Error),
+    #[error("request failed: {0}")]
+    Http(#[from] reqwest::Error),
 }
 
+/// One endpoint, with a client per protocol it may speak.
 struct Client {
     origin: Origin,
-    inner: ChatClient,
+    /// What the catalogue knows the endpoint by.
+    base_url: String,
+    chat: ChatClient,
+    messages: messages::Client,
 }
 
 pub struct Providers {
@@ -53,8 +60,10 @@ pub struct Providers {
     default: usize,
     clients: Vec<Client>,
     unavailable: Vec<Unavailable>,
-    /// Shared by every client and the catalogue fetch.
-    http: reqwest::Client,
+    catalog: Snapshot,
+    /// The catalogue fetch started with the providers, so the first
+    /// request need not wait for it.
+    fetch: Option<JoinHandle<()>>,
 }
 
 impl Providers {
@@ -65,10 +74,29 @@ impl Providers {
         unavailable: Vec<Unavailable>,
         default_model: &str,
     ) -> Result<Self, Error> {
+        let http = crate::http::client()?;
+        let catalog = Snapshot::new(http.clone());
+        let mut providers = Self::build(endpoints, unavailable, default_model, http, catalog)?;
+        // Without a runtime, as in a test, the first request fetches it.
+        providers.fetch = tokio::runtime::Handle::try_current().ok().map(|runtime| {
+            let catalog = providers.catalog.clone();
+            runtime.spawn(async move {
+                catalog.get().await;
+            })
+        });
+        Ok(providers)
+    }
+
+    fn build(
+        endpoints: Vec<Endpoint>,
+        unavailable: Vec<Unavailable>,
+        default_model: &str,
+        http: reqwest::Client,
+        catalog: Snapshot,
+    ) -> Result<Self, Error> {
         if endpoints.is_empty() {
             return Err(Error::NoProviders);
         }
-        let http = chat_completions::http()?;
         let clients = endpoints
             .into_iter()
             .map(|endpoint| Client {
@@ -76,15 +104,22 @@ impl Providers {
                     id: endpoint.id,
                     name: endpoint.name,
                 },
-                inner: ChatClient::with_http(http.clone(), endpoint.base_url, endpoint.api_key)
-                    .only(endpoint.models),
+                base_url: endpoint.base_url.clone(),
+                chat: ChatClient::with_http(
+                    http.clone(),
+                    endpoint.base_url.clone(),
+                    endpoint.api_key.clone(),
+                )
+                .only(endpoint.models),
+                messages: messages::Client::new(http.clone(), endpoint.base_url, endpoint.api_key),
             })
             .collect();
         let mut providers = Self {
             default: 0,
             clients,
             unavailable,
-            http,
+            catalog,
+            fetch: None,
         };
         providers.default = providers.route(default_model)?.0;
         Ok(providers)
@@ -119,6 +154,29 @@ impl Providers {
         }
         Ok((self.default, model))
     }
+
+    /// The protocol `model`, as client `i` knows it, speaks there, and what
+    /// the catalogue knows about it. Chat completions when it says nothing.
+    async fn wire(&self, i: usize, model: &str) -> (Wire, Option<&catalog::Model>) {
+        let provider = self
+            .catalog
+            .get()
+            .await
+            .and_then(|c| catalog::provider_for(c, &self.clients[i].base_url));
+        let wire = provider.and_then(|p| p.wire(model));
+        (
+            wire.unwrap_or(Wire::ChatCompletions),
+            provider.and_then(|p| p.models.get(model)),
+        )
+    }
+}
+
+impl Drop for Providers {
+    fn drop(&mut self) {
+        if let Some(fetch) = &self.fetch {
+            fetch.abort();
+        }
+    }
 }
 
 impl Provider for Providers {
@@ -126,16 +184,14 @@ impl Provider for Providers {
         async move {
             // Everything at once: the catalogue's deadline must not delay the
             // lists, and one slow endpoint must not delay the others' start.
-            let ids = self.clients.iter().map(|c| c.inner.ids());
-            let (catalog, ids) =
-                futures::join!(catalog::fetch(&self.http), futures::future::join_all(ids));
-            let catalog = catalog.ok();
+            let ids = self.clients.iter().map(|c| c.chat.ids());
+            let (catalog, ids) = futures::join!(self.catalog.get(), futures::future::join_all(ids));
             let listed = self
                 .clients
                 .iter()
                 .zip(ids)
                 .map(|(client, ids)| {
-                    let models = ids.map(|ids| client.inner.describe(ids, catalog.as_ref()));
+                    let models = ids.map(|ids| client.chat.describe(ids, catalog));
                     (client.origin.clone(), models)
                 })
                 .collect();
@@ -150,16 +206,25 @@ impl Provider for Providers {
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
         async move {
             let (i, model) = self.route(request.model)?;
-            self.clients[i]
-                .inner
-                .stream(Request { model, ..request })
-                .await
+            let request = Request { model, ..request };
+            let client = &self.clients[i];
+            match self.wire(i, model).await {
+                (Wire::ChatCompletions, _) => client.chat.stream(request).await,
+                (Wire::Messages, known) => {
+                    let output = known.and_then(|m| m.limit.as_ref()?.output);
+                    Ok(client
+                        .messages
+                        .stream(request, messages::max_tokens(output))
+                        .await?)
+                }
+            }
         }
         .boxed()
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
-        chat_completions::retry(error)
+        // Each protocol recognises only its own errors.
+        chat_completions::retry(error).or_else(|| messages::retry(error))
     }
 }
 
@@ -298,6 +363,47 @@ mod tests {
             Providers::new(Vec::new(), Vec::new(), "x").err(),
             Some(Error::NoProviders)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_catalogue_picks_the_protocol() {
+        let catalog = serde_json::from_str(include_str!("../tests/fixtures/models_dev.json"))
+            .expect("valid fixture");
+        let go = Endpoint {
+            base_url: "https://opencode.ai/zen/go/v1/".into(),
+            ..endpoint("opencode")
+        };
+        let providers = Providers::build(
+            vec![endpoint("lyceum"), go],
+            Vec::new(),
+            "opencode/glm-5.3",
+            reqwest::Client::new(),
+            Snapshot::of(catalog),
+        )
+        .expect("two providers");
+        let wire = async |model| {
+            let (i, model) = providers.route(model).expect("routes");
+            let (wire, known) = providers.wire(i, model).await;
+            (wire, known.and_then(|m| m.limit.as_ref()?.output))
+        };
+
+        assert_eq!(
+            wire("opencode/minimax-m3").await,
+            (Wire::Messages, Some(131_072))
+        );
+        assert_eq!(
+            wire("glm-5.3").await,
+            (Wire::ChatCompletions, Some(131_072))
+        );
+        assert_eq!(
+            wire("opencode/unlisted").await,
+            (Wire::ChatCompletions, None)
+        );
+        assert_eq!(
+            wire("lyceum/minimax-m3").await,
+            (Wire::ChatCompletions, None),
+            "an endpoint the catalogue does not know"
+        );
     }
 
     #[test]
