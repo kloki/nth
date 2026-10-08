@@ -60,8 +60,8 @@ pub(crate) async fn listed(
 /// Only the models whose protocol nth speaks. Without a catalogue entry for
 /// the endpoint, everything it lists is assumed to speak chat completions,
 /// since that is what the endpoint is for. An unknown model may reason, so
-/// it is offered an effort; a known one only when the catalogue says it
-/// reasons.
+/// it is offered the usual efforts; a known one those the catalogue says it
+/// takes.
 pub(crate) fn select(
     endpoint: Vec<String>,
     provider: Option<&catalog::Provider>,
@@ -75,7 +75,7 @@ pub(crate) fn select(
                     name: None,
                     context: None,
                     output: None,
-                    reasoning: true,
+                    efforts: catalog::BUDGET_EFFORTS.to_vec(),
                     origin: None,
                 });
             };
@@ -86,7 +86,7 @@ pub(crate) fn select(
                 name: model.name.clone(),
                 context: model.limit.as_ref().and_then(|l| l.context),
                 output: model.limit.as_ref().and_then(|l| l.output),
-                reasoning: model.reasoning.unwrap_or(false),
+                efforts: model.efforts(),
                 origin: None,
             })
         })
@@ -133,6 +133,8 @@ pub(crate) fn merge<E: std::fmt::Display>(
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Effort;
+
     use super::*;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/models_dev.json");
@@ -168,7 +170,7 @@ mod tests {
             name: None,
             context: None,
             output: None,
-            reasoning: true,
+            efforts: Vec::new(),
             origin: None,
         }
     }
@@ -191,7 +193,7 @@ mod tests {
                 name: Some("GLM-5.3".into()),
                 context: Some(1_000_000),
                 output: Some(131_072),
-                reasoning: true,
+                efforts: vec![Effort::Low, Effort::High, Effort::Max],
                 origin: None,
             }
         );
@@ -200,17 +202,19 @@ mod tests {
             Some("Grok 4.7"),
             "over responses"
         );
-        assert!(
-            !models[2].reasoning,
-            "the catalog does not say kimi reasons"
-        );
+        assert_eq!(models[2].efforts, [Effort::Max], "kimi only maxes");
         assert_eq!(
             models[3].name.as_deref(),
             Some("MiniMax M3"),
             "over messages"
         );
         assert_eq!(models[4].context, None);
-        assert!(models[4].reasoning, "unlisted models may reason");
+        assert_eq!(models[3].efforts, [], "minimax only toggles");
+        assert_eq!(
+            models[4].efforts,
+            catalog::BUDGET_EFFORTS,
+            "unlisted models may reason"
+        );
     }
 
     #[test]

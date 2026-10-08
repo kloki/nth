@@ -35,28 +35,53 @@ pub struct Llm {
     pub effort: Effort,
 }
 
-/// How hard a reasoning model thinks before it answers.
+/// How hard a reasoning model thinks before it answers. The levels are
+/// models.dev's; a model takes only some of them (`ModelInfo::efforts`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
     /// Leaves the choice to the model, for endpoints that reject the field.
     #[default]
     Default,
+    /// Asks the model not to think, where it can be told so.
+    None,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl Effort {
-    pub const ALL: [Effort; 4] = [Effort::Default, Effort::Low, Effort::Medium, Effort::High];
+    /// Every level, least thinking first after `Default`.
+    pub const ALL: [Effort; 8] = [
+        Effort::Default,
+        Effort::None,
+        Effort::Minimal,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::XHigh,
+        Effort::Max,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Effort::Default => "default",
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
             Effort::Low => "low",
             Effort::Medium => "medium",
             Effort::High => "high",
+            Effort::XHigh => "xhigh",
+            Effort::Max => "max",
         }
+    }
+
+    /// The level named `name` on the wire, if nth knows it.
+    pub fn from_name(name: &str) -> Option<Effort> {
+        Self::ALL.into_iter().find(|e| e.name() == name)
     }
 
     /// The value to send, if any.
@@ -64,15 +89,24 @@ impl Effort {
         (self != Effort::Default).then(|| self.name())
     }
 
-    /// One step up, staying at the top.
-    pub fn next(self) -> Effort {
-        let i = self.index();
-        Self::ALL[(i + 1).min(Self::ALL.len() - 1)]
-    }
-
-    /// One step down, staying at the bottom.
-    pub fn prev(self) -> Effort {
-        Self::ALL[self.index().saturating_sub(1)]
+    /// The level of `allowed` closest to this one, rounding up on a tie, so
+    /// a model is never sent a level it refuses. `Default` always stays, and
+    /// is all a model without levels can be sent.
+    pub fn nearest(self, allowed: &[Effort]) -> Effort {
+        if self == Effort::Default || allowed.contains(&self) {
+            return self;
+        }
+        let at = self.index();
+        allowed
+            .iter()
+            .copied()
+            .filter(|&e| e != Effort::Default)
+            .min_by_key(|e| {
+                let i = e.index();
+                // Below comes after above at the same distance.
+                (i.abs_diff(at), i < at)
+            })
+            .unwrap_or(Effort::Default)
     }
 
     fn index(self) -> usize {
@@ -125,8 +159,9 @@ pub struct ModelInfo {
     pub context: Option<u64>,
     /// Maximum output tokens.
     pub output: Option<u64>,
-    /// Whether it takes a reasoning effort.
-    pub reasoning: bool,
+    /// The efforts it takes, least first; none when there is nothing to
+    /// pick.
+    pub efforts: Vec<Effort>,
     pub origin: Option<Origin>,
 }
 
@@ -214,13 +249,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effort_steps_stop_at_the_ends() {
-        assert_eq!(Effort::Default.prev(), Effort::Default);
-        assert_eq!(Effort::Default.next(), Effort::Low);
-        assert_eq!(Effort::Medium.next(), Effort::High);
-        assert_eq!(Effort::High.next(), Effort::High);
-        assert_eq!(Effort::Default.wire(), None);
-        assert_eq!(Effort::High.wire(), Some("high"));
+    fn an_effort_snaps_to_the_nearest_allowed_level() {
+        use Effort::*;
+        assert_eq!(Low.nearest(&[High, Max]), High);
+        assert_eq!(Max.nearest(&[Low, Medium, High]), High);
+        assert_eq!(Medium.nearest(&[Low, High]), High, "a tie rounds up");
+        assert_eq!(High.nearest(&[Low, High]), High);
+        assert_eq!(Default.nearest(&[Max]), Default);
+        assert_eq!(High.nearest(&[]), Default, "nothing to send");
+        assert_eq!(Default.wire(), Option::None);
+        assert_eq!(XHigh.wire(), Some("xhigh"));
+        assert_eq!(Effort::from_name("minimal"), Some(Minimal));
+        assert_eq!(Effort::from_name("ultra"), Option::None);
     }
 
     #[test]
@@ -230,7 +270,7 @@ mod tests {
             name: None,
             context: Some(1_000_000),
             output: Some(131_072),
-            reasoning: true,
+            efforts: vec![Effort::High],
             origin: None,
         };
         assert_eq!(model.limits(), "1M ctx · 131k out");
@@ -261,7 +301,7 @@ mod tests {
             name: None,
             context: None,
             output: None,
-            reasoning: false,
+            efforts: Vec::new(),
             origin: None,
         };
         assert_eq!(bare.wire_id(), "z-ai/glm-5.2");

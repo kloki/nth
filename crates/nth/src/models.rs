@@ -1,5 +1,6 @@
-//! `nth models`: the models the providers serve, with the one in use marked,
-//! and on stderr the providers that could not be asked.
+//! `nth models`: the models the providers serve, with their limits and
+//! efforts and the one in use marked, and on stderr the providers that
+//! could not be asked.
 
 use std::io::{IsTerminal, Write};
 
@@ -40,7 +41,14 @@ pub async fn run(json: bool, config: Config) -> Result<()> {
             writeln!(out, "{}", origin.unwrap_or_default().bold())?;
             shown = origin;
         }
-        let limits = model.limits().dimmed().to_string();
+        let efforts: Vec<&str> = model.efforts.iter().map(|e| e.name()).collect();
+        let limits = [model.limits(), efforts.join("/")]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+            .dimmed()
+            .to_string();
         let id = model.wire_id();
         if model.id == current {
             writeln!(out, "{} {:width$}  {limits}", "→".cyan().bold(), id.bold())?;

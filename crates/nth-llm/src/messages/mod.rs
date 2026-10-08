@@ -24,6 +24,22 @@ const VERSION: &str = "2023-06-01";
 /// what a request may produce, not what it does.
 const MAX_TOKENS: u64 = 32_000;
 
+/// How the model is told to think: adaptively when it takes effort levels
+/// and no budget, else within a budget, with the level too when it takes
+/// one.
+fn thinking(known: Option<&catalog::Model>) -> wire::Thinking {
+    let Some(known) = known else {
+        return wire::Thinking::UNKNOWN;
+    };
+    match (known.takes_effort(), known.budget()) {
+        (true, None) => wire::Thinking::Adaptive,
+        (effort, budget) => {
+            let (min, max) = budget.unwrap_or_default();
+            wire::Thinking::Budget { min, max, effort }
+        }
+    }
+}
+
 /// The `max_tokens` to ask for, from the model's output limit if known.
 fn max_tokens(known: Option<&catalog::Model>) -> u64 {
     let output = known.and_then(|m| m.limit.as_ref()?.output);
@@ -77,7 +93,7 @@ impl Client {
 
     /// `known` is the catalogue's entry for the model, if it has one: its
     /// output limit bounds `max_tokens`, which is required here, unlike in
-    /// chat completions.
+    /// chat completions, and its reasoning options say how it thinks.
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
@@ -94,6 +110,7 @@ impl Client {
             .json(&wire::body(
                 request.model,
                 request.effort,
+                thinking(known),
                 max_tokens(known),
                 request.messages,
                 request.tools,
@@ -427,15 +444,31 @@ mod tests {
     }
 
     #[test]
+    fn the_catalogue_says_how_a_model_thinks() {
+        let catalog: catalog::Catalog =
+            serde_json::from_str(include_str!("../../tests/fixtures/models_dev.json"))
+                .expect("valid fixture");
+        let other = &catalog["other"].models;
+        assert_eq!(thinking(other.get("claude-x")), wire::Thinking::Adaptive);
+        assert_eq!(
+            thinking(other.get("claude-old")),
+            wire::Thinking::Budget {
+                min: Some(1_024),
+                max: None,
+                effort: false
+            }
+        );
+        assert_eq!(thinking(None), wire::Thinking::UNKNOWN);
+    }
+
+    #[test]
     fn max_tokens_is_the_output_limit_capped() {
         let model = |output| catalog::Model {
-            name: None,
-            reasoning: None,
             limit: Some(catalog::Limit {
                 context: None,
                 output,
             }),
-            provider: None,
+            ..catalog::Model::default()
         };
         assert_eq!(max_tokens(None), MAX_TOKENS);
         assert_eq!(max_tokens(Some(&model(None))), MAX_TOKENS);

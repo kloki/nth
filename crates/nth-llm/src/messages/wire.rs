@@ -6,9 +6,34 @@ use serde_json::{Value, json};
 /// The smallest thinking budget the API takes.
 const MIN_THINKING: u64 = 1_024;
 
+/// How a model is told to think, from what the catalogue says it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Thinking {
+    /// Thinks as much as the effort asks (Claude 4.7 and later): adaptive
+    /// thinking, steered by the effort alone.
+    Adaptive,
+    /// Thinks within a budget the effort picks, bounded by `min` and `max`.
+    /// With `effort` the model takes the level as well.
+    Budget {
+        min: Option<u64>,
+        max: Option<u64>,
+        effort: bool,
+    },
+}
+
+impl Thinking {
+    /// A budget with no bounds, for a model the catalogue does not know.
+    pub(super) const UNKNOWN: Thinking = Thinking::Budget {
+        min: None,
+        max: None,
+        effort: false,
+    };
+}
+
 pub(super) fn body(
     model: &str,
     effort: Effort,
+    style: Thinking,
     max_tokens: u64,
     messages: &[Message],
     tools: &[ToolSpec],
@@ -45,8 +70,26 @@ pub(super) fn body(
             "cache_control": { "type": "ephemeral" },
         }]);
     }
-    if let Some(budget) = thinking(effort, max_tokens) {
-        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    if let Some(level) = effort.wire().filter(|_| effort != Effort::None) {
+        match style {
+            Thinking::Adaptive => {
+                // Newer models leave their thinking out unless asked.
+                body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
+                body["output_config"] = json!({ "effort": level });
+            }
+            Thinking::Budget {
+                min,
+                max,
+                effort: takes_effort,
+            } => {
+                if let Some(budget) = budget(effort, max_tokens, min, max) {
+                    body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+                }
+                if takes_effort {
+                    body["output_config"] = json!({ "effort": level });
+                }
+            }
+        }
     }
     if !tools.is_empty() {
         body["tools"] = tools.iter().map(tool).collect();
@@ -121,17 +164,25 @@ fn tool_id(id: &str) -> String {
         .collect()
 }
 
-/// How many tokens the model may think for at `effort`: at most half the
-/// reply, so the answer has room, and none below the API's minimum.
-fn thinking(effort: Effort, max_tokens: u64) -> Option<u64> {
+/// How many tokens the model may think for at `effort`: within the model's
+/// bounds, at most half the reply, so the answer has room, and none below
+/// the smallest it takes.
+fn budget(effort: Effort, max_tokens: u64, min: Option<u64>, max: Option<u64>) -> Option<u64> {
     let budget: u64 = match effort {
-        Effort::Default => return None,
+        Effort::Default | Effort::None => return None,
+        Effort::Minimal => 1_024,
         Effort::Low => 2_048,
         Effort::Medium => 8_192,
         Effort::High => 16_000,
+        Effort::XHigh => 24_000,
+        Effort::Max => 32_000,
     };
-    let budget = budget.min(max_tokens / 2);
-    (budget >= MIN_THINKING).then_some(budget)
+    let floor = min.unwrap_or(0).max(MIN_THINKING);
+    let budget = budget
+        .max(floor)
+        .min(max.unwrap_or(u64::MAX))
+        .min(max_tokens / 2);
+    (budget >= floor).then_some(budget)
 }
 
 fn tool(spec: &ToolSpec) -> Value {
@@ -186,7 +237,14 @@ mod tests {
             parameters: json!({ "type": "object" }),
         }];
 
-        let body = body("claude-x", Effort::Default, 32_000, &messages, &tools);
+        let body = body(
+            "claude-x",
+            Effort::Default,
+            Thinking::UNKNOWN,
+            32_000,
+            &messages,
+            &tools,
+        );
 
         assert_eq!(
             body,
@@ -227,9 +285,11 @@ mod tests {
 
     #[test]
     fn thinks_only_when_an_effort_is_chosen_and_leaves_room_to_answer() {
-        let thinking =
-            |effort, max_tokens| body("claude-x", effort, max_tokens, &[], &[])["thinking"].clone();
+        let thinking = |effort, max_tokens| {
+            body("claude-x", effort, Thinking::UNKNOWN, max_tokens, &[], &[])["thinking"].clone()
+        };
         assert_eq!(thinking(Effort::Default, 32_000), Value::Null);
+        assert_eq!(thinking(Effort::None, 32_000), Value::Null);
         assert_eq!(
             thinking(Effort::High, 32_000),
             json!({ "type": "enabled", "budget_tokens": 16_000 })
@@ -240,5 +300,56 @@ mod tests {
             Value::Null,
             "below the minimum"
         );
+    }
+
+    #[test]
+    fn a_budget_stays_within_the_models_bounds() {
+        let style = Thinking::Budget {
+            min: Some(4_096),
+            max: Some(10_000),
+            effort: false,
+        };
+        let thinking = |effort| {
+            body("qwen", effort, style, 32_000, &[], &[])["thinking"]["budget_tokens"].clone()
+        };
+        assert_eq!(thinking(Effort::Low), 4_096);
+        assert_eq!(thinking(Effort::Max), 10_000);
+    }
+
+    #[test]
+    fn an_effort_model_thinks_adaptively_at_that_effort() {
+        let adaptive = body(
+            "claude-y",
+            Effort::XHigh,
+            Thinking::Adaptive,
+            32_000,
+            &[],
+            &[],
+        );
+        assert_eq!(
+            adaptive["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
+        assert_eq!(adaptive["output_config"], json!({ "effort": "xhigh" }));
+
+        let both = Thinking::Budget {
+            min: Some(1_024),
+            max: None,
+            effort: true,
+        };
+        let both = body("claude-z", Effort::High, both, 32_000, &[], &[]);
+        assert_eq!(both["thinking"]["budget_tokens"], 16_000);
+        assert_eq!(both["output_config"], json!({ "effort": "high" }));
+
+        let left = body(
+            "claude-y",
+            Effort::Default,
+            Thinking::Adaptive,
+            32_000,
+            &[],
+            &[],
+        );
+        assert_eq!(left.get("thinking"), None);
+        assert_eq!(left.get("output_config"), None);
     }
 }
