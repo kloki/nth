@@ -8,7 +8,7 @@ Whenever I did not know what to do, I copied [opencode](https://github.com/anoma
 
 ## Install
 
-Every [release](https://github.com/kloki/nth/releases) ships a prebuilt binary for x86_64 Linux. To install the latest one, run its installer:
+Every [release](https://github.com/kloki/nth/releases) ships prebuilt binaries for macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64, glibc and musl). To install the latest one, run its installer:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kloki/nth/releases/latest/download/nth-installer.sh | sh
