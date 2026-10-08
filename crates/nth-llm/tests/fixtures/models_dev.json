@@ -25,8 +25,15 @@
       "grok-4.7": {
         "id": "grok-4.7",
         "name": "Grok 4.7",
+        "reasoning": true,
         "limit": { "context": 500000, "output": 500000 },
         "provider": { "npm": "@ai-sdk/openai" }
+      },
+      "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "limit": { "context": 1048576, "output": 65536 },
+        "provider": { "npm": "@ai-sdk/google" }
       }
     }
   },

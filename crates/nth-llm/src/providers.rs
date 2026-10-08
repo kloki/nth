@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use crate::{
     catalog::{self, Snapshot, Wire},
     chat_completions::{self, ChatClient},
-    messages,
+    messages, responses,
 };
 
 /// A configured endpoint whose key is set.
@@ -52,6 +52,7 @@ struct Client {
     base_url: String,
     chat: ChatClient,
     messages: messages::Client,
+    responses: responses::Client,
 }
 
 pub struct Providers {
@@ -111,7 +112,16 @@ impl Providers {
                     endpoint.api_key.clone(),
                 )
                 .only(endpoint.models),
-                messages: messages::Client::new(http.clone(), endpoint.base_url, endpoint.api_key),
+                messages: messages::Client::new(
+                    http.clone(),
+                    endpoint.base_url.clone(),
+                    endpoint.api_key.clone(),
+                ),
+                responses: responses::Client::new(
+                    http.clone(),
+                    endpoint.base_url,
+                    endpoint.api_key,
+                ),
             })
             .collect();
         let mut providers = Self {
@@ -217,6 +227,10 @@ impl Provider for Providers {
                         .stream(request, messages::max_tokens(output))
                         .await?)
                 }
+                (Wire::Responses, known) => {
+                    let reasons = known.and_then(|m| m.reasoning).unwrap_or(false);
+                    Ok(client.responses.stream(request, reasons).await?)
+                }
             }
         }
         .boxed()
@@ -224,7 +238,9 @@ impl Provider for Providers {
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
         // Each protocol recognises only its own errors.
-        chat_completions::retry(error).or_else(|| messages::retry(error))
+        chat_completions::retry(error)
+            .or_else(|| messages::retry(error))
+            .or_else(|| responses::retry(error))
     }
 }
 
@@ -390,6 +406,10 @@ mod tests {
         assert_eq!(
             wire("opencode/minimax-m3").await,
             (Wire::Messages, Some(131_072))
+        );
+        assert_eq!(
+            wire("opencode/grok-4.7").await,
+            (Wire::Responses, Some(500_000))
         );
         assert_eq!(
             wire("glm-5.3").await,
