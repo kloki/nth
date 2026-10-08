@@ -48,6 +48,12 @@ pub enum Error {
     TooManySteps(usize),
     #[error("interrupted")]
     Interrupted,
+    /// A reply with neither text nor tool calls: a content filter, a
+    /// reasoning-only reply, or a stream that ended at once. Reported
+    /// rather than passed off as an answer, which a subagent's parent
+    /// would read as an empty result marked completed.
+    #[error("the model answered nothing")]
+    EmptyReply,
     #[error(
         "stopped: the model called {0} with the same input {DOOM_LOOP_THRESHOLD} times in a row"
     )]
@@ -126,6 +132,14 @@ pub async fn run_turn(
             Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
         };
 
+        if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
+            // Reasoning alone is kept, as an interrupted reply's is; an
+            // assistant message with nothing in it never is.
+            if !reply.reasoning.is_empty() {
+                messages.push(Message::Assistant(reply));
+            }
+            return Err(Error::EmptyReply);
+        }
         let calls = reply.tool_calls.clone();
         messages.push(Message::Assistant(reply));
         if calls.is_empty() {
@@ -643,6 +657,60 @@ pub(crate) mod tests {
             shown |= event == Event::Notice(notice.into());
         }
         assert!(shown);
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_nothing_in_it_fails_the_turn() {
+        let provider = Scripted::new(vec![vec![]]);
+        let ctx = ToolContext::new(".".into());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::EmptyReply)));
+        assert_eq!(
+            messages,
+            [Message::User("go".into())],
+            "no empty assistant message in the history"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reasoning_only_reply_is_kept_but_is_no_answer() {
+        let provider = Scripted::new(vec![vec![StreamEvent::ReasoningDelta("hmm".into())]]);
+        let ctx = ToolContext::new(".".into());
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::EmptyReply)));
+        assert_eq!(
+            messages[1],
+            Message::Assistant(AssistantMessage {
+                reasoning: "hmm".into(),
+                ..AssistantMessage::default()
+            })
+        );
     }
 
     #[tokio::test]
