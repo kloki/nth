@@ -37,7 +37,7 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 3. **Merging back is the hard part, not creating the worktree.** The exact mechanics can wait until M2. The constraint is fixed now: base gets a clean history of one well-described commit per task, and checkpoint commits never reach it.
 4. **A tiling TUI is a rabbit hole.** Decided: no tiling. The screen is three fixed bands: content, input and status (see [ui.md](ui.md)). That covers every planned view without a layout engine.
 5. **Long-run plan and review flows should come last, not first.** Their shape will be obvious after a month of daily use and a guess before that. Build them as agents, prompts and a markdown artifact on the existing loop, never as a workflow engine.
-6. **OpenCode Go speaks three wire protocols.** Its models sit behind chat completions (GLM, Kimi, DeepSeek), Anthropic messages (MiniMax and others) and OpenAI responses (Grok, GPT Luna). M1 implemented only chat completions, which already covers the strongest open coding models; messages followed, and the models.dev catalogue says which protocol each model speaks.
+6. **OpenCode Go speaks three wire protocols.** Its models sit behind chat completions (GLM, Kimi, DeepSeek), Anthropic messages (MiniMax and others) and OpenAI responses (Grok, GPT Luna). M1 implemented only chat completions, which already covers the strongest open coding models; messages and responses followed, and the models.dev catalogue says which protocol each model speaks.
 7. **LSP means diagnostics only in M1.** opencode's main LSP payoff is feeding compiler errors back after an edit. Hover, go-to-definition and symbol tools can wait.
 8. **MCP is not on the list, and it should stay off it.** Integrations are skills that call REST APIs or CLIs through bash. nth ships no MCP client.
 
@@ -50,7 +50,7 @@ The list asks for three new ideas and a full opencode clone all at once, and tha
 | Plan and Act modes                               | yes                                          | custom agents                                          |
 | Sessions                                         | persist and resume                           | compaction, fork, revert                               |
 | Worktrees                                        | one per session, auto-created                | merge flow UI, pool, cleanup                           |
-| Providers                                        | Go over chat completions and messages        | responses, Anthropic direct                            |
+| Providers                                        | Go over all three of its wire protocols      | Anthropic direct                                       |
 | Skills                                           | markdown files and a skill tool              |                                                        |
 | Formatting                                       | run formatter after each write               |                                                        |
 | LSP                                              | diagnostics from every server on PATH        | symbol tools                                           |
@@ -122,7 +122,7 @@ crates/
 │       ├── agents/      # plan.md, build.md prompt templates + tool filters
 │       ├── store.rs     # one JSON file per session
 │       └── skills.rs
-├── nth-llm/src/chat_completions/   # and messages/; later: responses/
+├── nth-llm/src/chat_completions/   # and messages/, responses/
 ├── nth-tools/src/{read,write,edit,glob,grep,bash,todo}/
 ├── nth-format/          # formatters run after a write
 ├── nth-worktree/

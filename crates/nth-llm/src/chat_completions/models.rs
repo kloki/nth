@@ -91,9 +91,16 @@ mod tests {
     }
 
     fn endpoint() -> Vec<String> {
-        ["kimi-k3", "minimax-m3", "grok-4.7", "glm-5.3", "unlisted"]
-            .map(String::from)
-            .into()
+        [
+            "kimi-k3",
+            "minimax-m3",
+            "grok-4.7",
+            "gemini-3.5-flash",
+            "glm-5.3",
+            "unlisted",
+        ]
+        .map(String::from)
+        .into()
     }
 
     #[test]
@@ -105,7 +112,7 @@ mod tests {
 
         assert_eq!(
             ids(&models),
-            ["glm-5.3", "kimi-k3", "minimax-m3", "unlisted"]
+            ["glm-5.3", "grok-4.7", "kimi-k3", "minimax-m3", "unlisted"]
         );
         assert_eq!(
             models[0],
@@ -118,17 +125,22 @@ mod tests {
                 origin: None,
             }
         );
+        assert_eq!(
+            models[1].name.as_deref(),
+            Some("Grok 4.7"),
+            "over responses"
+        );
         assert!(
-            !models[1].reasoning,
+            !models[2].reasoning,
             "the catalog does not say kimi reasons"
         );
         assert_eq!(
-            models[2].name.as_deref(),
+            models[3].name.as_deref(),
             Some("MiniMax M3"),
             "over messages"
         );
-        assert_eq!(models[3].context, None);
-        assert!(models[3].reasoning, "unlisted models may reason");
+        assert_eq!(models[4].context, None);
+        assert!(models[4].reasoning, "unlisted models may reason");
     }
 
     #[test]

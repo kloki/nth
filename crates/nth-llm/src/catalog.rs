@@ -50,6 +50,7 @@ pub(crate) struct Override {
 pub(crate) enum Wire {
     ChatCompletions,
     Messages,
+    Responses,
 }
 
 impl Wire {
@@ -57,6 +58,7 @@ impl Wire {
         match npm {
             "@ai-sdk/openai-compatible" => Some(Self::ChatCompletions),
             "@ai-sdk/anthropic" => Some(Self::Messages),
+            "@ai-sdk/openai" => Some(Self::Responses),
             _ => None,
         }
     }
@@ -144,7 +146,8 @@ mod tests {
         let go = provider_for(&catalog, "https://opencode.ai/zen/go/v1").expect("go entry");
         assert_eq!(go.wire("glm-5.3"), Some(Wire::ChatCompletions));
         assert_eq!(go.wire("minimax-m3"), Some(Wire::Messages));
-        assert_eq!(go.wire("grok-4.7"), None, "responses is not spoken");
+        assert_eq!(go.wire("grok-4.7"), Some(Wire::Responses));
+        assert_eq!(go.wire("gemini-3.5-flash"), None, "google's is not spoken");
         assert_eq!(go.wire("unlisted"), Some(Wire::ChatCompletions));
 
         let other = &catalog["other"];

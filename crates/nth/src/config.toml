@@ -6,7 +6,8 @@
 model = "opencode/deepseek-v4.1-flash"
 
 # One [provider.<id>] block per endpoint; the id prefixes its models. Every one is
-# an OpenAI-compatible chat completions endpoint. A provider whose key is not set
+# an OpenAI-compatible chat completions endpoint; models.dev says which models it
+# serves over Anthropic messages or OpenAI responses. A provider whose key is not set
 # is left out, and nth needs at least one that is.
 [provider.opencode]
 # Built in: this block is here only to change it.
