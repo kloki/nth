@@ -1,7 +1,7 @@
-//! OpenAI-compatible chat completions over SSE. Works against OpenCode Go and
-//! any other endpoint speaking this protocol.
+//! OpenAI-compatible chat completions over SSE, for OpenCode Go and any
+//! other endpoint speaking this protocol, and what a model goes over when
+//! the catalogue says nothing else.
 
-mod models;
 mod sse;
 mod wire;
 
@@ -10,15 +10,10 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use nth_protocol::{
-    BoxError, Listing, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage,
-};
+use futures::{Stream, StreamExt, stream::BoxStream};
+use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
-use crate::{
-    catalog,
-    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
-};
+use crate::http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,58 +46,23 @@ pub enum Error {
     Truncated,
 }
 
-pub struct ChatClient {
+/// One endpoint's chat completions route.
+pub(crate) struct Client {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
-    /// The models to offer instead of asking the endpoint's `/models`, for
-    /// an endpoint without one; empty asks.
-    only: Vec<String>,
 }
 
-impl ChatClient {
-    pub fn new(base_url: String, api_key: String) -> Result<Self, Error> {
-        Ok(Self::with_http(crate::http::client()?, base_url, api_key))
-    }
-
-    /// On a client shared with others, so several endpoints need one pool.
-    pub fn with_http(http: reqwest::Client, base_url: String, api_key: String) -> Self {
+impl Client {
+    pub(crate) fn new(http: reqwest::Client, base_url: String, api_key: String) -> Self {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-            only: Vec::new(),
         }
     }
 
-    /// Offers these models rather than the ones the endpoint lists.
-    pub fn only(mut self, models: Vec<String>) -> Self {
-        self.only = models;
-        self
-    }
-
-    /// The ids of the models to offer: the configured ones, else what the
-    /// endpoint lists.
-    pub(crate) async fn ids(&self) -> Result<Vec<String>, Error> {
-        if !self.only.is_empty() {
-            return Ok(self.only.clone());
-        }
-        models::listed(&self.http, &self.base_url, &self.api_key).await
-    }
-
-    /// What the catalogue knows about `ids`, which this client serves.
-    pub(crate) fn describe(
-        &self,
-        ids: Vec<String>,
-        catalog: Option<&catalog::Catalog>,
-    ) -> Vec<ModelInfo> {
-        models::select(
-            ids,
-            catalog.and_then(|c| catalog::provider_for(c, &self.base_url)),
-        )
-    }
-
-    async fn open(
+    pub(crate) async fn stream(
         &self,
         request: Request<'_>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
@@ -132,7 +92,7 @@ impl ChatClient {
 
 /// Turns a non-2xx response into an error that carries the server's body
 /// and its `Retry-After`, if any.
-pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
+async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -146,31 +106,9 @@ pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Resp
     })
 }
 
-impl Provider for ChatClient {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async move {
-            // Both at once; the catalogue only refines the list, so failing
-            // to get it is not failing to list.
-            let (catalog, ids) = futures::join!(catalog::fetch(&self.http), self.ids());
-            Ok(Listing::from(self.describe(ids?, catalog.ok().as_ref())))
-        }
-        .boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        request: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        async move { self.open(request).await.map_err(BoxError::from) }.boxed()
-    }
-
-    fn retry(&self, error: &BoxError) -> Option<Retry> {
-        retry(error)
-    }
-}
-
-/// Whether `error`, one a `ChatClient` produced, may be retried. Reads only
-/// the error, so whatever fronts the clients answers the same way.
+/// Whether `error`, one a chat completions `Client` produced, may be
+/// retried. Reads only the error, so whatever fronts the clients answers
+/// the same way.
 pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
     let error = error.downcast_ref::<Error>()?;
     match error {
@@ -430,7 +368,7 @@ mod tests {
                 .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
         );
         let stalled: BoxError = Box::new(Error::Stalled);
-        assert_eq!(client().retry(&stalled), Some(Retry { after: None }));
+        assert_eq!(retry(&stalled), Some(Retry { after: None }));
     }
 
     #[tokio::test]
@@ -460,10 +398,6 @@ mod tests {
         );
     }
 
-    fn client() -> ChatClient {
-        ChatClient::new("http://localhost".into(), "key".into()).expect("client builds")
-    }
-
     #[test]
     fn only_transient_errors_are_retryable() {
         let boxed = |error: Error| -> BoxError { Box::new(error) };
@@ -474,7 +408,7 @@ mod tests {
             retry_after: Some(Duration::from_secs(7)),
         });
         assert_eq!(
-            client().retry(&limited),
+            retry(&limited),
             Some(Retry {
                 after: Some(Duration::from_secs(7))
             })
@@ -485,19 +419,19 @@ mod tests {
             body: String::new(),
             retry_after: None,
         });
-        assert_eq!(client().retry(&overloaded), Some(Retry { after: None }));
+        assert_eq!(retry(&overloaded), Some(Retry { after: None }));
 
         let rejected = boxed(Error::Status {
             status: reqwest::StatusCode::BAD_REQUEST,
             body: String::new(),
             retry_after: None,
         });
-        assert_eq!(client().retry(&rejected), None);
+        assert_eq!(retry(&rejected), None);
         assert_eq!(
-            client().retry(&boxed(Error::Incomplete)),
+            retry(&boxed(Error::Incomplete)),
             Some(Retry { after: None })
         );
-        assert_eq!(client().retry(&boxed(Error::Truncated)), None);
+        assert_eq!(retry(&boxed(Error::Truncated)), None);
 
         let in_stream = |status: Option<reqwest::StatusCode>| {
             boxed(Error::Provider {
@@ -506,23 +440,23 @@ mod tests {
             })
         };
         assert_eq!(
-            client().retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),
+            retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),
             Some(Retry { after: None })
         );
         assert_eq!(
-            client().retry(&in_stream(Some(reqwest::StatusCode::BAD_GATEWAY))),
+            retry(&in_stream(Some(reqwest::StatusCode::BAD_GATEWAY))),
             Some(Retry { after: None })
         );
         assert_eq!(
-            client().retry(&in_stream(Some(reqwest::StatusCode::BAD_REQUEST))),
+            retry(&in_stream(Some(reqwest::StatusCode::BAD_REQUEST))),
             None
         );
-        assert_eq!(client().retry(&in_stream(None)), None);
+        assert_eq!(retry(&in_stream(None)), None);
 
         let bad_url = reqwest::Client::new()
             .get("not a url")
             .build()
             .expect_err("not a url");
-        assert_eq!(client().retry(&boxed(Error::Http(bad_url))), None);
+        assert_eq!(retry(&boxed(Error::Http(bad_url))), None);
     }
 }

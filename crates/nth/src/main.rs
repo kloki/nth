@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
-use nth_llm::{Endpoint, Providers, Unavailable};
+use nth_llm::{EndpointConfig, Providers, Unavailable};
 use nth_protocol::Mode;
 use nth_session::Session;
 use owo_colors::OwoColorize;
@@ -176,7 +176,7 @@ fn providers(config: &Config) -> Result<Providers> {
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
         match std::env::var(&provider.api_key_env) {
-            Ok(api_key) if !api_key.is_empty() => endpoints.push(Endpoint {
+            Ok(api_key) if !api_key.is_empty() => endpoints.push(EndpointConfig {
                 id: id.clone(),
                 name: provider.name.clone(),
                 base_url: provider.base_url.clone(),

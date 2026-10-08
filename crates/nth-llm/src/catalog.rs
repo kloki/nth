@@ -87,6 +87,7 @@ impl Provider {
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     http: reqwest::Client,
+    url: String,
     catalog: Arc<OnceCell<Option<Catalog>>>,
 }
 
@@ -94,6 +95,7 @@ impl Snapshot {
     pub(crate) fn new(http: reqwest::Client) -> Self {
         Self {
             http,
+            url: URL.into(),
             catalog: Arc::new(OnceCell::new()),
         }
     }
@@ -101,7 +103,7 @@ impl Snapshot {
     /// The catalogue, waiting for the fetch if it is still under way.
     pub(crate) async fn get(&self) -> Option<&Catalog> {
         self.catalog
-            .get_or_init(|| async { fetch(&self.http).await.ok() })
+            .get_or_init(|| async { fetch(&self.http, &self.url).await.ok() })
             .await
             .as_ref()
     }
@@ -109,14 +111,23 @@ impl Snapshot {
     #[cfg(test)]
     pub(crate) fn of(catalog: Catalog) -> Self {
         Self {
-            http: reqwest::Client::new(),
             catalog: Arc::new(OnceCell::new_with(Some(Some(catalog)))),
+            ..Self::new(reqwest::Client::new())
+        }
+    }
+
+    /// One fetched from `url` instead of models.dev.
+    #[cfg(test)]
+    pub(crate) fn at(url: String) -> Self {
+        Self {
+            url,
+            ..Self::new(reqwest::Client::new())
         }
     }
 }
 
-pub(crate) async fn fetch(http: &reqwest::Client) -> Result<Catalog, reqwest::Error> {
-    http.get(URL)
+async fn fetch(http: &reqwest::Client, url: &str) -> Result<Catalog, reqwest::Error> {
+    http.get(url)
         .timeout(TIMEOUT)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()

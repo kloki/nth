@@ -1,7 +1,5 @@
 //! Anthropic messages over SSE, for the models the catalogue says need it
-//! (Claude on OpenCode Zen, MiniMax on Go). It has no listing of its own:
-//! the endpoint lists its models over chat completions, and `Providers`
-//! sends a model here when the catalogue says so.
+//! (Claude on OpenCode Zen, MiniMax on Go).
 
 mod sse;
 mod wire;
@@ -14,7 +12,10 @@ use std::{
 use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
-use crate::http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient};
+use crate::{
+    catalog,
+    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+};
 
 /// The API version the request and the stream are shaped for.
 const VERSION: &str = "2023-06-01";
@@ -24,7 +25,8 @@ const VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u64 = 32_000;
 
 /// The `max_tokens` to ask for, from the model's output limit if known.
-pub(crate) fn max_tokens(output: Option<u64>) -> u64 {
+fn max_tokens(known: Option<&catalog::Model>) -> u64 {
+    let output = known.and_then(|m| m.limit.as_ref()?.output);
     output.map_or(MAX_TOKENS, |output| output.min(MAX_TOKENS))
 }
 
@@ -73,11 +75,13 @@ impl Client {
         }
     }
 
-    /// `max_tokens` is required here, unlike in chat completions.
+    /// `known` is the catalogue's entry for the model, if it has one: its
+    /// output limit bounds `max_tokens`, which is required here, unlike in
+    /// chat completions.
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
-        max_tokens: u64,
+        known: Option<&catalog::Model>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
         let response = self
             .http
@@ -90,7 +94,7 @@ impl Client {
             .json(&wire::body(
                 request.model,
                 request.effort,
-                max_tokens,
+                max_tokens(known),
                 request.messages,
                 request.tools,
             ))
@@ -433,6 +437,23 @@ mod tests {
             panic!("expected an error, got {events:?}");
         };
         assert!(matches!(error, Error::Provider { kind, .. } if kind == "overloaded_error"));
+    }
+
+    #[test]
+    fn max_tokens_is_the_output_limit_capped() {
+        let model = |output| catalog::Model {
+            name: None,
+            reasoning: None,
+            limit: Some(catalog::Limit {
+                context: None,
+                output,
+            }),
+            provider: None,
+        };
+        assert_eq!(max_tokens(None), MAX_TOKENS);
+        assert_eq!(max_tokens(Some(&model(None))), MAX_TOKENS);
+        assert_eq!(max_tokens(Some(&model(Some(8_192)))), 8_192);
+        assert_eq!(max_tokens(Some(&model(Some(131_072)))), MAX_TOKENS);
     }
 
     #[test]

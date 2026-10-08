@@ -122,7 +122,9 @@ crates/
 │       ├── agents/      # plan.md, build.md prompt templates + tool filters
 │       ├── store.rs     # one JSON file per session
 │       └── skills.rs
-├── nth-llm/src/chat_completions/   # and messages/, responses/
+├── nth-llm/src/
+│   ├── providers/       # the one Provider: an Endpoint per config block, listing
+│   └── chat_completions/   # and messages/, responses/: a Client per protocol
 ├── nth-tools/src/{read,write,edit,glob,grep,bash,todo}/
 ├── nth-format/          # formatters run after a write
 ├── nth-worktree/

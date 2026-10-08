@@ -1,18 +1,29 @@
-//! Lists the models an endpoint serves. The endpoint's own `/models` (a
-//! chat completions route, which every endpoint nth knows has) says what
-//! exists; the catalogue says which protocol each one speaks and what its
-//! limits are.
+//! Lists the models the endpoints serve. An endpoint's own `/models` (an
+//! OpenAI-shaped route, which every endpoint nth knows has, whatever its
+//! models speak) says what exists; the catalogue says which protocol each
+//! one speaks and what its limits are. Every endpoint's list then goes
+//! into the one listing, each id prefixed with its endpoint's.
 
 use std::time::Duration;
 
-use nth_protocol::ModelInfo;
+use nth_protocol::{Failed, Listing, ModelInfo, Origin};
 use serde::Deserialize;
 
-use super::{Error, USER_AGENT, success};
-use crate::catalog;
+use crate::{catalog, http::USER_AGENT};
 
 /// The list is one small JSON body, so unlike a reply it can have a deadline.
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("{status}: {body}")]
+    Status {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+}
 
 #[derive(Deserialize)]
 struct ModelList {
@@ -37,7 +48,12 @@ pub(crate) async fn listed(
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await?;
-    let list: ModelList = success(response).await?.json().await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(Error::Status { status, body });
+    }
+    let list: ModelList = response.json().await?;
     Ok(list.data.into_iter().map(|m| m.id).collect())
 }
 
@@ -79,6 +95,42 @@ pub(crate) fn select(
     models
 }
 
+/// One listing from every endpoint's: ids prefixed with their endpoint,
+/// and an endpoint that could not list reported beside them. Only when
+/// none could is the listing itself a failure.
+pub(crate) fn merge<E: std::fmt::Display>(
+    listed: Vec<(Origin, Result<Vec<ModelInfo>, E>)>,
+) -> Result<Listing, E> {
+    let mut listing = Listing::default();
+    let mut errors = Vec::new();
+    let mut any_listed = false;
+    for (origin, models) in listed {
+        match models {
+            Ok(models) => {
+                any_listed = true;
+                listing
+                    .models
+                    .extend(models.into_iter().map(|model| ModelInfo {
+                        id: format!("{}/{}", origin.id, model.id),
+                        origin: Some(origin.clone()),
+                        ..model
+                    }));
+            }
+            Err(error) => {
+                listing.failed.push(Failed {
+                    origin,
+                    error: error.to_string(),
+                });
+                errors.push(error);
+            }
+        }
+    }
+    match errors.into_iter().next() {
+        Some(error) if !any_listed => Err(error),
+        _ => Ok(listing),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +153,24 @@ mod tests {
         ]
         .map(String::from)
         .into()
+    }
+
+    fn origin(id: &str) -> Origin {
+        Origin {
+            id: id.into(),
+            name: id.to_uppercase(),
+        }
+    }
+
+    fn model(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: None,
+            context: None,
+            output: None,
+            reasoning: true,
+            origin: None,
+        }
     }
 
     #[test]
@@ -151,5 +221,42 @@ mod tests {
         let models = select(endpoint(), provider);
 
         assert_eq!(models.len(), endpoint().len());
+    }
+
+    #[test]
+    fn merging_prefixes_ids_and_reports_the_endpoints_that_failed() {
+        let listing = merge(vec![
+            (origin("lyceum"), Ok(vec![model("z-ai/glm-5.2")])),
+            (origin("opencode"), Err("401: bad key")),
+        ])
+        .expect("one listed");
+
+        assert_eq!(
+            listing.models,
+            [ModelInfo {
+                id: "lyceum/z-ai/glm-5.2".into(),
+                origin: Some(origin("lyceum")),
+                ..model("")
+            }]
+        );
+        assert_eq!(listing.models[0].wire_id(), "z-ai/glm-5.2");
+        assert_eq!(
+            listing.failed,
+            [Failed {
+                origin: origin("opencode"),
+                error: "401: bad key".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn merging_fails_only_when_every_endpoint_did() {
+        let error = merge::<&str>(vec![
+            (origin("lyceum"), Err("offline")),
+            (origin("opencode"), Err("401")),
+        ])
+        .expect_err("nothing listed");
+        assert_eq!(error, "offline");
+        assert_eq!(merge::<&str>(Vec::new()), Ok(Listing::default()));
     }
 }
