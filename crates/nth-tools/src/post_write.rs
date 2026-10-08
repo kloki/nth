@@ -173,7 +173,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "a").expect("write");
-        let post = PostWrite::with_formatter("sed", &["sed", "-i", "s/a/b/", "$FILE"]);
+        let post = PostWrite::with_formatter("sed", &["perl", "-pi", "-e", "s/a/b/", "$FILE"]);
 
         let note = post.after_write(&path, dir.path()).await;
 
@@ -199,7 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.cs");
         std::fs::write(&path, "a").expect("write");
-        let post = PostWrite::with_formatter("sed", &["sed", "-i", "s/a/b/", "$FILE"]);
+        let post = PostWrite::with_formatter("sed", &["perl", "-pi", "-e", "s/a/b/", "$FILE"]);
 
         assert_eq!(post.after_write(&path, dir.path()).await, "");
     }

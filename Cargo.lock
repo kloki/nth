@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "nth"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "nth-context"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ignore",
  "serde_norway",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "nth-format"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "nth-context",
  "serde",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "nth-llm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "nth-lsp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "nth-context",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "nth-notify"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "serde",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "nth-protocol"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "nth-context",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "nth-session"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "jiff",
@@ -1618,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "nth-tools"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures",
  "htmd",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "nth-tui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

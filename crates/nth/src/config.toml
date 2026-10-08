@@ -169,5 +169,6 @@ enabled = true
 # focus (in tmux, `set -g focus-events on`). false turns them off.
 # `nth notify` sends a sample.
 enabled = true
-# Where they go. Only "notify-send" (libnotify) for now.
-backend = "notify-send"
+# Where they go: "notify-send" (libnotify), the default on Linux, or
+# "osascript" (Notification Center), the default on macOS.
+# backend = "notify-send"

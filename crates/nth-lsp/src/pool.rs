@@ -323,7 +323,8 @@ message() {
         esac
     done
     [ "$length" -gt 0 ] || return 1
-    body=$(head -c "$length")
+    # One byte at a time: BSD head buffers and would eat the next message.
+    body=$(dd bs=1 count="$length" 2>/dev/null)
 }
 send() {
     printf 'Content-Length: %d\r\n\r\n%s' "${#1}" "$1"

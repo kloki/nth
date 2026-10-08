@@ -335,7 +335,11 @@ mod tests {
     async fn custom_formatter_rewrites_the_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a.txt", "aaa\n");
-        let formatters = formatters([custom("sed", &["sed", "-i", "s/a/b/g", "$FILE"], ".txt")]);
+        let formatters = formatters([custom(
+            "sed",
+            &["perl", "-pi", "-e", "s/a/b/g", "$FILE"],
+            ".txt",
+        )]);
 
         let outcomes = formatters.format(&path, dir.path()).await;
 
@@ -354,8 +358,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a.txt", "a\n");
         let formatters = formatters([
-            custom("one", &["sed", "-i", "s/a/b/", "$FILE"], ".txt"),
-            custom("two", &["sed", "-i", "s/b/c/", "$FILE"], ".txt"),
+            custom("one", &["perl", "-pi", "-e", "s/a/b/", "$FILE"], ".txt"),
+            custom("two", &["perl", "-pi", "-e", "s/b/c/", "$FILE"], ".txt"),
             custom("other", &["false"], ".md"),
         ]);
 
@@ -428,7 +432,7 @@ mod tests {
     async fn disabled_formatter_does_not_run() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a.txt", "a");
-        let (name, mut entry) = custom("sed", &["sed", "-i", "s/a/b/", "$FILE"], ".txt");
+        let (name, mut entry) = custom("sed", &["perl", "-pi", "-e", "s/a/b/", "$FILE"], ".txt");
         entry.disabled = true;
         let formatters = formatters([(name, entry)]);
 
@@ -446,7 +450,7 @@ mod tests {
             enabled: false,
             ..FormatConfig::default()
         };
-        let (name, entry) = custom("sed", &["sed", "-i", "s/a/b/", "$FILE"], ".txt");
+        let (name, entry) = custom("sed", &["perl", "-pi", "-e", "s/a/b/", "$FILE"], ".txt");
         config.formatters.insert(name, entry);
         let formatters = Formatters::new(&config);
 
@@ -526,7 +530,11 @@ mod tests {
         std::fs::create_dir_all(project.join(".git")).expect("git dir");
         let outside = file(dir.path(), "a.txt", "aaa\n");
         let inside = file(&project, "a.txt", "aaa\n");
-        let formatters = formatters([custom("sed", &["sed", "-i", "s/a/b/g", "$FILE"], ".txt")]);
+        let formatters = formatters([custom(
+            "sed",
+            &["perl", "-pi", "-e", "s/a/b/g", "$FILE"],
+            ".txt",
+        )]);
 
         assert!(formatters.format(&outside, &project).await.is_empty());
         assert!(
@@ -548,7 +556,7 @@ mod tests {
         let plain = file(dir.path(), "view.erb", "a\n");
         let formatters = formatters([custom(
             "erb",
-            &["sed", "-i", "s/a/b/", "$FILE"],
+            &["perl", "-pi", "-e", "s/a/b/", "$FILE"],
             ".html.erb",
         )]);
 
@@ -604,7 +612,7 @@ mod tests {
         let formatters = Formatters::new(&config(
             r#"
             [rustfmt]
-            command = ["sed", "-i", "s/a/b/", "$FILE"]
+            command = ["perl", "-pi", "-e", "s/a/b/", "$FILE"]
             "#,
         ))
         .with_search_path(&dir.path().join("empty"));

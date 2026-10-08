@@ -383,7 +383,7 @@ mod tests {
         std::fs::write(&path, "x = a\n").expect("write");
         let tool = Edit::new(PostWrite::with_formatter(
             "sed",
-            &["sed", "-i", "s/ = /=/", "$FILE"],
+            &["perl", "-pi", "-e", "s/ = /=/", "$FILE"],
         ));
         let ctx = ToolContext::new(dir.path().to_path_buf());
 
@@ -407,7 +407,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let tool = Edit::new(PostWrite::with_formatter(
             "sed",
-            &["sed", "-i", "s/a/b/", "$FILE"],
+            &["perl", "-pi", "-e", "s/a/b/", "$FILE"],
         ));
         let ctx = ToolContext::new(dir.path().to_path_buf());
 
