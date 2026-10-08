@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
-use crate::chat_completions::{Error, USER_AGENT, success};
+use crate::http::USER_AGENT;
 
 const URL: &str = "https://models.dev/api.json";
 /// The catalogue only refines a listing, so a stall must not hold it up.
@@ -113,14 +113,15 @@ impl Snapshot {
     }
 }
 
-pub(crate) async fn fetch(http: &reqwest::Client) -> Result<Catalog, Error> {
-    let response = http
-        .get(URL)
+pub(crate) async fn fetch(http: &reqwest::Client) -> Result<Catalog, reqwest::Error> {
+    http.get(URL)
         .timeout(TIMEOUT)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
-        .await?;
-    Ok(success(response).await?.json().await?)
+        .await?
+        .error_for_status()?
+        .json()
+        .await
 }
 
 /// The catalogue's entry for the provider serving `base_url`, if it has one.

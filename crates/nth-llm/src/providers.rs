@@ -41,8 +41,8 @@ pub enum Error {
     NoProviders,
     #[error("{id} is configured but {api_key_env} is not set")]
     Unavailable { id: String, api_key_env: String },
-    #[error(transparent)]
-    Http(#[from] chat_completions::Error),
+    #[error("request failed: {0}")]
+    Http(#[from] reqwest::Error),
 }
 
 /// One endpoint, with a client per protocol it may speak.
@@ -74,7 +74,7 @@ impl Providers {
         unavailable: Vec<Unavailable>,
         default_model: &str,
     ) -> Result<Self, Error> {
-        let http = chat_completions::http()?;
+        let http = crate::http::client()?;
         let catalog = Snapshot::new(http.clone());
         let mut providers = Self::build(endpoints, unavailable, default_model, http, catalog)?;
         // Without a runtime, as in a test, the first request fetches it.

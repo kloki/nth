@@ -14,7 +14,7 @@ use std::{
 use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
-use crate::chat_completions::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, transient};
+use crate::http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient};
 
 /// The API version the request and the stream are shaped for.
 const VERSION: &str = "2023-06-01";
@@ -148,9 +148,7 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
         {
             Some(Retry { after: None })
         }
-        Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
-            Some(Retry { after: None })
-        }
+        Error::Http(e) if retryable(e) => Some(Retry { after: None }),
         Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
         _ => None,
     }

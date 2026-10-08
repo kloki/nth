@@ -15,17 +15,10 @@ use nth_protocol::{
     BoxError, Listing, ModelInfo, Provider, Request, Retry, StreamEvent, ToolCall, Usage,
 };
 
-use crate::catalog;
-
-pub(crate) const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
-/// A server that does not answer the handshake this fast is down or
-/// unreachable; waiting longer only delays the retry.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// The longest silence tolerated between two chunks of a reply. A whole
-/// reply may take minutes, so there is no overall deadline, but a live
-/// stream keeps sending (if only keep-alive comments), while a dead
-/// connection would otherwise hang the turn forever.
-pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+use crate::{
+    catalog,
+    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -69,7 +62,7 @@ pub struct ChatClient {
 
 impl ChatClient {
     pub fn new(base_url: String, api_key: String) -> Result<Self, Error> {
-        Ok(Self::with_http(http()?, base_url, api_key))
+        Ok(Self::with_http(crate::http::client()?, base_url, api_key))
     }
 
     /// On a client shared with others, so several endpoints need one pool.
@@ -137,13 +130,6 @@ impl ChatClient {
     }
 }
 
-/// How every endpoint is reached; `Providers` shares one between them.
-pub(crate) fn http() -> Result<reqwest::Client, Error> {
-    Ok(reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .build()?)
-}
-
 /// Turns a non-2xx response into an error that carries the server's body
 /// and its `Retry-After`, if any.
 pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error> {
@@ -158,22 +144,6 @@ pub(crate) async fn success(response: reqwest::Response) -> Result<reqwest::Resp
         body,
         retry_after,
     })
-}
-
-/// How long the server asked to wait, from `Retry-After-Ms` or the usual
-/// `Retry-After` in seconds; the HTTP-date form is not supported, and a
-/// value no `Duration` holds (negative, `inf`, huge) counts as absent.
-pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let number = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<f64>().ok())
-    };
-    if let Some(ms) = number("retry-after-ms") {
-        return Duration::try_from_secs_f64(ms / 1000.0).ok();
-    }
-    number("retry-after").and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
 }
 
 impl Provider for ChatClient {
@@ -218,20 +188,11 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
             status: Some(status),
             ..
         } if transient(*status) => Some(Retry { after: None }),
-        // The connection failed or timed out, possibly part-way through
-        // the stream. Other HTTP errors (a bad URL, an undecodable
-        // body) fail the same way every time.
-        Error::Http(e) if e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() => {
-            Some(Retry { after: None })
-        }
+        Error::Http(e) if retryable(e) => Some(Retry { after: None }),
         // The stream ended, or went quiet, before the reply did.
         Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
         _ => None,
     }
-}
-
-pub(crate) fn transient(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 struct State<S> {
@@ -563,36 +524,5 @@ mod tests {
             .build()
             .expect_err("not a url");
         assert_eq!(client().retry(&boxed(Error::Http(bad_url))), None);
-    }
-
-    #[test]
-    fn retry_after_reads_seconds_or_milliseconds() {
-        let header = |name: &'static str, value: &str| {
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(name, value.parse().expect("header"));
-            headers
-        };
-
-        assert_eq!(
-            retry_after(&header("retry-after", "3")),
-            Some(Duration::from_secs(3))
-        );
-        assert_eq!(
-            retry_after(&header("retry-after-ms", "1500")),
-            Some(Duration::from_millis(1500))
-        );
-        assert_eq!(
-            retry_after(&header("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")),
-            None,
-            "the HTTP-date form is not parsed"
-        );
-        for unholdable in ["inf", "1e30", "-1", "NaN"] {
-            assert_eq!(
-                retry_after(&header("retry-after", unholdable)),
-                None,
-                "{unholdable} is not a wait"
-            );
-        }
-        assert_eq!(retry_after(&reqwest::header::HeaderMap::new()), None);
     }
 }
