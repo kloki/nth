@@ -32,6 +32,9 @@ const STOP: &str = "Stop";
 pub(crate) const INTERRUPTED: &str = "interrupted by the user";
 /// Why calls the user stopped at the doom-loop prompt failed.
 const STOPPED: &str = "stopped by the user (the same call kept repeating)";
+/// Why calls stopped at a doom loop with nobody to ask failed: a subagent's,
+/// or a headless run's.
+const UNASKED: &str = "stopped: the same call kept repeating and nobody could be asked";
 /// Why calls the model made on the last allowed step anyway failed.
 const MAX_STEPS_REACHED: &str = "maximum steps reached; tool not run";
 
@@ -156,13 +159,17 @@ pub async fn run_turn(
         }
 
         // The same call three times in a row is a model stuck in a loop;
-        // ask before running it.
+        // ask before running it, or stop when there is nobody to ask.
         if let Some(call) = repeating(&messages[start..]) {
+            let reason = match ctx.asker.reaches_someone() {
+                true => STOPPED,
+                false => UNASKED,
+            };
             let stopped = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Some((INTERRUPTED, Error::Interrupted)),
                 run = confirm_doom_loop(ctx, call) => {
-                    (!run).then(|| (STOPPED, Error::DoomLoop(call.name.clone())))
+                    (!run).then(|| (reason, Error::DoomLoop(call.name.clone())))
                 }
             };
             if let Some((reason, error)) = stopped {
@@ -326,12 +333,13 @@ fn repeating(turn: &[Message]) -> Option<&ToolCall> {
     None
 }
 
-/// Asks whether to run a call that keeps repeating. `true` means run it; a
-/// front-end with nobody to ask (as in a headless run) lets it through, and
-/// a decline stops the turn.
+/// Asks whether to run a call that keeps repeating. `true` means run it. A
+/// decline stops the turn, and so does having nobody to ask (a subagent, or
+/// a headless run): letting the loop through would only burn the step
+/// budget on the same call.
 async fn confirm_doom_loop(ctx: &ToolContext, call: &ToolCall) -> bool {
     if !ctx.asker.reaches_someone() {
-        return true;
+        return false;
     }
     let question = Question {
         question: format!(
@@ -1252,15 +1260,14 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_headless_run_never_asks_about_a_loop() {
+    async fn with_nobody_to_ask_a_loop_stops_the_turn() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        // Nobody to ask, so it must not block; the model decides.
-        run_turn(
+        let result = run_turn(
             &provider,
             ROUTE,
             &tools,
@@ -1269,8 +1276,17 @@ pub(crate) mod tests {
             &tx,
             &CancellationToken::new(),
         )
-        .await
-        .expect("turn completes");
+        .await;
+
+        assert!(matches!(result, Err(Error::DoomLoop(name)) if name == "echo"));
+        assert_eq!(
+            messages[2..],
+            ["1", "2", "3"].map(|id| Message::ToolResult {
+                call_id: id.into(),
+                content: failed(UNASKED),
+            }),
+            "stopped without blocking on a question nobody would answer"
+        );
     }
 
     #[test]
