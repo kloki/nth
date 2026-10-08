@@ -14,28 +14,32 @@ Every [release](https://github.com/kloki/nth/releases) ships a prebuilt binary f
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kloki/nth/releases/latest/download/nth-installer.sh | sh
 ```
 
-## Configure
+## Set up
 
-Currently nth only supports OpenAI-compatible chat completions APIs.
+nth comes with no providers, so it needs a config before it can chat.
 
-To configure nth:
+1. Run `nth init`. It writes `~/.config/nth/config.toml` with every key, its default and what it does.
+2. Uncomment a provider. OpenCode Go and OpenCode Zen are ready to go, or add your own `[provider.<id>]` block for any OpenAI-compatible endpoint.
+3. Export the API key in the variable that provider's `api_key_env` names. nth reads keys only from the environment, never from the config file:
 
-1. Run `nth init` to write a config with every default to `~/.config/nth/config.toml`.
-2. Edit the keys you want to change.
-3. Run `nth config` to print the config nth uses.
+   ```sh
+   export OPENCODE_API_KEY=...
+   ```
 
-nth reads API keys from environment variables, never from the config file. Each provider names its variable with `api_key_env`. The built-in OpenCode Go provider reads `OPENCODE_API_KEY`. To set it, add it to your `.bashrc`:
+4. Run `nth models` to see what the provider serves, and set `model` to one of them as `provider/model`.
+
+`nth config` prints the config nth actually uses. The template that `nth init` writes, [`crates/nth/src/config.toml`](crates/nth/src/config.toml), is the reference for every key.
+
+## Use
 
 ```sh
-export OPENCODE_API_KEY=...
+nth                       # open the chat
+nth -c                    # continue the last session (/resume in the chat picks any)
+nth run "fix the tests"   # one prompt, headless, in act mode
+nth run --mode plan "..." # only write a plan
+nth --model zen/<model>   # any command, on another model (or NTH_MODEL)
 ```
 
-To add another provider, add a `[provider.<id>]` block with a `base_url` and an `api_key_env`:
+In the chat, Tab switches between plan and act mode. Each mode can have its own model and effort under `[mode]`.
 
-```toml
-[provider.acme]
-base_url = "https://api.acme.technology/api/"
-api_key_env = "ACME_API_KEY"
-```
-
-nth leaves out a provider whose key is not set, and needs at least one that is.
+To see what nth finds for the working directory, run `nth skills`, `nth agents`, `nth formatters` or `nth lsp`. `nth notify` sends a sample desktop notification.

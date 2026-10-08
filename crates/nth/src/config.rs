@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize};
 
 /// Everything in `config.toml`. Every key is optional: a missing key keeps
 /// the default below, so a config file only lists what it changes.
-#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The model a new chat starts on, as `provider/model`. Before the
     /// tables, since TOML has values ahead of tables.
     pub model: String,
-    /// The endpoints by id; the id prefixes their models. OpenCode Go and
-    /// Zen are built in as `opencode` and `zen`, listed only to change them.
+    /// The endpoints by id; the id prefixes their models. None is built
+    /// in: these are only the ones the file lists.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
     pub mode: ModeConfig,
@@ -45,55 +46,14 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
 }
 
-pub const BUILT_IN_PROVIDER: &str = "opencode";
-pub const BUILT_IN_ZEN_PROVIDER: &str = "zen";
-const BUILT_IN: [&str; 2] = [BUILT_IN_PROVIDER, BUILT_IN_ZEN_PROVIDER];
-
 /// What `nth init` writes: every key at its default, with a comment on
 /// each. A test keeps it equal to `Config::default()`.
 const TEMPLATE: &str = include_str!("config.toml");
 
 impl ProviderConfig {
-    fn opencode() -> Self {
-        Self {
-            name: "OpenCode Go".into(),
-            base_url: "https://opencode.ai/zen/go/v1".into(),
-            api_key_env: "OPENCODE_API_KEY".into(),
-            models: Vec::new(),
-        }
-    }
-
-    fn zen() -> Self {
-        Self {
-            name: "OpenCode Zen".into(),
-            base_url: "https://opencode.ai/zen/v1".into(),
-            api_key_env: "OPENCODE_API_KEY".into(),
-            models: Vec::new(),
-        }
-    }
-
-    fn built_in(id: &str) -> Option<Self> {
-        match id {
-            BUILT_IN_PROVIDER => Some(Self::opencode()),
-            BUILT_IN_ZEN_PROVIDER => Some(Self::zen()),
-            _ => None,
-        }
-    }
-
-    /// Fills what `id`'s block left out: the built-in values for a
-    /// built-in provider, and the id as the name for any.
+    /// Names it by `id` when its block has no name, and rejects a block
+    /// without an endpoint or a key variable.
     fn complete(&mut self, id: &str) -> Result<()> {
-        if let Some(built_in) = Self::built_in(id) {
-            for (field, default) in [
-                (&mut self.name, built_in.name),
-                (&mut self.base_url, built_in.base_url),
-                (&mut self.api_key_env, built_in.api_key_env),
-            ] {
-                if field.is_empty() {
-                    *field = default;
-                }
-            }
-        }
         if self.name.is_empty() {
             self.name = id.to_string();
         }
@@ -104,25 +64,6 @@ impl ProviderConfig {
             bail!("provider {id} has no api_key_env");
         }
         Ok(())
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            model: "opencode/deepseek-v4.1-flash".into(),
-            provider: BUILT_IN
-                .into_iter()
-                .filter_map(|id| Some((id.into(), ProviderConfig::built_in(id)?)))
-                .collect(),
-            session: SessionConfig::default(),
-            mode: ModeConfig::default(),
-            tools: nth_tools::ToolsConfig::default(),
-            skills: SkillsConfig::default(),
-            format: nth_format::FormatConfig::default(),
-            lsp: nth_lsp::LspConfig::default(),
-            notify: nth_notify::NotifyConfig::default(),
-        }
     }
 }
 
@@ -222,7 +163,7 @@ impl Config {
     }
 
     /// Loads `path`, which must exist, or else the default path, which may
-    /// be missing and then gives the built-in defaults.
+    /// be missing and then gives the defaults.
     pub fn load(path: Option<&Path>) -> Result<Self> {
         if let Some(path) = path {
             return Self::load_file(path);
@@ -241,13 +182,8 @@ impl Config {
         Self::parse(&text).with_context(|| format!("invalid config {}", path.display()))
     }
 
-    /// The built-in providers are always there, so a file that only adds
-    /// another keeps them.
     fn parse(text: &str) -> Result<Self> {
         let mut config: Self = toml::from_str(text)?;
-        for id in BUILT_IN {
-            config.provider.entry(id.into()).or_default();
-        }
         for (id, provider) in &mut config.provider {
             provider.complete(id)?;
         }
@@ -293,15 +229,11 @@ pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
     };
     write_template(&path, force)?;
     eprintln!("{} wrote {}", "✓".green().bold(), path.display().dimmed());
-    // Go and Zen share the key.
-    let key = ProviderConfig::opencode().api_key_env;
-    if std::env::var_os(&key).is_none() {
-        eprintln!(
-            "{} {}",
-            "→".cyan().bold(),
-            format!("set {key} to use OpenCode").dimmed()
-        );
-    }
+    eprintln!(
+        "{} {}",
+        "→".cyan().bold(),
+        "uncomment a [provider.<id>] in it, export its key and set model".dimmed()
+    );
     Ok(())
 }
 
@@ -481,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn another_provider_keeps_the_built_in_one() {
+    fn a_provider_block_is_the_only_provider() {
         let config = Config::parse(
             r#"
             [provider.lyceum]
@@ -490,40 +422,46 @@ mod tests {
             "#,
         )
         .expect("parses");
-        assert_eq!(
-            config.provider.keys().collect::<Vec<_>>(),
-            ["lyceum", "opencode", "zen"]
-        );
-        assert_eq!(config.provider["opencode"], ProviderConfig::opencode());
-        assert_eq!(config.provider["zen"], ProviderConfig::zen());
+        assert_eq!(config.provider.keys().collect::<Vec<_>>(), ["lyceum"]);
         assert_eq!(config.provider["lyceum"].name, "lyceum", "named by id");
         assert_eq!(config.provider["lyceum"].api_key_env, "LYCEUM_API_KEY");
     }
 
     #[test]
-    fn the_built_in_provider_block_changes_only_its_keys() {
-        let config =
-            Config::parse("[provider.opencode]\napi_key_env = \"GO_KEY\"").expect("parses");
-        let expected = ProviderConfig {
-            api_key_env: "GO_KEY".into(),
-            ..ProviderConfig::opencode()
-        };
-        assert_eq!(config.provider["opencode"], expected);
-    }
+    fn template_providers_parse_when_uncommented() {
+        // Uncomments the OpenCode blocks the way a user would: from their
+        // header to the first blank comment line.
+        let mut text = String::new();
+        let mut inside = false;
+        for line in TEMPLATE.lines() {
+            if line == "# [provider.opencode]" || line == "# [provider.zen]" {
+                inside = true;
+            } else if line == "#" || !line.starts_with('#') {
+                inside = false;
+            }
+            match line.strip_prefix("# ") {
+                Some(rest) if inside => text.push_str(rest),
+                _ => text.push_str(line),
+            }
+            text.push('\n');
+        }
 
-    #[test]
-    fn the_zen_provider_block_changes_only_its_keys() {
-        let config = Config::parse(
-            "[provider.zen]
-api_key_env = \"ZEN_KEY\"",
-        )
-        .expect("parses");
-        let expected = ProviderConfig {
-            api_key_env: "ZEN_KEY".into(),
-            ..ProviderConfig::zen()
-        };
-        assert_eq!(config.provider["zen"], expected);
-        assert_eq!(config.provider["opencode"], ProviderConfig::opencode());
+        let config = Config::parse(&text).expect("parses");
+
+        assert_eq!(
+            config.provider.keys().collect::<Vec<_>>(),
+            ["opencode", "zen"]
+        );
+        assert_eq!(config.provider["opencode"].name, "OpenCode Go");
+        assert_eq!(
+            config.provider["opencode"].base_url,
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert_eq!(
+            config.provider["zen"].base_url,
+            "https://opencode.ai/zen/v1"
+        );
+        assert_eq!(config.provider["zen"].api_key_env, "OPENCODE_API_KEY");
     }
 
     #[test]
