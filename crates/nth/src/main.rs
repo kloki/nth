@@ -190,7 +190,10 @@ fn providers(config: &Config) -> Result<Providers> {
         }
     }
     if endpoints.is_empty() {
-        let variables: Vec<_> = unavailable.iter().map(|u| u.api_key_env.as_str()).collect();
+        // Providers may share a variable, as the built-in ones do.
+        let mut variables: Vec<_> = unavailable.iter().map(|u| u.api_key_env.as_str()).collect();
+        variables.sort();
+        variables.dedup();
         bail!("no provider has its API key set: {}", variables.join(", "));
     }
     let providers = Providers::new(endpoints, unavailable, &config.model)

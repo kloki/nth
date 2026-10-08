@@ -17,8 +17,8 @@ pub struct Config {
     /// The model a new chat starts on, as `provider/model`. Before the
     /// tables, since TOML has values ahead of tables.
     pub model: String,
-    /// The endpoints by id; the id prefixes their models. OpenCode Go is
-    /// built in as `opencode` and listed only to change it.
+    /// The endpoints by id; the id prefixes their models. OpenCode Go and
+    /// Zen are built in as `opencode` and `zen`, listed only to change them.
     pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
     pub mode: ModeConfig,
@@ -46,6 +46,8 @@ pub struct ProviderConfig {
 }
 
 pub const BUILT_IN_PROVIDER: &str = "opencode";
+pub const BUILT_IN_ZEN_PROVIDER: &str = "zen";
+const BUILT_IN: [&str; 2] = [BUILT_IN_PROVIDER, BUILT_IN_ZEN_PROVIDER];
 
 /// What `nth init` writes: every key at its default, with a comment on
 /// each. A test keeps it equal to `Config::default()`.
@@ -61,11 +63,27 @@ impl ProviderConfig {
         }
     }
 
-    /// Fills what `id`'s block left out: the built-in values for the
+    fn zen() -> Self {
+        Self {
+            name: "OpenCode Zen".into(),
+            base_url: "https://opencode.ai/zen/v1".into(),
+            api_key_env: "OPENCODE_API_KEY".into(),
+            models: Vec::new(),
+        }
+    }
+
+    fn built_in(id: &str) -> Option<Self> {
+        match id {
+            BUILT_IN_PROVIDER => Some(Self::opencode()),
+            BUILT_IN_ZEN_PROVIDER => Some(Self::zen()),
+            _ => None,
+        }
+    }
+
+    /// Fills what `id`'s block left out: the built-in values for a
     /// built-in provider, and the id as the name for any.
     fn complete(&mut self, id: &str) -> Result<()> {
-        if id == BUILT_IN_PROVIDER {
-            let built_in = Self::opencode();
+        if let Some(built_in) = Self::built_in(id) {
             for (field, default) in [
                 (&mut self.name, built_in.name),
                 (&mut self.base_url, built_in.base_url),
@@ -93,7 +111,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: "opencode/deepseek-v4.1-flash".into(),
-            provider: BTreeMap::from([(BUILT_IN_PROVIDER.into(), ProviderConfig::opencode())]),
+            provider: BUILT_IN
+                .into_iter()
+                .filter_map(|id| Some((id.into(), ProviderConfig::built_in(id)?)))
+                .collect(),
             session: SessionConfig::default(),
             mode: ModeConfig::default(),
             tools: nth_tools::ToolsConfig::default(),
@@ -220,11 +241,13 @@ impl Config {
         Self::parse(&text).with_context(|| format!("invalid config {}", path.display()))
     }
 
-    /// The built-in provider is always there, so a file that only adds
-    /// another keeps it.
+    /// The built-in providers are always there, so a file that only adds
+    /// another keeps them.
     fn parse(text: &str) -> Result<Self> {
         let mut config: Self = toml::from_str(text)?;
-        config.provider.entry(BUILT_IN_PROVIDER.into()).or_default();
+        for id in BUILT_IN {
+            config.provider.entry(id.into()).or_default();
+        }
         for (id, provider) in &mut config.provider {
             provider.complete(id)?;
         }
@@ -270,12 +293,13 @@ pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
     };
     write_template(&path, force)?;
     eprintln!("{} wrote {}", "✓".green().bold(), path.display().dimmed());
+    // Go and Zen share the key.
     let key = ProviderConfig::opencode().api_key_env;
     if std::env::var_os(&key).is_none() {
         eprintln!(
             "{} {}",
             "→".cyan().bold(),
-            format!("set {key} to use OpenCode Go").dimmed()
+            format!("set {key} to use OpenCode").dimmed()
         );
     }
     Ok(())
@@ -468,9 +492,10 @@ mod tests {
         .expect("parses");
         assert_eq!(
             config.provider.keys().collect::<Vec<_>>(),
-            ["lyceum", "opencode"]
+            ["lyceum", "opencode", "zen"]
         );
         assert_eq!(config.provider["opencode"], ProviderConfig::opencode());
+        assert_eq!(config.provider["zen"], ProviderConfig::zen());
         assert_eq!(config.provider["lyceum"].name, "lyceum", "named by id");
         assert_eq!(config.provider["lyceum"].api_key_env, "LYCEUM_API_KEY");
     }
@@ -484,6 +509,21 @@ mod tests {
             ..ProviderConfig::opencode()
         };
         assert_eq!(config.provider["opencode"], expected);
+    }
+
+    #[test]
+    fn the_zen_provider_block_changes_only_its_keys() {
+        let config = Config::parse(
+            "[provider.zen]
+api_key_env = \"ZEN_KEY\"",
+        )
+        .expect("parses");
+        let expected = ProviderConfig {
+            api_key_env: "ZEN_KEY".into(),
+            ..ProviderConfig::zen()
+        };
+        assert_eq!(config.provider["zen"], expected);
+        assert_eq!(config.provider["opencode"], ProviderConfig::opencode());
     }
 
     #[test]

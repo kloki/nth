@@ -18,6 +18,13 @@ api_key_env = "OPENCODE_API_KEY"
 # one, or to offer only these.
 models = []
 
+[provider.zen]
+# Built in: this block is here only to change it.
+name = "OpenCode Zen"
+base_url = "https://opencode.ai/zen/v1"
+api_key_env = "OPENCODE_API_KEY"
+models = []
+
 # Another provider, say:
 #
 # [provider.openrouter]
