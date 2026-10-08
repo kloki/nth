@@ -319,6 +319,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mistral_thinking_chunks_are_reasoning() {
+        let fixture = include_bytes!("../../tests/fixtures/zen_mistral.sse");
+        let whole: Vec<_> = replay_bytes(fixture, fixture.len())
+            .await
+            .into_iter()
+            .map(|e| e.expect("fixture is valid"))
+            .collect();
+        for size in [1, 7, 64] {
+            let events: Vec<_> = replay_bytes(fixture, size)
+                .await
+                .into_iter()
+                .map(|e| e.expect("fixture is valid"))
+                .collect();
+            assert_eq!(events, whole, "chunk size {size}");
+        }
+
+        let (mut reasoning, mut text, mut rest) = (String::new(), String::new(), Vec::new());
+        for event in whole {
+            match event {
+                StreamEvent::ReasoningDelta(delta) => reasoning.push_str(&delta),
+                StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                other => rest.push(other),
+            }
+        }
+        assert!(reasoning.starts_with("The user wants me to"), "{reasoning}");
+        assert_eq!(text, "Reading the project manifest now.");
+        assert_eq!(
+            rest,
+            vec![
+                StreamEvent::Usage(Usage {
+                    input: 74,
+                    output: 58,
+                }),
+                StreamEvent::ToolCall(ToolCall {
+                    id: "WeYavUuRu".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path": "Cargo.toml"}"#.into(),
+                }),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn missing_done_after_finish_reason_is_fine() {
         let events = replay_bytes(fixture_until("data: [DONE]"), FIXTURE.len()).await;
         let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();

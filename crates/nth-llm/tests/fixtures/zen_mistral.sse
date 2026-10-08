@@ -1,0 +1,48 @@
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":""}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"The"}]}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" user wants me to"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":":\n1. Think"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" briefly ("}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"internal"}]}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" reasoning"}]}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":")\n2. Say"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" one short sentence out"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" loud\n3."}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" Read the file Cargo"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":".toml\n\nLet me"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" do"}]}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" this step"}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" by step."}],"closed":true}]}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":"Reading"}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":" the"}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":" project"}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":" manifest"}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":" now"}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":"."}}]}
+
+data: {"id":"85fc7fce99e5452786409268201825d9","object":"chat.completion.chunk","created":1791486016,"model":"mistral-large-4","choices":[{"index":0,"finish_reason":"tool_calls","logprobs":null,"delta":{"tool_calls":[{"index":0,"id":"WeYavUuRu","type":"function","function":{"name":"read","arguments":"{\"path\": \"Cargo.toml\"}"}}]}}],"usage":{"prompt_tokens":74,"completion_tokens":58,"total_tokens":132,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+
