@@ -234,12 +234,7 @@ fn tools(
         .into_iter()
         .map(Arc::from)
         .collect();
-    let task = nth_session::Task::new(
-        provider,
-        shared.clone(),
-        subagents,
-        config.session.max_steps,
-    );
+    let task = nth_session::Task::new(provider, shared.clone(), subagents, config.task.limits());
     let mut tools: Vec<Box<dyn nth_protocol::Tool>> = shared
         .into_iter()
         .map(|tool| Box::new(tool) as Box<dyn nth_protocol::Tool>)

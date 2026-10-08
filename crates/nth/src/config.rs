@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     io::ErrorKind,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -22,6 +23,7 @@ pub struct Config {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
+    pub task: TaskConfig,
     pub mode: ModeConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
@@ -77,6 +79,35 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_steps: nth_session::DEFAULT_MAX_STEPS,
+        }
+    }
+}
+
+/// What a subagent the model starts with the task tool may spend. Lower
+/// than the session's, since a child works on one delegated question and
+/// its parent is waiting on the answer.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaskConfig {
+    pub max_steps: usize,
+    /// `0` leaves a task to its steps alone.
+    pub timeout_secs: u64,
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: 50,
+            timeout_secs: 600,
+        }
+    }
+}
+
+impl TaskConfig {
+    pub fn limits(&self) -> nth_session::subagent::Limits {
+        nth_session::subagent::Limits {
+            max_steps: self.max_steps,
+            timeout: (self.timeout_secs > 0).then(|| Duration::from_secs(self.timeout_secs)),
         }
     }
 }

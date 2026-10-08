@@ -22,7 +22,7 @@ use std::{
 pub use mention::resolve;
 use nth_context::Agent;
 use nth_protocol::{Event, Inbox, Provider, TaskId, TaskOutcome, Tool};
-pub use task::Task;
+pub use task::{Limits, Task};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -89,6 +89,10 @@ pub struct Job {
     pub text: String,
     pub cancel: CancellationToken,
     pub done: Done,
+    /// How long its turn may run before it is stopped and fails with
+    /// [`Error::TimedOut`]: the task tool's budget. A prompt you type on
+    /// the tab has none, since you are watching.
+    pub timeout: Option<Duration>,
 }
 
 /// What the registry and a subagent's actor share about it. The actor
@@ -330,11 +334,29 @@ impl Drop for Inner {
 
 #[cfg(test)]
 mod tests {
+    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_context::{Context, Paths};
-    use nth_protocol::StreamEvent;
+    use nth_protocol::{BoxError, Listing, Request, StreamEvent};
 
     use super::*;
     use crate::agent_loop::tests::Scripted;
+
+    /// A model whose reply never arrives.
+    pub(super) struct Stalled;
+
+    impl Provider for Stalled {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Ok(futures::stream::pending().boxed()) }.boxed()
+        }
+    }
 
     fn explore() -> Agent {
         Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
@@ -358,6 +380,7 @@ mod tests {
             text: text.into(),
             cancel: cancel.clone(),
             done,
+            timeout: None,
         };
         (job, cancel)
     }
@@ -567,6 +590,59 @@ mod tests {
                 .any(|e| matches!(e, SubagentEvent::Prompted { .. })),
             "neither ran: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_job_past_its_budget_fails_with_why_and_the_subagent_can_go_on() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let inbox = Inbox::new();
+        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let (mut slow, _) = job("go", Done::Notify(inbox.clone()));
+        slow.timeout = Some(Duration::from_millis(20));
+        subagents.prompt(id, slow);
+
+        let events = until_ended(&mut rx).await;
+
+        assert!(
+            matches!(
+                events.last(),
+                Some(SubagentEvent::TurnEnded {
+                    outcome: TaskOutcome::Failed(why),
+                    ..
+                }) if why == "no answer after 20ms; its task_id continues it"
+            ),
+            "{events:?}"
+        );
+        assert_eq!(subagents.state(id), Some(State::Failed));
+        assert!(
+            inbox
+                .take_notices()
+                .unwrap()
+                .contains("<task_error>\nno answer after 20ms"),
+            "the parent hears why"
+        );
+        assert!(
+            subagents.prompt(id, job("again", Done::Nothing).0),
+            "the session is still there to continue"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_without_a_budget_runs_until_stopped() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let (reply_tx, reply_rx) = oneshot::channel();
+        subagents.prompt(id, job("go", Done::Reply(reply_tx)).0);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(subagents.is_running(id));
+        assert!(subagents.cancel(id));
+
+        until_ended(&mut rx).await;
+        assert!(matches!(reply_rx.await.unwrap(), Err(Error::Interrupted)));
+        assert_eq!(subagents.state(id), Some(State::Interrupted));
     }
 
     #[tokio::test]

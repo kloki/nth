@@ -57,6 +57,9 @@ pub enum Error {
     /// would read as an empty result marked completed.
     #[error("the model answered nothing")]
     EmptyReply,
+    /// A subagent's turn ran past the time its parent's task tool gave it.
+    #[error("no answer after {0:?}; its task_id continues it")]
+    TimedOut(Duration),
     #[error(
         "stopped: the model called {0} with the same input {DOOM_LOOP_THRESHOLD} times in a row"
     )]

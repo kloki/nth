@@ -56,6 +56,13 @@ model = ""
 # Stop a turn after this many model requests without a final answer.
 max_steps = 100
 
+[task]
+# A subagent the model starts with the task tool fails after this many
+# model requests without an answer, or after this many seconds (0 for no
+# time limit). The model hears why and can continue it by its task_id.
+max_steps = 50
+timeout_secs = 600
+
 [mode]
 # The mode a new chat starts in: "plan" or "act". Tab switches between them.
 # `nth run` starts in act; `nth run --mode plan` plans instead.
