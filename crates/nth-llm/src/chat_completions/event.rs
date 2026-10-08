@@ -24,13 +24,86 @@ pub struct Usage {
 }
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
+#[serde(from = "RawDelta")]
 pub struct Delta {
     pub content: Option<String>,
+    pub reasoning_content: Option<String>,
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+#[derive(Deserialize)]
+struct RawDelta {
+    content: Option<Content>,
     /// DeepSeek and Kimi use `reasoning_content`, others plain `reasoning`.
     #[serde(alias = "reasoning")]
-    pub reasoning_content: Option<String>,
+    reasoning_content: Option<String>,
     /// Some servers send `"tool_calls": null` on plain text deltas.
-    pub tool_calls: Option<Vec<ToolCallDelta>>,
+    tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// Mistral sends content as a list of typed chunks rather than a string,
+/// with its reasoning in `thinking` chunks among them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Chunks(Vec<ContentChunk>),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ContentChunk {
+    Text {
+        text: String,
+    },
+    Thinking {
+        thinking: Vec<ContentChunk>,
+    },
+    /// Images, references and whatever comes next carry nothing to show.
+    #[serde(other)]
+    Other,
+}
+
+impl ContentChunk {
+    /// Appends the chunk's text to `text`, or to `reasoning` when it is thinking.
+    fn collect(self, text: &mut String, reasoning: &mut String) {
+        match self {
+            ContentChunk::Text { text: t } => text.push_str(&t),
+            ContentChunk::Thinking { thinking } => {
+                for chunk in thinking {
+                    chunk.collect(reasoning, &mut String::new());
+                }
+            }
+            ContentChunk::Other => {}
+        }
+    }
+}
+
+impl From<RawDelta> for Delta {
+    fn from(raw: RawDelta) -> Self {
+        let mut reasoning_content = raw.reasoning_content;
+        let content = match raw.content {
+            None => None,
+            Some(Content::Text(text)) => Some(text),
+            Some(Content::Chunks(chunks)) => {
+                let (mut text, mut reasoning) = (String::new(), String::new());
+                for chunk in chunks {
+                    chunk.collect(&mut text, &mut reasoning);
+                }
+                if !reasoning.is_empty() {
+                    reasoning_content
+                        .get_or_insert_default()
+                        .push_str(&reasoning);
+                }
+                (!text.is_empty()).then_some(text)
+            }
+        };
+        Delta {
+            content,
+            reasoning_content,
+            tool_calls: raw.tool_calls,
+        }
+    }
 }
 
 /// One fragment of a tool call. The first fragment for an `index` carries
@@ -219,6 +292,48 @@ mod tests {
                 content: Some("hi".into()),
                 ..Delta::default()
             })]
+        );
+    }
+
+    fn delta(content: &str) -> Delta {
+        let line = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":{content}}}}}]}}\n");
+        let mut events = parser().push(line.as_bytes()).expect("valid");
+        match (events.pop(), events.is_empty()) {
+            (Some(Event::Delta(delta)), true) => delta,
+            other => panic!("expected one delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mistral_chunks_split_into_text_and_reasoning() {
+        assert_eq!(
+            delta(
+                r#"[{"type":"thinking","thinking":[{"type":"text","text":"hmm"}],"closed":true},{"type":"text","text":"hi"}]"#
+            ),
+            Delta {
+                content: Some("hi".into()),
+                reasoning_content: Some("hmm".into()),
+                tool_calls: None,
+            }
+        );
+    }
+
+    #[test]
+    fn mistral_text_chunks_are_content() {
+        assert_eq!(
+            delta(r#"[{"type":"text","text":"a"},{"type":"text","text":"b"}]"#),
+            Delta {
+                content: Some("ab".into()),
+                ..Delta::default()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_chunks_are_dropped() {
+        assert_eq!(
+            delta(r#"[{"type":"image_url","image_url":"x"}]"#),
+            Delta::default()
         );
     }
 }
