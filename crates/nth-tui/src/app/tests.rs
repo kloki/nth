@@ -305,7 +305,11 @@ async fn tabs_open_switch_and_close() {
         "{opened:#?}"
     );
     assert!(opened[2].starts_with(" model "), "{:?}", opened[2]);
-    assert!(opened[3].trim_start().starts_with("glm"));
+    assert!(opened[3].trim_start().starts_with("plan  glm"));
+    assert!(
+        opened[4].trim_start().starts_with("▸ act   glm"),
+        "a bare app acts"
+    );
 
     app.apply(Action::Content(0));
     assert_eq!(app.content.active(), Tab::Chat);

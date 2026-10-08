@@ -146,22 +146,14 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 
 ```
 model
-  glm-5.3 · high · 128k context
+    plan  kimi-k3 · high · 256k context
+  ▸ act   glm-5.3 · 128k context
   25 models served
 
 model usage
   opencode/glm-5.3  ██████████████████████████████  142
   openrouter/kimi   ███████▍                         35
   opencode/qwen-4   ▏                                 1
-
-language servers
-  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
-  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
-  ✗ gopls     not on PATH
-
-formatters
-  ✓ rustfmt   rustfmt $FILE
-  ✗ prettier  no package.json here
 
 instructions
   ~/repos/nth/CLAUDE.md
@@ -172,9 +164,19 @@ skills
 agents
   ↳ explore  builtin
   ↳ general  builtin
+
+language servers
+  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
+  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
+  ✗ gopls     not on PATH
+
+formatters
+  ✓ rustfmt   rustfmt $FILE
+  ✗ prettier  no package.json here
 ```
 
-- **Sections.** A bold title each, and rows under it: model, model usage, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
+- **Sections.** A bold title each, and rows under it: model, model usage, instructions, skills, agents, language servers, formatters. Context warnings follow the agents in yellow.
+- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
 - **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.

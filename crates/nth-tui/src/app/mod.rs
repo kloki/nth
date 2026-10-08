@@ -585,10 +585,18 @@ impl App {
                 }
             }
             Tab::Diagnostics => {
+                let modes = Mode::ALL.map(|mode| {
+                    let llm = self.llm(mode);
+                    diagnostics::ModeModel {
+                        mode,
+                        effort: llm.effort.wire(),
+                        context_window: self.context_window_of(&llm.model),
+                        model: llm.model,
+                        current: mode == self.mode,
+                    }
+                });
                 let facts = diagnostics::Facts {
-                    model: &self.model,
-                    effort: self.effort.wire(),
-                    context_window: self.context_window(),
+                    modes,
                     llms: self.llms.as_ref().map(|l| l.models.len()),
                     failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
                     listing: self.llm_listing.is_running(),
