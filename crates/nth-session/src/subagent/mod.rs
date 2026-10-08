@@ -8,6 +8,7 @@
 
 mod actor;
 mod mention;
+mod stop;
 mod task;
 
 /// Tools that change files, kept from a subagent while its parent plans.
@@ -22,6 +23,7 @@ use std::{
 pub use mention::resolve;
 use nth_context::Agent;
 use nth_protocol::{Event, Inbox, Provider, TaskId, TaskOutcome, Tool};
+pub use stop::TaskStop;
 pub use task::{Limits, Task};
 use tokio::{
     sync::{mpsc, oneshot},

@@ -222,8 +222,8 @@ fn providers(config: &Config) -> Result<Providers> {
     Ok(providers)
 }
 
-/// Every tool the model gets: nth-tools' list, and the task tool that
-/// hands each subagent its share of the same list.
+/// Every tool the model gets: nth-tools' list, the task tool that hands
+/// each subagent its share of the same list, and task_stop.
 fn tools(
     config: &Config,
     post_write: nth_tools::PostWrite,
@@ -234,12 +234,14 @@ fn tools(
         .into_iter()
         .map(Arc::from)
         .collect();
+    let stop = nth_session::TaskStop::new(subagents.clone());
     let task = nth_session::Task::new(provider, shared.clone(), subagents, config.task.limits());
     let mut tools: Vec<Box<dyn nth_protocol::Tool>> = shared
         .into_iter()
         .map(|tool| Box::new(tool) as Box<dyn nth_protocol::Tool>)
         .collect();
     tools.push(Box::new(task));
+    tools.push(Box::new(stop));
     tools
 }
 
