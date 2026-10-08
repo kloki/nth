@@ -1,5 +1,7 @@
 //! Desktop notifications for when you look elsewhere: the model done or
-//! failed, a plan ready to approve, a question waiting.
+//! failed, a plan ready to approve, a question waiting. Only while the
+//! terminal does not have focus, so a terminal that never reports focus
+//! never notifies.
 
 use std::time::Duration;
 
@@ -87,6 +89,9 @@ impl App {
     }
 
     pub(super) fn notify(&self, event: Event, cx: &Context) {
+        if self.focused {
+            return;
+        }
         self.notifier.notify(event.notification(cx));
     }
 }
@@ -104,8 +109,9 @@ fn last_reply(messages: &[Message]) -> Option<String> {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use crossterm::event::Event as TermEvent;
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_notify::{Backend, BoxError as NotifyError, Notification, Urgency};
+    use nth_notify::{Backend, BoxError as NotifyError, Notification};
     use nth_protocol::{BoxError, Listing, Provider, Question, Request, StreamEvent};
     use nth_session::Session;
     use tokio::sync::{mpsc, oneshot};
@@ -159,8 +165,10 @@ mod tests {
     ) -> (App, mpsc::UnboundedReceiver<Notification>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let session = Session::new("glm", cwd);
-        let app = App::new(session, Arc::new(provider), Arc::new(Vec::new()))
+        let mut app = App::new(session, Arc::new(provider), Arc::new(Vec::new()))
             .with_notifier(Notifier::new(Box::new(Recording(tx))));
+        // Looking elsewhere, or nothing would be sent.
+        app.on_terminal(TermEvent::FocusLost);
         (app, rx)
     }
 
@@ -202,7 +210,6 @@ mod tests {
         let n = next(&mut rx).await;
         assert_eq!(n.summary, "nth · done in 0s");
         assert_eq!(n.body, "go\nall done");
-        assert_eq!(n.urgency, Urgency::Normal);
     }
 
     #[tokio::test]
@@ -229,7 +236,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_turn_is_critical_with_the_error() {
+    async fn a_focused_terminal_sends_nothing() {
+        let (mut app, mut rx) = answering("ok");
+        app.on_terminal(TermEvent::FocusGained);
+        send(&mut app, "go");
+        end(&mut app).await;
+        none(&mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_names_the_error() {
         let (mut app, mut rx) = app_in(
             "/repo".into(),
             Reply {
@@ -243,7 +259,6 @@ mod tests {
         let n = next(&mut rx).await;
         assert!(n.summary.starts_with("nth · failed"), "{}", n.summary);
         assert!(n.body.contains("rate limited"), "{}", n.body);
-        assert_eq!(n.urgency, Urgency::Critical);
     }
 
     #[tokio::test]
@@ -291,6 +306,5 @@ mod tests {
         let n = next(&mut rx).await;
         assert_eq!(n.summary, "nth · needs you");
         assert_eq!(n.body, "Doom loop: Keep going?\nand 1 more question");
-        assert_eq!(n.urgency, Urgency::Critical);
     }
 }

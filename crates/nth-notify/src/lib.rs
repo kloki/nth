@@ -18,19 +18,11 @@ use tokio::sync::{mpsc, watch};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Urgency {
-    Normal,
-    /// Something waits on you, or went wrong.
-    Critical,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     /// The one line every notification daemon shows.
     pub summary: String,
     pub body: String,
-    pub urgency: Urgency,
 }
 
 pub trait Backend: Send + Sync {
@@ -132,7 +124,6 @@ mod tests {
         Notification {
             summary: summary.into(),
             body: String::new(),
-            urgency: Urgency::Normal,
         }
     }
 
