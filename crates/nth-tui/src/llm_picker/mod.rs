@@ -15,8 +15,9 @@ use crate::fuzzy::Filter;
 pub struct LlmPicker {
     /// The model in use, marked in the list.
     current: String,
-    /// Kept while a non-reasoning model is highlighted, so moving back to a
-    /// reasoning one restores it.
+    /// The effort last picked, kept while a model that takes fewer levels
+    /// is highlighted, so moving back restores it. Each model is shown and
+    /// sent its nearest level.
     effort: Effort,
     state: State,
 }
@@ -152,27 +153,38 @@ impl LlmPicker {
     }
 
     pub fn more(&mut self) {
-        if self.selected().is_some_and(|m| m.reasoning) {
-            self.effort = self.effort.next();
-        }
+        self.step(|i, levels| (i + 1).min(levels - 1));
     }
 
     pub fn less(&mut self) {
-        if self.selected().is_some_and(|m| m.reasoning) {
-            self.effort = self.effort.prev();
-        }
+        self.step(|i, _| i.saturating_sub(1));
     }
 
-    /// The highlighted model and the effort to run it at; a model that
-    /// doesn't reason is sent none.
+    /// Moves the effort over `Default` and the highlighted model's levels,
+    /// from the one it is shown at. A model without levels stays put.
+    fn step(&mut self, to: impl FnOnce(usize, usize) -> usize) {
+        let Some(model) = self.selected().filter(|m| !m.efforts.is_empty()) else {
+            return;
+        };
+        let levels: Vec<Effort> = std::iter::once(Effort::Default)
+            .chain(model.efforts.iter().copied())
+            .collect();
+        let shown = self.effort.nearest(&model.efforts);
+        let at = levels.iter().position(|&e| e == shown).unwrap_or(0);
+        self.effort = levels[to(at, levels.len())];
+    }
+
+    /// The effort the highlighted model is shown at, if it takes one.
+    fn shown_effort(&self) -> Option<Effort> {
+        let model = self.selected().filter(|m| !m.efforts.is_empty())?;
+        Some(self.effort.nearest(&model.efforts))
+    }
+
+    /// The highlighted model and the effort to run it at: the nearest level
+    /// it takes, so a model that takes none is sent none.
     pub fn chosen(&self) -> Option<(String, Effort)> {
         let model = self.selected()?;
-        let effort = if model.reasoning {
-            self.effort
-        } else {
-            Effort::Default
-        };
-        Some((model.id.clone(), effort))
+        Some((model.id.clone(), self.effort.nearest(&model.efforts)))
     }
 
     fn selected(&self) -> Option<&ModelInfo> {
@@ -216,7 +228,11 @@ pub(crate) mod tests {
             name: None,
             context: None,
             output: None,
-            reasoning,
+            efforts: if reasoning {
+                vec![Effort::Low, Effort::Medium, Effort::High]
+            } else {
+                Vec::new()
+            },
             origin: None,
         }
     }
@@ -257,6 +273,31 @@ pub(crate) mod tests {
 
         picker.prev();
         picker.less();
+        assert_eq!(picker.chosen(), Some(("glm".into(), Effort::Low)));
+    }
+
+    #[test]
+    fn effort_steps_over_the_levels_the_model_takes() {
+        let mut picker = LlmPicker::new("glm", Effort::Low);
+        let mut few = model("few", true);
+        few.efforts = vec![Effort::High, Effort::Max];
+        picker.load(Ok(vec![model("glm", true), few].into()));
+        picker.next();
+        assert_eq!(
+            picker.chosen(),
+            Some(("few".into(), Effort::High)),
+            "nearest"
+        );
+        picker.more();
+        picker.more();
+        assert_eq!(picker.chosen(), Some(("few".into(), Effort::Max)), "stops");
+        picker.less();
+        picker.less();
+        picker.less();
+        assert_eq!(picker.chosen(), Some(("few".into(), Effort::Default)));
+
+        picker.prev();
+        picker.more();
         assert_eq!(picker.chosen(), Some(("glm".into(), Effort::Low)));
     }
 

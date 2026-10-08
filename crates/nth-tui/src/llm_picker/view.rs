@@ -94,7 +94,7 @@ struct Listed<'a> {
 }
 
 /// One row per model matching the query: id, a ✓ on the one in use, name
-/// and limits, and on the highlighted reasoning model the effort ←→
+/// and limits, and on the highlighted model that takes one the effort ←→
 /// changes, with the characters the query matched marked. The providers
 /// that could not be listed follow, each a row saying why. The window
 /// scrolls over all of them to keep the highlighted model in view.
@@ -158,11 +158,8 @@ fn rows<'a>(
                 ),
                 dim(),
             ));
-            if here && model.reasoning {
-                spans.push(Span::styled(
-                    format!("  ◂ {} ▸", picker.effort.name()),
-                    pick,
-                ));
+            if let Some(effort) = here.then(|| picker.shown_effort()).flatten() {
+                spans.push(Span::styled(format!("  ◂ {} ▸", effort.name()), pick));
             }
             panel_row(ACCENT, spans)
         })
@@ -200,7 +197,7 @@ mod tests {
             name: None,
             context: None,
             output: None,
-            reasoning: false,
+            efforts: Vec::new(),
             origin: Some(Origin {
                 id: origin.into(),
                 name: origin.to_uppercase(),

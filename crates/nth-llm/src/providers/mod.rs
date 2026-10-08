@@ -162,6 +162,15 @@ impl Provider for Providers {
             let request = Request { model, ..request };
             let endpoint = &self.endpoints[i];
             let (wire, known) = endpoint.wire(self.catalog.get().await, model);
+            // Whatever picked the effort (the config, a resumed session, a
+            // model switch), a known model is sent only a level it takes.
+            let request = match known {
+                Some(known) => Request {
+                    effort: request.effort.nearest(&known.efforts()),
+                    ..request
+                },
+                None => request,
+            };
             Ok(match wire {
                 Wire::ChatCompletions => endpoint.chat.stream(request).await?,
                 Wire::Messages => endpoint.messages.stream(request, known).await?,
