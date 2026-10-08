@@ -1,0 +1,1 @@
+Stops a running subagent by the task_id the task tool gave you: its turn is interrupted and the prompts waiting for it are dropped. You hear of it as an interrupted notice like any other. The subagent keeps its session, so the same task_id continues it later if you need it again.

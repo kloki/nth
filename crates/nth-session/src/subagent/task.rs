@@ -19,7 +19,14 @@ use crate::{Error, Session};
 
 /// Tools a subagent never gets: another task would nest without end, and
 /// the rest need the front-end, which belongs to the parent.
-const WITHHELD: [&str; 5] = ["task", "question", "panel", "monitor", "monitor_stop"];
+const WITHHELD: [&str; 6] = [
+    "task",
+    "task_stop",
+    "question",
+    "panel",
+    "monitor",
+    "monitor_stop",
+];
 /// Goes with every prompt from a planning parent: its child has no tool
 /// that writes, but bash could still change files.
 const PLANNING: &str = "<system-reminder>\nThe agent that sent you this task is planning and may not change the project. Do not change any file, with bash or otherwise: research, then report what you found.\n</system-reminder>";
@@ -54,13 +61,13 @@ struct Args {
 /// Models send the id back as they read it, a number or a string.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum TaskIdArg {
+pub(super) enum TaskIdArg {
     Number(SubagentId),
     Text(String),
 }
 
 impl TaskIdArg {
-    fn parse(&self) -> Result<SubagentId, String> {
+    pub(super) fn parse(&self) -> Result<SubagentId, String> {
         match self {
             TaskIdArg::Number(id) => Ok(*id),
             TaskIdArg::Text(text) => text
@@ -331,6 +338,7 @@ mod tests {
             "apply_patch",
             "grep",
             "task",
+            "task_stop",
             "question",
             "panel",
             "monitor",

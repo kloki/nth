@@ -18,3 +18,4 @@ Usage notes:
 5. The agent's outputs should generally be trusted
 6. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
 7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+8. Stop an agent you no longer need with task_stop and its task_id; it reports back as interrupted. An agent also stops by itself once it runs out of its step or time budget, and tells you so.
