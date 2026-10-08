@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_llm::{EndpointConfig, Providers, Unavailable};
-use nth_protocol::Mode;
+use nth_protocol::{Listing, Mode, Provider};
 use nth_session::Session;
 use owo_colors::OwoColorize;
 
@@ -155,17 +155,22 @@ async fn dispatch(
 
 /// A fresh session in `mode` in the working directory, on that mode's
 /// model, with its instruction files read, and the providers it talks
-/// through.
-async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, Providers)> {
+/// through. A mode without a model gets one picked from what the
+/// providers list, written into `config` so the caller sees it too.
+async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Session, Providers)> {
     let cwd = std::env::current_dir().context("no working directory")?;
     let providers = providers(config)?;
-    // Here rather than in providers(), so `nth models` can list what to
-    // pick before one is set. Per mode, so a config that gives each mode
-    // its own model needs no top-level one.
-    for mode in [Mode::Plan, Mode::Act] {
-        if config.llm_for(mode).0.is_empty() {
-            bail!("no model set: set model in the config or pass --model provider/model");
-        }
+    // Per mode, so a config that gives each mode its own model needs no
+    // top-level one. Setting the top-level model leaves a mode's own alone.
+    if Mode::ALL
+        .iter()
+        .any(|&mode| config.llm_for(mode).0.is_empty())
+    {
+        config.model = random_model(&providers).await?;
+        eprintln!(
+            "no model set, picked {} (set model in the config or pass --model)",
+            config.model
+        );
     }
     let (model, effort) = config.llm_for(mode);
     let model = providers.qualify(&model);
@@ -174,6 +179,36 @@ async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, P
     session.effort = effort;
     session.max_steps = config.session.max_steps;
     Ok((session, providers))
+}
+
+/// Any one of the models the providers list.
+async fn random_model(providers: &Providers) -> Result<String> {
+    let listing = providers
+        .models()
+        .await
+        .map_err(|e| anyhow::anyhow!("no model set, and listing models failed: {e}"))?;
+    pick(listing)
+}
+
+/// A model from `listing` at random; none listed is an error naming the
+/// providers that could not be asked.
+fn pick(mut listing: Listing) -> Result<String> {
+    if listing.models.is_empty() {
+        let failed: Vec<_> = listing
+            .failed
+            .iter()
+            .map(|f| format!("{}: {}", f.origin.id, f.error))
+            .collect();
+        bail!(
+            "no model set, and the providers list none to pick from{}",
+            match failed.as_slice() {
+                [] => String::new(),
+                failed => format!(" ({})", failed.join("; ")),
+            }
+        );
+    }
+    let picked = fastrand::usize(..listing.models.len());
+    Ok(listing.models.swap_remove(picked).id)
 }
 
 /// The configured providers whose keys are set. None configured is an
@@ -261,4 +296,49 @@ async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
         eprintln!("{} {warning}", "!".yellow().bold());
     }
     Arc::new(context)
+}
+
+#[cfg(test)]
+mod tests {
+    use nth_protocol::{Failed, ModelInfo, Origin};
+
+    use super::*;
+
+    fn model(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: None,
+            context: None,
+            output: None,
+            efforts: Vec::new(),
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn picks_one_of_the_listed_models() {
+        let ids = ["zen/a", "zen/b", "go/c"];
+        let listing = Listing::from(ids.map(model).to_vec());
+        for _ in 0..20 {
+            let picked = pick(listing.clone()).expect("one is listed");
+            assert!(ids.contains(&picked.as_str()), "{picked}");
+        }
+    }
+
+    #[test]
+    fn nothing_listed_names_the_providers_that_failed() {
+        assert!(pick(Listing::default()).is_err());
+        let listing = Listing {
+            models: Vec::new(),
+            failed: vec![Failed {
+                origin: Origin {
+                    id: "zen".into(),
+                    name: "Zen".into(),
+                },
+                error: "401".into(),
+            }],
+        };
+        let error = pick(listing).expect_err("nothing to pick").to_string();
+        assert!(error.contains("zen: 401"), "{error}");
+    }
 }

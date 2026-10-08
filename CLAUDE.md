@@ -15,7 +15,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 - Single test: `cargo test -p nth-tui prompt_and_status_rows_never_move` (any substring of the test path works).
-- Run the TUI: `cargo run -p nth`. It needs at least one configured provider with its API key set, and a model: none is built in, so run `nth init` and uncomment one (OpenCode Go and Zen read `OPENCODE_API_KEY`). `NTH_MODEL` (or `--model`) picks the model as `provider/model`.
+- Run the TUI: `cargo run -p nth`. It needs at least one configured provider with its API key set: none is built in, so run `nth init` and uncomment one (OpenCode Go and Zen read `OPENCODE_API_KEY`). `NTH_MODEL` (or `--model`) picks the model as `provider/model`; with none set, a random one the providers list is used.
 - Headless: `cargo run -p nth -- run "<prompt>"` (act mode; `--mode plan` to plan). List models: `cargo run -p nth -- models`. List skills: `cargo run -p nth -- skills`. List agents: `cargo run -p nth -- agents`. List formatters: `cargo run -p nth -- formatters`. List language servers: `cargo run -p nth -- lsp`; what they say about a file: `cargo run -p nth -- lsp diagnostics <file>`. Send a sample desktop notification: `cargo run -p nth -- notify` (`--event needs-you` and others).
 - Config: optional `~/.config/nth/config.toml` (or `--config`, `NTH_CONFIG`); `cargo run -p nth -- init` writes one with every key and its default (`--force` to overwrite; the template, `crates/nth/src/config.toml`, is the reference for every key, and has OpenCode Go and Zen commented out), and `cargo run -p nth -- config` prints the resolved one. Flags and env vars win over it. Another provider is a `[provider.<id>]` block with `base_url` and `api_key_env`.
 

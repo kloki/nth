@@ -12,9 +12,10 @@ use crate::{config::Config, context, post_write, setup};
 /// A new chat starts in the config's default mode. With `resume`, the last
 /// session comes back as it was: its mode, model, effort and working
 /// directory win over the flags and where nth was started.
-pub async fn run(resume: bool, config: Config) -> Result<()> {
+pub async fn run(resume: bool, mut config: Config) -> Result<()> {
     let paths = config.paths();
-    let (mut session, provider) = setup(&config, &paths, config.mode.default).await?;
+    let mode = config.mode.default;
+    let (mut session, provider) = setup(&mut config, &paths, mode).await?;
     let store = Store::open()?;
     if resume {
         session = store

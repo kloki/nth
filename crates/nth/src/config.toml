@@ -7,12 +7,13 @@
 # Nothing is configured to talk to yet. To start a chat:
 #   1. uncomment a provider below (or add your own),
 #   2. export the environment variable its api_key_env names,
-#   3. set model to one of its models (`nth models` lists them).
+#   3. set model to one of its models (`nth models` lists them), or leave it
+#      empty and nth picks one at random.
 
 # The model a new chat starts on, as provider/model: the provider id picks the
 # endpoint and the rest goes on the wire. A bare id goes to the provider this
-# key names. --model or NTH_MODEL override it. Empty means none, and nth will
-# not start a chat without one (unless both modes below have their own).
+# key names. --model or NTH_MODEL override it. Empty means none: a mode below
+# without its own then runs on a model picked at random from `nth models`.
 model = ""
 # model = "opencode/deepseek-v4.1-flash"
 
