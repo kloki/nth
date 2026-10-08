@@ -4,8 +4,12 @@
 pub mod usage;
 mod view;
 
+use std::collections::BTreeSet;
+
 use nth_protocol::{Effort, Failed, Listing, ModelInfo};
 pub use view::draw;
+
+use crate::fuzzy::Filter;
 
 #[derive(Debug)]
 pub struct LlmPicker {
@@ -25,6 +29,14 @@ enum State {
         models: Vec<ModelInfo>,
         /// The providers that could not be asked, shown after the models.
         failed: Vec<Failed>,
+        /// With models from several providers, ids keep their `provider/`
+        /// prefix.
+        prefixed: bool,
+        filter: Filter,
+        /// The models matching the filter, best first, as indices into
+        /// `models`.
+        shown: Vec<usize>,
+        /// The highlighted model, an index into `shown`.
         selected: usize,
     },
 }
@@ -48,34 +60,94 @@ impl LlmPicker {
                     None => "the endpoint lists no models".into(),
                 })
             }
-            Ok(listing) => State::Ready {
-                selected: listing
+            Ok(listing) => {
+                let origins: BTreeSet<&str> = listing
                     .models
                     .iter()
-                    .position(|m| m.id == self.current)
-                    .unwrap_or(0),
-                models: listing.models,
-                failed: listing.failed,
-            },
+                    .filter_map(|m| m.origin.as_ref().map(|o| o.id.as_str()))
+                    .collect();
+                State::Ready {
+                    selected: listing
+                        .models
+                        .iter()
+                        .position(|m| m.id == self.current)
+                        .unwrap_or(0),
+                    prefixed: origins.len() > 1,
+                    shown: (0..listing.models.len()).collect(),
+                    filter: Filter::default(),
+                    models: listing.models,
+                    failed: listing.failed,
+                }
+            }
             Err(error) => State::Failed(error),
         };
     }
 
     pub fn next(&mut self) {
         if let State::Ready {
-            models, selected, ..
+            shown, selected, ..
         } = &mut self.state
+            && !shown.is_empty()
         {
-            *selected = (*selected + 1) % models.len();
+            *selected = (*selected + 1) % shown.len();
         }
     }
 
     pub fn prev(&mut self) {
         if let State::Ready {
-            models, selected, ..
+            shown, selected, ..
+        } = &mut self.state
+            && !shown.is_empty()
+        {
+            *selected = (*selected + shown.len() - 1) % shown.len();
+        }
+    }
+
+    /// Narrows the list by one more character of the query.
+    pub fn insert(&mut self, c: char) {
+        self.refilter(|filter| filter.push(c));
+    }
+
+    pub fn backspace(&mut self) {
+        self.refilter(Filter::pop);
+    }
+
+    /// Empties the query; false when it already was.
+    pub fn clear_query(&mut self) -> bool {
+        let State::Ready { filter, .. } = &self.state else {
+            return false;
+        };
+        if filter.is_empty() {
+            return false;
+        }
+        self.refilter(Filter::clear);
+        true
+    }
+
+    /// Changes the query and matches the models again, highlighting the
+    /// best match.
+    fn refilter(&mut self, change: impl FnOnce(&mut Filter)) {
+        if let State::Ready {
+            models,
+            prefixed,
+            filter,
+            shown,
+            selected,
+            ..
         } = &mut self.state
         {
-            *selected = (*selected + models.len() - 1) % models.len();
+            change(filter);
+            let haystacks: Vec<String> = models.iter().map(|m| haystack(m, *prefixed)).collect();
+            *shown = filter.rank(haystacks.iter().map(String::as_str));
+            // Back on the model in use once the query is gone, as on opening.
+            *selected = if filter.is_empty() {
+                shown
+                    .iter()
+                    .position(|&i| models[i].id == self.current)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
         }
     }
 
@@ -106,11 +178,32 @@ impl LlmPicker {
     fn selected(&self) -> Option<&ModelInfo> {
         match &self.state {
             State::Ready {
-                models, selected, ..
-            } => models.get(*selected),
+                models,
+                shown,
+                selected,
+                ..
+            } => shown.get(*selected).and_then(|&i| models.get(i)),
             _ => None,
         }
     }
+}
+
+/// The id a row shows: whole with `prefixed`, else without its provider.
+fn shown_id(model: &ModelInfo, prefixed: bool) -> &str {
+    if prefixed {
+        model.id.as_str()
+    } else {
+        model.wire_id()
+    }
+}
+
+/// What the filter matches a model by: its id as shown, then its name.
+fn haystack(model: &ModelInfo, prefixed: bool) -> String {
+    format!(
+        "{} {}",
+        shown_id(model, prefixed),
+        model.name.as_deref().unwrap_or("")
+    )
 }
 
 #[cfg(test)]
@@ -165,6 +258,40 @@ pub(crate) mod tests {
         picker.prev();
         picker.less();
         assert_eq!(picker.chosen(), Some(("glm".into(), Effort::Low)));
+    }
+
+    #[test]
+    fn typing_narrows_to_the_best_match() {
+        let mut picker = ready("glm");
+        picker.insert('p');
+        picker.insert('l');
+        assert_eq!(picker.chosen().map(|c| c.0), Some("plain".into()));
+        picker.next();
+        assert_eq!(picker.chosen().map(|c| c.0), Some("plain".into()), "alone");
+
+        picker.insert('z');
+        assert_eq!(picker.chosen(), None, "nothing matches");
+        picker.next();
+        assert_eq!(picker.chosen(), None);
+
+        picker.backspace();
+        picker.backspace();
+        picker.backspace();
+        assert_eq!(picker.chosen().map(|c| c.0), Some("glm".into()), "all back");
+    }
+
+    #[test]
+    fn clearing_an_empty_query_says_so() {
+        let mut picker = ready("plain");
+        assert!(!picker.clear_query());
+        picker.insert('g');
+        assert_eq!(picker.chosen().map(|c| c.0), Some("glm".into()));
+        assert!(picker.clear_query());
+        assert_eq!(
+            picker.chosen().map(|c| c.0),
+            Some("plain".into()),
+            "back on the model in use"
+        );
     }
 
     #[test]

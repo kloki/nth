@@ -126,7 +126,11 @@ impl App {
                 Action::SelectPrev => picker.prev(),
                 Action::Right => picker.more(),
                 Action::Left => picker.less(),
+                Action::Insert(c) => picker.insert(c),
+                Action::Backspace => picker.backspace(),
                 Action::Submit => self.choose_llm(),
+                // As on the prompt, ctrl+c clears the query before closing.
+                Action::ClearOrQuit if picker.clear_query() => {}
                 // Closing the picker must not also interrupt a running turn.
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
@@ -139,7 +143,10 @@ impl App {
             match action {
                 Action::SelectNext => picker.next(),
                 Action::SelectPrev => picker.prev(),
+                Action::Insert(c) => picker.insert(c),
+                Action::Backspace => picker.backspace(),
                 Action::Submit => self.choose_session(),
+                Action::ClearOrQuit if picker.clear_query() => {}
                 Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
                     self.input = Input::Prompt
                 }

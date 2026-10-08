@@ -1,5 +1,5 @@
 //! The LLMs the endpoint serves: listed for the context window on the
-//! status bar, and picked from in the model picker, the most used first.
+//! status bar, and picked from in the model picker.
 
 use std::path::Path;
 
@@ -14,7 +14,7 @@ impl App {
         self.completion = None;
         let mut picker = LlmPicker::new(&self.model, self.effort);
         match &self.llms {
-            Some(llms) => picker.load(Ok(self.by_usage(llms))),
+            Some(llms) => picker.load(Ok(llms.clone())),
             // The answer fills this picker when it comes.
             None => self.list_llms(),
         }
@@ -43,18 +43,9 @@ impl App {
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
         }
-        let llms = llms.map(|llms| self.by_usage(&llms));
         if let Input::LlmPicker(picker) = &mut self.input {
             picker.load(llms);
         }
-    }
-
-    /// The LLMs as the picker lists them; `llms` stays in the endpoint's
-    /// order.
-    fn by_usage(&self, llms: &Listing) -> Listing {
-        let mut llms = llms.clone();
-        self.llm_usage.order(&mut llms.models);
-        llms
     }
 
     /// Writes the counts in the background, as the prompt history is.
@@ -148,12 +139,14 @@ mod tests {
         let rows = rows(&mut app);
 
         assert!(rows[5].starts_with(" ▎ switch model"), "{:?}", rows[5]);
-        assert!(rows[6].starts_with(" ▎ → glm   ✓"), "{:?}", rows[6]);
-        assert!(rows[6].trim_end().ends_with("◂ default ▸"));
-        assert!(rows[7].starts_with(" ▎   plain"));
+        assert!(rows[6].starts_with(" ▎ > "), "{:?}", rows[6]);
+        assert!(rows[6].trim_end().ends_with("2/2"), "{:?}", rows[6]);
+        assert!(rows[7].starts_with(" ▎ → glm   ✓"), "{:?}", rows[7]);
+        assert!(rows[7].trim_end().ends_with("◂ default ▸"));
+        assert!(rows[8].starts_with(" ▎   plain"));
         assert!(
-            rows[8..13].iter().all(|r| r.trim().is_empty()),
-            "seven model rows"
+            rows[9..13].iter().all(|r| r.trim().is_empty()),
+            "six model rows"
         );
         assert!(
             rows.iter().all(|r| !r.contains("Ask anything")),
@@ -181,21 +174,26 @@ mod tests {
     }
 
     #[test]
-    fn the_most_used_model_is_listed_first() {
+    fn typing_filters_the_picker_and_ctrl_c_clears_before_closing() {
         let mut app = llm_listed_app();
-        app.llm_usage.count("plain");
         app.apply(Action::LlmPicker);
+        for c in "pla".chars() {
+            app.apply(Action::Insert(c));
+        }
         let rows = rows(&mut app);
+        assert!(rows[6].starts_with(" ▎ > pla"), "{:?}", rows[6]);
+        assert!(rows[6].trim_end().ends_with("1/2"), "{:?}", rows[6]);
+        assert!(rows[7].starts_with(" ▎ → plain"), "{:?}", rows[7]);
+        assert!(rows[8].trim().is_empty(), "glm filtered out");
 
-        assert!(rows[6].starts_with(" ▎   plain"), "{:?}", rows[6]);
-        assert!(
-            rows[7].starts_with(" ▎ → glm   ✓"),
-            "still on the model in use"
-        );
-        assert_eq!(
-            app.llms.as_ref().map(|l| l.models[0].id.as_str()),
-            Some("glm")
-        );
+        app.apply(Action::ClearOrQuit);
+        assert!(matches!(app.input, Input::LlmPicker(_)), "query cleared");
+        assert_eq!(picker(&app).chosen().map(|c| c.0), Some("glm".into()));
+
+        app.apply(Action::Insert('p'));
+        app.apply(Action::Submit);
+        assert_eq!(app.model, "plain");
+        assert!(matches!(app.input, Input::Prompt));
     }
 
     #[tokio::test]
@@ -276,8 +274,8 @@ mod tests {
         }));
         let rows = rows(&mut app);
 
-        assert!(rows[6].starts_with(" ▎ → glm"), "{:?}", rows[6]);
-        assert!(rows[7].contains("✗ Lyceum: 401: bad key"), "{:?}", rows[7]);
+        assert!(rows[7].starts_with(" ▎ → glm"), "{:?}", rows[7]);
+        assert!(rows[8].contains("✗ Lyceum: 401: bad key"), "{:?}", rows[8]);
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ mod app;
 mod chat;
 mod command;
 mod diagnostics;
+mod fuzzy;
 mod git;
 mod header;
 mod history;

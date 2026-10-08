@@ -1,13 +1,11 @@
-//! How many turns ran on each model, kept across runs in one JSON file:
-//! the picker lists the most used first, and the diagnostics tab graphs it.
+//! How many turns ran on each model, kept across runs in one JSON file,
+//! for the diagnostics tab to graph.
 
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-
-use nth_protocol::ModelInfo;
 
 #[derive(Debug, Default)]
 pub struct LlmUsage {
@@ -60,12 +58,6 @@ impl LlmUsage {
         *self.turns.entry(model.to_string()).or_default() += 1;
     }
 
-    /// Most used first, across providers; the sort is stable, so models
-    /// used equally often keep the listing's order.
-    pub fn order(&self, models: &mut [ModelInfo]) {
-        models.sort_by_key(|m| Reverse(self.turns.get(&m.id).copied().unwrap_or(0)));
-    }
-
     /// The models that ran a turn, most used first, then by name.
     pub fn ranked(&self) -> Vec<(&str, u64)> {
         let mut ranked: Vec<(&str, u64)> = self
@@ -82,7 +74,6 @@ impl LlmUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_picker::tests::model;
 
     fn usage(turns: &[(&str, u64)]) -> LlmUsage {
         let mut usage = LlmUsage::default();
@@ -92,43 +83,6 @@ mod tests {
             }
         }
         usage
-    }
-
-    #[test]
-    fn the_most_used_come_first_and_ties_keep_their_order() {
-        let mut models = vec![
-            model("a", false),
-            model("b", false),
-            model("c", false),
-            model("d", false),
-        ];
-        usage(&[("c", 3), ("d", 1)]).order(&mut models);
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["c", "d", "a", "b"]);
-    }
-
-    fn served(provider: &str, id: &str) -> ModelInfo {
-        ModelInfo {
-            id: format!("{provider}/{id}"),
-            origin: Some(nth_protocol::Origin {
-                id: provider.into(),
-                name: provider.into(),
-            }),
-            ..model(id, false)
-        }
-    }
-
-    #[test]
-    fn orders_across_providers() {
-        let mut models = vec![
-            served("ly", "a"),
-            served("ly", "b"),
-            served("go", "c"),
-            served("go", "hy3"),
-        ];
-        usage(&[("go/hy3", 7), ("ly/b", 2)]).order(&mut models);
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["go/hy3", "ly/b", "ly/a", "go/c"]);
     }
 
     #[test]

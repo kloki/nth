@@ -243,15 +243,16 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 - **Default: the prompt.** See [Prompt](#prompt) below. The completion popup for `/` commands and `@` agents and files floats right above the row being typed, lined up with the `/` or `@` it completes.
 - **One style.** Every input panel looks the same; see [Input panel style](#input-panel-style).
 - **Context swaps it.** Today that is the model picker. Later come question tool answers, permission prompts, the session list and similar. Each is its own input panel.
-- **Each input panel declares its height in lines.** The prompt is 4; the model picker is a header plus a list, around 8. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
-- **The model picker lists the most used first.** By turns run on each model, across providers, counted across runs in `$XDG_DATA_HOME/nth/llm-usage.json` by `provider/model` id. Ties, and the unused models, keep the listing's order. It still opens on the model in use.
+- **Each input panel declares its height in lines.** The prompt is 4; the model and session pickers are a header, a query row and a list, 16 rows but at most half the screen. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
+- **The model picker keeps the listing's order** and opens on the model in use.
+- **Pickers filter as you type, as telescope does.** The model and session pickers have a query row under the title: `> query`, and how many items match against the right edge. Typing narrows the list by fuzzy matching (`fuzzy.rs`, nucleo, smart case, words in any order) and highlights the best match; the matched characters are bold and underlined. A model matches by its id and name, a session by its title and directory. Backspace widens the list again; ctrl+c clears the query, then closes. With an empty query the list keeps its own order: the listing's for models, newest first for sessions.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
 
 | Input panel        | Height   | Opens on              | Returns on    |
 | ------------------ | -------- | --------------------- | ------------- |
 | Prompt             | 4        | default               | —             |
-| Model picker       | ~8       | `/models`, ctrl+m     | enter, esc    |
+| Model picker       | ≤16      | `/models`, ctrl+m     | enter, esc    |
 | Question           | per call | the agent asks        | answer, esc   |
 | Permission (later) | ~4       | a tool needs approval | allow, reject |
 
@@ -260,7 +261,8 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 Every input panel has the same shape, so a new one reads as the same kind of thing as the prompt. In code this is `theme::panel_title` and `theme::panel_row` in `crates/nth-tui/src/theme.rs`; build a new panel from those.
 
 ```
-▎ switch model                         ↑↓ model · ←→ effort · enter · esc
+▎ switch model        type to filter · ↑↓ model · ←→ effort · enter · esc
+▎ >                                                                    3/3
 ▎   opencode/kimi      Kimi     256k
 ▎ → openrouter/glm   ✓ GLM 5.3  128k
 ▎   openrouter/plain   Plain    32k
