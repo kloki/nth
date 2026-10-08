@@ -10,8 +10,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 
 ```
  [› chat] ● diagnostics                                    nth 0.2.0  header
- nth · glm-5.3 · ~/repos/nth                                          ┐
- ▎ you  add retry to the fetch client                                 │ content
+ ▎ you  add retry to the fetch client                                 ┐ content
  ▎ read  src/client.rs                                                │
  ▎ Added exponential backoff with jitter …                            ┘
 ▎ plan                                                                ┐
@@ -36,7 +35,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 ## Content panel
 
-- **Default: chat history.** The transcript, scrolled, with the banner on top as today.
+- **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
 - **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
@@ -515,7 +514,3 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | bright white     | bright white    | status line 1 text                        |
 
 Orange is not a standard terminal colour, so it means yellow.
-
-## Open questions
-
-- Does the chat banner (`nth · model · place`) stay, now that status line 2 shows the same?

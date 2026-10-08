@@ -8,6 +8,7 @@ mod diagnostics;
 mod fuzzy;
 mod git;
 mod header;
+mod hero;
 mod history;
 mod llm_picker;
 mod mention;

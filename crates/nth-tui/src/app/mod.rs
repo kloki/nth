@@ -56,7 +56,7 @@ use nth_session::{
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Margin, Position, Rect},
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
@@ -73,7 +73,7 @@ use crate::{
     command::Command,
     diagnostics::{self, Diagnostics},
     git::GitStatus,
-    header,
+    header, hero,
     history::History,
     llm_picker::{self, usage::LlmUsage},
     monitor::MonitorView,
@@ -141,6 +141,10 @@ pub struct App {
     home: Option<String>,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
+    /// When the empty chat's field started moving, and where the mouse
+    /// last was, for its ripple.
+    hero_since: Instant,
+    pointer: Option<Position>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
     completion: Option<Completion>,
     /// What `@` mentions complete to, refreshed after every turn since the
@@ -356,6 +360,8 @@ impl App {
             place: status::place(&session.cwd, home.as_deref()),
             home,
             busy_since: None,
+            hero_since: Instant::now(),
+            pointer: None,
             completion: None,
             files: Vec::new(),
             indexing: Job::default(),
@@ -473,8 +479,10 @@ impl App {
             if !self.is_editing() {
                 terminal.draw(|frame| self.draw(frame))?;
             }
-            let ticking =
-                self.is_busy() || self.running_monitors() > 0 || self.running_subagents() > 0;
+            let ticking = self.is_busy()
+                || self.running_monitors() > 0
+                || self.running_subagents() > 0
+                || self.showing_hero();
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -553,6 +561,11 @@ impl App {
         Ok(())
     }
 
+    /// Whether the empty chat's field shows, which moves on every tick.
+    fn showing_hero(&self) -> bool {
+        self.content.active() == Tab::Chat && self.chat.transcript.is_empty()
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
         let [header, content, input, status] = Layout::vertical([
@@ -617,8 +630,10 @@ impl App {
                 }
             }
             Tab::Chat => {
-                let banner = format!("nth · {} · {}", self.model, self.place);
-                self.chat.draw(frame, content, &banner, self.settings);
+                if self.chat.transcript.is_empty() {
+                    hero::draw(frame, content, self.hero_since.elapsed(), self.pointer);
+                }
+                self.chat.draw(frame, content, self.settings);
                 if let Some(state) = self.chat.scrollbar() {
                     draw_scrollbar(frame, content, state);
                 }
