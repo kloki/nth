@@ -264,13 +264,17 @@ fn read(file: &Path, source: Source) -> Result<Read, String> {
         prompt,
         tools,
         denied,
-        // Claude Code's way of saying its parent's model.
-        model: frontmatter::field(&front, "model").filter(|m| m != "inherit"),
+        model: frontmatter::field(&front, "model").filter(|m| !PARENTS_MODEL.contains(&m.as_str())),
         hidden: front.get("hidden").and_then(Value::as_bool) == Some(true),
         path: Some(file.to_path_buf()),
         source,
     }))
 }
+
+/// Claude Code's ways of naming a model nth cannot route: `inherit` and the
+/// family aliases, which Claude Code resolves itself. All of them read as
+/// the parent's model, so such an agent runs rather than failing on the wire.
+const PARENTS_MODEL: [&str; 4] = ["inherit", "sonnet", "opus", "haiku"];
 
 /// The `tools` field in either shape, as the tools allowed and those
 /// denied. Claude Code's `Read, Grep` list is all an agent may use;
@@ -480,7 +484,7 @@ mod tests {
         let tree = Tree::new();
         tree.agent(
             "repo/.claude/agents/reviewer.md",
-            "name: reviewer\ndescription: Reviews\ntools: Read, Grep, Glob\nmodel: sonnet",
+            "name: reviewer\ndescription: Reviews\ntools: Read, Grep, Glob\nmodel: zen/claude-sonnet-4-5",
             "You review.",
         )
         .agent(
@@ -496,7 +500,7 @@ mod tests {
             reviewer.tools.as_deref(),
             Some(&["read".to_string(), "grep".into(), "glob".into()][..])
         );
-        assert_eq!(reviewer.model.as_deref(), Some("sonnet"));
+        assert_eq!(reviewer.model.as_deref(), Some("zen/claude-sonnet-4-5"));
         assert_eq!(reviewer.prompt.as_deref(), Some("You review."));
         let triage = agents.get("triage").expect("triage");
         assert_eq!(triage.tools, None, "a map only changes the defaults");
@@ -507,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_permissions_deny_and_inherit_is_the_parents_model() {
+    fn opencode_permissions_deny_and_claude_code_aliases_are_the_parents_model() {
         let tree = Tree::new();
         tree.agent(
             "repo/.opencode/agents/careful.md",
@@ -518,6 +522,11 @@ mod tests {
             "repo/.claude/agents/plain.md",
             "description: p\nmodel: inherit",
             "",
+        )
+        .agent(
+            "repo/.claude/agents/family.md",
+            "description: f\nmodel: sonnet",
+            "",
         );
 
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
@@ -526,6 +535,11 @@ mod tests {
         assert_eq!(careful.denied, ["apply_patch", "edit", "webfetch", "write"]);
         assert!(careful.allows("bash"), "a pattern map is not a plain deny");
         assert_eq!(agents.get("plain").expect("plain").model, None);
+        assert_eq!(
+            agents.get("family").expect("family").model,
+            None,
+            "a Claude Code family alias cannot be routed, so the parent's model runs it"
+        );
     }
 
     #[test]
