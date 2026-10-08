@@ -168,7 +168,7 @@ opencode calls these agents plan and build; nth calls them modes, plan and act.
 **Providers**
 
 - The M1 implementation is one `chat_completions` module that streams SSE and parses tool-call deltas. It works against any OpenAI-compatible endpoint, not only Go.
-- Several endpoints at once, as in opencode: the config has a `[provider.<id>]` block per endpoint (`name`, `base_url`, `api_key_env`, optional `models`), with OpenCode Go built in as `opencode`. `Providers` in nth-llm fronts one client per block behind the one `Provider` trait, so the session loop and the front-ends see a single provider.
+- Several endpoints at once, as in opencode: the config has a `[provider.<id>]` block per endpoint (`name`, `base_url`, `api_key_env`, optional `models`), with OpenCode Go and Zen built in as `opencode` and `zen`. `Providers` in nth-llm fronts one client per block behind the one `Provider` trait, so the session loop and the front-ends see a single provider.
 - A model id is `provider/model`, split on the first `/`: the prefix picks the endpoint, the rest goes on the wire, so `openrouter/z-ai/glm-5.2` works. An id without a known prefix goes whole to the default provider, the one the config's `model` names, which keeps sessions saved before there were several working. (A bare id whose first segment happens to equal a provider id would be misrouted; opencode has the same rule.) A provider whose key variable is unset is left out, and a model of its is refused with the variable's name rather than sent elsewhere.
 - The picker and `nth models` show one list grouped by provider. Every endpoint is listed at once; a provider that could not list is shown with its error beside the others' models, and one slow endpoint holds the list up to its 30s deadline.
 - Go asks clients to send a stable `x-opencode-session` header per conversation for routing and prompt caching. It also asks for a real user agent, such as `nth/0.1`. Both are cheap and both are required.
@@ -228,7 +228,7 @@ Every agent is its own actor with an id, a parent and a status, and every event 
 
 - The agents sidebar lists every agent on the machine as a tree: session, then subagents. Each row shows a status marker and what the agent is doing right now, such as `edit src/client.rs`.
 - Each subagent has a tab with its transcript, and the prompt talks to the subagent whose tab shows (see [ui.md](ui.md#subagents)). Esc there stops its turn; the tab keys go back to the chat.
-- Tabs with an agent waiting for you are marked in magenta in the tab bar, and a desktop notification fires. Notifications also fire when the chat's model is done, has a plan ready or failed; each names the session and what happened (the question, the reply's first lines, the error). They go through `nth-notify` (`[notify]` in the config; `notify-send` today, more backends behind its `Backend` trait), and `nth notify` sends a sample.
+- Tabs with an agent waiting for you are marked in magenta in the tab bar, and a desktop notification fires. Notifications also fire when the chat's model is done, has a plan ready or failed. They fire only while the terminal does not have focus, all at normal urgency; each names the session and what happened (the question, the reply's first lines, the error). They go through `nth-notify` (`[notify]` in the config; `notify-send` today, more backends behind its `Backend` trait), and `nth notify` sends a sample.
 - The same tree comes out of `nth agents --json`, so an agent can check on other agents.
 
 ## TUI

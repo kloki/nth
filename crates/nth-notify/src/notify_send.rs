@@ -5,7 +5,7 @@ use std::{io::ErrorKind, process::Stdio};
 use futures::future::BoxFuture;
 use tokio::process::Command;
 
-use crate::{Backend, BoxError, Notification, Urgency};
+use crate::{Backend, BoxError, Notification};
 
 pub struct NotifySend;
 
@@ -37,13 +37,8 @@ impl Backend for NotifySend {
 }
 
 fn args(notification: &Notification) -> Vec<String> {
-    let urgency = match notification.urgency {
-        Urgency::Normal => "normal",
-        Urgency::Critical => "critical",
-    };
     vec![
         "--app-name=nth".into(),
-        format!("--urgency={urgency}"),
         // Ends the options, so a summary starting with `-` stays text.
         "--".into(),
         notification.summary.clone(),
@@ -68,13 +63,11 @@ mod tests {
         let notification = Notification {
             summary: "-done".into(),
             body: "Vec<T> && more".into(),
-            urgency: Urgency::Critical,
         };
         assert_eq!(
             args(&notification),
             [
                 "--app-name=nth",
-                "--urgency=critical",
                 "--",
                 "-done",
                 "Vec&lt;T&gt; &amp;&amp; more"

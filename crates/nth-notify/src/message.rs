@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::{Notification, Urgency};
+use crate::Notification;
 
 const DONE: &str = include_str!("../templates/done.txt");
 const PLAN_READY: &str = include_str!("../templates/plan_ready.txt");
@@ -47,15 +47,15 @@ impl Event {
         let elapsed = elapsed(cx.elapsed);
         let title = clip(&cx.title);
         let mut values = vec![("title", title), ("elapsed", elapsed)];
-        let (template, urgency) = match self {
+        let template = match self {
             Event::Done => {
                 values.push(("reply", cx.reply.as_deref().map(clip).unwrap_or_default()));
-                (DONE, Urgency::Normal)
+                DONE
             }
-            Event::PlanReady => (PLAN_READY, Urgency::Normal),
+            Event::PlanReady => PLAN_READY,
             Event::Failed(error) => {
                 values.push(("error", clip(error)));
-                (FAILED, Urgency::Critical)
+                FAILED
             }
             Event::NeedsYou {
                 header,
@@ -72,7 +72,7 @@ impl Event {
                         n => format!("and {n} more questions"),
                     },
                 ));
-                (NEEDS_YOU, Urgency::Critical)
+                NEEDS_YOU
             }
         };
         let text = fill(template, &values);
@@ -85,7 +85,6 @@ impl Event {
                 .filter(|line| !line.trim().is_empty())
                 .collect::<Vec<_>>()
                 .join("\n"),
-            urgency,
         }
     }
 }
@@ -167,7 +166,6 @@ mod tests {
             n.body,
             "add notification support\n# Done\nAdded `nth-notify`.\nIt uses {title}.…"
         );
-        assert_eq!(n.urgency, Urgency::Normal);
     }
 
     #[test]
@@ -193,11 +191,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_is_critical_with_the_error() {
+    fn failed_names_the_error() {
         let n = Event::Failed("rate limited".into()).notification(&cx());
         assert_eq!(n.summary, "nth · failed after 2m 14s");
         assert_eq!(n.body, "add notification support\nrate limited");
-        assert_eq!(n.urgency, Urgency::Critical);
     }
 
     #[test]
@@ -213,7 +210,6 @@ mod tests {
             n.body,
             "Doom loop: Keep going?\nand 2 more questions\nadd notification support"
         );
-        assert_eq!(n.urgency, Urgency::Critical);
     }
 
     #[test]
