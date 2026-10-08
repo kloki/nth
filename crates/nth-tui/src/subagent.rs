@@ -14,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{app::TabState, chat::Chat, spinner, theme};
+use crate::{app::TabState, chat::Chat, settings::ChatSettings, spinner, theme};
 
 /// The header row above the chat.
 const HEADER_ROWS: u16 = 2;
@@ -152,11 +152,11 @@ impl SubagentView {
 
     /// Draws the header and the chat, and returns where the chat went, for
     /// its scrollbar.
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) -> Rect {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, settings: ChatSettings) -> Rect {
         let [header, chat] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
         frame.render_widget(Paragraph::new(self.header()), header);
-        self.chat.draw(frame, chat, "");
+        self.chat.draw(frame, chat, "", settings);
         chat
     }
 

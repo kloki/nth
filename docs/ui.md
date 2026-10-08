@@ -256,6 +256,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 | Prompt             | 4        | default               | —             |
 | Model picker       | ≤16      | `/models`, ctrl+m     | enter, esc    |
 | Question           | per call | the agent asks        | answer, esc   |
+| Settings           | 3        | `/settings`           | esc           |
 | Permission (later) | ~4       | a tool needs approval | allow, reject |
 
 ## Input panel style
@@ -281,6 +282,7 @@ With models from more than one provider, the picker shows ids with their `provid
 | Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner |
 | Model picker | magenta                           | `switch model`                    |
 | Question     | cyan                              | `question`, or a tab per question |
+| Settings     | magenta                           | `settings`                        |
 
 ## Prompt
 
@@ -405,6 +407,21 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 **Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 
 **Esc.** Declines: the panel goes, the prompt comes back with its text, and the model reads that you declined and carries on. Esc at the prompt cancels the turn, as it always does.
+
+## Settings
+
+Opened with `/settings`. What the chats show, for this run of nth only: a change is never written to the config or the saved session, and the next nth starts with everything on.
+
+```
+▎ settings                   ↑↓ setting · enter toggle · esc
+▎ → [x] thinking     the model's reasoning under ∴
+▎   [ ] tool output  what each tool call returned
+```
+
+- **Toggles.** ↑↓ move, Enter or Space flips the highlighted one, Esc goes back to the prompt with its text kept. A change shows in the chat behind the panel at once.
+- **Thinking.** Off, a reasoning entry is only its `∴ thought · 2.1s` line, without the text under it.
+- **Tool output.** Off, a tool call is only its row, with any format note and language server errors under it, without what it returned.
+- **Every chat.** Both apply to the main chat and every subagent's tab, and stay through `/clear` and `/resume`.
 
 ## Status bar
 

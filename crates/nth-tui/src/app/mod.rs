@@ -79,7 +79,9 @@ use crate::{
     monitor::MonitorView,
     plan::PlanView,
     prompt::{self, Prompt},
-    question, session_picker, spinner, status,
+    question, session_picker,
+    settings::{self, ChatSettings, SettingsPanel},
+    spinner, status,
     subagent::SubagentView,
 };
 
@@ -107,6 +109,8 @@ pub struct App {
     history_saving: Job<std::io::Result<()>>,
     /// Turns run on each model, which orders the picker.
     llm_usage: LlmUsage,
+    /// How the chats show what the model did; for this run only.
+    settings: ChatSettings,
     /// Saved like the history, one write at a time.
     llm_usage_saving: Job<std::io::Result<()>>,
     /// Prompts sent while a turn runs, oldest first; each runs as its own
@@ -336,6 +340,7 @@ impl App {
             history_saving: Job::default(),
             llm_usage: LlmUsage::default(),
             llm_usage_saving: Job::default(),
+            settings: ChatSettings::default(),
             queue: VecDeque::new(),
             interrupted: false,
             last_turn: TabState::Idle,
@@ -571,7 +576,7 @@ impl App {
             }
             Tab::Subagent(id) => {
                 if let Some(view) = self.subagent_views.get_mut(&id) {
-                    let chat = view.draw(frame, content);
+                    let chat = view.draw(frame, content, self.settings);
                     if let Some(state) = view.chat.scrollbar() {
                         draw_scrollbar(frame, chat, state);
                     }
@@ -613,7 +618,7 @@ impl App {
             }
             Tab::Chat => {
                 let banner = format!("nth · {} · {}", self.model, self.place);
-                self.chat.draw(frame, content, &banner);
+                self.chat.draw(frame, content, &banner, self.settings);
                 if let Some(state) = self.chat.scrollbar() {
                     draw_scrollbar(frame, content, state);
                 }
@@ -645,6 +650,7 @@ impl App {
             Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
             Input::Question(panel) => question::draw(frame, input, panel),
+            Input::Settings(panel) => settings::draw(frame, input, panel, self.settings),
         }
     }
 
@@ -717,6 +723,10 @@ impl App {
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
+            Command::Settings => {
+                self.completion = None;
+                self.input = Input::Settings(SettingsPanel::default());
+            }
         }
     }
 

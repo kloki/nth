@@ -370,3 +370,33 @@ fn a_large_paste_collapses_and_a_small_one_does_not() {
         "a small paste goes in as is"
     );
 }
+
+#[tokio::test]
+async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
+    let mut app = app();
+    app.prompt.insert_str("half typed");
+    app.run_command(crate::command::Command::Settings);
+    let shown = rows(&mut app);
+    assert_eq!(shown[10].trim_end(), " ▎ settings");
+    assert!(
+        shown[11].starts_with(" ▎ → [x] thinking "),
+        "{:?}",
+        shown[11]
+    );
+    assert!(
+        shown[12].starts_with(" ▎   [x] tool output "),
+        "{:?}",
+        shown[12]
+    );
+
+    app.apply(Action::SelectNext);
+    app.apply(Action::Submit);
+    assert!(!app.settings.tool_output);
+    assert!(rows(&mut app)[12].starts_with(" ▎ → [ ] tool output "));
+
+    app.apply(Action::Interrupt);
+    assert!(matches!(app.input, Input::Prompt));
+    assert_eq!(app.prompt.text(), "half typed", "the prompt kept its text");
+    app.run_command(crate::command::Command::Clear);
+    assert!(!app.settings.tool_output, "kept for the rest of the run");
+}

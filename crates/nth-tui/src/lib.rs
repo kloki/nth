@@ -18,6 +18,7 @@ mod prompt;
 mod question;
 mod rich;
 mod session_picker;
+mod settings;
 mod spinner;
 mod status;
 mod subagent;

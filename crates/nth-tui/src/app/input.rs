@@ -11,6 +11,7 @@ use crate::{
     prompt,
     question::{self, QuestionPanel},
     session_picker::SessionPicker,
+    settings::{self, SettingsPanel},
 };
 
 #[derive(Debug)]
@@ -19,6 +20,7 @@ pub(super) enum Input {
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
     Question(QuestionPanel),
+    Settings(SettingsPanel),
 }
 
 impl Input {
@@ -31,6 +33,7 @@ impl Input {
             Input::Prompt => prompt::ROWS,
             Input::LlmPicker(_) | Input::SessionPicker(_) => picker_rows(screen),
             Input::Question(panel) => question::rows(panel, screen),
+            Input::Settings(_) => settings::ROWS,
         }
     }
 }

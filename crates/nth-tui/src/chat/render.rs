@@ -11,14 +11,16 @@ use ratatui::{
 use super::transcript::{Entry, OUTPUT_LINES, ToolState, Transcript, Wrapped};
 use crate::{
     rich::{self, Link, Markdown},
+    settings::ChatSettings,
     theme::{BAR, BAR_WIDTH, INDENT, dim},
 };
 
 impl Transcript {
     /// Wraps whatever changed for `width` and returns the total line count.
-    pub fn layout(&mut self, width: u16) -> usize {
-        if width != self.width {
+    pub fn layout(&mut self, width: u16, settings: ChatSettings) -> usize {
+        if width != self.width || settings != self.settings {
             self.width = width;
+            self.settings = settings;
             self.items.iter_mut().for_each(|item| item.lines = None);
         }
         let mut previous: Option<&Entry> = None;
@@ -33,7 +35,7 @@ impl Transcript {
                 if previous.is_some() {
                     wrapped.lines.push(Line::default());
                 }
-                wrapped.extend(render(&item.entry, &self.cwd, width));
+                wrapped.extend(render(&item.entry, &self.cwd, width, settings));
                 item.lines = Some(wrapped);
             }
             total += item.lines.as_ref().map_or(0, |w| w.lines.len());
@@ -99,7 +101,7 @@ fn is_live(entry: &Entry) -> bool {
     matches!(entry, Entry::Reasoning { took: None, .. })
 }
 
-fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Wrapped {
+fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettings) -> Wrapped {
     let dim = dim();
     let lines = match entry {
         Entry::User(text) => return barred_markdown(text, width, Style::new().fg(Color::Green)),
@@ -159,6 +161,9 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Wrapped {
                 Some(took) => format!("thought · {:.1}s", took.as_secs_f64()),
             };
             let mut lines = vec![Line::styled(format!("{INDENT}∴ {timing}"), dim)];
+            if !settings.thinking {
+                return Wrapped::plain(lines);
+            }
             // Plain text rather than markdown: reasoning is raw prose, often
             // with half-written markup.
             let body = dim.add_modifier(Modifier::ITALIC);
@@ -170,7 +175,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16) -> Wrapped {
             state,
             output,
             notes,
-        } => return tool(call, state, output, notes, cwd, width),
+        } => {
+            let output: &[String] = if settings.tool_output { output } else { &[] };
+            return tool(call, state, output, notes, cwd, width);
+        }
         Entry::TurnDone {
             model,
             tool_calls,
@@ -407,7 +415,10 @@ mod tests {
     use nth_protocol::Event;
     use ratatui::style::{Color, Modifier};
 
-    use crate::chat::transcript::tests::{call, text, transcript};
+    use crate::{
+        chat::transcript::tests::{call, text, transcript},
+        settings::ChatSettings,
+    };
 
     #[test]
     fn wraps_under_the_bar_and_separates_blocks() {
@@ -417,7 +428,7 @@ mod tests {
         t.apply(&Event::ToolStarted(call("2")));
         t.apply(&Event::TextDelta("ok\n\n*leaning* tower".into()));
 
-        let total = t.layout(10);
+        let total = t.layout(10, ChatSettings::default());
 
         assert_eq!(
             text(&t.visible(0, total)),
@@ -455,7 +466,7 @@ mod tests {
         t.apply(&Event::ReasoningDelta(" file\n\nthen".into()));
         t.apply(&Event::TextDelta("ok".into()));
 
-        let total = t.layout(12);
+        let total = t.layout(12, ChatSettings::default());
 
         let lines = t.visible(0, total);
         assert!(text(&lines)[0].starts_with("  ∴ thought · "));
@@ -478,7 +489,7 @@ mod tests {
         t.apply(&Event::ToolStarted(call("1")));
         t.finish_turn(Ok(()), "glm", std::time::Duration::from_secs(2));
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(
             text(&t.visible(0, total)),
@@ -502,7 +513,7 @@ mod tests {
         });
         t.apply(&Event::ToolStarted(call("2")));
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(
             text(&t.visible(0, total)),
@@ -513,6 +524,31 @@ mod tests {
                 "▎ ≡ read   src/a.rs",
             ]
         );
+    }
+
+    #[test]
+    fn settings_hide_thinking_and_tool_output() {
+        let mut t = transcript();
+        t.apply(&Event::ReasoningDelta("look at the file".into()));
+        t.apply(&Event::ToolStarted(call("1")));
+        t.apply(&Event::ToolOutput {
+            call_id: "1".into(),
+            text: "fn main() {}\n".into(),
+        });
+        let hidden = ChatSettings {
+            thinking: false,
+            tool_output: false,
+        };
+
+        let total = t.layout(40, hidden);
+        let shown = text(&t.visible(0, total));
+        assert!(shown[0].starts_with("  ∴ thought · "));
+        assert_eq!(shown[1..], ["", "▎ ≡ read   src/a.rs"]);
+
+        let total = t.layout(40, ChatSettings::default());
+        let shown = text(&t.visible(0, total));
+        assert_eq!(shown[1], "  look at the file", "shown again once on");
+        assert_eq!(shown[4], "▎   fn main() {}");
     }
 
     #[test]
@@ -529,7 +565,7 @@ mod tests {
             result: Ok("<skill_content name=\"research-opencode\">\nlots of body\n".into()),
         });
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ✦ skill  research-opencode"]);
     }
@@ -555,7 +591,7 @@ mod tests {
                 .into()),
         });
 
-        let total = t.layout(60);
+        let total = t.layout(60, ChatSettings::default());
         let lines = t.visible(0, total);
 
         assert_eq!(
@@ -599,7 +635,7 @@ mod tests {
             result: Ok("The user answered:\n\"Which auth?\" = OAuth".into()),
         });
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
     }
@@ -616,7 +652,7 @@ mod tests {
         let mut t = transcript();
         t.push_user("make it **bold**".into());
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
         let lines = t.visible(0, total);
 
         assert_eq!(text(&lines), ["▎ make it bold"]);
@@ -637,7 +673,7 @@ mod tests {
             text: "9: fn a() {}\n10: fn b() {}\n\n(Showing lines 9-10 of 20.)".into(),
         });
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
         let lines = t.visible(0, total);
 
         assert_eq!(
@@ -664,7 +700,7 @@ mod tests {
         };
         t.apply(&Event::ToolStarted(edit));
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
         let lines = t.visible(0, total);
 
         assert_eq!(
@@ -694,7 +730,7 @@ mod tests {
             result: Ok("# Example\n\nSome text.".into()),
         });
 
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(
             trimmed(&t.visible(0, total)),
@@ -712,7 +748,7 @@ mod tests {
         let mut t = transcript();
         t.push_user("one two three".into());
 
-        assert_eq!(t.layout(10), 2);
-        assert_eq!(t.layout(40), 1);
+        assert_eq!(t.layout(10, ChatSettings::default()), 2);
+        assert_eq!(t.layout(40, ChatSettings::default()), 1);
     }
 }
