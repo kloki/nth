@@ -36,7 +36,11 @@ use anyhow::{Context, Result};
 use checks::lsp_changed;
 use completion::Completion;
 pub(crate) use content::{Content, Tab, TabState};
-use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind};
+use crossterm::{
+    event::{Event as TermEvent, EventStream, KeyEventKind},
+    execute, queue,
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+};
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -477,7 +481,12 @@ impl App {
                 self.open_editor(&mut input).await;
             }
             if !self.is_editing() {
+                // The terminal holds the frame until it is all written, so
+                // a screen that changes everywhere at once (the empty chat's
+                // field) never shows half old, half new.
+                queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 terminal.draw(|frame| self.draw(frame))?;
+                execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             }
             let ticking = self.is_busy()
                 || self.running_monitors() > 0

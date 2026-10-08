@@ -11,8 +11,10 @@ use ratatui::{
     style::{Modifier, Style},
 };
 
-/// Sparsest to densest.
-const RAMP: &[u8] = b" .`'\",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+/// Sparsest to densest. Far shorter than the original's 70: on terminal
+/// cells a fine ramp swaps nearly every glyph on every tick and flickers,
+/// where ten steps let a cell hold its character for half a second.
+const RAMP: &[u8] = b" .:-=+*#%@";
 /// Terminal cells are about twice as tall as wide; distances to the pointer
 /// count rows this much more, so the ripple comes out round.
 const ROW_SCALE: f32 = 1.8;
