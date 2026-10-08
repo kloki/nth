@@ -1,5 +1,6 @@
 //! What every protocol's stream shares: SSE arrives as lines, each protocol
-//! reads its `data:` payloads, and a payload that does not parse is quoted.
+//! reads its `data:` payloads into its own events, and a payload that does
+//! not parse is quoted.
 
 /// How much of an unparseable line an error quotes. Enough to see what the
 /// server sent, little enough that the error still fits in the TUI.
@@ -41,6 +42,39 @@ pub(crate) fn data(line: &str) -> Option<&str> {
     (!data.is_empty()).then_some(data)
 }
 
+/// Turns raw response bytes into a protocol's events: `Lines` splits them,
+/// and `parse` reads one line into whatever events it carries.
+pub(crate) struct Parser<F> {
+    lines: Lines,
+    parse: F,
+}
+
+impl<F, I, E> Parser<F>
+where
+    F: FnMut(&str) -> Result<I, E>,
+    I: IntoIterator,
+{
+    pub(crate) fn new(parse: F) -> Self {
+        Self {
+            lines: Lines::default(),
+            parse,
+        }
+    }
+
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<I::Item>, E> {
+        let mut events = Vec::new();
+        for line in self.lines.push(bytes) {
+            events.extend((self.parse)(&line)?);
+        }
+        Ok(events)
+    }
+
+    /// Parses what is left once the bytes end.
+    pub(crate) fn finish(&mut self) -> Result<Vec<I::Item>, E> {
+        Ok((self.parse)(&self.lines.finish())?.into_iter().collect())
+    }
+}
+
 pub(crate) fn excerpt(data: &str) -> String {
     match data.char_indices().nth(EXCERPT_CHARS) {
         Some((end, _)) => format!("{}…", &data[..end]),
@@ -62,6 +96,18 @@ mod tests {
             got.push(lines.finish());
             assert_eq!(got, ["data: wörld", "", "data: x"], "split at {at}");
         }
+    }
+
+    #[test]
+    fn the_parser_hands_each_line_to_the_protocol() {
+        let mut parser =
+            Parser::new(|line: &str| -> Result<Option<usize>, ()> { Ok(data(line).map(str::len)) });
+        assert_eq!(
+            parser.push(b"data: ab\n: comment\ndata: c").expect("valid"),
+            [2]
+        );
+        assert_eq!(parser.finish().expect("valid"), [1]);
+        assert!(parser.finish().expect("valid").is_empty(), "nothing left");
     }
 
     #[test]

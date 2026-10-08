@@ -2,7 +2,7 @@
 //! other endpoint speaking this protocol, and what a model goes over when
 //! the catalogue says nothing else.
 
-mod sse;
+mod event;
 mod wire;
 
 use std::{
@@ -29,7 +29,7 @@ pub enum Error {
     #[error("bad stream chunk: {source} in {line:?}")]
     Parse {
         source: serde_json::Error,
-        /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
+        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
         line: String,
     },
     #[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
@@ -135,7 +135,7 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
 
 struct State<S> {
     bytes: S,
-    parser: sse::Parser,
+    parser: event::Parser,
     pending: VecDeque<Result<StreamEvent, Error>>,
     calls: BTreeMap<usize, ToolCall>,
     finish_reason: Option<String>,
@@ -150,7 +150,7 @@ where
 {
     let state = State {
         bytes,
-        parser: sse::Parser::default(),
+        parser: event::parser(),
         pending: VecDeque::new(),
         calls: BTreeMap::new(),
         finish_reason: None,
@@ -187,15 +187,15 @@ where
             };
             for event in parsed {
                 match event {
-                    sse::Event::Delta(delta) => s.apply(delta),
-                    sse::Event::Finish(reason) => s.finish_reason = Some(reason),
-                    sse::Event::Usage(usage) => {
+                    event::Event::Delta(delta) => s.apply(delta),
+                    event::Event::Finish(reason) => s.finish_reason = Some(reason),
+                    event::Event::Usage(usage) => {
                         s.pending.push_back(Ok(StreamEvent::Usage(Usage {
                             input: usage.prompt_tokens,
                             output: usage.completion_tokens,
                         })))
                     }
-                    sse::Event::Done => {
+                    event::Event::Done => {
                         s.done();
                         break;
                     }
@@ -229,7 +229,7 @@ impl<S> State<S> {
             .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
     }
 
-    fn apply(&mut self, delta: sse::Delta) {
+    fn apply(&mut self, delta: event::Delta) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
             self.pending
                 .push_back(Ok(StreamEvent::ReasoningDelta(text)));
@@ -261,6 +261,7 @@ impl<S> State<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{chunks, runs_no_tools, until};
 
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");
 
@@ -278,17 +279,8 @@ mod tests {
             .await
     }
 
-    fn chunks(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, Error>> {
-        input
-            .chunks(chunk_size)
-            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
-            .collect()
-    }
-
     fn fixture_until(marker: &str) -> &'static [u8] {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let end = text.find(marker).expect("marker in fixture");
-        &FIXTURE[..end]
+        until(FIXTURE, marker)
     }
 
     #[tokio::test]
@@ -362,11 +354,7 @@ mod tests {
             matches!(events.last(), Some(Err(Error::Stalled))),
             "{events:?}"
         );
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
-        );
+        assert!(runs_no_tools(&events));
         let stalled: BoxError = Box::new(Error::Stalled);
         assert_eq!(retry(&stalled), Some(Retry { after: None }));
     }
@@ -375,11 +363,7 @@ mod tests {
     async fn cut_off_stream_is_an_error_and_runs_no_tools() {
         let events = replay_bytes(fixture_until("\"finish_reason\""), FIXTURE.len()).await;
         assert!(matches!(events.last(), Some(Err(Error::Incomplete))));
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
-        );
+        assert!(runs_no_tools(&events));
     }
 
     #[tokio::test]
@@ -391,11 +375,7 @@ mod tests {
         );
         let events = replay_bytes(input.as_bytes(), input.len()).await;
         assert!(matches!(events.last(), Some(Err(Error::Truncated))));
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
-        );
+        assert!(runs_no_tools(&events));
     }
 
     #[test]

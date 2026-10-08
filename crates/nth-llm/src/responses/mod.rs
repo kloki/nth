@@ -1,7 +1,7 @@
 //! OpenAI responses over SSE, for the models the catalogue says need it
 //! (GPT on OpenCode Zen, GPT and Grok on Go).
 
-mod sse;
+mod event;
 mod wire;
 
 use std::{
@@ -32,7 +32,7 @@ pub enum Error {
     #[error("bad stream event: {source} in {line:?}")]
     Parse {
         source: serde_json::Error,
-        /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
+        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
         line: String,
     },
     /// An `error` event or a failed response, sent after the 200 status.
@@ -106,7 +106,7 @@ async fn success(response: reqwest::Response) -> Result<reqwest::Response, Error
     }
     let retry_after = retry_after(response.headers());
     let body = response.text().await.unwrap_or_default();
-    let message = match serde_json::from_str::<sse::ErrorResponse>(&body) {
+    let message = match serde_json::from_str::<event::ErrorResponse>(&body) {
         Ok(error) => error.error.message,
         Err(_) => body,
     };
@@ -143,7 +143,7 @@ pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
 
 struct State<S> {
     bytes: S,
-    parser: sse::Parser,
+    parser: event::Parser,
     pending: VecDeque<Result<StreamEvent, Error>>,
     /// Tool calls by the index of their output item.
     calls: BTreeMap<usize, ToolCall>,
@@ -158,7 +158,7 @@ where
 {
     let state = State {
         bytes,
-        parser: sse::Parser::default(),
+        parser: event::parser(),
         pending: VecDeque::new(),
         calls: BTreeMap::new(),
         finished: false,
@@ -172,6 +172,10 @@ where
                 return None;
             }
             let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, s.bytes.next()).await;
+            // Unlike the other two protocols, nothing after the end is
+            // tolerated: `response.completed` is the last event and ends
+            // the stream at once, so there is no window for the connection
+            // to fail in after the reply is complete.
             let (parsed, ended) = match next {
                 Ok(Some(Ok(chunk))) => (s.parser.push(&chunk), false),
                 Ok(Some(Err(e))) => (Err(e), false),
@@ -205,23 +209,23 @@ where
 }
 
 impl<S> State<S> {
-    fn apply(&mut self, event: sse::Event) {
+    fn apply(&mut self, event: event::Event) {
         match event {
-            sse::Event::TextDelta { delta } if !delta.is_empty() => {
+            event::Event::TextDelta { delta } if !delta.is_empty() => {
                 self.pending.push_back(Ok(StreamEvent::TextDelta(delta)));
             }
-            sse::Event::ReasoningDelta { delta } if !delta.is_empty() => {
+            event::Event::ReasoningDelta { delta } if !delta.is_empty() => {
                 self.pending
                     .push_back(Ok(StreamEvent::ReasoningDelta(delta)));
             }
-            sse::Event::SummaryPart { summary_index } if summary_index > 0 => {
+            event::Event::SummaryPart { summary_index } if summary_index > 0 => {
                 self.pending
                     .push_back(Ok(StreamEvent::ReasoningDelta("\n\n".into())));
             }
-            sse::Event::ItemDone {
+            event::Event::ItemDone {
                 output_index,
                 item:
-                    sse::Item::FunctionCall {
+                    event::Item::FunctionCall {
                         call_id,
                         name,
                         mut arguments,
@@ -240,7 +244,7 @@ impl<S> State<S> {
                     },
                 );
             }
-            sse::Event::Completed { response } => {
+            event::Event::Completed { response } => {
                 self.usage(&response);
                 self.finished = true;
                 let calls = std::mem::take(&mut self.calls);
@@ -249,7 +253,7 @@ impl<S> State<S> {
             }
             // Tool calls of a response stopped early may be partial, so
             // none run.
-            sse::Event::Incomplete { response } => {
+            event::Event::Incomplete { response } => {
                 self.usage(&response);
                 self.finished = true;
                 let reason = response.incomplete_details.and_then(|d| d.reason);
@@ -265,7 +269,7 @@ impl<S> State<S> {
         }
     }
 
-    fn usage(&mut self, response: &sse::Response) {
+    fn usage(&mut self, response: &event::Response) {
         if let Some(usage) = response.usage {
             self.pending.push_back(Ok(StreamEvent::Usage(Usage {
                 input: usage.input_tokens,
@@ -278,6 +282,7 @@ impl<S> State<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{chunks, runs_no_tools, until};
 
     /// Recorded from OpenCode Zen's gpt-5.4-nano at low effort, shortened:
     /// one delta per summary part, encrypted reasoning and the repeated
@@ -298,23 +303,8 @@ mod tests {
             .await
     }
 
-    fn chunks(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, Error>> {
-        input
-            .chunks(chunk_size)
-            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
-            .collect()
-    }
-
     fn fixture_until(marker: &str) -> &'static [u8] {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let end = text.find(marker).expect("marker in fixture");
-        &FIXTURE[..end]
-    }
-
-    fn runs_no_tools(events: &[Result<StreamEvent, Error>]) -> bool {
-        !events
-            .iter()
-            .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
+        until(FIXTURE, marker)
     }
 
     #[tokio::test]

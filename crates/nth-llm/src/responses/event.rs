@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 use super::Error;
-use crate::sse::{Lines, data, excerpt};
+use crate::sse::{self, data, excerpt};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
@@ -109,24 +109,10 @@ pub struct ErrorResponse {
 }
 
 /// Turns raw response bytes into events.
-#[derive(Default)]
-pub struct Parser {
-    lines: Lines,
-}
+pub(super) type Parser = sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
 
-impl Parser {
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, Error> {
-        let mut events = Vec::new();
-        for line in self.lines.push(bytes) {
-            events.extend(parse_line(&line)?);
-        }
-        Ok(events)
-    }
-
-    /// Parses what is left once the bytes end.
-    pub fn finish(&mut self) -> Result<Vec<Event>, Error> {
-        Ok(parse_line(&self.lines.finish())?.into_iter().collect())
-    }
+pub(super) fn parser() -> Parser {
+    sse::Parser::new(parse_line)
 }
 
 fn parse_line(line: &str) -> Result<Option<Event>, Error> {
@@ -162,7 +148,7 @@ mod tests {
 
     #[test]
     fn bad_json_is_an_error() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         assert!(matches!(
             parser.push(b"data: {nope\n"),
             Err(Error::Parse { .. })
@@ -171,7 +157,7 @@ mod tests {
 
     #[test]
     fn unknown_events_and_items_are_skipped() {
-        let mut parser = Parser::default();
+        let mut parser = parser();
         let events = parser
             .push(
                 b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\n\
@@ -194,12 +180,7 @@ mod tests {
 
     #[test]
     fn error_events_and_failed_responses_are_errors_of_their_kind() {
-        let error = |line: &[u8]| {
-            Parser::default()
-                .push(line)
-                .expect_err("an error")
-                .to_string()
-        };
+        let error = |line: &[u8]| parser().push(line).expect_err("an error").to_string();
         assert_eq!(
             error(b"data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Slow down\"}\n"),
             "provider error rate_limit_exceeded: Slow down"
