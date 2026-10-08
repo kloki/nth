@@ -159,6 +159,14 @@ async fn dispatch(
 async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, Providers)> {
     let cwd = std::env::current_dir().context("no working directory")?;
     let providers = providers(config)?;
+    // Here rather than in providers(), so `nth models` can list what to
+    // pick before one is set. Per mode, so a config that gives each mode
+    // its own model needs no top-level one.
+    for mode in [Mode::Plan, Mode::Act] {
+        if config.llm_for(mode).0.is_empty() {
+            bail!("no model set: set model in the config or pass --model provider/model");
+        }
+    }
     let (model, effort) = config.llm_for(mode);
     let model = providers.qualify(&model);
     let mut session = Session::new(model, cwd.clone()).with_context(context(cwd, paths).await);
@@ -168,10 +176,17 @@ async fn setup(config: &Config, paths: &Paths, mode: Mode) -> Result<(Session, P
     Ok((session, providers))
 }
 
-/// The configured providers whose keys are set. None set is an error
-/// naming every variable; so is a model, the config's or a mode's, on a
-/// provider whose key is not.
+/// The configured providers whose keys are set. None configured is an
+/// error. None set is an error naming
+/// every variable; so is a model, the config's or a mode's, on a provider
+/// whose key is not.
 fn providers(config: &Config) -> Result<Providers> {
+    if config.provider.is_empty() {
+        bail!(
+            "no provider configured: add a [provider.<id>] to the config \
+             (`nth init` writes one with OpenCode Go and Zen ready to uncomment)"
+        );
+    }
     let mut endpoints = Vec::new();
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
@@ -190,7 +205,7 @@ fn providers(config: &Config) -> Result<Providers> {
         }
     }
     if endpoints.is_empty() {
-        // Providers may share a variable, as the built-in ones do.
+        // Providers may share a variable.
         let mut variables: Vec<_> = unavailable.iter().map(|u| u.api_key_env.as_str()).collect();
         variables.sort();
         variables.dedup();

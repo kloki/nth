@@ -1,33 +1,52 @@
 # nth config, written by `nth init`.
-# Every key is optional and shows its default. Keep only the ones you change.
-# `nth config` prints the config nth actually uses.
-
-# The model a new chat starts on, as provider/model. --model / NTH_MODEL override it.
-model = "opencode/deepseek-v4.1-flash"
-
-# One [provider.<id>] block per endpoint; the id prefixes its models. Every one is
-# an OpenAI-compatible chat completions endpoint; models.dev says which models it
-# serves over Anthropic messages or OpenAI responses. A provider whose key is not set
-# is left out, and nth needs at least one that is.
-[provider.opencode]
-# Built in: this block is here only to change it.
-name = "OpenCode Go"
-base_url = "https://opencode.ai/zen/go/v1"
-# Name of the environment variable that holds the API key. The key itself stays out of this file.
-api_key_env = "OPENCODE_API_KEY"
-# Normally nth asks the endpoint's /models. List ids here for an endpoint without
-# one, or to offer only these.
-models = []
-
-[provider.zen]
-# Built in: this block is here only to change it.
-name = "OpenCode Zen"
-base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
-models = []
-
-# Another provider, say:
 #
+# Every key is optional and shows its default, so keep only the ones you
+# change. `nth config` prints the config nth actually uses. --config or
+# NTH_CONFIG point nth at another file.
+#
+# Nothing is configured to talk to yet. To start a chat:
+#   1. uncomment a provider below (or add your own),
+#   2. export the environment variable its api_key_env names,
+#   3. set model to one of its models (`nth models` lists them).
+
+# The model a new chat starts on, as provider/model: the provider id picks the
+# endpoint and the rest goes on the wire. A bare id goes to the provider this
+# key names. --model or NTH_MODEL override it. Empty means none, and nth will
+# not start a chat without one (unless both modes below have their own).
+model = ""
+# model = "opencode/deepseek-v4.1-flash"
+
+# Providers: one [provider.<id>] block per endpoint, and none are built in.
+# The id prefixes its models, as in opencode/kimi-k3. Each is an
+# OpenAI-compatible chat completions endpoint; models.dev says which models it
+# serves over Anthropic messages or OpenAI responses instead.
+#
+#   name         What listings call it. Empty means the id.
+#   base_url     The endpoint, up to and including the version (/v1). Required.
+#   api_key_env  The environment variable holding the API key. Required. The
+#                key itself never goes in this file.
+#   models       Model ids to offer instead of asking the endpoint's /models:
+#                for an endpoint without one, or to offer only these. Empty
+#                means ask.
+#
+# A provider whose variable is not set is left out; nth needs at least one
+# that is set. Go and Zen share OPENCODE_API_KEY.
+#
+# OpenCode Go (https://opencode.ai):
+# [provider.opencode]
+# name = "OpenCode Go"
+# base_url = "https://opencode.ai/zen/go/v1"
+# api_key_env = "OPENCODE_API_KEY"
+# models = []
+#
+# OpenCode Zen (https://opencode.ai):
+# [provider.zen]
+# name = "OpenCode Zen"
+# base_url = "https://opencode.ai/zen/v1"
+# api_key_env = "OPENCODE_API_KEY"
+# models = []
+#
+# Any other OpenAI-compatible endpoint, say:
 # [provider.openrouter]
 # name = "OpenRouter"
 # base_url = "https://openrouter.ai/api/v1"
@@ -43,27 +62,30 @@ max_steps = 100
 default = "plan"
 
 [mode.plan]
-# Model and effort for plan mode, as provider/model. An empty model means the one above.
+# The model for plan mode, as provider/model. Empty means the model above.
+# --model and NTH_MODEL override this too.
 model = ""
-# "default", "low", "medium" or "high".
+# Reasoning effort: "default" (leave it to the model, for endpoints that reject
+# the field), "low", "medium" or "high".
 effort = "default"
 
 [mode.act]
+# The same two keys, for act mode.
 model = ""
 effort = "default"
 
 [tools.read]
 # Lines returned when the model gives no limit.
 default_limit = 2000
-# Longer lines are cut.
+# Longer lines are cut to this many characters.
 max_line_chars = 2000
 # Output stops before this many bytes.
 max_bytes = 51200
 
 [tools.bash]
-# Timeout when the model gives none.
+# Timeout when the model gives none, in milliseconds.
 default_timeout_ms = 120000
-# Cap on the timeout the model may ask for.
+# Cap on the timeout the model may ask for, in milliseconds.
 max_timeout_ms = 600000
 # Longer output keeps only its last this-many characters.
 max_output_chars = 30000
@@ -82,9 +104,16 @@ paths = []
 # `nth formatters` lists them and whether they apply to the working directory.
 enabled = true
 
-# One table per formatter to change or add. A built-in name (rustfmt, prettier,
-# ruff, gofmt, ...) changes that formatter; any other name adds one, which needs
-# command and extensions. $FILE is the file to format.
+# One [format.<name>] table per formatter to change or add. A built-in name
+# (rustfmt, prettier, ruff, gofmt, ...) changes that formatter; any other name
+# adds one, which needs command and extensions.
+#
+#   disabled    true turns this formatter off.
+#   command     Program and arguments; $FILE is the file to format. For a
+#               built-in name, leaving it out keeps its own.
+#   extensions  The files it formats, with the dot, as in ".toml". For a
+#               built-in name, leaving it out keeps its own.
+#   env         Extra environment variables for the command.
 #
 # [format.prettier]
 # disabled = true
@@ -100,9 +129,18 @@ enabled = true
 # `nth lsp` lists them and the project root each would run in.
 enabled = true
 
-# One table per server to change or add. A built-in id (rust, typescript,
-# pyright, gopls, clangd, ...) changes that server; any other id adds one, which
-# needs command and extensions. initialization is sent as initializationOptions.
+# One [lsp.<id>] table per server to change or add. A built-in id (rust,
+# typescript, pyright, gopls, clangd, ...) changes that server; any other id
+# adds one, which needs command and extensions. A server is only used when its
+# program is on PATH.
+#
+#   disabled        true turns this server off.
+#   command         Program and arguments. For a built-in id, empty keeps its
+#                   own.
+#   extensions      The files it checks, with the dot, as in ".rs". For a
+#                   built-in id, empty keeps its own.
+#   env             Extra environment variables for the server.
+#   initialization  Sent to the server as initializationOptions.
 #
 # [lsp.pyright]
 # disabled = true
@@ -118,9 +156,9 @@ enabled = true
 
 [notify]
 # Desktop notifications when the model is done, fails, has a plan ready or
-# asks you something, sent only while the terminal does not have focus (in
-# tmux, `set -g focus-events on`). false turns them off. `nth notify` sends
-# a sample.
+# asks you something. They are sent only while the terminal does not have
+# focus (in tmux, `set -g focus-events on`). false turns them off.
+# `nth notify` sends a sample.
 enabled = true
-# Where they go. Only "notify-send" (libnotify) today.
+# Where they go. Only "notify-send" (libnotify) for now.
 backend = "notify-send"
