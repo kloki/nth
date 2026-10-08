@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 /// `reasons` is whether the catalogue says the model reasons: its summary
 /// is then asked for even when the effort is left to the model.
-pub fn body(
+pub(super) fn body(
     model: &str,
     session_id: &str,
     effort: Effort,

@@ -3,7 +3,7 @@
 use nth_protocol::{Effort, Message, ToolSpec};
 use serde_json::{Value, json};
 
-pub fn body(model: &str, effort: Effort, messages: &[Message], tools: &[ToolSpec]) -> Value {
+pub(super) fn body(model: &str, effort: Effort, messages: &[Message], tools: &[ToolSpec]) -> Value {
     let mut body = json!({
         "model": model,
         "stream": true,

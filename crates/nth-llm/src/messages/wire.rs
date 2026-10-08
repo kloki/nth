@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 /// The smallest thinking budget the API takes.
 const MIN_THINKING: u64 = 1_024;
 
-pub fn body(
+pub(super) fn body(
     model: &str,
     effort: Effort,
     max_tokens: u64,

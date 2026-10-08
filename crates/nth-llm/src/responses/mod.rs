@@ -1,7 +1,5 @@
 //! OpenAI responses over SSE, for the models the catalogue says need it
-//! (GPT on OpenCode Zen, GPT and Grok on Go). Like messages it has no
-//! listing of its own: `Providers` sends a model here when the catalogue
-//! says so.
+//! (GPT on OpenCode Zen, GPT and Grok on Go).
 
 mod sse;
 mod wire;
@@ -14,7 +12,10 @@ use std::{
 use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
-use crate::http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient};
+use crate::{
+    catalog,
+    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -62,12 +63,14 @@ impl Client {
         }
     }
 
-    /// `reasons` is whether the catalogue says the model reasons.
+    /// `known` is the catalogue's entry for the model, if it has one: it
+    /// says whether the model reasons.
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
-        reasons: bool,
+        known: Option<&catalog::Model>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
+        let reasons = known.and_then(|m| m.reasoning).unwrap_or(false);
         let response = self
             .http
             .post(format!("{}/responses", self.base_url))
