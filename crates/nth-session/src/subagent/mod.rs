@@ -450,6 +450,48 @@ mod tests {
         );
     }
 
+    /// A child has nobody to ask, so a loop stops it with a failed notice
+    /// rather than running the same call for the whole step budget.
+    #[tokio::test]
+    async fn a_looping_child_fails_instead_of_asking() {
+        struct Noop;
+        impl Tool for Noop {
+            fn spec(&self) -> nth_protocol::ToolSpec {
+                nth_protocol::ToolSpec {
+                    name: "noop",
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn call<'a>(
+                &'a self,
+                _: serde_json::Value,
+                _: &'a nth_protocol::ToolContext,
+            ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+                Box::pin(async { Ok(String::new()) })
+            }
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let inbox = Inbox::new();
+        let same =
+            |id: &str| StreamEvent::ToolCall(crate::agent_loop::tests::call(id, "noop", "{}"));
+        let provider = Arc::new(Scripted::new(vec![vec![same("1"), same("2"), same("3")]]));
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Noop)];
+        let id = subagents.spawn(&explore(), "d", session(), provider, tools);
+        subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
+
+        until_ended(&mut rx).await;
+
+        assert_eq!(subagents.state(id), Some(State::Failed));
+        let notice = inbox.take_notices().unwrap();
+        assert!(
+            notice.contains("state=\"failed\"")
+                && notice.contains("called noop with the same input"),
+            "{notice}"
+        );
+    }
+
     #[tokio::test]
     async fn a_child_that_answers_nothing_fails_its_task() {
         let (tx, mut rx) = mpsc::channel(64);
