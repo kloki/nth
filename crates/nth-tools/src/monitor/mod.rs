@@ -453,6 +453,15 @@ mod tests {
         assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 2));
     }
 
+    /// Through `kill -0`, as macOS has no `/proc`.
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .expect("run kill")
+            .success()
+    }
+
     #[tokio::test]
     async fn background_processes_outlive_a_natural_exit() {
         let mut f = fixture();
@@ -464,7 +473,7 @@ mod tests {
 
         let pid = std::fs::read_to_string(&pid_file).expect("pid");
         let pid = pid.trim();
-        let alive = std::path::Path::new("/proc").join(pid).exists();
+        let alive = alive(pid);
         // Our business is over either way; the sleep must not linger past
         // the test.
         let _ = std::process::Command::new("kill").arg(pid).status();
@@ -507,14 +516,13 @@ mod tests {
         assert_eq!(end(&seen).0, MonitorEnd::Stopped(StoppedBy::Model));
 
         // Killed, it lingers until init reaps it.
-        let proc = std::path::Path::new("/proc").join(pid.trim());
         for _ in 0..50 {
-            if !proc.exists() {
+            if !alive(pid.trim()) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(!proc.exists(), "the background sleep is killed too");
+        assert!(!alive(pid.trim()), "the background sleep is killed too");
         let again = MonitorStop.call(json!({ "id": 1 }), &f.ctx).await;
         assert_eq!(again, Err("there is no running monitor 1".into()));
     }
