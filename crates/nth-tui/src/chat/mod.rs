@@ -11,13 +11,13 @@ use std::path::PathBuf;
 use nth_protocol::{Event, Message};
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::Rect,
     widgets::{Paragraph, ScrollbarState},
 };
 use scroll::Scroll;
 pub use transcript::{Entry, Transcript};
 
-use crate::{settings::ChatSettings, theme::dim};
+use crate::settings::ChatSettings;
 
 pub struct Chat {
     pub transcript: Transcript,
@@ -99,24 +99,13 @@ impl Chat {
         )
     }
 
-    /// Draws the visible history, or `banner` centred while there is none.
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, banner: &str, settings: ChatSettings) {
+    /// Draws the visible history; an empty chat draws nothing, leaving
+    /// what shows in its place to the caller.
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, settings: ChatSettings) {
         let total = self.transcript.layout(area.width, settings);
         self.height = usize::from(area.height);
         self.max_top = total.saturating_sub(self.height);
-
         if self.transcript.is_empty() {
-            let middle = Rect {
-                y: area.y + area.height / 2,
-                height: area.height.min(1),
-                ..area
-            };
-            frame.render_widget(
-                Paragraph::new(banner)
-                    .style(dim())
-                    .alignment(Alignment::Center),
-                middle,
-            );
             return;
         }
 

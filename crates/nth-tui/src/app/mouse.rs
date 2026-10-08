@@ -1,6 +1,7 @@
 //! What the mouse does: the wheel scrolls the showing tab, a click on the
 //! header shows that tab, a click on a link in a chat opens it, and a right
-//! click on an entry copies what it says.
+//! click on an entry copies what it says. Where it moves is kept for the
+//! empty chat's field to ripple under.
 
 use std::process::Stdio;
 
@@ -22,6 +23,7 @@ impl App {
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = Position::new(mouse.column, mouse.row);
         match mouse.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => self.pointer = Some(at),
             MouseEventKind::ScrollUp => {
                 if let Some(view) = self.active_view() {
                     view.scroll_up(WHEEL_LINES);

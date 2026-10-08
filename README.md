@@ -26,7 +26,7 @@ nth comes with no providers, so it needs a config before it can chat.
    export OPENCODE_API_KEY=...
    ```
 
-4. Run `nth models` to see what the provider serves, and set `model` to one of them as `provider/model`.
+4. Run `nth models` to see what the provider serves, and set `model` to one of them as `provider/model`. Leave it empty and nth picks one at random.
 
 `nth config` prints the config nth actually uses. The template that `nth init` writes, [`crates/nth/src/config.toml`](crates/nth/src/config.toml), is the reference for every key.
 

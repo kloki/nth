@@ -80,6 +80,26 @@ pub(crate) fn rows(app: &mut App) -> Vec<String> {
 }
 
 #[test]
+fn an_empty_chat_shows_the_field_until_something_is_said() {
+    let mut app = app();
+    assert!(app.showing_hero(), "it keeps moving");
+    let content = |app: &mut App| rows(app)[2..8].concat();
+    assert!(
+        content(&mut app).chars().any(|c| !c.is_whitespace()),
+        "the field fills the content panel"
+    );
+
+    app.chat.apply(&Event::TextDelta("hello".into()));
+    assert!(!app.showing_hero());
+    let after = content(&mut app);
+    assert!(after.contains("hello"), "{after:?}");
+    assert!(
+        rows(&mut app)[3..8].iter().all(|row| row.trim().is_empty()),
+        "no field left behind"
+    );
+}
+
+#[test]
 fn prompt_and_status_rows_never_move() {
     let mut app = app();
     let idle = rows(&mut app);

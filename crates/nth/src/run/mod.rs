@@ -13,8 +13,9 @@ use tokio::sync::mpsc;
 
 use crate::{config::Config, post_write, setup};
 
-pub async fn run(prompt: String, mode: Mode, config: Config) -> Result<()> {
-    let (mut session, provider) = setup(&config, &config.paths(), mode).await?;
+pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
+    let paths = config.paths();
+    let (mut session, provider) = setup(&mut config, &paths, mode).await?;
     let provider: Arc<dyn Provider> = Arc::new(provider);
     let cwd = session.cwd.clone();
     let post_write = post_write(&config);

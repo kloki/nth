@@ -156,7 +156,7 @@ impl SubagentView {
         let [header, chat] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
         frame.render_widget(Paragraph::new(self.header()), header);
-        self.chat.draw(frame, chat, "", settings);
+        self.chat.draw(frame, chat, settings);
         chat
     }
 
