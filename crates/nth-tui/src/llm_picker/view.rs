@@ -1,6 +1,5 @@
 //! Draws the picker in the prompt's place: a header with its keys, the
-//! query, then the models matching it, the most used first while it is
-//! empty, scrolled to the highlighted one.
+//! query, then the models matching it, scrolled to the highlighted one.
 
 use nth_protocol::{Failed, ModelInfo};
 use ratatui::{

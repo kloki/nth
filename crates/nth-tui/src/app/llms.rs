@@ -1,5 +1,5 @@
 //! The LLMs the endpoint serves: listed for the context window on the
-//! status bar, and picked from in the model picker, the most used first.
+//! status bar, and picked from in the model picker.
 
 use std::path::Path;
 
@@ -14,7 +14,7 @@ impl App {
         self.completion = None;
         let mut picker = LlmPicker::new(&self.model, self.effort);
         match &self.llms {
-            Some(llms) => picker.load(Ok(self.by_usage(llms))),
+            Some(llms) => picker.load(Ok(llms.clone())),
             // The answer fills this picker when it comes.
             None => self.list_llms(),
         }
@@ -43,18 +43,9 @@ impl App {
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
         }
-        let llms = llms.map(|llms| self.by_usage(&llms));
         if let Input::LlmPicker(picker) = &mut self.input {
             picker.load(llms);
         }
-    }
-
-    /// The LLMs as the picker lists them; `llms` stays in the endpoint's
-    /// order.
-    fn by_usage(&self, llms: &Listing) -> Listing {
-        let mut llms = llms.clone();
-        self.llm_usage.order(&mut llms.models);
-        llms
     }
 
     /// Writes the counts in the background, as the prompt history is.
@@ -203,24 +194,6 @@ mod tests {
         app.apply(Action::Submit);
         assert_eq!(app.model, "plain");
         assert!(matches!(app.input, Input::Prompt));
-    }
-
-    #[test]
-    fn the_most_used_model_is_listed_first() {
-        let mut app = llm_listed_app();
-        app.llm_usage.count("plain");
-        app.apply(Action::LlmPicker);
-        let rows = rows(&mut app);
-
-        assert!(rows[7].starts_with(" ▎   plain"), "{:?}", rows[7]);
-        assert!(
-            rows[8].starts_with(" ▎ → glm   ✓"),
-            "still on the model in use"
-        );
-        assert_eq!(
-            app.llms.as_ref().map(|l| l.models[0].id.as_str()),
-            Some("glm")
-        );
     }
 
     #[tokio::test]
