@@ -451,6 +451,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_child_that_answers_nothing_fails_its_task() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let inbox = Inbox::new();
+        let provider = Arc::new(Scripted::new(vec![vec![]]));
+        let id = subagents.spawn(&explore(), "find tabs", session(), provider, Vec::new());
+        subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
+
+        until_ended(&mut rx).await;
+
+        assert_eq!(subagents.state(id), Some(State::Failed));
+        assert_eq!(
+            inbox.take_notices().unwrap(),
+            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"failed\">\n<task_error>\nthe model answered nothing\n</task_error>\n</task>"
+        );
+    }
+
+    #[tokio::test]
     async fn jobs_run_one_after_another_and_a_cancelled_one_is_skipped() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
