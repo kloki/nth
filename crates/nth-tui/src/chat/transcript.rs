@@ -14,7 +14,7 @@ use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
 
 use super::after_write::{self, Note};
-use crate::rich::Link;
+use crate::{rich::Link, settings::ChatSettings};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -102,6 +102,8 @@ pub struct Transcript {
     pub(super) items: Vec<Item>,
     /// Width the cached lines were wrapped for.
     pub(super) width: u16,
+    /// What the cached lines show.
+    pub(super) settings: ChatSettings,
 }
 
 pub(super) struct Item {
@@ -142,6 +144,7 @@ impl Transcript {
             cwd,
             items: Vec::new(),
             width: 0,
+            settings: ChatSettings::default(),
         }
     }
 
@@ -550,7 +553,7 @@ pub(super) mod tests {
         t.push_user("one".into());
         t.apply(&Event::TextDelta("two".into()));
         t.push_error("three".into());
-        t.layout(40);
+        t.layout(40, ChatSettings::default());
 
         assert_eq!(t.entry_at(0), Some(&Entry::User("one".into())));
         // The blank line above an entry counts as its own.
@@ -566,7 +569,7 @@ pub(super) mod tests {
         t.apply(&Event::TextDelta(
             "see [docs](https://x.y) or https://a.b/c. and [no](file:///etc/passwd)".into(),
         ));
-        t.layout(60);
+        t.layout(60, ChatSettings::default());
         assert_eq!(
             text(&t.visible(0, 1)),
             ["▎ see docs or https://a.b/c. and no"]
@@ -590,7 +593,7 @@ pub(super) mod tests {
         t.apply(&Event::TextDelta(
             "alpha beta gamma [delta](https://d) epsilon".into(),
         ));
-        t.layout(20);
+        t.layout(20, ChatSettings::default());
         assert_eq!(
             text(&t.visible(0, 3)),
             ["▎ alpha beta gamma", "▎ delta epsilon"]
@@ -748,7 +751,7 @@ pub(super) mod tests {
             }
         );
         assert!(matches!(entries[4], Entry::Interrupted { .. }));
-        let total = t.layout(40);
+        let total = t.layout(40, ChatSettings::default());
         assert_eq!(text(&t.visible(total - 1, 1)), ["  ⏹ interrupted · 3.0s"]);
     }
 

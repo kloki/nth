@@ -18,10 +18,11 @@ pub enum Command {
     Exit,
     Models,
     Resume,
+    Settings,
 }
 
 impl Command {
-    const ALL: [Command; 7] = [
+    const ALL: [Command; 8] = [
         Command::Approve,
         Command::Clear,
         Command::Close,
@@ -29,6 +30,7 @@ impl Command {
         Command::Exit,
         Command::Models,
         Command::Resume,
+        Command::Settings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -40,6 +42,7 @@ impl Command {
             Command::Exit => "exit",
             Command::Models => "models",
             Command::Resume => "resume",
+            Command::Settings => "settings",
         }
     }
 
@@ -52,6 +55,7 @@ impl Command {
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
             Command::Resume => "reopen a past session",
+            Command::Settings => "toggle thinking and tool output",
         }
     }
 
@@ -192,23 +196,19 @@ mod tests {
     fn skills_follow_the_commands() {
         let skills = skills(&["review", "clear", "deploy"]);
 
-        let names: Vec<_> = Entry::matching("/", &skills)
-            .iter()
-            .map(|e| e.name().to_string())
-            .collect();
+        let names = |stem| -> Vec<_> {
+            Entry::matching(stem, &skills)
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect()
+        };
+        assert_eq!(names("/").len(), 8, "the popup holds 8");
+        assert!(!names("/").contains(&"deploy".to_string()));
+        assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
-            names,
-            [
-                "approve",
-                "clear",
-                "close",
-                "diagnostics",
-                "exit",
-                "models",
-                "resume",
-                "deploy",
-            ],
-            "the clear skill is hidden by the command, and the popup holds 8"
+            names("/c"),
+            ["clear", "close"],
+            "the clear skill is hidden by the command"
         );
         assert_eq!(
             Entry::matching("/re", &skills),

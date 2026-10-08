@@ -1,12 +1,12 @@
 //! The diagnostics tab: nth's own state, for when something does not work
-//! as expected. The model and the turns run on each, the language servers
-//! and formatters that check writes, and the instruction files, skills and agents found for the
-//! project.
+//! as expected. The model each mode runs with and the turns run on each
+//! model, the instruction files, skills and agents found for the project,
+//! and the language servers and formatters that check writes.
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerState, ServerStatus};
-use nth_protocol::Failed;
+use nth_protocol::{Failed, Mode};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -30,11 +30,20 @@ pub struct Diagnostics {
     height: usize,
 }
 
+/// The model a mode runs with.
+pub struct ModeModel {
+    pub mode: Mode,
+    pub model: String,
+    pub effort: Option<&'static str>,
+    pub context_window: Option<u64>,
+    /// Whether the next turn runs in this mode.
+    pub current: bool,
+}
+
 /// Everything the tab shows that lives elsewhere on the app.
 pub struct Facts<'a> {
-    pub model: &'a str,
-    pub effort: Option<&'a str>,
-    pub context_window: Option<u64>,
+    /// The model each mode runs with, plan first.
+    pub modes: [ModeModel; 2],
     /// How many LLMs the provider lists, once listed.
     pub llms: Option<usize>,
     /// The providers that could not be asked for theirs.
@@ -99,11 +108,11 @@ impl Diagnostics {
         lines.push(Line::default());
         usage(&mut lines, facts);
         lines.push(Line::default());
+        context(&mut lines, facts);
+        lines.push(Line::default());
         self.servers(&mut lines, facts);
         lines.push(Line::default());
         self.formatters(&mut lines, facts);
-        lines.push(Line::default());
-        context(&mut lines, facts);
         lines
     }
 
@@ -175,17 +184,32 @@ impl Diagnostics {
     }
 }
 
+/// A row per mode, the current one marked.
 fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("model"));
-    let mut about = vec![facts.model.to_string()];
-    about.extend(facts.effort.map(String::from));
-    if let Some(window) = facts.context_window {
-        about.push(format!("{}k context", window / 1000));
+    let width = Mode::ALL
+        .map(|m| m.label().len())
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    for mode in &facts.modes {
+        let mut about = vec![mode.model.clone()];
+        about.extend(mode.effort.map(String::from));
+        if let Some(window) = mode.context_window {
+            about.push(format!("{}k context", window / 1000));
+        }
+        let (mark, label) = if mode.current {
+            ("▸", Style::new())
+        } else {
+            (" ", theme::dim())
+        };
+        lines.push(Line::from(vec![
+            Span::raw(theme::INDENT),
+            Span::raw(mark),
+            Span::styled(format!(" {:width$}  ", mode.mode.label()), label),
+            Span::styled(about.join(" · "), Style::new().fg(Color::Blue)),
+        ]));
     }
-    lines.push(Line::from(vec![
-        Span::raw(theme::INDENT),
-        Span::styled(about.join(" · "), Style::new().fg(Color::Blue)),
-    ]));
     let listed = match facts.llms {
         _ if facts.listing => "listing models…".to_string(),
         Some(1) => "1 model served".to_string(),
@@ -362,11 +386,31 @@ mod tests {
             .collect()
     }
 
+    /// Where the section titled `title` starts.
+    fn section(text: &[String], title: &str) -> usize {
+        text.iter()
+            .position(|l| l == title)
+            .unwrap_or_else(|| panic!("{title} section"))
+    }
+
     fn facts<'a>(context: &'a Context, running: &'a [ServerStatus]) -> Facts<'a> {
         Facts {
-            model: "glm",
-            effort: Some("high"),
-            context_window: Some(128_000),
+            modes: [
+                ModeModel {
+                    mode: Mode::Plan,
+                    model: "kimi".into(),
+                    effort: None,
+                    context_window: None,
+                    current: false,
+                },
+                ModeModel {
+                    mode: Mode::Act,
+                    model: "glm".into(),
+                    effort: Some("high"),
+                    context_window: Some(128_000),
+                    current: true,
+                },
+            ],
             llms: Some(3),
             failed: &[],
             listing: false,
@@ -410,12 +454,36 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[1], "  glm · high · 128k context");
-        assert_eq!(text[2], "  3 models served");
-        assert_eq!(text[8], "  ● rust   /bin/rust-analyzer  → /repo  exited");
-        assert_eq!(text[9], "  ✗ gopls  not on PATH");
-        assert_eq!(text[12], "  ✓ rustfmt  rustfmt $FILE");
+        assert_eq!(text[3], "  3 models served");
+        let servers = section(&text, "language servers");
+        assert!(servers > section(&text, "agents"), "checks come last");
+        assert_eq!(
+            text[servers + 1],
+            "  ● rust   /bin/rust-analyzer  → /repo  exited"
+        );
+        assert_eq!(text[servers + 2], "  ✗ gopls  not on PATH");
+        let formatters = section(&text, "formatters");
+        assert_eq!(text[formatters + 1], "  ✓ rustfmt  rustfmt $FILE");
         assert!(text.contains(&"  none found".to_string()));
+    }
+
+    #[test]
+    fn shows_the_model_of_each_mode() {
+        let context = Context::default();
+        let mut facts = facts(&context, &[]);
+        let acting = text(&Diagnostics::default(), &facts);
+        assert_eq!(
+            acting[1..3],
+            ["    plan  kimi", "  ▸ act   glm · high · 128k context"]
+        );
+
+        facts.modes[0].current = true;
+        facts.modes[1].current = false;
+        let planning = text(&Diagnostics::default(), &facts);
+        assert_eq!(
+            planning[1..3],
+            ["  ▸ plan  kimi", "    act   glm · high · 128k context"]
+        );
     }
 
     #[test]
@@ -441,11 +509,12 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
         let checking = text(&Diagnostics::default(), &facts);
-        assert_eq!(checking[8], "  checking…");
+        let servers = section(&checking, "language servers");
+        assert_eq!(checking[servers + 1], "  checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
-        assert_eq!(unchecked[8], "  not checked in this session");
+        assert_eq!(unchecked[servers + 1], "  not checked in this session");
     }
 
     #[test]
@@ -453,13 +522,13 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
         let empty = text(&Diagnostics::default(), &facts);
-        assert_eq!(empty[4..6], ["model usage", "  no turns yet"]);
+        assert_eq!(empty[5..7], ["model usage", "  no turns yet"]);
 
         facts.usage = vec![("glm", 120), ("kimi", 30), ("qwen", 1)];
         let text = text(&Diagnostics::default(), &facts);
         let row = |model: &str, bar: &str, turns: &str| format!("  {model}  {bar:30}  {turns}");
-        assert_eq!(text[5], row("glm ", &"█".repeat(30), "120"));
-        assert_eq!(text[6], row("kimi", "███████▌", " 30"));
-        assert_eq!(text[7], row("qwen", "▎", "  1"), "every used model shows");
+        assert_eq!(text[6], row("glm ", &"█".repeat(30), "120"));
+        assert_eq!(text[7], row("kimi", "███████▌", " 30"));
+        assert_eq!(text[8], row("qwen", "▎", "  1"), "every used model shows");
     }
 }

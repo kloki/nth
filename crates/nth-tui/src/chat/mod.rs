@@ -17,7 +17,7 @@ use ratatui::{
 use scroll::Scroll;
 pub use transcript::{Entry, Transcript};
 
-use crate::theme::dim;
+use crate::{settings::ChatSettings, theme::dim};
 
 pub struct Chat {
     pub transcript: Transcript,
@@ -100,8 +100,8 @@ impl Chat {
     }
 
     /// Draws the visible history, or `banner` centred while there is none.
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, banner: &str) {
-        let total = self.transcript.layout(area.width);
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, banner: &str, settings: ChatSettings) {
+        let total = self.transcript.layout(area.width, settings);
         self.height = usize::from(area.height);
         self.max_top = total.saturating_sub(self.height);
 

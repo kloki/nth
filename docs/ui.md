@@ -146,22 +146,14 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 
 ```
 model
-  glm-5.3 · high · 128k context
+    plan  kimi-k3 · high · 256k context
+  ▸ act   glm-5.3 · 128k context
   25 models served
 
 model usage
   opencode/glm-5.3  ██████████████████████████████  142
   openrouter/kimi   ███████▍                         35
   opencode/qwen-4   ▏                                 1
-
-language servers
-  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
-  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
-  ✗ gopls     not on PATH
-
-formatters
-  ✓ rustfmt   rustfmt $FILE
-  ✗ prettier  no package.json here
 
 instructions
   ~/repos/nth/CLAUDE.md
@@ -172,9 +164,19 @@ skills
 agents
   ↳ explore  builtin
   ↳ general  builtin
+
+language servers
+  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
+  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
+  ✗ gopls     not on PATH
+
+formatters
+  ✓ rustfmt   rustfmt $FILE
+  ✗ prettier  no package.json here
 ```
 
-- **Sections.** A bold title each, and rows under it: model, model usage, language servers, formatters, instructions, skills, agents. Context warnings follow the agents in yellow.
+- **Sections.** A bold title each, and rows under it: model, model usage, instructions, skills, agents, language servers, formatters. Context warnings follow the agents in yellow.
+- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
 - **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
@@ -254,6 +256,7 @@ Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing n
 | Prompt             | 4        | default               | —             |
 | Model picker       | ≤16      | `/models`, ctrl+m     | enter, esc    |
 | Question           | per call | the agent asks        | answer, esc   |
+| Settings           | 3        | `/settings`           | esc           |
 | Permission (later) | ~4       | a tool needs approval | allow, reject |
 
 ## Input panel style
@@ -279,6 +282,7 @@ With models from more than one provider, the picker shows ids with their `provid
 | Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner |
 | Model picker | magenta                           | `switch model`                    |
 | Question     | cyan                              | `question`, or a tab per question |
+| Settings     | magenta                           | `settings`                        |
 
 ## Prompt
 
@@ -403,6 +407,21 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 **Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 
 **Esc.** Declines: the panel goes, the prompt comes back with its text, and the model reads that you declined and carries on. Esc at the prompt cancels the turn, as it always does.
+
+## Settings
+
+Opened with `/settings`. What the chats show, for this run of nth only: a change is never written to the config or the saved session, and the next nth starts with everything on.
+
+```
+▎ settings                   ↑↓ setting · enter toggle · esc
+▎ → [x] thinking     the model's reasoning under ∴
+▎   [ ] tool output  what each tool call returned
+```
+
+- **Toggles.** ↑↓ move, Enter or Space flips the highlighted one, Esc goes back to the prompt with its text kept. A change shows in the chat behind the panel at once.
+- **Thinking.** Off, a reasoning entry is only its `∴ thought · 2.1s` line, without the text under it.
+- **Tool output.** Off, a tool call is only its row, with any format note and language server errors under it, without what it returned.
+- **Every chat.** Both apply to the main chat and every subagent's tab, and stay through `/clear` and `/resume`.
 
 ## Status bar
 

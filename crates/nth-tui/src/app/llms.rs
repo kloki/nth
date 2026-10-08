@@ -33,8 +33,13 @@ impl App {
 
     /// The context window of the model in use, when the provider says.
     pub fn context_window(&self) -> Option<u64> {
+        self.context_window_of(&self.model)
+    }
+
+    /// The context window of `model`, when the provider says.
+    pub fn context_window_of(&self, model: &str) -> Option<u64> {
         let llms = self.llms.as_ref()?;
-        llms.models.iter().find(|llm| llm.id == self.model)?.context
+        llms.models.iter().find(|llm| llm.id == model)?.context
     }
 
     /// Only a list is kept; after a failure the next open asks again.

@@ -154,6 +154,18 @@ impl App {
             }
             return;
         }
+        if let Input::Settings(panel) = &mut self.input {
+            match action {
+                Action::SelectNext => panel.next(),
+                Action::SelectPrev => panel.prev(),
+                Action::Submit | Action::Insert(' ') => panel.selected().flip(&mut self.settings),
+                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
+                    self.input = Input::Prompt
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Input::Question(panel) = &mut self.input {
             let editing = panel.editing();
             let answers = match action {
@@ -433,12 +445,12 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Clear);
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::Approve);
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Resume);
+        assert_eq!(selected(&app), Command::Settings);
         assert_eq!(app.prompt.text(), "/");
     }
 
@@ -475,8 +487,9 @@ mod tests {
                 "exit",
                 "models",
                 "resume",
-                "fix"
-            ]
+                "settings"
+            ],
+            "the popup holds 8, so the skills wait for a letter"
         );
 
         let app = skilled(dir.path(), "/f");
@@ -628,7 +641,7 @@ mod tests {
             app.apply(Action::Insert(c));
         }
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Resume);
+        assert_eq!(selected(&app), Command::Settings);
         assert_eq!(app.prompt.text(), "/");
     }
 

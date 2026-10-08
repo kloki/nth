@@ -63,6 +63,19 @@ impl App {
         };
     }
 
+    /// What `mode` runs with: the current mode's live pick, as the picker
+    /// changes `model` and `effort` before it is saved.
+    pub(super) fn llm(&self, mode: Mode) -> Llm {
+        if mode == self.mode {
+            Llm {
+                model: self.model.clone(),
+                effort: self.effort,
+            }
+        } else {
+            self.mode_llms.get(mode).clone()
+        }
+    }
+
     fn load_llm(&mut self) {
         let llm = self.mode_llms.get(self.mode);
         self.model = llm.model.clone();
@@ -108,5 +121,20 @@ mod tests {
         assert_eq!((app.mode, app.model.as_str()), (Mode::Act, "glm"));
         app.apply(Action::NextTab);
         assert_eq!(app.effort, Effort::Low, "the pick stays with its mode");
+    }
+
+    #[test]
+    fn each_mode_has_its_llm_while_one_is_picked() {
+        let mut app = app().with_mode_llms(ModeLlms {
+            plan: llm("kimi", Effort::High),
+            act: llm("glm", Effort::Default),
+        });
+        app.model = "qwen".into();
+        assert_eq!(
+            app.llm(Mode::Act),
+            llm("qwen", Effort::Default),
+            "not yet saved"
+        );
+        assert_eq!(app.llm(Mode::Plan), llm("kimi", Effort::High));
     }
 }
