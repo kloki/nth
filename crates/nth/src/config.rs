@@ -25,6 +25,7 @@ pub struct Config {
     pub session: SessionConfig,
     pub task: TaskConfig,
     pub mode: ModeConfig,
+    pub chat: ChatConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
@@ -140,6 +141,26 @@ pub struct ModeDefaults {
     /// that has none of its own.
     pub model: String,
     pub effort: Effort,
+}
+
+/// How the chat shows what the model did. `/settings` still flips these for
+/// the run; this only sets where they start.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChatConfig {
+    /// The model's reasoning under its `∴` line.
+    pub thinking: bool,
+    /// What each tool call returned, under its row.
+    pub tool_output: bool,
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            thinking: true,
+            tool_output: true,
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -441,6 +462,25 @@ mod tests {
             ("from-flag".into(), Effort::High)
         );
         assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
+    }
+
+    #[test]
+    fn chat_settings_set_where_the_toggles_start() {
+        let config = Config::parse(
+            r#"
+            [chat]
+            thinking = false
+            tool_output = false
+            "#,
+        )
+        .expect("parses");
+        assert!(!config.chat.thinking);
+        assert!(!config.chat.tool_output);
+
+        let round = Config::parse(&config.to_toml().expect("serializes")).expect("parses");
+        assert_eq!(round, config);
+        assert!(Config::parse("[chat]\nthinking = \"x\"").is_err());
+        assert!(Config::parse("[chat]\ntoggl = true").is_err());
     }
 
     #[test]

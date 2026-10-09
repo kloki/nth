@@ -1,6 +1,7 @@
 //! How the chats show what the model did, and the panel that changes it.
-//! ChatSettings last for this run of nth only: they are never written to the
-//! config or the saved session.
+//! ChatSettings start from the config's `[chat]` and last for this run of
+//! nth only: `/settings` changes them for the run, and they are never
+//! written back to the config or the saved session.
 
 mod view;
 
