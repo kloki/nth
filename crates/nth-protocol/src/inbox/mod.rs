@@ -1,7 +1,8 @@
-//! The model's inbox: what it has not heard yet from the background, handed
-//! over between its steps or as a turn of its own when idle. Monitors put
-//! their output here and subagents their answers; `notice` is the text that
-//! carries them, written for the model and read back by the transcript.
+//! The model's inbox: what it has not heard yet, handed over between its
+//! steps or as a turn of its own when idle. Monitors put their output here
+//! and subagents their answers; `notice` is the text that carries them,
+//! written for the model and read back by the transcript. A prompt you send
+//! while a turn runs waits here too, and pre-empts its next tool calls.
 
 mod notice;
 
@@ -21,11 +22,13 @@ use crate::{MonitorEnd, MonitorId};
 #[derive(Debug, Clone, Default)]
 pub struct Inbox(Option<Arc<Mutex<Vec<Pending>>>>);
 
-/// One notice waiting for the model.
+/// One thing waiting for the model.
 #[derive(Debug)]
 enum Pending {
     Monitor(MonitorNotice),
     Task(TaskNotice),
+    /// A prompt sent while a turn runs, for its next step.
+    Prompt(String),
 }
 
 #[derive(Debug)]
@@ -55,6 +58,14 @@ impl Inbox {
     pub fn post_task(&self, task: TaskNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         lock(pending).push(Pending::Task(task));
+        true
+    }
+
+    /// Puts a prompt sent while a turn runs in; the turn's next tool calls
+    /// give way to it. `false` without an inbox.
+    pub fn post_prompt(&self, text: String) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        lock(pending).push(Pending::Prompt(text));
         true
     }
 
@@ -91,14 +102,57 @@ impl Inbox {
         self.0.as_ref().is_some_and(|p| !lock(p).is_empty())
     }
 
-    /// The notices the model has not seen, as one message, and forgets them.
+    /// The prompts waiting, oldest first, and forgets them. Notices stay
+    /// for [`Inbox::take_notices`]: a turn that pre-empts its tool calls
+    /// takes only these.
+    pub fn take_prompts(&self) -> Option<String> {
+        let pending = self.0.as_ref()?;
+        let mut pending = lock(pending);
+        let mut prompts = Vec::new();
+        for item in std::mem::take(&mut *pending) {
+            match item {
+                Pending::Prompt(text) => prompts.push(text),
+                notice => pending.push(notice),
+            }
+        }
+        (!prompts.is_empty()).then(|| prompts.join("\n\n"))
+    }
+
+    /// The prompts waiting, without forgetting them: the status bar counts
+    /// and names them.
+    pub fn pending_prompts(&self) -> Vec<String> {
+        let Some(pending) = &self.0 else {
+            return Vec::new();
+        };
+        lock(pending)
+            .iter()
+            .filter_map(|pending| match pending {
+                Pending::Prompt(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Everything the model has not seen, as one message, and forgets it:
+    /// the background's notices first, so the transcript reads them back,
+    /// then any prompts, as a turn's own prompt follows its notices.
     pub fn take_notices(&self) -> Option<String> {
         let pending = std::mem::take(&mut *lock(self.0.as_ref()?));
         if pending.is_empty() {
             return None;
         }
-        let notices: Vec<String> = pending.iter().map(Pending::notice).collect();
-        Some(notices.join("\n"))
+        let mut parts: Vec<String> = pending.iter().filter_map(Pending::notice).collect();
+        let prompts: Vec<String> = pending
+            .iter()
+            .filter_map(|pending| match pending {
+                Pending::Prompt(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        if !prompts.is_empty() {
+            parts.push(prompts.join("\n\n"));
+        }
+        Some(parts.join("\n"))
     }
 
     /// Forgets every notice, for a session that was left: they were for
@@ -142,17 +196,27 @@ fn monitor_notice<'a>(
     match &mut pending[index] {
         Pending::Monitor(monitor) => monitor,
         // Just pushed or found as a monitor's.
-        Pending::Task(_) => unreachable!("the index is a monitor's notice"),
+        Pending::Task(_) | Pending::Prompt(_) => {
+            unreachable!("the index is a monitor's notice")
+        }
     }
 }
 
 impl Pending {
-    fn notice(&self) -> String {
+    /// The notice as the model reads it; a prompt is none, since it reads
+    /// as what you typed, not as a notice.
+    fn notice(&self) -> Option<String> {
         match self {
-            Pending::Monitor(m) => {
-                notice::render(m.id, &m.description, &m.log, &m.lines, m.more, m.ended)
-            }
-            Pending::Task(task) => notice::render_task(task),
+            Pending::Monitor(m) => Some(notice::render(
+                m.id,
+                &m.description,
+                &m.log,
+                &m.lines,
+                m.more,
+                m.ended,
+            )),
+            Pending::Task(task) => Some(notice::render_task(task)),
+            Pending::Prompt(_) => None,
         }
     }
 }
@@ -175,9 +239,41 @@ mod tests {
         let inbox = Inbox::default();
         assert!(!inbox.reaches_model());
         assert!(!inbox.post_task(task()));
+        assert!(!inbox.post_prompt("hold on".into()));
         inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
         assert!(!inbox.has_notices());
         assert_eq!(inbox.take_notices(), None);
+    }
+
+    #[test]
+    fn prompts_follow_the_notices_in_take_notices() {
+        let inbox = Inbox::new();
+        let log = Path::new("/logs/1.log");
+        inbox.monitor_line(1, "ci", log, "build ok".into());
+        assert!(inbox.post_prompt("hold on".into()));
+        assert!(inbox.post_prompt("and thanks".into()));
+
+        assert_eq!(
+            inbox.take_notices().unwrap(),
+            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
+             hold on\n\nand thanks",
+            "notices first, so the transcript's parser keeps working"
+        );
+        assert_eq!(inbox.take_notices(), None, "taken");
+    }
+
+    #[test]
+    fn take_prompts_leaves_the_notices_waiting() {
+        let inbox = Inbox::new();
+        assert!(inbox.post_prompt("one".into()));
+        inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
+        assert!(inbox.post_prompt("two".into()));
+
+        assert_eq!(inbox.pending_prompts(), ["one", "two"]);
+        assert_eq!(inbox.take_prompts().as_deref(), Some("one\n\ntwo"));
+        assert!(inbox.has_notices(), "the monitor line still waits");
+        assert_eq!(inbox.take_prompts(), None, "taken");
+        assert_eq!(inbox.pending_prompts(), Vec::<String>::new());
     }
 
     #[test]

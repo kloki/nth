@@ -207,8 +207,9 @@ pub struct App {
     turn: Job<Ended>,
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
-    /// What the model has not heard yet from the monitors and subagents.
-    inbox: Inbox,
+    /// What the model has not heard yet from the monitors and subagents,
+    /// and the prompts on their way into a running turn.
+    pub(crate) inbox: Inbox,
     monitor_rx: mpsc::Receiver<MonitorEvent>,
     /// Each monitor's tab, open from its start until you close it.
     monitor_views: BTreeMap<MonitorId, MonitorView>,

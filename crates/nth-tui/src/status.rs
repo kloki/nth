@@ -66,17 +66,23 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     split_line(frame, checks, left, servers(app));
 }
 
-/// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`.
+/// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`. Prompts
+/// on their way into the running turn count too, and name the line: they
+/// are the next thing the model hears.
 fn queued(app: &App) -> Vec<Span<'static>> {
-    let Some(next) = app.queue.front() else {
+    let mut prompts = app.inbox.pending_prompts().into_iter();
+    let count = prompts.len() + app.queue.len();
+    let next = prompts
+        .next()
+        .or_else(|| app.queue.front().map(|next| next.label()));
+    let Some(next) = next else {
         return Vec::new();
     };
-    let next = next.label();
     let first = next
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or_default();
-    let line = format!("⏵ {} queued · {first}", app.queue.len());
+    let line = format!("⏵ {count} queued · {first}");
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }
 

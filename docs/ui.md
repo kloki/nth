@@ -136,9 +136,9 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 - **What the model gets.** The diff from the plan to your copy, in a `<plan-edits>` element, then an instruction: these edits are review feedback, a plain change is carried into the plan, a question is answered, an objection is met or argued, each comment is removed once handled, and the plan file itself is edited, never your copy. The instruction is `crates/nth-session/src/plan/plan_edits.md`.
 - **In the chat.** One row, `✎ plan edits · +2 -0`, the diff and instruction being for the model only.
 - **Nothing to send.** Saving without changes says `no changes to the plan`. Quitting the editor with an error, vim's `:cq`, drops the edits. An editor that fails to start says why on the status bar.
-- **While the editor runs.** nth keeps running but draws nothing: a turn goes on, monitors keep reporting, and their output shows when you come back. Edits made during a turn wait in the queue like any prompt.
+- **While the editor runs.** nth keeps running but draws nothing: a turn goes on, monitors keep reporting, and their output shows when you come back. Edits made during a turn wait for it to end.
 
-**`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits in the queue like any prompt. Without a plan file it only says `no plan to approve` on the status bar.
+**`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits for it to end. Without a plan file it only says `no plan to approve` on the status bar.
 
 ## Diagnostics
 
@@ -323,7 +323,7 @@ The mode label is replaced by a braille spinner in the same mode colour. Its fra
 ▎
 ```
 
-The bar keeps the mode colour. Enter still sends: the prompt is queued and runs as its own turn once the running one ends well. After Esc or a failed turn, queued prompts are not sent; they go back into the prompt, ahead of what is typed, separated by blank lines. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
+The bar keeps the mode colour. Enter still sends, and a plain prompt does not wait for the turn to end: the turn picks it up at its next step, skipping the tool calls it was about to run — they show as interrupted, like an Esc'd one — and the model answers your message at once. A `!` command, `/approve`, plan edits and a `/skill` still wait for the turn to end well, as does a prompt sent while one of those already waits. After Esc or a failed turn, what the turn had not picked up is not sent; it goes back into the prompt, ahead of what is typed, separated by blank lines. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
 The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
 
@@ -485,7 +485,7 @@ The status comes from one `git status --porcelain=v2 --branch` plus a stash chec
 
 **Line 2, left: queued prompts**
 
-While prompts are queued, `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
+While prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
 
 **Line 2, right: the language servers**
 
