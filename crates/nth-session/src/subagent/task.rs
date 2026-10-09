@@ -117,6 +117,7 @@ impl Task {
     fn spawn(&self, agent: &Agent, description: &str, ctx: &ToolContext) -> SubagentId {
         let model = agent.model.clone().unwrap_or_else(|| ctx.llm.model.clone());
         let mut session = Session::new(model, ctx.cwd.clone())
+            .with_extra_dirs(ctx.extra_dirs.clone())
             .with_context(ctx.context.clone())
             .as_subagent(agent.prompt.clone());
         session.effort = ctx.llm.effort;
@@ -397,6 +398,22 @@ mod tests {
         );
         assert!(result.contains("And close there too."), "{result}");
         assert_eq!(subagents.ids(), [1]);
+    }
+
+    #[tokio::test]
+    async fn a_subagent_works_in_the_directories_added_to_its_parent() {
+        let provider = Arc::new(Scripted::new(vec![says("done")]));
+        let task = Task::new(provider.clone(), Vec::new(), Subagents::default(), LIMITS);
+        let ctx = ToolContext {
+            extra_dirs: vec!["/elsewhere".into()],
+            ..ctx()
+        };
+        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+
+        task.call(args, &ctx).await.unwrap();
+
+        let systems = provider.systems.lock().expect("not poisoned");
+        assert!(systems[0].contains("  - /elsewhere\n"), "{}", systems[0]);
     }
 
     #[tokio::test]

@@ -52,7 +52,8 @@ pub fn candidates(cwd: &Path, home: Option<&str>, arg: &str) -> Vec<String> {
     };
     let mut names: Vec<String> = entries
         .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        // `is_dir` follows a symlink, as `/add-dir` does when it adds one.
+        .filter(|entry| entry.path().is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with(part))
         .collect();
@@ -182,5 +183,18 @@ mod tests {
     fn a_missing_directory_lists_nothing() {
         assert!(candidates(Path::new("/nowhere"), None, "").is_empty());
         assert!(candidates(Path::new("/nowhere"), None, "no/pe").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_directory_is_listed() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let target = dir(base.path(), "data/work");
+        let cwd = dir(base.path(), "cwd");
+        std::os::unix::fs::symlink(&target, cwd.join("work")).expect("symlink");
+        std::fs::write(target.join("file"), "").expect("file");
+        std::os::unix::fs::symlink(target.join("file"), cwd.join("link")).expect("symlink");
+
+        assert_eq!(candidates(&cwd, None, ""), ["work/"]);
     }
 }

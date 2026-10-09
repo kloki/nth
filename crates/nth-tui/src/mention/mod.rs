@@ -5,7 +5,7 @@
 
 mod index;
 
-pub use index::{walk, walk_absolute};
+pub use index::walk;
 use nth_context::Agents;
 use nucleo_matcher::{
     Config, Matcher,

@@ -263,7 +263,10 @@ mod tests {
     #[tokio::test]
     async fn streams_lines_before_the_command_exits() {
         let texts = streamed("echo one; sleep 0.2; echo two; printf three").await;
-        assert_eq!(texts, ["one\n", "two\n", "three"]);
+        // Only the sleep separates sends for sure: what follows it may
+        // arrive in one read, as it does on macOS.
+        assert_eq!(texts[0], "one\n");
+        assert_eq!(texts.concat(), "one\ntwo\nthree");
     }
 
     #[tokio::test]

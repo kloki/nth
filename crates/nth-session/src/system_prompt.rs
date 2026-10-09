@@ -49,18 +49,9 @@ fn template(model: &str) -> &'static str {
 }
 
 /// The system prompt of a session run for you: the model's persona, the
-/// environment, the instruction files and the skills.
-pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
-    render(None, model, cwd, &[], context)
-}
-
-/// The same, with the working directories added with `/add-dir`.
-pub fn system_prompt_with_dirs(
-    model: &str,
-    cwd: &Path,
-    dirs: &[PathBuf],
-    context: &Context,
-) -> String {
+/// environment, the working directories added with `/add-dir`, the
+/// instruction files and the skills.
+pub fn system_prompt(model: &str, cwd: &Path, dirs: &[PathBuf], context: &Context) -> String {
     render(None, model, cwd, dirs, context)
 }
 
@@ -69,7 +60,7 @@ pub fn system_prompt_with_dirs(
 /// go, or the model's when the agent has none; then the same environment,
 /// instructions and skills, with the working directories added with
 /// `/add-dir`.
-pub fn subagent_system_prompt_with_dirs(
+pub fn subagent_system_prompt(
     persona: Option<&str>,
     model: &str,
     cwd: &Path,
@@ -208,7 +199,7 @@ mod tests {
             ..Context::default()
         };
 
-        let prompt = system_prompt("glm", "/repo".as_ref(), &context);
+        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         assert_eq!(
@@ -232,7 +223,7 @@ mod tests {
         }
         let context = Context::discover(dir.path(), &nth_context::Paths::default());
 
-        let prompt = system_prompt("glm", dir.path(), &context);
+        let prompt = system_prompt("glm", dir.path(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         let (skills, agents) = tail
@@ -268,8 +259,8 @@ mod tests {
             &nth_context::Paths::default(),
         );
 
-        let own = system_prompt("glm", "/repo".as_ref(), &context);
-        let child = subagent_system_prompt_with_dirs(None, "glm", "/repo".as_ref(), &[], &context);
+        let own = system_prompt("glm", "/repo".as_ref(), &[], &context);
+        let child = subagent_system_prompt(None, "glm", "/repo".as_ref(), &[], &context);
 
         assert!(own.contains("<available_agents>"), "{own}");
         assert!(!child.contains("<available_agents>"), "{child}");
@@ -277,7 +268,7 @@ mod tests {
 
     #[test]
     fn without_instructions_the_prompt_ends_at_the_environment() {
-        let prompt = system_prompt("glm", "/repo".as_ref(), &Context::default());
+        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &Context::default());
 
         assert!(prompt.ends_with("</env>\n"), "{prompt}");
     }
@@ -286,11 +277,11 @@ mod tests {
     fn added_directories_follow_the_environment() {
         let dirs = ["/elsewhere".to_string(), "/home/k/reference".to_string()];
         let dirs: Vec<_> = dirs.iter().map(PathBuf::from).collect();
-        let prompt = system_prompt_with_dirs("glm", "/repo".as_ref(), &dirs, &Context::default());
+        let prompt = system_prompt("glm", "/repo".as_ref(), &dirs, &Context::default());
 
         // The block is left out entirely when there is nothing added.
         assert!(
-            !system_prompt("glm", "/repo".as_ref(), &Context::default())
+            !system_prompt("glm", "/repo".as_ref(), &[], &Context::default())
                 .contains("<additional_directories>")
         );
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
@@ -316,7 +307,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".git")).expect("git dir");
         std::fs::create_dir_all(dir.path().join("sub")).expect("subdir");
 
-        let prompt = system_prompt("glm", &dir.path().join("sub"), &Context::default());
+        let prompt = system_prompt("glm", &dir.path().join("sub"), &[], &Context::default());
 
         // The root above the working directory, not the working directory.
         let env = prompt
@@ -338,7 +329,7 @@ mod tests {
 
     #[test]
     fn a_prompt_names_today_until_the_day_changes() {
-        let prompt = system_prompt("glm", "/repo".as_ref(), &Context::default());
+        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &Context::default());
 
         assert!(names_today(&prompt));
         assert!(!names_today(&prompt.replace(&today(), "Mon Jan 01 2001")));
@@ -367,7 +358,7 @@ mod tests {
 
     #[test]
     fn the_meta_prompt_is_named_for_the_model() {
-        let prompt = system_prompt("muse-glimmer", "/repo".as_ref(), &Context::default());
+        let prompt = system_prompt("muse-glimmer", "/repo".as_ref(), &[], &Context::default());
 
         assert!(prompt.contains("powered by muse-glimmer,"), "{prompt}");
         assert!(!prompt.contains("{{MODEL_NAME}}"), "{prompt}");
@@ -375,20 +366,15 @@ mod tests {
 
     #[test]
     fn a_subagent_gets_its_persona_or_the_models() {
-        let own = subagent_system_prompt_with_dirs(
+        let own = subagent_system_prompt(
             Some("You search.\n"),
             "kimi-k3",
             "/repo".as_ref(),
             &[],
             &Context::default(),
         );
-        let models = subagent_system_prompt_with_dirs(
-            None,
-            "kimi-k3",
-            "/repo".as_ref(),
-            &[],
-            &Context::default(),
-        );
+        let models =
+            subagent_system_prompt(None, "kimi-k3", "/repo".as_ref(), &[], &Context::default());
 
         assert!(
             own.starts_with("You search.\n\nYou are powered by the model named kimi-k3."),
@@ -397,13 +383,13 @@ mod tests {
         assert!(!own.contains("interactive general AI agent"), "{own}");
         assert_eq!(
             models,
-            system_prompt("kimi-k3", "/repo".as_ref(), &Context::default())
+            system_prompt("kimi-k3", "/repo".as_ref(), &[], &Context::default())
         );
     }
 
     #[test]
     fn a_family_prompt_still_carries_the_environment_block() {
-        let prompt = system_prompt("kimi-k3", "/repo".as_ref(), &Context::default());
+        let prompt = system_prompt("kimi-k3", "/repo".as_ref(), &[], &Context::default());
 
         assert!(
             prompt.contains("an interactive general AI agent"),

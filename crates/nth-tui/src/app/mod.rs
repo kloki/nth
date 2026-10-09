@@ -193,6 +193,9 @@ pub struct App {
     session_listing: Job<Result<Vec<Summary>, store::Error>>,
     /// The session chosen in the session picker, being read.
     session_loading: Job<Result<Session, store::Error>>,
+    /// A save between turns, after a change no turn would save, such as
+    /// `/add-dir`; one asked for mid-save runs after it.
+    session_saving: Job<Result<(), store::Error>>,
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
@@ -304,6 +307,7 @@ enum Step {
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
+    SessionSaved(Result<Result<(), store::Error>, JoinError>),
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
@@ -388,6 +392,7 @@ impl App {
             max_steps: session.max_steps,
             session_listing: Job::default(),
             session_loading: Job::default(),
+            session_saving: Job::default(),
             session: Some(session),
             provider,
             tools,
@@ -522,6 +527,7 @@ impl App {
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
+                saved = self.session_saving.join() => Step::SessionSaved(saved),
                 saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
@@ -559,6 +565,9 @@ impl App {
                 }
                 Step::HistorySaved(saved) => {
                     self.history_saved(saved.context("saving prompt history failed")?)
+                }
+                Step::SessionSaved(saved) => {
+                    self.session_saved(saved.context("saving the session failed")?)
                 }
                 Step::LlmUsageSaved(saved) => {
                     self.llm_usage_saved(saved.context("saving model usage failed")?)

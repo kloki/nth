@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use nth_session::store;
+
 use super::App;
 use crate::{command, status};
 
@@ -32,15 +34,22 @@ impl App {
                 return;
             }
         };
-        if dir == self.cwd {
-            self.hint = Some("already the working directory".into());
-            return;
-        }
-        if self.extra_dirs.contains(&dir) {
-            self.hint = Some(format!(
-                "already added: {}",
-                status::place(&dir, self.home.as_deref())
-            ));
+        // A directory inside one already there, or around one, would list
+        // its files twice for `@` and tell the model of them twice.
+        let home = self.home.as_deref();
+        let dirs = std::iter::once(&self.cwd).chain(&self.extra_dirs);
+        let refused = dirs.enumerate().find_map(|(i, other)| {
+            let place = status::place(other, home);
+            match (i, dir == *other) {
+                (0, true) => Some("already the working directory".to_string()),
+                (_, true) => Some(format!("already added: {place}")),
+                _ if dir.starts_with(other) => Some(format!("already in {place}")),
+                _ if other.starts_with(&dir) => Some(format!("contains {place}")),
+                _ => None,
+            }
+        });
+        if refused.is_some() {
+            self.hint = refused;
             return;
         }
         // The status bar shows the same place the hint names.
@@ -49,12 +58,38 @@ impl App {
             status::place(&dir, self.home.as_deref())
         ));
         self.extra_dirs.push(dir.clone());
+        // Between turns no turn's end saves it, so it is saved here, or
+        // quitting now would lose it.
         if let Some(session) = &mut self.session {
             session.set_extra_dirs(self.extra_dirs.clone());
+            self.save_session();
         }
         // The added directory's files are worth mentioning as much as the
         // working directory's are.
         self.index_files();
+    }
+
+    /// Saves the session between turns, in the background.
+    fn save_session(&mut self) {
+        let (Some(store), Some(session)) = (&self.store, &self.session) else {
+            return;
+        };
+        let store = store.clone();
+        let session = session.clone();
+        self.session_saving
+            .start_or_queue(|_| tokio::spawn(async move { store.save(&session).await }));
+    }
+
+    /// A save asked for mid-save runs now, with the session as it is.
+    pub(super) fn session_saved(&mut self, saved: Result<(), store::Error>) {
+        if self.session_saving.take_again() {
+            self.save_session();
+        }
+        if let Err(e) = saved {
+            self.chat
+                .transcript
+                .push_error(format!("session not saved: {e}"));
+        }
     }
 
     /// `HOME`, as the status bar abbreviates the working directory and the
@@ -70,7 +105,7 @@ mod tests {
     use std::{path::Path, sync::Arc};
 
     use nth_protocol::Message;
-    use nth_session::Session;
+    use nth_session::{Session, Store};
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
     use super::*;
@@ -203,6 +238,27 @@ mod tests {
             app.hint
         );
         assert_eq!(app.extra_dirs.len(), 1, "nothing added by a refusal");
+
+        // Inside the working directory or an added one, or around one.
+        dir(&repo, "src");
+        app.add_dir("src");
+        assert_eq!(
+            app.hint.as_deref(),
+            Some(format!("already in {}", place(&app, &repo)).as_str())
+        );
+        dir(base.path(), "other/lib");
+        app.add_dir("../other/lib");
+        assert!(
+            app.hint
+                .as_deref()
+                .is_some_and(|h| h.starts_with("already in "))
+        );
+        app.add_dir("..");
+        assert_eq!(
+            app.hint.as_deref(),
+            Some(format!("contains {}", place(&app, &repo)).as_str())
+        );
+        assert_eq!(app.extra_dirs.len(), 1, "nothing added by a refusal");
     }
 
     #[tokio::test]
@@ -265,6 +321,89 @@ mod tests {
         assert_eq!(
             app.hint.as_deref(),
             Some(format!("added {}", place(&app, &dir(base.path(), "other"))).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_walks_down_until_a_directory_is_filled_in() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let repo = dir(base.path(), "repo");
+        dir(&repo, "src");
+        let lib = dir(base.path(), "other/lib");
+        let mut app = app_in(&repo);
+        app.home = Some(base.path().display().to_string());
+
+        // Nothing typed names the working directory, which Enter fills
+        // in from rather than adds.
+        for c in "/add-dir ".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        assert_eq!(app.prompt.text(), "/add-dir src/");
+        assert!(app.extra_dirs.is_empty());
+
+        // `~` alone names home, which Enter fills in from too.
+        app.prompt.clear();
+        for c in "/add-dir ~".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        assert_eq!(app.prompt.text(), "/add-dir ~/other/");
+        assert!(app.extra_dirs.is_empty());
+
+        // Filled in, it is added, though it has directories under it.
+        app.apply(Action::Submit);
+        assert!(app.prompt.is_empty());
+        assert_eq!(
+            app.extra_dirs,
+            [lib.parent()
+                .expect("other")
+                .canonicalize()
+                .expect("canonical")]
+        );
+    }
+
+    #[tokio::test]
+    async fn completing_mid_argument_replaces_all_of_it() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let repo = dir(base.path(), "repo");
+        dir(base.path(), "other");
+        let mut app = app_in(&repo);
+
+        // Typing `h` into `../otr` lists what `../oth` completes to.
+        for c in "/add-dir ../otr".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Left);
+        app.apply(Action::Insert('h'));
+        app.apply(Action::Accept);
+
+        assert_eq!(app.prompt.text(), "/add-dir ../other/");
+    }
+
+    #[tokio::test]
+    async fn an_added_directory_is_saved_between_turns() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let other = dir(base.path(), "other");
+        let sessions = base.path().join("sessions");
+        // A session nothing was asked in yet is never saved.
+        let mut session = Session::new("glm", dir(base.path(), "repo"));
+        session.messages.push(Message::User("go".into()));
+        let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()))
+            .with_store(Store::at(&sessions));
+
+        app.add_dir("../other");
+        let saved = app.session_saving.join().await.expect("saves");
+        app.session_saved(saved);
+
+        let loaded = Store::at(&sessions)
+            .latest()
+            .await
+            .expect("loads")
+            .expect("one saved");
+        assert_eq!(
+            loaded.extra_dirs,
+            [other.canonicalize().expect("canonical")]
         );
     }
 

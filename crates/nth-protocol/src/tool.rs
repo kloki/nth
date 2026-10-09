@@ -20,6 +20,9 @@ pub struct ToolSpec {
 
 pub struct ToolContext {
     pub cwd: PathBuf,
+    /// Working directories added with `/add-dir`, for a tool that starts
+    /// another session in the same ones.
+    pub extra_dirs: Vec<PathBuf>,
     /// Where a tool streams what it produces while it runs.
     pub output: OutputSink,
     /// Instruction files already in the conversation. Shared by the calls
@@ -63,6 +66,7 @@ impl ToolContext {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
+            extra_dirs: Vec::new(),
             output: OutputSink::default(),
             instructions: LoadedInstructions::default(),
             context: Arc::default(),

@@ -14,13 +14,7 @@ impl App {
         let root = self.cwd.clone();
         let extra = self.extra_dirs.clone();
         self.indexing.start_or_queue(|cancel| {
-            tokio::task::spawn_blocking(move || {
-                let mut files = mention::walk(&root, &cancel);
-                for dir in &extra {
-                    files.extend(mention::walk_absolute(dir, &cancel));
-                }
-                files
-            })
+            tokio::task::spawn_blocking(move || mention::walk(&root, &extra, &cancel))
         });
     }
 

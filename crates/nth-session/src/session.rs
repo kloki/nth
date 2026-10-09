@@ -83,7 +83,7 @@ impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let context = Arc::<Context>::default();
-        let messages = vec![Message::System(system_prompt(&model, &cwd, &context))];
+        let messages = vec![Message::System(system_prompt(&model, &cwd, &[], &context))];
         let now = SystemTime::now();
         Self {
             id: Uuid::new_v4(),
@@ -189,19 +189,14 @@ impl Session {
 
     fn system_prompt(&self) -> String {
         match self.subagent {
-            true => system_prompt::subagent_system_prompt_with_dirs(
+            true => system_prompt::subagent_system_prompt(
                 self.persona.as_deref(),
                 &self.model,
                 &self.cwd,
                 &self.extra_dirs,
                 &self.context,
             ),
-            false => system_prompt::system_prompt_with_dirs(
-                &self.model,
-                &self.cwd,
-                &self.extra_dirs,
-                &self.context,
-            ),
+            false => system_prompt(&self.model, &self.cwd, &self.extra_dirs, &self.context),
         }
     }
 
@@ -265,6 +260,7 @@ impl Session {
         let mut loaded = self.loaded_instructions.clone();
         loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
         let ctx = ToolContext {
+            extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(loaded)),
             context: self.context.clone(),
             asker: front_end.asker.clone(),
@@ -411,7 +407,12 @@ mod tests {
         assert_eq!(
             session.messages,
             [
-                Message::System(system_prompt("kimi-k3", ".".as_ref(), &Context::default())),
+                Message::System(system_prompt(
+                    "kimi-k3",
+                    ".".as_ref(),
+                    &[],
+                    &Context::default()
+                )),
                 Message::User("go".into()),
             ]
         );
@@ -465,7 +466,7 @@ mod tests {
         session.set_model("kimi-k3");
         assert_eq!(
             session.messages[0],
-            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &context)),
+            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &[], &context)),
             "a new model keeps the instructions"
         );
 
@@ -685,7 +686,7 @@ mod tests {
     async fn a_prompt_rewrites_a_system_prompt_from_another_day() {
         let mut session = Session::new("glm-5.3", "/repo".into());
         let current = session.messages[0].clone();
-        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &Context::default())
+        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &[], &Context::default())
             .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
         session.messages[0] = Message::System(stale);
 

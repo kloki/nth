@@ -101,9 +101,12 @@ impl App {
     }
 
     /// The directories that complete the argument of `/add-dir`, the one
-    /// command that takes one.
+    /// command that takes one, as typed up to the cursor.
     fn add_dir_completion(&self) -> Option<Completion> {
-        let arg = command::argument(self.prompt.text())?;
+        let text = self.prompt.text();
+        // The whole argument is one path, though only its head completes.
+        command::argument(text)?;
+        let arg = command::argument(&text[..self.prompt.cursor()])?;
         let popup = command::complete(&self.cwd, self.home.as_deref(), arg)?;
         Some(Completion::Directory {
             popup,
@@ -114,8 +117,10 @@ impl App {
     /// `submit` runs a highlighted command; an agent or a file is filled in
     /// either way, since sending a half-typed mention is never what Enter
     /// meant. A skill is filled in with room for its arguments, and runs
-    /// once its name is typed out. A directory runs once the argument
-    /// typed out names one; until then it is filled in like a mention.
+    /// once its name is typed out. A directory runs once the argument is
+    /// one filled in, ending in `/`; until then the highlighted one
+    /// replaces the whole argument, so Enter on `/add-dir ` or `~` walks
+    /// down rather than adding the working or the home directory.
     pub(super) fn accept(&mut self, completion: Completion, submit: bool) {
         match completion {
             Completion::Command(popup) => match popup.selected().clone() {
@@ -133,9 +138,11 @@ impl App {
                 Entry::Skill { name, .. } => self.prompt.set(&format!("/{name} ")),
             },
             Completion::Directory { popup, start } => {
-                let end = self.prompt.cursor().max(start);
-                let arg = self.prompt.text()[start..end].to_string();
-                if submit && command::expand(&self.cwd, self.home.as_deref(), &arg).is_dir() {
+                let end = self.prompt.text().len();
+                let arg = self.prompt.text()[start..].to_string();
+                let named = arg.ends_with('/')
+                    && command::expand(&self.cwd, self.home.as_deref(), &arg).is_dir();
+                if submit && named {
                     self.prompt.clear();
                     self.add_dir(&arg);
                 } else {
