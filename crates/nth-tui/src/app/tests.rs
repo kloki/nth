@@ -420,3 +420,23 @@ async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
     app.run_command(crate::command::Command::Clear);
     assert!(!app.settings.tool_output, "kept for the rest of the run");
 }
+
+#[test]
+fn chat_settings_start_from_the_config() {
+    let mut app = app().with_chat_settings(crate::settings::ChatSettings {
+        thinking: false,
+        tool_output: false,
+    });
+    app.run_command(crate::command::Command::Settings);
+    let shown = rows(&mut app);
+    assert!(
+        shown[11].starts_with(" ▎ → [ ] thinking "),
+        "{:?}",
+        shown[11]
+    );
+    assert!(
+        shown[12].starts_with(" ▎   [ ] tool output "),
+        "{:?}",
+        shown[12]
+    );
+}

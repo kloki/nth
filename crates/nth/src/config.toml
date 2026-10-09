@@ -83,6 +83,12 @@ effort = "default"
 model = ""
 effort = "default"
 
+[chat]
+# What the chat shows of what the model did. `/settings` toggles these for the
+# run; these keys set where they start.
+thinking = true
+tool_output = true
+
 [tools.read]
 # Lines returned when the model gives no limit.
 default_limit = 2000

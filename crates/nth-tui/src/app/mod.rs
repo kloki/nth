@@ -113,7 +113,8 @@ pub struct App {
     history_saving: Job<std::io::Result<()>>,
     /// Turns run on each model, which orders the picker.
     llm_usage: LlmUsage,
-    /// How the chats show what the model did; for this run only.
+    /// How the chats show what the model did: the config's `[chat]` to
+    /// start, `/settings` to change it for this run.
     settings: ChatSettings,
     /// Saved like the history, one write at a time.
     llm_usage_saving: Job<std::io::Result<()>>,
@@ -464,6 +465,13 @@ impl App {
 
     pub fn with_llm_usage(mut self, usage: LlmUsage) -> Self {
         self.llm_usage = usage;
+        self
+    }
+
+    /// The initial thinking and tool-output toggles, from the config's
+    /// `[chat]`; `/settings` flips them for the run.
+    pub fn with_chat_settings(mut self, settings: ChatSettings) -> Self {
+        self.settings = settings;
         self
     }
 
