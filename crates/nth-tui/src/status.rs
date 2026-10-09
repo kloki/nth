@@ -1,6 +1,6 @@
 //! The status bar under the input panel. Line 1 is general state: model,
-//! effort, place (the working directory in magenta, then the ones added
-//! with `/add-dir` with a `+`) and context used on the left, git branch and
+//! effort, place (the working directory in magenta, then how many were
+//! added with `/add-dir` as `(+N)`) and context used on the left, git branch and
 //! status on the right. Line 2 shows a hint about the last key or the queued
 //! prompts on the left, and the running monitors and the language servers
 //! that check a write on the right: a dot per server, coloured by its
@@ -30,19 +30,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut model = vec![app.model.clone()];
     model.extend(app.effort.wire().map(String::from));
-    // The working directory, and the ones added with `/add-dir` behind a
-    // `+`, say where the session works: magenta, against the bright white
-    // model and effort.
-    let mut dirs = vec![app.place.clone()];
-    dirs.extend(
-        app.extra_dirs
-            .iter()
-            .map(|dir| format!(" +{}", place(dir, app.home()))),
-    );
+    // The working directory, and how many were added with `/add-dir`,
+    // say where the session works: magenta, against the bright white model
+    // and effort. Only the count, since each path would crowd out the rest.
+    let mut dirs = app.place.clone();
+    if !app.extra_dirs.is_empty() {
+        dirs.push_str(&format!(" (+{})", app.extra_dirs.len()));
+    }
     let mut place = vec![
         Span::styled(model.join(" · "), bright_white()),
         Span::raw(" · "),
-        Span::styled(dirs.join(""), magenta()),
+        Span::styled(dirs, magenta()),
     ];
     // Unknown window, no bar; no reply yet, an empty one.
     if let Some(window) = app.context_window().filter(|&w| w > 0) {

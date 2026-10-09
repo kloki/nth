@@ -93,13 +93,6 @@ impl App {
                 .push_error(format!("session not saved: {e}"));
         }
     }
-
-    /// `HOME`, as the status bar abbreviates the working directory and the
-    /// ones added to it. The field is the app module's own; the status bar
-    /// is a module over.
-    pub(crate) fn home(&self) -> Option<&str> {
-        self.home.as_deref()
-    }
 }
 
 #[cfg(test)]
@@ -135,7 +128,7 @@ mod tests {
     /// The app's buffer, drawn wide enough for a status line with a place
     /// and an added directory in it.
     fn wide_buffer(app: &mut App) -> Buffer {
-        // macOS's temporary directories are long, and long again canonical.
+        // macOS's temporary directories are long.
         let mut terminal = Terminal::new(TestBackend::new(240, 16)).expect("test backend");
         terminal.draw(|frame| app.draw(frame)).expect("draws");
         terminal.backend().buffer().clone()
@@ -179,20 +172,24 @@ mod tests {
     #[tokio::test]
     async fn the_status_bar_shows_the_added_directories() {
         let base = tempfile::tempdir().expect("tempdir");
-        let other = dir(base.path(), "other");
+        dir(base.path(), "other");
+        dir(base.path(), "lib");
         let mut app = app_in(&dir(base.path(), "repo"));
 
         app.add_dir("../other");
-        let added = format!("+{}", place(&app, &other));
+        app.add_dir("../lib");
+        // Only how many, not where.
+        let added = format!("{} (+2)", app.place);
 
         let buffer = wide_buffer(&mut app);
         let line = row(&buffer, 14);
         assert!(line.contains(&added), "{line:?}");
-        // The working directory and the added one are magenta, the model
+        assert!(!line.contains("other"), "{line:?}");
+        // The working directory and the count are magenta, the model
         // bright white before them.
         let at = |needle: &str| u16::try_from(line.find(needle).expect(needle)).expect("fits");
         assert_eq!(buffer[(at("glm"), 14)].fg, Color::White);
-        for needle in [app.place.as_str(), added.as_str()] {
+        for needle in [app.place.as_str(), "(+2)"] {
             assert_eq!(buffer[(at(needle), 14)].fg, Color::Magenta, "{needle}");
         }
     }
