@@ -272,6 +272,8 @@ impl Session {
             cancel,
         )
         .await;
+        // Prompts you sent mid-turn joined it.
+        self.updated_at = SystemTime::now();
         self.loaded_instructions = ctx
             .instructions
             .lock()

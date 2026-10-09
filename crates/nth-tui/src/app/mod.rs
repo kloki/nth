@@ -121,6 +121,10 @@ pub struct App {
     /// Prompts sent while a turn runs, oldest first; each runs as its own
     /// turn once the one before ends well. Always empty while idle.
     pub queue: VecDeque<Queued>,
+    /// The mode, model and effort the running model turn has, which a
+    /// prompt sent mid-turn steers into only while they are still yours;
+    /// `None` while idle or running a command.
+    steerable: Option<(Mode, mode::Llm)>,
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
@@ -208,8 +212,9 @@ pub struct App {
     turn: Job<Ended>,
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
-    /// What the model has not heard yet from the monitors and subagents.
-    inbox: Inbox,
+    /// What the model has not heard yet from the monitors and subagents,
+    /// and the prompts on their way into a running turn.
+    pub(crate) inbox: Inbox,
     monitor_rx: mpsc::Receiver<MonitorEvent>,
     /// Each monitor's tab, open from its start until you close it.
     monitor_views: BTreeMap<MonitorId, MonitorView>,
@@ -351,6 +356,7 @@ impl App {
             llm_usage_saving: Job::default(),
             settings: ChatSettings::default(),
             queue: VecDeque::new(),
+            steerable: None,
             interrupted: false,
             last_turn: TabState::Idle,
             content: Content::default(),
