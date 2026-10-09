@@ -28,6 +28,8 @@ pub(crate) struct Scripted {
     pub(super) replies: Mutex<Vec<Vec<StreamEvent>>>,
     /// The model and session id of every request, in order.
     pub(super) routes: Mutex<Vec<(String, String)>>,
+    /// The system prompt of every request, in order.
+    pub(crate) systems: Mutex<Vec<String>>,
 }
 
 impl Scripted {
@@ -35,6 +37,7 @@ impl Scripted {
         Self {
             replies: Mutex::new(replies),
             routes: Mutex::new(Vec::new()),
+            systems: Mutex::new(Vec::new()),
         }
     }
 }
@@ -52,6 +55,12 @@ impl Provider for Scripted {
             .lock()
             .expect("not poisoned")
             .push((request.model.to_string(), request.session_id.to_string()));
+        if let Some(Message::System(system)) = request.messages.first() {
+            self.systems
+                .lock()
+                .expect("not poisoned")
+                .push(system.clone());
+        }
         let reply = self.replies.lock().expect("not poisoned").remove(0);
         async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
     }

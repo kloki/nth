@@ -7,11 +7,14 @@ use crate::mention;
 impl App {
     /// Lists the files off the runtime; a big tree takes a while to walk.
     /// The walk checks its token between entries, since a blocking task
-    /// can't be aborted and quitting shouldn't wait for it.
+    /// can't be aborted and quitting shouldn't wait for it. A directory
+    /// added with `/add-dir` walks with the working one, its files spelled
+    /// absolutely so the tools take them as they are.
     pub(super) fn index_files(&mut self) {
         let root = self.cwd.clone();
+        let extra = self.extra_dirs.clone();
         self.indexing.start_or_queue(|cancel| {
-            tokio::task::spawn_blocking(move || mention::walk(&root, &cancel))
+            tokio::task::spawn_blocking(move || mention::walk(&root, &extra, &cancel))
         });
     }
 

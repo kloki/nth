@@ -41,6 +41,7 @@ pub(crate) async fn run_call(
     // so it is dropped with the call and always lands before ToolFinished.
     let ctx = ToolContext {
         cwd: ctx.cwd.clone(),
+        extra_dirs: ctx.extra_dirs.clone(),
         output: OutputSink::new(events.clone(), call.id.clone()),
         instructions: ctx.instructions.clone(),
         context: ctx.context.clone(),

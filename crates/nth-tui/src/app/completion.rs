@@ -9,7 +9,7 @@ use ratatui::{
 
 use super::App;
 use crate::{
-    command::Entry,
+    command::{self, Entry},
     mention,
     popup::{self, Popup},
 };
@@ -17,6 +17,12 @@ use crate::{
 /// The open completion popup.
 pub(super) enum Completion {
     Command(Popup<Entry>),
+    /// The argument of `/add-dir`: a directory path. `start` is the byte
+    /// offset of the argument in the prompt.
+    Directory {
+        popup: Popup<String>,
+        start: usize,
+    },
     /// An agent or a file; `start` is the byte offset of the mention's `@`
     /// in the prompt.
     Mention {
@@ -29,6 +35,7 @@ impl Completion {
     pub(super) fn next(&mut self) {
         match self {
             Completion::Command(popup) => popup.next(),
+            Completion::Directory { popup, .. } => popup.next(),
             Completion::Mention { popup, .. } => popup.next(),
         }
     }
@@ -36,6 +43,7 @@ impl Completion {
     pub(super) fn prev(&mut self) {
         match self {
             Completion::Command(popup) => popup.prev(),
+            Completion::Directory { popup, .. } => popup.prev(),
             Completion::Mention { popup, .. } => popup.prev(),
         }
     }
@@ -45,6 +53,7 @@ impl Completion {
     pub(super) fn start(&self) -> usize {
         match self {
             Completion::Command(_) => 0,
+            Completion::Directory { start, .. } => *start,
             Completion::Mention { start, .. } => *start,
         }
     }
@@ -52,6 +61,14 @@ impl Completion {
     pub(super) fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
             Completion::Command(popup) => (Entry::rows(popup.items()), popup.selected_index()),
+            Completion::Directory { popup, .. } => (
+                popup
+                    .items()
+                    .iter()
+                    .map(|path| (path.clone(), ""))
+                    .collect(),
+                popup.selected_index(),
+            ),
             Completion::Mention { popup, .. } => {
                 (mention::rows(popup.items()), popup.selected_index())
             }
@@ -65,6 +82,7 @@ impl App {
         let text = self.prompt.text();
         self.completion = Entry::complete(text, &self.context.skills)
             .map(Completion::Command)
+            .or_else(|| self.add_dir_completion())
             .or_else(|| {
                 let mention = mention::find(text, self.prompt.cursor())?;
                 // A subagent starts no subagents, so `@name` means nothing
@@ -82,10 +100,27 @@ impl App {
             });
     }
 
+    /// The directories that complete the argument of `/add-dir`, the one
+    /// command that takes one, as typed up to the cursor.
+    fn add_dir_completion(&self) -> Option<Completion> {
+        let text = self.prompt.text();
+        // The whole argument is one path, though only its head completes.
+        command::argument(text)?;
+        let arg = command::argument(&text[..self.prompt.cursor()])?;
+        let popup = command::complete(&self.cwd, self.home.as_deref(), arg)?;
+        Some(Completion::Directory {
+            popup,
+            start: "/add-dir ".len(),
+        })
+    }
+
     /// `submit` runs a highlighted command; an agent or a file is filled in
     /// either way, since sending a half-typed mention is never what Enter
     /// meant. A skill is filled in with room for its arguments, and runs
-    /// once its name is typed out.
+    /// once its name is typed out. A directory runs once the argument is
+    /// one filled in, ending in `/`; until then the highlighted one
+    /// replaces the whole argument, so Enter on `/add-dir ` or `~` walks
+    /// down rather than adding the working or the home directory.
     pub(super) fn accept(&mut self, completion: Completion, submit: bool) {
         match completion {
             Completion::Command(popup) => match popup.selected().clone() {
@@ -102,6 +137,18 @@ impl App {
                 }
                 Entry::Skill { name, .. } => self.prompt.set(&format!("/{name} ")),
             },
+            Completion::Directory { popup, start } => {
+                let end = self.prompt.text().len();
+                let arg = self.prompt.text()[start..].to_string();
+                let named = arg.ends_with('/')
+                    && command::expand(&self.cwd, self.home.as_deref(), &arg).is_dir();
+                if submit && named {
+                    self.prompt.clear();
+                    self.add_dir(&arg);
+                } else {
+                    self.prompt.replace(start..end, popup.selected());
+                }
+            }
             Completion::Mention { popup, start } => {
                 let end = self.prompt.cursor();
                 let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
@@ -126,7 +173,9 @@ mod tests {
         app.apply(Action::Insert('/'));
         let rows = rows(&mut app);
 
-        assert!(rows[3].starts_with("  /clear "), "{rows:#?}");
+        assert!(rows[1].starts_with("  /add-dir "), "{rows:#?}");
+        assert!(rows[2].starts_with("  /approve "));
+        assert!(rows[3].starts_with("  /clear "));
         assert!(rows[4].starts_with("  /close "));
         assert!(rows[5].starts_with("  /diagnostics "));
         assert!(rows[6].starts_with("  /exit "));

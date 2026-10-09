@@ -303,8 +303,9 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Commands.** `!` typed at the very start of the prompt makes it a command, as in opencode: the `!` is not kept, the label reads `cmd` and the bar turns yellow, and the placeholder becomes "Run a command.". Esc, ctrl+c on an empty prompt, or Backspace at the start goes back to the mode; Tab does nothing meanwhile. Enter runs the text with bash in the session's directory, with no timeout, and the model does not answer. The chat shows it as a bash row with its output, and the session keeps it the way opencode does: a user message saying the user ran a tool, then a bash call with its result, so the model sees it next turn. It runs like a turn: the spinner shows, Esc kills it, and a command sent while a turn runs is queued like a prompt. Prompt history keeps it with its `!`, and recalling it comes back as a command.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
-- **Agents and files.** `@` starting a word lists the agents whose name starts with what follows (not opencode's `hidden` ones, and none on a subagent's tab), `@explore` with the first line of its description, then the files under the working directory that fuzzy-match it, at most 8 rows in all; a query with a `/` in it is a path and lists files only. Ctrl+N or Enter fills in `@name `. Sent, `@explore` tells the model to call the task tool with that agent, as in opencode: you pick the agent, the model writes the task. The chat shows the prompt as typed; a word that is also a file under the working directory is the file.
-- **Skills as commands.** `/` lists nth's commands first, then every skill, at most 8 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
+- **Agents and files.** `@` starting a word lists the agents whose name starts with what follows (not opencode's `hidden` ones, and none on a subagent's tab), `@explore` with the first line of its description, then the files under the working directory that fuzzy-match it, and the files under a directory added with `/add-dir` after them, by absolute path, at most 8 rows in all; a query with a `/` in it is a path and lists files only. Ctrl+N or Enter fills in `@name `. Sent, `@explore` tells the model to call the task tool with that agent, as in opencode: you pick the agent, the model writes the task. The chat shows the prompt as typed; a word that is also a file under the working directory is the file.
+- **Skills as commands.** `/` lists nth's commands first, then every skill, at most 10 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
+- **Added directories.** `/add-dir <dir>` adds a working directory to the session, as Claude Code's does: the path expanded (`~`, or against the working directory) and canonicalized, and only when it names a directory that is not inside the working directory or one already added, nor around one. Typing after `/add-dir ` completes to the directories under the one being typed, symlinked ones too; Ctrl+N fills the highlighted one in over the whole argument, and so does Enter until the argument is a directory ending in `/`, when it runs the command, so Enter on `/add-dir ` or `/add-dir ~` walks down rather than adding the working or the home directory. `/add-dir` with nothing says how it is used. How many were added shows on the status bar as `(+N)` after the working directory; their files list in `@` (20,000 in all, the working directory's first), and the model and its subagents are told of them in their system prompts and may read and edit them by absolute path. They are saved with the session at once and kept by `/clear` and `/resume`, as the working directory is.
 - **History.** Up and Down recall sent prompts, newest first, and Down past the newest gives back what was being typed. An edited recalled prompt is never replaced: Up and Down do nothing until it is sent or cleared. The last 100 prompts are kept across runs in `$XDG_DATA_HOME/nth/prompt-history.jsonl`, one JSON string per line. Builtin commands are not recorded.
 - **External editor.** ctrl+g opens the prompt in `$VISUAL`, else `$EDITOR`, else vi, as the plan does on its tab. The text you save and quit comes back into the prompt; an empty prompt opens an empty buffer. Saving with no change or quitting with an error (vim's `:cq`) leaves the prompt as it was, the latter with a hint. While the plan tab shows, ctrl+g edits the plan, not the prompt (see [Plan](#plan)).
 
@@ -434,14 +435,14 @@ Fixed at 2 lines, always visible, below the input panel. It holds general state,
 
 **Line 1: where you are**
 
-Left-aligned: `model · effort · path context`, all bright white. The git branch and status sit against the right edge.
+Left-aligned: `model · effort · place`, the model and effort in bright white and the place in magenta. The git branch and status sit against the right edge.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
 | Part    | Shows                                                                                                                           | Colour       |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------ |
 | Model   | The current model, and its effort unless default                                                                                | bright white |
-| Path    | The working directory, with home written as `~`                                                                                 | bright white |
+| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                              | magenta      |
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white        |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
@@ -508,9 +509,9 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | green            | green           | branch, your messages, success            |
 | yellow, orange   | yellow          | ahead, behind, renamed, interrupted       |
 | blue             | blue            | model, act mode, staged, model answer bar |
-| magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified |
+| magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified, status bar place |
 | cyan             | cyan            | tool names, tool call and output bar      |
 | white            | white           | context bar, untracked, stashed           |
-| bright white     | bright white    | status line 1 text                        |
+| bright white     | bright white    | status line 1 model                      |
 
 Orange is not a standard terminal colour, so it means yellow.

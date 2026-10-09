@@ -37,6 +37,10 @@ pub struct Session {
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
     pub cwd: PathBuf,
+    /// Working directories added with `/add-dir`, which the tools may read
+    /// and edit like `cwd` itself.
+    #[serde(default)]
+    pub extra_dirs: Vec<PathBuf>,
     pub model: String,
     /// Sessions saved before effort existed load with the model's default.
     #[serde(default)]
@@ -79,11 +83,12 @@ impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let context = Arc::<Context>::default();
-        let messages = vec![Message::System(system_prompt(&model, &cwd, &context))];
+        let messages = vec![Message::System(system_prompt(&model, &cwd, &[], &context))];
         let now = SystemTime::now();
         Self {
             id: Uuid::new_v4(),
             cwd,
+            extra_dirs: Vec::new(),
             model,
             effort: Effort::default(),
             mode: Mode::default(),
@@ -118,6 +123,19 @@ impl Session {
     /// until this is called.
     pub fn set_context(&mut self, context: Arc<Context>) {
         self.context = context;
+        self.rewrite_system_prompt();
+    }
+
+    /// Builder form of [`Session::set_extra_dirs`].
+    pub fn with_extra_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.set_extra_dirs(dirs);
+        self
+    }
+
+    /// The directories added with `/add-dir` become part of the system
+    /// prompt, as a switch of model does.
+    pub fn set_extra_dirs(&mut self, dirs: Vec<PathBuf>) {
+        self.extra_dirs = dirs;
         self.rewrite_system_prompt();
     }
 
@@ -175,9 +193,10 @@ impl Session {
                 self.persona.as_deref(),
                 &self.model,
                 &self.cwd,
+                &self.extra_dirs,
                 &self.context,
             ),
-            false => system_prompt(&self.model, &self.cwd, &self.context),
+            false => system_prompt(&self.model, &self.cwd, &self.extra_dirs, &self.context),
         }
     }
 
@@ -241,6 +260,7 @@ impl Session {
         let mut loaded = self.loaded_instructions.clone();
         loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
         let ctx = ToolContext {
+            extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(loaded)),
             context: self.context.clone(),
             asker: front_end.asker.clone(),
@@ -389,10 +409,45 @@ mod tests {
         assert_eq!(
             session.messages,
             [
-                Message::System(system_prompt("kimi-k3", ".".as_ref(), &Context::default())),
+                Message::System(system_prompt(
+                    "kimi-k3",
+                    ".".as_ref(),
+                    &[],
+                    &Context::default()
+                )),
                 Message::User("go".into()),
             ]
         );
+    }
+
+    #[test]
+    fn added_directories_rewrite_the_prompt_and_survive_the_save() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        session.messages.push(Message::User("go".into()));
+        let dirs = vec!["/elsewhere".into()];
+
+        session.set_extra_dirs(dirs.clone());
+
+        let Message::System(prompt) = &session.messages[0] else {
+            panic!("starts with the system prompt");
+        };
+        assert!(prompt.contains("  - /elsewhere\n"), "{prompt}");
+
+        // Saved like the model and the mode are, so `/resume` keeps them.
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.extra_dirs, dirs);
+        // A session saved before there were extra directories loads none.
+        let old = serde_json::json!({
+            "id": session.id.to_string(),
+            "cwd": "/repo",
+            "model": "glm-5.3",
+            "created_at": serde_json::to_value(session.created_at).unwrap(),
+            "updated_at": serde_json::to_value(session.updated_at).unwrap(),
+            "messages": [],
+        });
+        let old: Session = serde_json::from_value(old).expect("loads");
+        assert!(old.extra_dirs.is_empty());
     }
 
     #[test]
@@ -413,7 +468,7 @@ mod tests {
         session.set_model("kimi-k3");
         assert_eq!(
             session.messages[0],
-            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &context)),
+            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &[], &context)),
             "a new model keeps the instructions"
         );
 
@@ -633,7 +688,7 @@ mod tests {
     async fn a_prompt_rewrites_a_system_prompt_from_another_day() {
         let mut session = Session::new("glm-5.3", "/repo".into());
         let current = session.messages[0].clone();
-        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &Context::default())
+        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &[], &Context::default())
             .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
         session.messages[0] = Message::System(stale);
 

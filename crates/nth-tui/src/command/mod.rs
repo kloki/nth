@@ -2,15 +2,21 @@
 //! match what has been typed so far. Besides nth's own commands, every
 //! skill runs as `/<name> [args]`.
 
+mod add_dir;
+
+pub(crate) use add_dir::{argument, complete, expand};
 use nth_context::Skills;
 
-use crate::{mention, popup::Popup};
+use crate::popup::Popup;
 
 /// Longest skill description shown in the popup, so it stays narrow.
 const ABOUT_CHARS: usize = 48;
+/// Rows of the command popup; enough for every command and a skill or two.
+const LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
+    AddDir,
     Approve,
     Clear,
     Close,
@@ -22,7 +28,8 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 8] = [
+    const ALL: [Command; 9] = [
+        Command::AddDir,
         Command::Approve,
         Command::Clear,
         Command::Close,
@@ -35,6 +42,7 @@ impl Command {
 
     pub fn name(self) -> &'static str {
         match self {
+            Command::AddDir => "add-dir",
             Command::Approve => "approve",
             Command::Clear => "clear",
             Command::Close => "close",
@@ -48,6 +56,7 @@ impl Command {
 
     pub fn about(self) -> &'static str {
         match self {
+            Command::AddDir => "add a working directory",
             Command::Approve => "act on the plan",
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
@@ -59,11 +68,27 @@ impl Command {
         }
     }
 
-    /// Only a prompt that is exactly `/<name>` is a command. Anything else,
-    /// such as `/etc/hosts what is this`, is meant for the model.
-    pub fn parse(text: &str) -> Option<Command> {
-        let name = text.trim().strip_prefix('/')?;
-        Self::ALL.into_iter().find(|c| c.name() == name)
+    /// `/add-dir` is the one command that takes an argument: the directory
+    /// to add.
+    fn takes_arg(self) -> bool {
+        matches!(self, Command::AddDir)
+    }
+
+    /// A command to run and the argument it was given: the first command is
+    /// `/<name>` alone, and only `/add-dir` takes anything after it, the
+    /// directory to add. `/clear now` is a prompt for the model, as ever.
+    pub fn invocation(text: &str) -> Option<(Command, &str)> {
+        let text = text.trim();
+        let name = text.strip_prefix('/')?;
+        let (name, arg) = match name.split_once(char::is_whitespace) {
+            Some((name, arg)) => (name, arg.trim()),
+            None => (name, ""),
+        };
+        let command = Self::ALL.into_iter().find(|c| c.name() == name)?;
+        if !arg.is_empty() && !command.takes_arg() {
+            return None;
+        }
+        Some((command, arg))
     }
 }
 
@@ -116,7 +141,7 @@ impl Entry {
         builtins
             .chain(skills)
             .filter(|e| e.name().starts_with(part))
-            .take(mention::LIMIT)
+            .take(LIMIT)
             .collect()
     }
 
@@ -165,18 +190,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_only_a_bare_command() {
-        assert_eq!(Command::parse("/clear"), Some(Command::Clear));
-        assert_eq!(Command::parse(" /exit\n"), Some(Command::Exit));
-        assert_eq!(Command::parse("/clear now"), None);
-        assert_eq!(Command::parse("/nope"), None);
-        assert_eq!(Command::parse("clear"), None);
+    fn an_invocation_is_a_command_and_add_dir_its_argument() {
+        let add = |text| Command::invocation(text).map(|(c, a)| (c, a.to_string()));
+
+        assert_eq!(add("/add-dir"), Some((Command::AddDir, String::new())));
+        assert_eq!(add("/add-dir /tmp"), Some((Command::AddDir, "/tmp".into())));
+        assert_eq!(
+            add(" /add-dir  ../shared\n"),
+            Some((Command::AddDir, "../shared".into())),
+            "trimmed, with its `!`-less whitespace"
+        );
+        assert_eq!(add("/clear"), Some((Command::Clear, String::new())));
+        // Only `/add-dir` takes an argument; anything else is for the model.
+        assert_eq!(add("/clear now"), None);
+        assert_eq!(add("/add-dirx"), None);
+        assert_eq!(add("/nope"), None);
+        assert_eq!(add("clear"), None);
     }
 
     #[test]
     fn matches_commands_by_prefix() {
         let none = Skills::default();
         assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL));
+        assert_eq!(
+            Entry::matching("/a", &none),
+            builtins(&[Command::AddDir, Command::Approve])
+        );
+        assert_eq!(Entry::matching("/add", &none), builtins(&[Command::AddDir]));
         assert_eq!(
             Entry::matching("/c", &none),
             builtins(&[Command::Clear, Command::Close])
@@ -202,8 +242,22 @@ mod tests {
                 .map(|e| e.name().to_string())
                 .collect()
         };
-        assert_eq!(names("/").len(), 8, "the popup holds 8");
-        assert!(!names("/").contains(&"deploy".to_string()));
+        assert_eq!(
+            names("/"),
+            [
+                "add-dir",
+                "approve",
+                "clear",
+                "close",
+                "diagnostics",
+                "exit",
+                "models",
+                "resume",
+                "settings",
+                "deploy",
+            ],
+            "the popup holds the 9 commands and one skill"
+        );
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
             names("/c"),
