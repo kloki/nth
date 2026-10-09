@@ -21,8 +21,8 @@ pub enum Event {
     },
     /// After each model reply, when the provider reports it.
     Usage(Usage),
-    /// What background monitors said, handed to the model between steps as
-    /// a user message.
+    /// Handed to the model between steps as a user message: what monitors
+    /// and subagents said, or a prompt sent mid-turn.
     Notice(String),
     /// A provider error is being retried: the front-end should show that a
     /// new attempt follows in `delay`, the `attempt`-th so far. Text already

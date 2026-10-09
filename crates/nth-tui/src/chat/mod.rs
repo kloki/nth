@@ -15,6 +15,10 @@ use ratatui::{
     widgets::{Paragraph, ScrollbarState},
 };
 use scroll::Scroll;
+/// Tests reach a tool row's state through the crate, where the module is
+/// not visible.
+#[cfg(test)]
+pub use transcript::ToolState;
 pub use transcript::{Entry, Transcript};
 
 use crate::settings::ChatSettings;
