@@ -83,6 +83,12 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
             paths,
             mode_llms,
             notifier: config.notify.notifier(),
+            // The chat starts on the config's toggles; `/settings` flips
+            // them for the run.
+            chat: nth_tui::ChatSettings {
+                thinking: config.chat.thinking,
+                tool_output: config.chat.tool_output,
+            },
         },
     )
     .await;

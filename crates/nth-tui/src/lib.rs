@@ -39,6 +39,7 @@ use nth_lsp::Lsp;
 use nth_notify::Notifier;
 use nth_protocol::{Provider, Tool};
 use nth_session::{Session, Store, Subagents, subagent::SubagentEvent};
+pub use settings::ChatSettings;
 use tokio::sync::mpsc;
 
 /// What checks the tools' writes: the same language servers and formatters
@@ -61,11 +62,13 @@ pub struct Tools {
 }
 
 /// What the config decided: where nth looks for project files, the model
-/// and effort each mode runs on, and where notifications go.
+/// and effort each mode runs on, where notifications go, and how the chat
+/// shows what the model did.
 pub struct Settings {
     pub paths: Paths,
     pub mode_llms: ModeLlms,
     pub notifier: Notifier,
+    pub chat: ChatSettings,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -82,6 +85,7 @@ pub async fn run(
         paths,
         mode_llms,
         notifier,
+        chat,
     }: Settings,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
@@ -109,6 +113,7 @@ pub async fn run(
         .with_checkers(checkers)
         .with_mode_llms(mode_llms)
         .with_notifier(notifier)
+        .with_chat_settings(chat)
         .run(&mut terminal)
         .await;
     terminal::restore();
