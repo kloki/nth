@@ -36,8 +36,10 @@ impl App {
         };
         // A directory inside one already there, or around one, would list
         // its files twice for `@` and tell the model of them twice.
+        // Compared canonical, as `dir` is: on macOS `/var` is `/private/var`.
+        let cwd = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
         let home = self.home.as_deref();
-        let dirs = std::iter::once(&self.cwd).chain(&self.extra_dirs);
+        let dirs = std::iter::once(&cwd).chain(&self.extra_dirs);
         let refused = dirs.enumerate().find_map(|(i, other)| {
             let place = status::place(other, home);
             match (i, dir == *other) {
@@ -133,7 +135,8 @@ mod tests {
     /// The app's buffer, drawn wide enough for a status line with a place
     /// and an added directory in it.
     fn wide_buffer(app: &mut App) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("test backend");
+        // macOS's temporary directories are long, and long again canonical.
+        let mut terminal = Terminal::new(TestBackend::new(240, 16)).expect("test backend");
         terminal.draw(|frame| app.draw(frame)).expect("draws");
         terminal.backend().buffer().clone()
     }
@@ -293,7 +296,11 @@ mod tests {
         app.end_turn(ended);
         let session = app.session.as_ref().expect("session back");
         assert_eq!(session.extra_dirs, added);
-        assert!(session.extra_dirs.contains(&other));
+        assert!(
+            session
+                .extra_dirs
+                .contains(&other.canonicalize().expect("canonical"))
+        );
     }
 
     #[tokio::test]
