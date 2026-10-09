@@ -95,6 +95,7 @@ impl App {
         self.cwd = session.cwd.clone();
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());
+        self.extra_dirs = session.extra_dirs.clone();
         self.chat = Chat::replay(session.cwd.clone(), &session.messages);
         self.last_turn = TabState::Idle;
         self.chat.warn(&session.context().warnings);
@@ -128,6 +129,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());
         let mut saved = Session::new("kimi", "/elsewhere".into());
+        saved.extra_dirs = vec!["/added".into()];
         saved.messages.push(Message::User("fix it".into()));
         saved.messages.push(Message::Assistant(AssistantMessage {
             text: "fixed".into(),
@@ -149,6 +151,7 @@ mod tests {
         assert_eq!(app.model, "kimi");
         assert_eq!(app.cwd, std::path::Path::new("/elsewhere"));
         assert_eq!(app.place, "/elsewhere");
+        assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/added")]);
         let entries: Vec<_> = app.chat.transcript.entries().cloned().collect();
         assert_eq!(
             entries,

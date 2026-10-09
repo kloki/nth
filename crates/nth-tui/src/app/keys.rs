@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn slash_opens_the_popup_and_typing_filters_it() {
         let mut app = typed("/");
-        assert_eq!(selected(&app), Command::Approve);
+        assert_eq!(selected(&app), Command::AddDir);
 
         app.apply(Action::Insert('e'));
         assert_eq!(selected(&app), Command::Exit);
@@ -444,11 +444,11 @@ mod tests {
     fn arrows_cycle_without_touching_the_prompt() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
-        assert_eq!(selected(&app), Command::Clear);
-        for _ in 0..7 {
+        assert_eq!(selected(&app), Command::Approve);
+        for _ in 0..8 {
             app.apply(Action::SelectNext);
         }
-        assert_eq!(selected(&app), Command::Approve);
+        assert_eq!(selected(&app), Command::AddDir, "around the whole list");
         app.apply(Action::SelectPrev);
         assert_eq!(selected(&app), Command::Settings);
         assert_eq!(app.prompt.text(), "/");
@@ -459,7 +459,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
-        assert_eq!(app.prompt.text(), "/clear");
+        assert_eq!(app.prompt.text(), "/approve");
         assert!(app.completion.is_some());
     }
 
@@ -480,6 +480,7 @@ mod tests {
         assert_eq!(
             names(&app),
             [
+                "add-dir",
                 "approve",
                 "clear",
                 "close",
@@ -487,9 +488,10 @@ mod tests {
                 "exit",
                 "models",
                 "resume",
-                "settings"
+                "settings",
+                "fix",
             ],
-            "the popup holds 8, so the skills wait for a letter"
+            "the popup holds the 9 commands and one skill"
         );
 
         let app = skilled(dir.path(), "/f");

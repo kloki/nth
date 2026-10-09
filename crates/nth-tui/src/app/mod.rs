@@ -6,6 +6,7 @@
 mod checks;
 mod completion;
 mod content;
+mod dirs;
 mod editor;
 mod files;
 mod git;
@@ -143,6 +144,9 @@ pub struct App {
     /// The working directory as shown in the status bar, `~` for home.
     pub place: String,
     home: Option<String>,
+    /// Working directories added with `/add-dir`, which the tools may read
+    /// and edit like `cwd` itself.
+    pub extra_dirs: Vec<PathBuf>,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
     /// When the empty chat's field started moving, and where the mouse
@@ -363,6 +367,7 @@ impl App {
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
             home,
+            extra_dirs: session.extra_dirs.clone(),
             busy_since: None,
             hero_since: Instant::now(),
             pointer: None,
@@ -734,6 +739,8 @@ impl App {
         match command {
             // Dropping the app aborts a running turn.
             Command::Exit => self.ask_quit(),
+            // `/add-dir` without a directory to add only says how it is used.
+            Command::AddDir => self.add_dir(""),
             // Mid-turn the session is in the turn task, so there is nothing
             // to replace yet.
             Command::Clear if self.is_busy() => self.hint = Some("a turn is running".into()),
@@ -756,13 +763,15 @@ impl App {
 
     /// Moves on to a new, empty session in the same directory, so it has
     /// the same instruction files and skills, and keeps the model, effort
-    /// and mode picked. The chat is the caller's to clear or keep.
+    /// and mode picked. The directories added with `/add-dir` are kept too.
+    /// The chat is the caller's to clear or keep.
     fn start_fresh_session(&mut self) {
         let mut session =
             Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
         session.effort = self.effort;
         session.mode = self.mode;
         session.max_steps = self.max_steps;
+        session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
         self.session = Some(session);
         self.usage = None;

@@ -32,6 +32,16 @@ pub fn walk(root: &Path, cancel: &CancellationToken) -> Vec<String> {
         .collect()
 }
 
+/// Files under `root` by absolute path, as the mention of a file in a
+/// directory added with `/add-dir` inserts: the tools take an absolute path
+/// as it is, wherever it points. Skips what [`walk`] skips.
+pub fn walk_absolute(root: &Path, cancel: &CancellationToken) -> Vec<String> {
+    walk(root, cancel)
+        .into_iter()
+        .map(|relative| root.join(relative).display().to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -51,6 +61,12 @@ mod tests {
         fs::write(root.join(".gitignore"), "target/\n").expect("write");
 
         assert_eq!(walk(root, &CancellationToken::new()), ["src/app/keys.rs"]);
+
+        // An added directory's files list by absolute path.
+        assert_eq!(
+            walk_absolute(root, &CancellationToken::new()),
+            [format!("{}/src/app/keys.rs", root.display())]
+        );
 
         let cancel = CancellationToken::new();
         cancel.cancel();

@@ -37,6 +37,10 @@ pub struct Session {
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
     pub cwd: PathBuf,
+    /// Working directories added with `/add-dir`, which the tools may read
+    /// and edit like `cwd` itself.
+    #[serde(default)]
+    pub extra_dirs: Vec<PathBuf>,
     pub model: String,
     /// Sessions saved before effort existed load with the model's default.
     #[serde(default)]
@@ -84,6 +88,7 @@ impl Session {
         Self {
             id: Uuid::new_v4(),
             cwd,
+            extra_dirs: Vec::new(),
             model,
             effort: Effort::default(),
             mode: Mode::default(),
@@ -118,6 +123,19 @@ impl Session {
     /// until this is called.
     pub fn set_context(&mut self, context: Arc<Context>) {
         self.context = context;
+        self.rewrite_system_prompt();
+    }
+
+    /// Builder form of [`Session::set_extra_dirs`].
+    pub fn with_extra_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.set_extra_dirs(dirs);
+        self
+    }
+
+    /// The directories added with `/add-dir` become part of the system
+    /// prompt, as a switch of model does.
+    pub fn set_extra_dirs(&mut self, dirs: Vec<PathBuf>) {
+        self.extra_dirs = dirs;
         self.rewrite_system_prompt();
     }
 
@@ -171,13 +189,19 @@ impl Session {
 
     fn system_prompt(&self) -> String {
         match self.subagent {
-            true => system_prompt::subagent_system_prompt(
+            true => system_prompt::subagent_system_prompt_with_dirs(
                 self.persona.as_deref(),
                 &self.model,
                 &self.cwd,
+                &self.extra_dirs,
                 &self.context,
             ),
-            false => system_prompt(&self.model, &self.cwd, &self.context),
+            false => system_prompt::system_prompt_with_dirs(
+                &self.model,
+                &self.cwd,
+                &self.extra_dirs,
+                &self.context,
+            ),
         }
     }
 
@@ -391,6 +415,36 @@ mod tests {
                 Message::User("go".into()),
             ]
         );
+    }
+
+    #[test]
+    fn added_directories_rewrite_the_prompt_and_survive_the_save() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        session.messages.push(Message::User("go".into()));
+        let dirs = vec!["/elsewhere".into()];
+
+        session.set_extra_dirs(dirs.clone());
+
+        let Message::System(prompt) = &session.messages[0] else {
+            panic!("starts with the system prompt");
+        };
+        assert!(prompt.contains("  - /elsewhere\n"), "{prompt}");
+
+        // Saved like the model and the mode are, so `/resume` keeps them.
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.extra_dirs, dirs);
+        // A session saved before there were extra directories loads none.
+        let old = serde_json::json!({
+            "id": session.id.to_string(),
+            "cwd": "/repo",
+            "model": "glm-5.3",
+            "created_at": serde_json::to_value(session.created_at).unwrap(),
+            "updated_at": serde_json::to_value(session.updated_at).unwrap(),
+            "messages": [],
+        });
+        let old: Session = serde_json::from_value(old).expect("loads");
+        assert!(old.extra_dirs.is_empty());
     }
 
     #[test]

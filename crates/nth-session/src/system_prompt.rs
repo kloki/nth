@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
 use nth_context::{Context, project_root};
@@ -13,6 +13,9 @@ const INSTRUCTION: &str = include_str!("prompts/system/instruction.md");
 /// The skills the model may load, after the instructions, as in opencode.
 const SKILLS: &str = include_str!("prompts/system/skills.md");
 const SKILL: &str = include_str!("prompts/system/skill.md");
+/// The working directories added with `/add-dir`, after the environment
+/// block; left out when there are none.
+const DIRS: &str = include_str!("prompts/system/dirs.md");
 /// The agents the model may delegate to, after the skills; a subagent has
 /// no task tool, so it is not told of them.
 const AGENTS: &str = include_str!("prompts/system/agents.md");
@@ -48,25 +51,43 @@ fn template(model: &str) -> &'static str {
 /// The system prompt of a session run for you: the model's persona, the
 /// environment, the instruction files and the skills.
 pub fn system_prompt(model: &str, cwd: &Path, context: &Context) -> String {
-    render(None, model, cwd, context)
+    render(None, model, cwd, &[], context)
+}
+
+/// The same, with the working directories added with `/add-dir`.
+pub fn system_prompt_with_dirs(
+    model: &str,
+    cwd: &Path,
+    dirs: &[PathBuf],
+    context: &Context,
+) -> String {
+    render(None, model, cwd, dirs, context)
 }
 
 /// The system prompt of a subagent's session: `persona` in place of the
 /// model's, as opencode puts an agent's prompt where the provider's would
 /// go, or the model's when the agent has none; then the same environment,
-/// instructions and skills.
-pub fn subagent_system_prompt(
+/// instructions and skills, with the working directories added with
+/// `/add-dir`.
+pub fn subagent_system_prompt_with_dirs(
     persona: Option<&str>,
     model: &str,
     cwd: &Path,
+    dirs: &[PathBuf],
     context: &Context,
 ) -> String {
-    render(Some(persona), model, cwd, context)
+    render(Some(persona), model, cwd, dirs, context)
 }
 
 /// `role` is `None` for your own session and `Some(persona)` for a
 /// subagent's.
-fn render(role: Option<Option<&str>>, model: &str, cwd: &Path, context: &Context) -> String {
+fn render(
+    role: Option<Option<&str>>,
+    model: &str,
+    cwd: &Path,
+    dirs: &[PathBuf],
+    context: &Context,
+) -> String {
     let root = project_root(cwd);
     let git = if root.is_some() { "yes" } else { "no" };
     // Outside a repository the workspace root is the working directory, as in
@@ -87,6 +108,16 @@ fn render(role: Option<Option<&str>>, model: &str, cwd: &Path, context: &Context
         _ => template(model).replace("{{MODEL_NAME}}", model),
     };
     let mut prompt = format!("{persona}\n{env}");
+    if !dirs.is_empty() {
+        // One per added directory, indented as the environment's lines are.
+        let list = dirs
+            .iter()
+            .map(|dir| format!("  - {}", dir.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push('\n');
+        prompt.push_str(&DIRS.replace("{dirs}", &list));
+    }
     for instruction in &context.instructions {
         prompt.push('\n');
         // Content last, so a `{path}` inside a file is left alone.
@@ -238,7 +269,7 @@ mod tests {
         );
 
         let own = system_prompt("glm", "/repo".as_ref(), &context);
-        let child = subagent_system_prompt(None, "glm", "/repo".as_ref(), &context);
+        let child = subagent_system_prompt_with_dirs(None, "glm", "/repo".as_ref(), &[], &context);
 
         assert!(own.contains("<available_agents>"), "{own}");
         assert!(!child.contains("<available_agents>"), "{child}");
@@ -249,6 +280,27 @@ mod tests {
         let prompt = system_prompt("glm", "/repo".as_ref(), &Context::default());
 
         assert!(prompt.ends_with("</env>\n"), "{prompt}");
+    }
+
+    #[test]
+    fn added_directories_follow_the_environment() {
+        let dirs = ["/elsewhere".to_string(), "/home/k/reference".to_string()];
+        let dirs: Vec<_> = dirs.iter().map(PathBuf::from).collect();
+        let prompt = system_prompt_with_dirs("glm", "/repo".as_ref(), &dirs, &Context::default());
+
+        // The block is left out entirely when there is nothing added.
+        assert!(
+            !system_prompt("glm", "/repo".as_ref(), &Context::default())
+                .contains("<additional_directories>")
+        );
+        let tail = prompt.split("</env>\n").nth(1).expect("env block");
+        assert_eq!(
+            tail,
+            "\n<additional_directories>\n  You may also read and edit files in these \
+             additional working directories, by their absolute paths:\n  - /elsewhere\n  \
+             - /home/k/reference\n</additional_directories>\n",
+            "{tail}"
+        );
     }
 
     #[test]
@@ -323,13 +375,20 @@ mod tests {
 
     #[test]
     fn a_subagent_gets_its_persona_or_the_models() {
-        let own = subagent_system_prompt(
+        let own = subagent_system_prompt_with_dirs(
             Some("You search.\n"),
             "kimi-k3",
             "/repo".as_ref(),
+            &[],
             &Context::default(),
         );
-        let models = subagent_system_prompt(None, "kimi-k3", "/repo".as_ref(), &Context::default());
+        let models = subagent_system_prompt_with_dirs(
+            None,
+            "kimi-k3",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(
             own.starts_with("You search.\n\nYou are powered by the model named kimi-k3."),

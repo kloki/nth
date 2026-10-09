@@ -1,9 +1,10 @@
 //! The status bar under the input panel. Line 1 is general state: model,
-//! place and context used on the left, git branch and status on the right.
-//! Line 2 shows a hint about the last key or the queued prompts on the
-//! left, and the running monitors and the language servers that check a
-//! write on the right: a dot per server, coloured by its state. The right
-//! side is cut first when a line is too narrow.
+//! effort, place (the working directory in magenta, then the ones added
+//! with `/add-dir` with a `+`) and context used on the left, git branch and
+//! status on the right. Line 2 shows a hint about the last key or the queued
+//! prompts on the left, and the running monitors and the language servers
+//! that check a write on the right: a dot per server, coloured by its
+//! state. The right side is cut first when a line is too narrow.
 
 use std::path::Path;
 
@@ -27,10 +28,22 @@ const BAR_WIDTH: usize = 13;
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
-    let mut place = vec![app.model.clone()];
-    place.extend(app.effort.wire().map(String::from));
-    place.push(app.place.clone());
-    let mut place = vec![Span::styled(place.join(" · "), bright_white())];
+    let mut model = vec![app.model.clone()];
+    model.extend(app.effort.wire().map(String::from));
+    // The working directory, and the ones added with `/add-dir` behind a
+    // `+`, say where the session works: magenta, against the bright white
+    // model and effort.
+    let mut dirs = vec![app.place.clone()];
+    dirs.extend(
+        app.extra_dirs
+            .iter()
+            .map(|dir| format!(" +{}", place(dir, app.home()))),
+    );
+    let mut place = vec![
+        Span::styled(model.join(" · "), bright_white()),
+        Span::raw(" · "),
+        Span::styled(dirs.join(""), magenta()),
+    ];
     // Unknown window, no bar; no reply yet, an empty one.
     if let Some(window) = app.context_window().filter(|&w| w > 0) {
         let used = app.usage.map_or(0, |usage| usage.context());
@@ -110,6 +123,11 @@ pub fn state_colour(state: &ServerState) -> Color {
 /// `Color::White` is the terminal's bright white; plain white is `Gray`.
 fn bright_white() -> Style {
     Style::new().fg(Color::White)
+}
+
+/// Where the session works, as line 1 shows it.
+fn magenta() -> Style {
+    Style::new().fg(Color::Magenta)
 }
 
 /// Draws `left` against the left edge and `right` against the right edge

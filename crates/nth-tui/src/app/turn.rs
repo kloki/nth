@@ -58,9 +58,17 @@ impl App {
 
     pub(super) fn submit(&mut self) {
         let shell = self.prompt.shell();
-        if !shell && let Some(command) = Command::parse(self.prompt.text()) {
+        if !shell
+            && let Some((command, arg)) = Command::invocation(self.prompt.text())
+            && let arg = arg.to_string()
+        {
             self.prompt.clear();
-            self.run_command(command);
+            match (command, arg.is_empty()) {
+                // `/add-dir <dir>` is the one command with an argument,
+                // and it runs without a turn.
+                (Command::AddDir, false) => self.add_dir(&arg),
+                (command, _) => self.run_command(command),
+            }
             return;
         }
         if self.prompt.text().trim().is_empty() {
@@ -179,6 +187,11 @@ impl App {
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
+        }
+        // Added with `/add-dir`, maybe while the last turn ran: the session
+        // is in its task while one does, so they reach it here.
+        if session.extra_dirs != self.extra_dirs {
+            session.set_extra_dirs(self.extra_dirs.clone());
         }
         self.llm_usage.count(&self.model);
         self.save_llm_usage();
