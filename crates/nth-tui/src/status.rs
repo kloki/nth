@@ -70,18 +70,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// on their way into the running turn count too, and name the line: they
 /// are the next thing the model hears.
 fn queued(app: &App) -> Vec<Span<'static>> {
-    let mut prompts = app.inbox.pending_prompts().into_iter();
-    let count = prompts.len() + app.queue.len();
-    let next = prompts
-        .next()
-        .or_else(|| app.queue.front().map(|next| next.label()));
-    let Some(next) = next else {
-        return Vec::new();
+    let waiting = app.inbox.prompts_waiting();
+    let count = waiting.as_ref().map_or(0, |(count, _)| *count) + app.queue.len();
+    let first = match waiting {
+        Some((_, first)) => first,
+        None => match app.queue.front() {
+            Some(next) => {
+                let next = next.label();
+                let first = next.lines().find(|line| !line.trim().is_empty());
+                first.unwrap_or_default().to_string()
+            }
+            None => return Vec::new(),
+        },
     };
-    let first = next
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
     let line = format!("⏵ {count} queued · {first}");
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }

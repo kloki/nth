@@ -97,7 +97,7 @@ impl Inbox {
         monitor_notice(&mut pending, id, description, log).ended = Some((end, events));
     }
 
-    /// Whether the model has notices waiting.
+    /// Whether anything waits for the model, notices or prompts.
     pub fn has_notices(&self) -> bool {
         self.0.as_ref().is_some_and(|p| !lock(p).is_empty())
     }
@@ -106,53 +106,42 @@ impl Inbox {
     /// for [`Inbox::take_notices`]: a turn that pre-empts its tool calls
     /// takes only these.
     pub fn take_prompts(&self) -> Option<String> {
-        let pending = self.0.as_ref()?;
-        let mut pending = lock(pending);
-        let mut prompts = Vec::new();
-        for item in std::mem::take(&mut *pending) {
-            match item {
-                Pending::Prompt(text) => prompts.push(text),
-                notice => pending.push(notice),
-            }
-        }
+        let mut pending = lock(self.0.as_ref()?);
+        let (prompts, notices): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+            .into_iter()
+            .partition(|pending| pending.prompt().is_some());
+        *pending = notices;
+        drop(pending);
+        let prompts: Vec<&str> = prompts.iter().filter_map(Pending::prompt).collect();
         (!prompts.is_empty()).then(|| prompts.join("\n\n"))
     }
 
-    /// The prompts waiting, without forgetting them: the status bar counts
-    /// and names them.
-    pub fn pending_prompts(&self) -> Vec<String> {
-        let Some(pending) = &self.0 else {
-            return Vec::new();
-        };
-        lock(pending)
-            .iter()
-            .filter_map(|pending| match pending {
-                Pending::Prompt(text) => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
+    /// How many prompts wait and the first line of the oldest, without
+    /// forgetting them: the status bar counts and names them on every draw.
+    pub fn prompts_waiting(&self) -> Option<(usize, String)> {
+        let pending = lock(self.0.as_ref()?);
+        let mut prompts = pending.iter().filter_map(Pending::prompt);
+        let first = prompts.next()?;
+        let line = first
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_string();
+        Some((1 + prompts.count(), line))
     }
 
-    /// Everything the model has not seen, as one message, and forgets it:
-    /// the background's notices first, so the transcript reads them back,
-    /// then any prompts, as a turn's own prompt follows its notices.
+    /// The background's notices, as one message, and forgets them. Prompts
+    /// stay for [`Inbox::take_prompts`]: they read as what you typed, and
+    /// whoever hands them over treats them as a prompt.
     pub fn take_notices(&self) -> Option<String> {
-        let pending = std::mem::take(&mut *lock(self.0.as_ref()?));
-        if pending.is_empty() {
-            return None;
-        }
-        let mut parts: Vec<String> = pending.iter().filter_map(Pending::notice).collect();
-        let prompts: Vec<String> = pending
-            .iter()
-            .filter_map(|pending| match pending {
-                Pending::Prompt(text) => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        if !prompts.is_empty() {
-            parts.push(prompts.join("\n\n"));
-        }
-        Some(parts.join("\n"))
+        let mut pending = lock(self.0.as_ref()?);
+        let (prompts, notices): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+            .into_iter()
+            .partition(|pending| pending.prompt().is_some());
+        *pending = prompts;
+        drop(pending);
+        let notices: Vec<String> = notices.iter().filter_map(Pending::notice).collect();
+        (!notices.is_empty()).then(|| notices.join("\n"))
     }
 
     /// Forgets every notice, for a session that was left: they were for
@@ -219,6 +208,14 @@ impl Pending {
             Pending::Prompt(_) => None,
         }
     }
+
+    /// What you typed, for a prompt.
+    fn prompt(&self) -> Option<&str> {
+        match self {
+            Pending::Prompt(text) => Some(text),
+            Pending::Monitor(_) | Pending::Task(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -246,34 +243,32 @@ mod tests {
     }
 
     #[test]
-    fn prompts_follow_the_notices_in_take_notices() {
+    fn take_notices_leaves_the_prompts() {
         let inbox = Inbox::new();
         let log = Path::new("/logs/1.log");
         inbox.monitor_line(1, "ci", log, "build ok".into());
         assert!(inbox.post_prompt("hold on".into()));
-        assert!(inbox.post_prompt("and thanks".into()));
 
         assert_eq!(
             inbox.take_notices().unwrap(),
-            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
-             hold on\n\nand thanks",
-            "notices first, so the transcript's parser keeps working"
+            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>"
         );
         assert_eq!(inbox.take_notices(), None, "taken");
+        assert_eq!(inbox.take_prompts().as_deref(), Some("hold on"));
     }
 
     #[test]
     fn take_prompts_leaves_the_notices_waiting() {
         let inbox = Inbox::new();
-        assert!(inbox.post_prompt("one".into()));
+        assert!(inbox.post_prompt("\none\nmore".into()));
         inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
         assert!(inbox.post_prompt("two".into()));
 
-        assert_eq!(inbox.pending_prompts(), ["one", "two"]);
-        assert_eq!(inbox.take_prompts().as_deref(), Some("one\n\ntwo"));
+        assert_eq!(inbox.prompts_waiting(), Some((2, "one".to_string())));
+        assert_eq!(inbox.take_prompts().as_deref(), Some("\none\nmore\n\ntwo"));
         assert!(inbox.has_notices(), "the monitor line still waits");
         assert_eq!(inbox.take_prompts(), None, "taken");
-        assert_eq!(inbox.pending_prompts(), Vec::<String>::new());
+        assert_eq!(inbox.prompts_waiting(), None);
     }
 
     #[test]

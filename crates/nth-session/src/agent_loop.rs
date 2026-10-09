@@ -187,13 +187,8 @@ pub async fn run_turn(
                 call_id: call.id,
                 content: failed(INTERRUPTED),
             }));
-            // As `Session::prompt` would treat it: the agents it mentions
-            // told of, the reminder hidden from the transcript.
-            let mut text = prompts.clone();
-            if let Some(mention) = crate::subagent::resolve(&text, &ctx.context.agents, &ctx.cwd) {
-                text.push_str(&mention);
-            }
-            text.push_str(INTERRUPTED_REMINDER);
+            // The reminder hidden from the transcript, as the mention is.
+            let text = steered(&prompts, ctx) + INTERRUPTED_REMINDER;
             messages.push(Message::User(text));
             emit(events, Event::Notice(prompts)).await;
             continue;
@@ -238,14 +233,29 @@ pub async fn run_turn(
         if cancel.is_cancelled() {
             return Err(Error::Interrupted);
         }
-        // What monitors said while the tools ran, so a model busy on a long
-        // turn hears it at its next step rather than when the turn ends.
-        if let Some(notices) = ctx.inbox.take_notices() {
-            messages.push(Message::User(notices.clone()));
-            emit(events, Event::Notice(notices)).await;
+        // What monitors said and you sent while the tools ran, so a model
+        // busy on a long turn hears it at its next step rather than when
+        // the turn ends: the notices first, so the transcript reads them
+        // back, then the prompts, as a turn's own prompt follows its notices.
+        let notices = ctx.inbox.take_notices();
+        let prompts = ctx.inbox.take_prompts();
+        let shown = [notices.clone(), prompts.clone()].into_iter().flatten();
+        let shown = shown.collect::<Vec<_>>().join("\n");
+        let sent = [notices, prompts.map(|prompts| steered(&prompts, ctx))];
+        let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
+        if !sent.is_empty() {
+            messages.push(Message::User(sent));
+            emit(events, Event::Notice(shown)).await;
         }
     }
     Err(Error::TooManySteps(route.max_steps))
+}
+
+/// Prompts sent mid-turn as `Session::prompt` would send them: the agents
+/// they mention told of. What the transcript shows is `prompts` alone.
+fn steered(prompts: &str, ctx: &ToolContext) -> String {
+    let mention = crate::subagent::resolve(prompts, &ctx.context.agents, &ctx.cwd);
+    format!("{prompts}{}", mention.unwrap_or_default())
 }
 
 /// Why a step's reply did not finish.
@@ -785,7 +795,7 @@ pub(crate) mod tests {
     }
 
     /// Posts a prompt from inside the tool, as you would while it runs.
-    struct Shout;
+    struct Shout(&'static str);
 
     impl Tool for Shout {
         fn spec(&self) -> ToolSpec {
@@ -802,7 +812,7 @@ pub(crate) mod tests {
             ctx: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
-                ctx.inbox.post_prompt("meanwhile".into());
+                ctx.inbox.post_prompt(self.0.into());
                 Ok("done".into())
             }
             .boxed()
@@ -815,7 +825,7 @@ pub(crate) mod tests {
             vec![StreamEvent::ToolCall(call("1", "shout", ""))],
             vec![StreamEvent::TextDelta("ok".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout)];
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("meanwhile"))];
         let ctx = ToolContext {
             inbox: Inbox::new(),
             ..ToolContext::new(".".into())
@@ -839,6 +849,57 @@ pub(crate) mod tests {
             messages[3],
             Message::User("meanwhile".into()),
             "plain, through the notices: the calls above it ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_while_tools_run_resolves_the_agents_it_mentions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = nth_context::Context::discover(dir.path(), &nth_context::Paths::default());
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "shout", ""))],
+            vec![StreamEvent::TextDelta("ok".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("@explore find the tabs"))];
+        let ctx = ToolContext {
+            context: std::sync::Arc::new(context),
+            inbox: Inbox::new(),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+
+        let Message::User(sent) = &messages[3] else {
+            panic!("the prompt followed the results: {:?}", messages[3]);
+        };
+        assert!(sent.starts_with("@explore find the tabs"), "{sent}");
+        assert!(
+            sent.contains("call the task tool with subagent: explore"),
+            "{sent}"
+        );
+        drop(tx);
+        let mut shown = None;
+        while let Some(event) = rx.recv().await {
+            if let Event::Notice(text) = event {
+                shown = Some(text);
+            }
+        }
+        assert_eq!(
+            shown.as_deref(),
+            Some("@explore find the tabs"),
+            "the chat shows what you typed"
         );
     }
 

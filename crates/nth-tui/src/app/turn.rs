@@ -105,11 +105,14 @@ impl App {
     /// a plain prompt while one runs, steers it: the turn picks it up from
     /// the model's inbox at its next step, pre-empting the tool calls it
     /// was about to run. A skill is filled in when its own turn starts,
-    /// and what already waits keeps its place ahead, so those queue.
+    /// what already waits keeps its place ahead, and a prompt for another
+    /// mode or model than the running turn's runs on its own, so those
+    /// queue.
     pub(super) fn send(&mut self, next: Queued) {
         if let Queued::Prompt(text) = &next
             && self.is_busy()
             && self.queue.is_empty()
+            && self.steerable == Some((self.mode, self.llm(self.mode)))
             && nth_context::skills::parse(text, &self.context.skills).is_none()
         {
             self.inbox.post_prompt(text.clone());
@@ -148,6 +151,8 @@ impl App {
         };
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
+        // A command never asks the model, so nothing would pick a prompt up.
+        self.steerable = None;
         let events = self.events_tx.clone();
         let store = self.store.clone();
         self.turn.start(|token| {
@@ -190,6 +195,16 @@ impl App {
             Some(_) => None,
             None => self.inbox.take_notices(),
         };
+        // Prompts the last turn never picked up are this one's own: the
+        // session treats them as it does `text`.
+        let text = match skill {
+            Some(_) => text,
+            None => match self.inbox.take_prompts() {
+                Some(prompts) if text.is_empty() => prompts,
+                Some(prompts) => format!("{prompts}\n\n{text}"),
+                None => text,
+            },
+        };
         self.notices_due = None;
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
@@ -199,6 +214,7 @@ impl App {
         self.save_llm_usage();
         session.effort = self.effort;
         session.mode = self.mode;
+        self.steerable = Some((self.mode, self.llm(self.mode)));
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }
@@ -317,19 +333,21 @@ impl App {
         // prompt once you stopped it, else wake it on their own: a turn
         // that failed is no reason to keep a subagent's answer from it.
         self.hold_notices = interrupted;
-        match self.queue.pop_front() {
-            Some(next) if send_next => self.start(next),
-            Some(next) => {
-                self.queue.push_front(next);
-                self.unqueue();
+        self.steerable = None;
+        if !send_next {
+            // What the turn never picked up goes back, steered or queued:
+            // sent prompts were written for a turn that went well. The
+            // notices stay and wake the model on their own.
+            self.unqueue();
+        } else if self.inbox.prompts_waiting().is_some() {
+            // Steered prompts the turn never picked up were sent before
+            // anything that queued behind them, so they run first.
+            self.start_turn(String::new());
+        } else {
+            match self.queue.pop_front() {
+                Some(next) => self.start(next),
+                None => self.start_turn(String::new()),
             }
-            None if send_next => self.start_turn(String::new()),
-            // A steered prompt the turn never picked up goes back, as a
-            // queued one does after an interrupted or failed turn: sent
-            // prompts were written for a turn that went well. The notices
-            // stay and wake the model on their own.
-            None if !send_next => self.unqueue(),
-            None => {}
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
@@ -367,6 +385,7 @@ impl App {
             "turn task failed: {error} · continuing in a new session; \
              the old one was last saved after its previous turn, /resume brings it back"
         ));
+        self.steerable = None;
         // Before the fresh session: starting one clears the inbox, and a
         // steered prompt still in it is yours to give back.
         self.unqueue();
@@ -665,7 +684,7 @@ mod tests {
 
         assert!(app.prompt.is_empty());
         assert!(app.queue.is_empty());
-        assert_eq!(app.inbox.pending_prompts(), ["next"]);
+        assert_eq!(app.inbox.prompts_waiting(), Some((1, "next".into())));
         assert_eq!(last_user(&app), Some("go"), "shown once the model gets it");
         let token = app.turn.token().expect("still running");
         assert!(!token.is_cancelled());
@@ -751,6 +770,68 @@ mod tests {
             &entries[at + 1],
             Entry::User(text) if text == "stop, just name them"
         ));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_after_a_mode_switch_waits_for_its_own_turn() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        app.set_mode(nth_protocol::Mode::Plan);
+        send(&mut app, "plan it");
+
+        assert_eq!(app.queue, [Queued::Prompt("plan it".into())]);
+        assert_eq!(app.inbox.prompts_waiting(), None, "not steered");
+        end(&mut app).await;
+        assert_eq!(last_user(&app), Some("plan it"));
+        end(&mut app).await;
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.mode, nth_protocol::Mode::Plan);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_after_a_model_pick_waits_for_its_own_turn() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        app.model = "kimi".into();
+        send(&mut app, "you now");
+
+        assert_eq!(app.queue, [Queued::Prompt("you now".into())]);
+        end(&mut app).await;
+        end(&mut app).await;
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.model, "kimi");
+    }
+
+    #[tokio::test]
+    async fn a_steered_prompt_runs_before_what_queued_behind_it() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        send(&mut app, "next");
+        command(&mut app, "make");
+        assert_eq!(app.inbox.prompts_waiting(), Some((1, "next".into())));
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the steered prompt's own turn");
+        assert_eq!(last_user(&app), Some("next"));
+        assert_eq!(app.queue, [Queued::Shell("make".into())], "still waits");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_while_a_command_runs_waits_for_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = shell_app(dir.path());
+        command(&mut app, "echo hi");
+        send(&mut app, "hello");
+
+        assert_eq!(app.queue, [Queued::Prompt("hello".into())]);
+        assert_eq!(
+            app.inbox.prompts_waiting(),
+            None,
+            "nothing would pick it up"
+        );
     }
 
     #[tokio::test]
