@@ -6,7 +6,7 @@
 use nth_protocol::Cost;
 use nth_session::{
     Ledger, Total,
-    usage::{self, short, steps},
+    usage::{self, row},
 };
 use ratatui::{
     Frame,
@@ -87,47 +87,22 @@ fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'stat
     }
     let price = |model: &str, total: Total| usage::price([(model, total)], cost);
     let mut lines = vec![title("usage")];
-    let all = ledger
-        .price(cost)
-        .map(|p| p.to_string())
-        .unwrap_or_default();
-    lines.extend(styled(&[cells("all", total, all)]));
+    let all = row("all", total, ledger.price(cost));
+    lines.extend(styled(&[all]));
 
     lines.push(Line::default());
     lines.push(title("per model"));
     let models: Vec<_> = ledger
         .by_model()
         .into_iter()
-        .map(|(model, total)| {
-            let price = price(model, total)
-                .map(|p| p.to_string())
-                .unwrap_or_default();
-            cells(model, total, price)
-        })
+        .map(|(model, total)| row(model, total, price(model, total)))
         .collect();
     lines.extend(styled(&models));
 
     lines.push(Line::default());
     lines.push(title("per turn"));
-    let turns: Vec<_> = ledger
-        .spends()
-        .iter()
-        .filter(|spend| spend.steps > 0)
-        .enumerate()
-        .map(|(n, spend)| {
-            let who = match &spend.agent {
-                Some(agent) => format!("#{} @{agent} {}", n + 1, spend.model),
-                None => format!("#{} {}", n + 1, spend.model),
-            };
-            let total = Total {
-                steps: spend.steps,
-                tokens: spend.tokens,
-            };
-            let price = price(&spend.model, total)
-                .map(|p| p.to_string())
-                .unwrap_or_default();
-            cells(&who, total, price)
-        })
+    let turns: Vec<_> = usage::turns(ledger)
+        .map(|(who, spend)| row(&who, spend.into(), price(&spend.model, spend.into())))
         .collect();
     lines.extend(styled(&turns));
 
@@ -136,23 +111,6 @@ fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'stat
         "prices are list-price estimates from models.dev, whatever your plan bills".into(),
     ));
     lines
-}
-
-/// One row: who spent it, then its counts, then its price.
-fn cells(who: &str, total: Total, price: String) -> [String; 6] {
-    let tokens = total.tokens;
-    let cached = match tokens.cached_share() {
-        Some(share) => format!("{:.0}% cached", share * 100.0),
-        None => "cache ?".into(),
-    };
-    [
-        who.to_string(),
-        steps(total.steps),
-        format!("{} in", short(tokens.input)),
-        cached,
-        format!("{} out", short(tokens.output)),
-        price,
-    ]
 }
 
 /// Rows in columns, who left-aligned and the counts right, each cell in

@@ -19,6 +19,7 @@ clap.workspace = true
 fastrand.workspace = true
 owo-colors.workspace = true
 serde.workspace = true
+jiff.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true

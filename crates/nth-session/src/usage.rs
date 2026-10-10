@@ -161,6 +161,65 @@ impl Extend<Spend> for Ledger {
     }
 }
 
+/// One row of a usage table: who spent it, its requests, tokens in, the
+/// share read from the cache, tokens out and its price when known.
+pub fn row(who: &str, total: Total, price: Option<Price>) -> [String; 6] {
+    let tokens = total.tokens;
+    let cached = match tokens.cached_share() {
+        Some(share) => format!("{:.0}% cached", share * 100.0),
+        None => "cache ?".into(),
+    };
+    [
+        who.to_string(),
+        steps(total.steps),
+        format!("{} in", short(tokens.input)),
+        cached,
+        format!("{} out", short(tokens.output)),
+        price.map(|price| price.to_string()).unwrap_or_default(),
+    ]
+}
+
+/// Rows as text in columns: who left-aligned, the counts right.
+pub fn columns(rows: &[[String; 6]]) -> Vec<String> {
+    let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..6).map(width).collect();
+    rows.iter()
+        .map(|row| {
+            let mut line = format!("{:<w$}", row[0], w = widths[0]);
+            for (cell, w) in row.iter().zip(&widths).skip(1) {
+                line.push_str(&format!("  {cell:>w$}"));
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// Each turn that made a request, numbered from 1 in that order, with who
+/// spent it: `#2 @explore kimi-k3`.
+pub fn turns(ledger: &Ledger) -> impl Iterator<Item = (String, &Spend)> {
+    ledger
+        .spends()
+        .iter()
+        .filter(|spend| spend.steps > 0)
+        .enumerate()
+        .map(|(n, spend)| {
+            let who = match &spend.agent {
+                Some(agent) => format!("#{} @{agent} {}", n + 1, spend.model),
+                None => format!("#{} {}", n + 1, spend.model),
+            };
+            (who, spend)
+        })
+}
+
+impl From<&Spend> for Total {
+    fn from(spend: &Spend) -> Self {
+        Self {
+            steps: spend.steps,
+            tokens: spend.tokens,
+        }
+    }
+}
+
 /// `1 step`, `12 steps`.
 pub fn steps(count: u32) -> String {
     match count {
