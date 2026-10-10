@@ -125,13 +125,16 @@ pub(super) async fn run(actor: Actor) {
             heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
         }
         // A child that was forgotten spent for a session that was left.
-        if !closed.is_cancelled() {
-            let turn = session.usage.spends()[spends..].iter().cloned();
-            let turn = turn.map(|spend| Spend {
-                agent: Some(agent.clone()),
-                ..spend
-            });
-            lock_spent(&spent).extend(turn);
+        // Checked under the lock `forget_all` takes the spend under, after
+        // cancelling `closed`, so none of it lands after that.
+        {
+            let mut spent = lock_spent(&spent);
+            if !closed.is_cancelled() {
+                spent.extend(session.usage.since(spends).iter().map(|spend| Spend {
+                    agent: Some(agent.clone()),
+                    ..spend.clone()
+                }));
+            }
         }
         let outcome = match &result {
             Ok(()) => TaskOutcome::Completed(answer(&session)),

@@ -247,7 +247,6 @@ impl Subagents {
     /// What they spent and nobody took is dropped with them: it belonged
     /// to the session that was left.
     pub fn forget_all(&self) {
-        self.take_spent();
         let mut registry = self.0.lock();
         registry.forgotten = registry.next;
         for (_, child) in std::mem::take(&mut registry.children) {
@@ -258,6 +257,10 @@ impl Subagents {
                 token.cancel();
             }
         }
+        drop(registry);
+        // Only once every child is closed: an actor checks that under the
+        // lock this takes, so nothing of the left session's comes after.
+        self.take_spent();
     }
 
     /// What the subagents' turns spent since this was last called, for

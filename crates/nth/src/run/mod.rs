@@ -73,7 +73,9 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     turn?;
 
     let mut spent = Total::default();
-    session.usage.spends()[spends..]
+    session
+        .usage
+        .since(spends)
         .iter()
         .for_each(|spend| spent.add(spend));
     eprintln!(

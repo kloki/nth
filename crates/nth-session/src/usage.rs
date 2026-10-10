@@ -14,7 +14,6 @@ pub struct Spend {
     pub model: String,
     /// The subagent that spent it on the session's behalf; `None` for the
     /// session's own turns.
-    #[serde(default)]
     pub agent: Option<String>,
     /// Requests the provider reported usage for.
     pub steps: u32,
@@ -57,6 +56,12 @@ pub struct Ledger(Vec<Spend>);
 impl Ledger {
     pub fn spends(&self) -> &[Spend] {
         &self.0
+    }
+
+    /// The spends from `at` on, as [`Ledger::spends`]`().len()` was then;
+    /// a ledger only grows, so they are what was spent since.
+    pub fn since(&self, at: usize) -> &[Spend] {
+        self.0.get(at..).unwrap_or_default()
     }
 
     /// Starts a turn's spend and returns where it is, for [`Ledger::add`].
