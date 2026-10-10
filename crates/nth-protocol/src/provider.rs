@@ -245,6 +245,13 @@ impl From<Vec<ModelInfo>> for Listing {
     }
 }
 
+impl Listing {
+    /// What `model` costs, when the catalogue says.
+    pub fn cost_of(&self, model: &str) -> Option<Cost> {
+        self.models.iter().find(|m| m.id == model)?.cost
+    }
+}
+
 impl ModelInfo {
     /// The id the endpoint knows the model by: `id` without the origin's
     /// prefix. The one place that knows the two are joined by a `/`.

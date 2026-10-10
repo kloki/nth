@@ -43,8 +43,22 @@ pub struct Total {
 
 impl Total {
     pub fn add(&mut self, spend: &Spend) {
-        self.steps += spend.steps;
-        self.tokens += spend.tokens;
+        *self += Total::from(spend);
+    }
+}
+
+impl std::ops::AddAssign for Total {
+    fn add_assign(&mut self, other: Self) {
+        self.steps += other.steps;
+        self.tokens += other.tokens;
+    }
+}
+
+impl<'a> std::iter::Sum<&'a Total> for Total {
+    fn sum<I: Iterator<Item = &'a Total>>(totals: I) -> Self {
+        let mut sum = Total::default();
+        totals.for_each(|total| sum += *total);
+        sum
     }
 }
 

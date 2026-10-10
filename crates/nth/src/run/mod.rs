@@ -77,11 +77,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
 
     let elapsed = started.elapsed();
     let models = usage::by_model(session.usage.since(spends));
-    let mut spent = Total::default();
-    models.values().for_each(|total| {
-        spent.steps += total.steps;
-        spent.tokens += total.tokens;
-    });
+    let spent: Total = models.values().sum();
     let price = match spent.steps {
         0 => None,
         _ => price(provider.as_ref(), models).await,
@@ -105,7 +101,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
 /// is slow or knows none of the models.
 async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option<Price> {
     let listing = crate::usage::listing(provider).await?;
-    usage::price(models, |model| crate::usage::cost_in(Some(&listing), model))
+    usage::price(models, |model| listing.cost_of(model))
 }
 
 /// `12 steps · 1.2M in · 82% cached · 40k out · $3.10`; the cache share

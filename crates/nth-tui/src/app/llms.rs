@@ -9,11 +9,6 @@ use nth_session::Price;
 use super::{App, input::Input};
 use crate::llm_picker::LlmPicker;
 
-/// What `model` costs in `llms`, when the catalogue says.
-pub(super) fn cost_in(llms: Option<&Listing>, model: &str) -> Option<Cost> {
-    llms?.models.iter().find(|llm| llm.id == model)?.cost
-}
-
 impl App {
     /// Opens the picker on the LLM in use, listing LLMs the first time.
     pub(super) fn open_llm_picker(&mut self) {
@@ -50,7 +45,7 @@ impl App {
 
     /// What `model` costs, when the catalogue says.
     pub fn cost_of(&self, model: &str) -> Option<Cost> {
-        cost_in(self.llms.as_ref(), model)
+        self.llms.as_ref()?.cost_of(model)
     }
 
     /// What the session spent so far, at the catalogue's prices.

@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use crate::{config::Config, providers};
 
 /// How long a price waits for the model listing.
-pub const LISTING_WAIT: Duration = Duration::from_secs(3);
+const LISTING_WAIT: Duration = Duration::from_secs(3);
 
 /// The providers' listing, for prices; `None` when it is slow or fails,
 /// which costs only the prices.
@@ -33,11 +33,6 @@ pub async fn listing(provider: &dyn Provider) -> Option<Listing> {
         .ok()
 }
 
-/// What `model` costs in `listing`, when the catalogue says.
-pub fn cost_in(listing: Option<&Listing>, model: &str) -> Option<Cost> {
-    listing?.models.iter().find(|m| m.id == model)?.cost
-}
-
 pub async fn run(session: Option<String>, all: bool, json: bool, config: Config) -> Result<()> {
     let store = Store::open()?;
     // No provider configured costs the prices, not the command.
@@ -45,13 +40,10 @@ pub async fn run(session: Option<String>, all: bool, json: bool, config: Config)
         Ok(providers) => listing(&providers).await,
         Err(_) => None,
     };
-    let cost = |model: &str| cost_in(listing.as_ref(), model);
+    let cost = |model: &str| listing.as_ref()?.cost_of(model);
     let mut out = std::io::stdout().lock();
     let json = json || !out.is_terminal();
     if all {
-        if session.is_some() {
-            bail!("--all sums every saved session; leave out the session");
-        }
         let spending = store.spending().await?;
         let spends: Vec<&Spend> = spending.iter().flat_map(|s| s.usage.spends()).collect();
         let days = per_day(&spends);
@@ -178,9 +170,7 @@ fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
     let mut all: BTreeMap<&str, Total> = BTreeMap::new();
     for (_, models) in days {
         for (model, total) in models {
-            let sum = all.entry(model).or_default();
-            sum.steps += total.steps;
-            sum.tokens += total.tokens;
+            *all.entry(model).or_default() += *total;
         }
     }
     let all_rows: Vec<_> = all
@@ -194,7 +184,7 @@ fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
             .map(|(model, total)| row(model, *total, price(model, *total)))
             .collect();
         writeln!(out)?;
-        let total = sum(models.values());
+        let total: Total = models.values().sum();
         let day_price = usage::price(models.iter().map(|(m, t)| (*m, *t)), cost);
         let head = row(&day.to_string(), total, day_price);
         writeln!(out, "{}", columns(&[head]).concat().bold())?;
@@ -215,15 +205,6 @@ fn days_json(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
         }
     }
     Ok(())
-}
-
-fn sum<'a>(totals: impl Iterator<Item = &'a Total>) -> Total {
-    let mut sum = Total::default();
-    for total in totals {
-        sum.steps += total.steps;
-        sum.tokens += total.tokens;
-    }
-    sum
 }
 
 /// A titled block of rows, indented under its title.

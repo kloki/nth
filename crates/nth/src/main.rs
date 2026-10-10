@@ -96,7 +96,7 @@ enum Command {
         /// The session, by its id or the start of it; the latest by default
         session: Option<String>,
         /// Every saved session instead, per day and model
-        #[arg(long)]
+        #[arg(long, conflicts_with = "session")]
         all: bool,
         /// Print JSON, the default when stdout is not a terminal
         #[arg(long)]
