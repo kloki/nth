@@ -17,6 +17,7 @@ pinned to an older SHA keep their own SHA in their header.
 | --- | ------------------------------------- | --------- |
 | 01  | [Paste summary](01-paste-summary.md)  | `03e6717` |
 | 02  | [Providers and models](02-providers.md) | `03e6717` |
+| 03  | [Context management & token use](03-context-management.md) | `03e6717` |
 
 ## Coverage checklist
 
@@ -29,7 +30,7 @@ pinned to an older SHA keep their own SHA in their header.
 - [ ] Permissions
 - [x] Config (providers and model only)
 - [ ] Agents/modes & prompts
-- [ ] Context management & compaction
+- [x] Context management & compaction
 - [ ] MCP
 - [ ] LSP integration
 - [ ] Plugins/extensibility
