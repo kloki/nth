@@ -230,6 +230,7 @@ impl App {
         }
         self.llm_usage.count(&self.model);
         self.save_llm_usage();
+        self.spent.turn_started(&self.model);
         session.effort = self.effort;
         session.mode = self.mode;
         self.steerable = Some((self.mode, self.llm(self.mode)));

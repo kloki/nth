@@ -21,6 +21,7 @@ mod mouse;
 mod notify;
 mod plan;
 mod resume;
+mod spent;
 mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -65,6 +66,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use spent::Spent;
 use tokio::{
     sync::{mpsc, watch},
     task::JoinError,
@@ -178,6 +180,8 @@ pub struct App {
     lsp: Option<watch::Receiver<Vec<ServerStatus>>>,
     /// What the last model reply used; `None` until the first one.
     pub usage: Option<Usage>,
+    /// What the session spent, its subagents included, as heard so far.
+    pub spent: Spent,
     /// Queued again when the tree may have changed mid-load, like `indexing`.
     git_loading: Job<Result<Option<GitStatus>, String>>,
     /// The pull request on the branch, loaded with the git status.
@@ -398,6 +402,7 @@ impl App {
             servers: Vec::new(),
             lsp: None,
             usage: None,
+            spent: Spent::new(session.usage.clone()),
             git_loading: Job::default(),
             pr_loading: Job::default(),
             llms: None,
@@ -772,7 +777,10 @@ impl App {
                     self.read_plan();
                 }
             }
-            Event::Usage(usage) => self.usage = Some(*usage),
+            Event::Usage(usage) => {
+                self.usage = Some(*usage);
+                self.spent.usage(&self.model, *usage);
+            }
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }
@@ -819,6 +827,7 @@ impl App {
         let plan_path = session.plan_path();
         self.session = Some(session);
         self.usage = None;
+        self.spent = Spent::default();
         self.plan_for_session(plan_path);
         self.left_session();
     }

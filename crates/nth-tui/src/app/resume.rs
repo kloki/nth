@@ -6,7 +6,7 @@ use std::sync::Arc;
 use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
-use super::{App, TabState, input::Input};
+use super::{App, TabState, input::Input, spent::Spent};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
 impl App {
@@ -100,6 +100,7 @@ impl App {
         self.last_turn = TabState::Idle;
         self.chat.warn(&session.context().warnings);
         self.usage = None;
+        self.spent = Spent::new(session.usage.clone());
         self.files.clear();
         self.plan_for_session(session.plan_path());
         self.session = Some(session);

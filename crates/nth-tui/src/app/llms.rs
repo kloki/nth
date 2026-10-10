@@ -3,7 +3,8 @@
 
 use std::path::Path;
 
-use nth_protocol::{BoxError, Listing};
+use nth_protocol::{BoxError, Cost, Listing};
+use nth_session::Price;
 
 use super::{App, input::Input};
 use crate::llm_picker::LlmPicker;
@@ -40,6 +41,17 @@ impl App {
     pub fn context_window_of(&self, model: &str) -> Option<u64> {
         let llms = self.llms.as_ref()?;
         llms.models.iter().find(|llm| llm.id == model)?.context
+    }
+
+    /// What `model` costs, when the catalogue says.
+    pub fn cost_of(&self, model: &str) -> Option<Cost> {
+        let llms = self.llms.as_ref()?;
+        llms.models.iter().find(|llm| llm.id == model)?.cost
+    }
+
+    /// What the session spent so far, at the catalogue's prices.
+    pub fn price(&self) -> Option<Price> {
+        self.spent.ledger.price(|model| self.cost_of(model))
     }
 
     /// Only a list is kept; after a failure the next open asks again.

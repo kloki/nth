@@ -3,11 +3,18 @@
 
 mod render;
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow};
 use nth_protocol::{FrontEnd, Mode, Provider};
-use nth_session::{CancellationToken, Store, Subagents, Total, usage::short};
+use nth_session::{
+    CancellationToken, Price, Store, Subagents, Total,
+    usage::{self, short},
+};
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
@@ -72,12 +79,17 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     lsp.shutdown().await;
     turn?;
 
+    let elapsed = started.elapsed();
+    let models = usage::by_model(session.usage.since(spends));
     let mut spent = Total::default();
-    session
-        .usage
-        .since(spends)
-        .iter()
-        .for_each(|spend| spent.add(spend));
+    models.values().for_each(|total| {
+        spent.steps += total.steps;
+        spent.tokens += total.tokens;
+    });
+    let price = match spent.steps {
+        0 => None,
+        _ => price(provider.as_ref(), models).await,
+    };
     eprintln!(
         "{} {}",
         "✓".green().bold(),
@@ -85,17 +97,31 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
             "{} · {} tool calls · {} · {:.1}s",
             session.model,
             printer.tool_calls,
-            summary(spent),
-            started.elapsed().as_secs_f64()
+            summary(spent, price),
+            elapsed.as_secs_f64()
         )
         .dimmed()
     );
     Ok(())
 }
 
-/// `12 steps · 1.2M in · 82% cached · 40k out`; the cache share is left
-/// out when the provider did not say.
-fn summary(spent: Total) -> String {
+/// How long the closing line waits for the model listing to price the run.
+const LISTING_WAIT: Duration = Duration::from_secs(3);
+
+/// What the run cost at the catalogue's prices; `None` when the listing
+/// is slow or knows none of the models.
+async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option<Price> {
+    let listing = tokio::time::timeout(LISTING_WAIT, provider.models())
+        .await
+        .ok()?
+        .ok()?;
+    let cost = |model: &str| listing.models.iter().find(|m| m.id == model)?.cost;
+    usage::price(models, cost)
+}
+
+/// `12 steps · 1.2M in · 82% cached · 40k out · $3.10`; the cache share
+/// and the price are left out when unknown.
+fn summary(spent: Total, price: Option<Price>) -> String {
     let tokens = spent.tokens;
     let mut parts = vec![
         format!("{} steps", spent.steps),
@@ -105,6 +131,7 @@ fn summary(spent: Total) -> String {
         parts.push(format!("{:.0}% cached", share * 100.0));
     }
     parts.push(format!("{} out", short(tokens.output)));
+    parts.extend(price.map(|price| price.to_string()));
     parts.join(" · ")
 }
 
@@ -115,7 +142,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_names_the_cache_share_only_when_known() {
+    fn summary_names_the_cache_share_and_price_only_when_known() {
         let mut spent = Total {
             steps: 12,
             tokens: Usage {
@@ -125,8 +152,15 @@ mod tests {
                 cache_write: None,
             },
         };
-        assert_eq!(summary(spent), "12 steps · 1.2M in · 82% cached · 40k out");
+        let price = Price {
+            dollars: 3.1,
+            partial: false,
+        };
+        assert_eq!(
+            summary(spent, Some(price)),
+            "12 steps · 1.2M in · 82% cached · 40k out · $3.10"
+        );
         spent.tokens.cache_read = None;
-        assert_eq!(summary(spent), "12 steps · 1.2M in · 40k out");
+        assert_eq!(summary(spent, None), "12 steps · 1.2M in · 40k out");
     }
 }

@@ -202,6 +202,7 @@ mod tests {
                 id: origin.into(),
                 name: origin.to_uppercase(),
             }),
+            cost: None,
         }
     }
 

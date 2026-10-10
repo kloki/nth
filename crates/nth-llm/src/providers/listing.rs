@@ -77,6 +77,7 @@ pub(crate) fn select(
                     output: None,
                     efforts: catalog::BUDGET_EFFORTS.to_vec(),
                     origin: None,
+                    cost: None,
                 });
             };
             // A model nth cannot talk to is not offered.
@@ -88,6 +89,7 @@ pub(crate) fn select(
                 output: model.limit.as_ref().and_then(|l| l.output),
                 efforts: model.efforts(),
                 origin: None,
+                cost: model.cost,
             })
         })
         .collect();
@@ -133,7 +135,7 @@ pub(crate) fn merge<E: std::fmt::Display>(
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Effort;
+    use nth_protocol::{Cost, Effort};
 
     use super::*;
 
@@ -172,6 +174,7 @@ mod tests {
             output: None,
             efforts: Vec::new(),
             origin: None,
+            cost: None,
         }
     }
 
@@ -195,6 +198,12 @@ mod tests {
                 output: Some(131_072),
                 efforts: vec![Effort::Low, Effort::High, Effort::Max],
                 origin: None,
+                cost: Some(Cost {
+                    input: 1.4,
+                    output: 4.4,
+                    cache_read: Some(0.26),
+                    cache_write: None,
+                }),
             }
         );
         assert_eq!(
