@@ -1628,6 +1628,7 @@ dependencies = [
  "nth-format",
  "nth-lsp",
  "nth-protocol",
+ "nth-worktree",
  "regex",
  "reqwest",
  "serde",
@@ -1663,6 +1664,14 @@ dependencies = [
  "tokio",
  "unicode-width",
  "uuid",
+]
+
+[[package]]
+name = "nth-worktree"
+version = "0.9.0"
+dependencies = [
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

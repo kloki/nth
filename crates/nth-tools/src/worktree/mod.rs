@@ -1,17 +1,10 @@
 //! Moving the session into a git worktree under `.nth/worktrees` and back.
 
-mod git;
-
-use std::path::{Path, PathBuf};
-
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, Writable};
+use nth_worktree::Created;
 use serde::Deserialize;
 use serde_json::json;
-
-/// Ignores everything beside it, itself included, so the user's own
-/// `.gitignore` files are never touched.
-const GITIGNORE: &str = "# nth's worktrees.\n*\n";
 
 /// Creates the worktree on first use and moves the session into it.
 pub struct EnterWorktree;
@@ -50,27 +43,14 @@ impl Tool for EnterWorktree {
             // From one worktree into another, the new one still goes in the
             // main checkout.
             let origin = ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone());
-            let root = git::toplevel(&origin).await?;
-            if !git::valid_branch(&root, &name).await {
-                return Err(format!("{name:?} is not a valid branch name"));
-            }
-            let dir = root.join(".nth").join("worktrees");
-            let path = dir.join(&name);
-            let created = match path.join(".git").exists() {
-                true => "",
-                false if path.exists() => {
-                    return Err(format!("{} exists but is not a worktree", path.display()));
-                }
-                false => {
-                    ignore(&dir).await?;
-                    let create = !git::branch_exists(&root, &name).await;
-                    git::add(&root, &path, &name, create).await?;
-                    match create {
-                        true => "Created it on a new branch from HEAD. ",
-                        false => "Created it on the existing branch. ",
-                    }
-                }
+            let root = nth_worktree::toplevel(&origin).await?;
+            let worktree = nth_worktree::open(&root, &name).await?;
+            let created = match worktree.created {
+                None => "",
+                Some(Created::NewBranch) => "Created it on a new branch from HEAD. ",
+                Some(Created::ExistingBranch) => "Created it on the existing branch. ",
             };
+            let path = worktree.path;
             ctx.workdir.enter(&ctx.cwd, path.clone());
             let back = ctx.workdir.origin().unwrap_or(origin);
             Ok(format!(
@@ -128,23 +108,12 @@ fn refuse_in_plan_mode(ctx: &ToolContext) -> Result<(), String> {
     }
 }
 
-/// Makes `dir` with its `.gitignore`, unless it is there already.
-async fn ignore(dir: &Path) -> Result<(), String> {
-    let gitignore: PathBuf = dir.join(".gitignore");
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    if !gitignore.exists() {
-        tokio::fs::write(&gitignore, GITIGNORE)
-            .await
-            .map_err(|e| format!("could not write {}: {e}", gitignore.display()))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::{
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     use nth_protocol::Workdir;
 
@@ -217,18 +186,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checks_out_a_branch_that_exists() {
-        let (_dir, root) = repo();
-        run(&root, &["branch", "old"]);
-
-        let out = enter(&ToolContext::new(root.clone()), "old")
-            .await
-            .expect("entered");
-
-        assert!(out.contains("existing branch"), "{out}");
-    }
-
-    #[tokio::test]
     async fn a_second_worktree_goes_in_the_main_checkout() {
         let (_dir, root) = repo();
         let first = root.join(".nth/worktrees/a");
@@ -288,22 +245,5 @@ mod tests {
                 .contains("plan mode")
         );
         assert_eq!(ctx.workdir.moved_to(), None);
-    }
-
-    #[tokio::test]
-    async fn refuses_a_bad_name_or_no_repository() {
-        let (_dir, root) = repo();
-        let ctx = ToolContext::new(root);
-        for name in ["", "../out", "-b", "a..b"] {
-            let out = enter(&ctx, name).await;
-            assert!(out.expect_err(name).contains("not a valid branch"));
-        }
-
-        let plain = tempfile::tempdir().expect("tempdir");
-        let out = enter(&ToolContext::new(plain.path().into()), "x").await;
-        assert!(
-            out.expect_err("no repo")
-                .contains("not in a git repository")
-        );
     }
 }

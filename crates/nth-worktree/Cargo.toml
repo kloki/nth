@@ -1,0 +1,10 @@
+[package]
+name = "nth-worktree"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
