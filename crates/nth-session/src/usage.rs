@@ -195,15 +195,23 @@ pub fn row(who: &str, total: Total, price: Option<Price>) -> [String; 6] {
 
 /// Rows as text in columns: who left-aligned, the counts right.
 pub fn columns(rows: &[[String; 6]]) -> Vec<String> {
+    padded(rows)
+        .iter()
+        .map(|row| row.join("  ").trim_end().to_string())
+        .collect()
+}
+
+/// Each row's cells padded to their column's width, who left-aligned and
+/// the counts right, for a front-end that styles them one by one.
+pub fn padded(rows: &[[String; 6]]) -> Vec<[String; 6]> {
     let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..6).map(width).collect();
+    let widths: [usize; 6] = std::array::from_fn(width);
     rows.iter()
         .map(|row| {
-            let mut line = format!("{:<w$}", row[0], w = widths[0]);
-            for (cell, w) in row.iter().zip(&widths).skip(1) {
-                line.push_str(&format!("  {cell:>w$}"));
-            }
-            line.trim_end().to_string()
+            std::array::from_fn(|i| match i {
+                0 => format!("{:<w$}", row[0], w = widths[0]),
+                _ => format!("{:>w$}", row[i], w = widths[i]),
+            })
         })
         .collect()
 }

@@ -14,7 +14,7 @@ use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use nth_protocol::{Cost, Listing, Provider};
 use nth_session::{
     Price, Session, Spend, Store, Total,
-    usage::{self, columns, row},
+    usage::{self, padded, row},
 };
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
@@ -187,8 +187,8 @@ fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
         let total: Total = models.values().sum();
         let day_price = usage::price(models.iter().map(|(m, t)| (*m, *t)), cost);
         let head = row(&day.to_string(), total, day_price);
-        writeln!(out, "{}", columns(&[head]).concat().bold())?;
-        for line in columns(&rows) {
+        writeln!(out, "{}", paint(&[head]).concat().bold())?;
+        for line in paint(&rows) {
             writeln!(out, "  {line}")?;
         }
     }
@@ -213,10 +213,48 @@ fn table(out: &mut impl Write, title: Option<&str>, rows: &[[String; 6]]) -> Res
         writeln!(out)?;
         writeln!(out, "{}", title.bold())?;
     }
-    for line in columns(rows) {
+    for line in paint(rows) {
         writeln!(out, "  {line}")?;
     }
     Ok(())
+}
+
+/// Rows in columns, coloured as the TUI's usage tab: models blue,
+/// agents cyan, turn numbers and steps dim, the cache share green from
+/// half on and yellow under it, prices magenta.
+fn paint(rows: &[[String; 6]]) -> Vec<String> {
+    padded(rows)
+        .iter()
+        .map(|row| {
+            let who: Vec<String> = row[0]
+                .split(' ')
+                .map(|word| match word {
+                    // A day heading reads as a date, not a model.
+                    "" | "all" => word.to_string(),
+                    _ if word.starts_with(|c: char| c.is_ascii_digit()) => word.to_string(),
+                    _ if word.starts_with('#') => word.dimmed().to_string(),
+                    _ if word.starts_with('@') => word.cyan().to_string(),
+                    _ => word.blue().to_string(),
+                })
+                .collect();
+            let share = row[3].trim_start().split('%').next();
+            let cached = match share.and_then(|n| n.parse::<u32>().ok()) {
+                Some(share) if share >= 50 => row[3].green().to_string(),
+                Some(_) => row[3].yellow().to_string(),
+                None => row[3].dimmed().to_string(),
+            };
+            let cells = [
+                who.join(" "),
+                row[1].dimmed().to_string(),
+                row[2].clone(),
+                cached,
+                row[4].clone(),
+                row[5].magenta().to_string(),
+            ];
+            let used = if row[5].trim().is_empty() { 5 } else { 6 };
+            cells[..used].join("  ")
+        })
+        .collect()
 }
 
 fn note(out: &mut impl Write) -> Result<()> {
