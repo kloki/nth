@@ -31,7 +31,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{Error, Session};
+use crate::{Error, Session, Spend};
 
 /// Numbered from 1 for as long as the front-end runs, like a monitor; it is
 /// the `task_id` the model continues a subagent with.
@@ -118,6 +118,10 @@ pub struct Subagents(Arc<Inner>);
 struct Inner {
     front_end: Option<mpsc::Sender<SubagentEvent>>,
     registry: Mutex<Registry>,
+    /// What the children's finished turns spent, until the front-end
+    /// takes it into the parent's session. Apart from the registry so an
+    /// actor can reach it without holding the registry alive.
+    spent: Arc<Mutex<Vec<Spend>>>,
 }
 
 #[derive(Default)]
@@ -152,6 +156,7 @@ impl Subagents {
         Self(Arc::new(Inner {
             front_end: Some(front_end),
             registry: Mutex::default(),
+            spent: Arc::default(),
         }))
     }
 
@@ -183,6 +188,7 @@ impl Subagents {
             shared: shared.clone(),
             closed: closed.clone(),
             jobs,
+            spent: self.0.spent.clone(),
         }));
         registry.children.insert(
             id,
@@ -238,6 +244,8 @@ impl Subagents {
     /// Ends every subagent, for a session that was left: the running turns
     /// are stopped, what waits in the inboxes is dropped and nothing is
     /// posted to the model, so each actor ends on its own.
+    /// What they spent and nobody took is dropped with them: it belonged
+    /// to the session that was left.
     pub fn forget_all(&self) {
         let mut registry = self.0.lock();
         registry.forgotten = registry.next;
@@ -249,6 +257,16 @@ impl Subagents {
                 token.cancel();
             }
         }
+        drop(registry);
+        // Only once every child is closed: an actor checks that under the
+        // lock this takes, so nothing of the left session's comes after.
+        self.take_spent();
+    }
+
+    /// What the subagents' turns spent since this was last called, for
+    /// the parent's session to [record](crate::Ledger::record).
+    pub fn take_spent(&self) -> Vec<Spend> {
+        std::mem::take(&mut *self.0.spent.lock().expect("subagent spend lock poisoned"))
     }
 
     /// The agent and description of subagent `id`.
@@ -515,6 +533,32 @@ mod tests {
                 && notice.contains("called noop with the same input"),
             "{notice}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_finished_turn_hands_its_spend_to_the_parent_once() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let reply = vec![
+            StreamEvent::TextDelta("done".into()),
+            StreamEvent::Usage(nth_protocol::Usage {
+                input: 300,
+                output: 7,
+                ..nth_protocol::Usage::default()
+            }),
+        ];
+        let provider = Arc::new(Scripted::new(vec![reply]));
+        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        subagents.prompt(id, job("go", Done::Nothing).0);
+
+        until_ended(&mut rx).await;
+
+        let spent = subagents.take_spent();
+        assert_eq!(spent.len(), 1);
+        assert_eq!(spent[0].agent.as_deref(), Some("explore"));
+        assert_eq!(spent[0].model, "glm-5.3");
+        assert_eq!((spent[0].steps, spent[0].tokens.input), (1, 300));
+        assert!(subagents.take_spent().is_empty(), "taken once");
     }
 
     #[tokio::test]

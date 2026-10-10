@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId};
-use crate::{Error, Session};
+use crate::{Error, Session, Spend};
 
 pub(super) struct Actor {
     pub id: SubagentId,
@@ -26,6 +26,8 @@ pub(super) struct Actor {
     /// The registry forgot the child.
     pub closed: CancellationToken,
     pub jobs: mpsc::UnboundedReceiver<Job>,
+    /// Where each turn's spend goes, for the parent's session.
+    pub spent: Arc<Mutex<Vec<Spend>>>,
 }
 
 /// Runs until the inbox closes or the front-end is gone.
@@ -41,6 +43,7 @@ pub(super) async fn run(actor: Actor) {
         shared,
         closed,
         mut jobs,
+        spent,
     } = actor;
     let started = SubagentEvent::Started {
         id,
@@ -83,6 +86,7 @@ pub(super) async fn run(actor: Actor) {
             return;
         }
         let began = Instant::now();
+        let spends = session.usage.spends().len();
         let (tx, mut rx) = mpsc::channel::<Event>(256);
         let mut heard = true;
         let mut timed_out = false;
@@ -119,6 +123,18 @@ pub(super) async fn run(actor: Actor) {
         // footer.
         while let Ok(event) = rx.try_recv() {
             heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
+        }
+        // A child that was forgotten spent for a session that was left.
+        // Checked under the lock `forget_all` takes the spend under, after
+        // cancelling `closed`, so none of it lands after that.
+        {
+            let mut spent = lock_spent(&spent);
+            if !closed.is_cancelled() {
+                spent.extend(session.usage.since(spends).iter().map(|spend| Spend {
+                    agent: Some(agent.clone()),
+                    ..spend.clone()
+                }));
+            }
         }
         let outcome = match &result {
             Ok(()) => TaskOutcome::Completed(answer(&session)),
@@ -219,6 +235,10 @@ async fn send(front_end: &Option<mpsc::Sender<SubagentEvent>>, event: SubagentEv
         Some(front_end) => front_end.send(event).await.is_ok(),
         None => true,
     }
+}
+
+fn lock_spent(spent: &Mutex<Vec<Spend>>) -> std::sync::MutexGuard<'_, Vec<Spend>> {
+    spent.lock().expect("subagent spend lock poisoned")
 }
 
 fn lock(shared: &Mutex<ChildState>) -> std::sync::MutexGuard<'_, ChildState> {

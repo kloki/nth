@@ -123,8 +123,9 @@ pub enum StreamEvent {
     Usage(Usage),
 }
 
-/// Tokens one model reply used, as the provider reports them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Tokens one model reply used, as the provider reports them; added up,
+/// what several used.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Everything sent: system prompt, history and tool results.
     pub input: u64,
@@ -149,6 +150,21 @@ impl Usage {
     pub fn cached_share(self) -> Option<f64> {
         let read = self.cache_read?;
         (self.input > 0).then(|| (read as f64 / self.input as f64).min(1.0))
+    }
+}
+
+/// A cache count the provider left out adds nothing, but a sum stays
+/// `None` only while none of its parts was reported.
+impl std::ops::AddAssign for Usage {
+    fn add_assign(&mut self, other: Self) {
+        let add = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read = add(self.cache_read, other.cache_read);
+        self.cache_write = add(self.cache_write, other.cache_write);
     }
 }
 

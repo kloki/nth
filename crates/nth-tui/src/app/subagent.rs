@@ -71,11 +71,25 @@ impl App {
                         self.content.remove(Tab::Subagent(id));
                     }
                 }
+                self.take_subagent_spend();
             }
         }
         // A task's answer waits in the inbox with the monitors' notices.
         if self.notices_due.is_none() && self.inbox.has_notices() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
+        }
+    }
+
+    /// What the subagents' finished turns spent goes into the session
+    /// when it is at hand, saved; mid-turn the turn's task takes it in.
+    pub(super) fn take_subagent_spend(&mut self) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        let spent = self.subagents.take_spent();
+        if !spent.is_empty() {
+            session.usage.extend(spent);
+            self.save_session();
         }
     }
 
@@ -522,6 +536,80 @@ mod tests {
         );
         app.apply(Action::ClearOrQuit);
         assert!(app.quit);
+    }
+
+    /// Answers every request with a word and what it used.
+    struct Spends;
+
+    impl nth_protocol::Provider for Spends {
+        fn models(
+            &self,
+        ) -> futures::future::BoxFuture<'_, Result<nth_protocol::Listing, nth_protocol::BoxError>>
+        {
+            Box::pin(async { Ok(nth_protocol::Listing::default()) })
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: nth_protocol::Request<'a>,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                futures::stream::BoxStream<
+                    'static,
+                    Result<nth_protocol::StreamEvent, nth_protocol::BoxError>,
+                >,
+                nth_protocol::BoxError,
+            >,
+        > {
+            let events = [
+                nth_protocol::StreamEvent::TextDelta("found".into()),
+                nth_protocol::StreamEvent::Usage(nth_protocol::Usage {
+                    input: 120,
+                    output: 4,
+                    ..nth_protocol::Usage::default()
+                }),
+            ];
+            Box::pin(async move { Ok(Box::pin(futures::stream::iter(events.map(Ok))) as _) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_finished_subagent_turn_is_counted_in_the_session_and_saved() {
+        let mut app = fronted();
+        let agents = nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        )
+        .agents;
+        let explore = agents.get("explore").expect("built in");
+        let session = Session::new("kimi", "/repo".into()).as_subagent(None);
+        let id = app
+            .subagents
+            .spawn(explore, "find tabs", session, Arc::new(Spends), Vec::new());
+        app.prompt_subagent(id, "go".into());
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            hear(&mut app);
+            if !app
+                .session
+                .as_ref()
+                .expect("idle")
+                .usage
+                .spends()
+                .is_empty()
+            {
+                break;
+            }
+        }
+
+        let spends = app.session.as_ref().expect("idle").usage.spends();
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].agent.as_deref(), Some("explore"));
+        assert_eq!(
+            (spends[0].model.as_str(), spends[0].tokens.input),
+            ("kimi", 120)
+        );
     }
 
     #[tokio::test]

@@ -166,11 +166,13 @@ impl App {
         self.steerable = None;
         let events = self.events_tx.clone();
         let store = self.store.clone();
+        let subagents = self.subagents.clone();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let result = session
                     .shell(command, shell.as_ref(), &events, &token)
                     .await;
+                session.usage.extend(subagents.take_spent());
                 let saved = match &store {
                     Some(store) => store.save(&session).await,
                     None => Ok(()),
@@ -245,6 +247,7 @@ impl App {
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
         let store = self.store.clone();
+        let subagents = self.subagents.clone();
         let front_end = FrontEnd {
             asker: Asker::new(self.asks_tx.clone()),
             screen: Screen::new(self.screen_tx.clone()),
@@ -273,6 +276,8 @@ impl App {
                     }
                     Err(e) => Err(e),
                 };
+                // Subagents that finished while it ran spent on its behalf.
+                session.usage.extend(subagents.take_spent());
                 // Saved however the turn ended, interrupted included: the
                 // session is always valid to continue from.
                 let saved = match &store {

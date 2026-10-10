@@ -152,6 +152,7 @@ mod tests {
             &tools,
             &ctx,
             &mut messages,
+            &mut spend(),
             &tx,
             &CancellationToken::new(),
         )
@@ -196,6 +197,7 @@ mod tests {
             &tools,
             &ctx,
             &mut messages,
+            &mut spend(),
             &tx,
             &CancellationToken::new(),
         )
@@ -323,6 +325,7 @@ mod tests {
             &tools,
             &ctx,
             &mut messages,
+            &mut spend(),
             &tx,
             &CancellationToken::new(),
         )
