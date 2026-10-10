@@ -100,16 +100,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
 
 /// What the session spent, once it spent anything: its price at the
 /// catalogue's rates when known, and how much of what it sent came from
-/// the provider's prompt cache behind the cache icon, as ` ≈$3.10 ↻82%`,
-/// or `↻?` when the provider never said.
+/// the provider's prompt cache behind the cache icon, as ` ≈$3.10 ↻ 82%`,
+/// or `↻ ?` when the provider never said.
 fn spent(app: &App) -> Vec<Span<'static>> {
     let total = app.spent.ledger.total();
     if total.steps == 0 {
         return Vec::new();
     }
     let cache = match total.tokens.cached_share() {
-        Some(share) => format!("{CACHE}{:.0}%", share * 100.0),
-        None => format!("{CACHE}?"),
+        Some(share) => format!("{CACHE} {:.0}%", share * 100.0),
+        None => format!("{CACHE} ?"),
     };
     let text = match app.price() {
         Some(price) => format!(" {price} {cache}"),
