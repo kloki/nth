@@ -1,34 +1,20 @@
 # nth
 
-Items are grouped by the milestones in [design.md](design.md). Each item names the opencode code to copy from.
+What opencode has that nth does not yet, plus nth's own review backlog. Each item names the opencode code to copy from, where there is one.
 
 ### Commands
 
 - [ ] /init Set agent.md
 - [ ] /compact compact long lines
 
-### Agent loop hardening
-
-- [x] Retry with backoff on 429, 5xx and dropped streams: start at 2 s, factor 2, and honor `retry-after`. Show "retrying in Ns" in the TUI. `session/retry.ts:26`
-- [x] Doom-loop guard: when the same tool is called with the same input 3 times in a row, ask the user before continuing. `session/processor.ts:29`
-- [x] Max-steps prompt: on the last allowed step, tell the model to stop calling tools and summarize, instead of cutting it off. `session/prompt.ts:1281`
-
-### Context and instructions
-
-- [x] Environment block: add today's date and the workspace root. `session/system.ts:80`
-- [x] Per-model system prompts: only when a model misbehaves (`kimi.txt`, `gpt.txt`, `gemini.txt`). `session/prompt/`
-
 ### Subagents and orchestrations
 
-- [x] Subagent: the task tool, async, answers as notices. `tool/task.ts`
-- [x] Subagent tabs, with the prompt talking to the showing one
 - [ ] Orchestrations view
 - [ ] Save subagent sessions under the parent's, so `/resume` brings them back
 - [ ] `[agents] paths` in the config, like `[skills] paths`
 - [ ] A global cap on concurrent model requests across subagents
 - [ ] Skills typed on a subagent's tab: expand them as the chat does, rather than send `/name args` as text
 - [ ] Name nested agent files by path (`group/name`) as opencode does, rather than by file alone
-- [x] Rename `Monitors` to the model's inbox it has become: `Inbox` is its own handle
 
 ### Worktrees
 
@@ -38,16 +24,8 @@ An opinionated worktree flow baked into nth requires design
 
 A more flexible todo that uses the tab view
 
-### Mouse control
-
-Allow mouse control
-
-- [x] Switching tabs
-- [x] Clicking to copy
-
 ### TUI
 
-- [x] Shell mode: `!` at the start of the prompt runs the line as a shell command and adds its output to the chat. `tui/component/prompt/index.tsx:836`
 - [ ] Paste summary: collapse a large paste to `[pasted N lines]`. `tui/` `app.toggle.paste_summary`
 - [ ] Tool details toggle: expand a collapsed tool call in place. `tui/` `session.toggle.actions`
 - [ ] Thinking toggle: show or hide reasoning. `tui/` `session.toggle.thinking`
@@ -68,7 +46,6 @@ Design debt and test gaps from the 2026-10-05 project review. Bugs from that rev
 - [ ] One timeout parameter convention across tools: `timeout` is ms in bash, seconds in webfetch, and `timeout_ms` in monitor next to camelCase `filePath` and `numResults`.
 - [ ] Decide on an SSRF guard for webfetch (`169.254.169.254`, `localhost:<port>`); opencode has the same gap.
 - [ ] Monitor flood guard counts stdout only, so a stderr flood still sends one event per line to the front-end and the log.
-- [ ] `docs/design.md` describes a `Command` type, a `broadcast` event channel, an `nth-worktree` crate and a `views/` folder that do not exist. Either a "what shipped differently" section or a dated banner.
 
 ### Tests
 

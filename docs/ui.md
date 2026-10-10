@@ -2,11 +2,11 @@
 
 The screen is three bands stacked top to bottom. Each band has one job, and none of them knows how the others draw.
 
-| Band          | Job                    | Default                                 |
-| ------------- | ---------------------- | --------------------------------------- |
-| Content panel | What you look at       | Chat history, or another open tab       |
-| Input panel   | What you type into     | The prompt                              |
-| Status bar    | What is true right now | Always 2 lines                          |
+| Band          | Job                    | Default                           |
+| ------------- | ---------------------- | --------------------------------- |
+| Content panel | What you look at       | Chat history, or another open tab |
+| Input panel   | What you type into     | The prompt                        |
+| Status bar    | What is true right now | Always 2 lines                    |
 
 ```
  [› chat] ● diagnostics                                    nth 0.2.0  header
@@ -21,7 +21,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
  ● rust  ● typescript  rustfmt · prettier                              ┘
 ```
 
-There are no borders or divider lines, as the styleguide in [design.md](design.md#tui) says. Bands are told apart by coloured bars and spacing.
+There are no borders or divider lines. Bands are told apart by coloured bars and spacing.
 
 ## Sizing
 
@@ -36,7 +36,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
@@ -49,18 +49,19 @@ Swapping input panels therefore resizes the content panel. The content panel kee
   | magenta | needs you                          | a question waits        |              |         |                     |
 
   Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
+
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
-| Key              | Does                                                  |
-| ---------------- | ----------------------------------------------------- |
-| ctrl+t           | Shows the next tab, from the last back to chat        |
-| ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                      |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the plan while there is one |
+| Key              | Does                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| ctrl+t           | Shows the next tab, from the last back to chat                                                              |
+| ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                                                                            |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the plan while there is one    |
 | ctrl+w           | On a monitor's tab: stops it, and the tab closes. On a subagent's: stops it, or closes the tab once stopped |
-| esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn |
-| ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan) |
+| esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn                              |
+| ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan)                       |
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
@@ -251,34 +252,30 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | write    | The content being written, the first 10 lines, taken from the call's arguments |
 | bash     | The command's output, stdout and stderr interleaved, the last 10 lines         |
 | skill    | None: the row says which skill was loaded, and its body is for the model only  |
-| question | None: the row says what was asked, and the answers are for the model only |
+| question | None: the row says what was asked, and the answers are for the model only      |
 
 - **After a write.** Once a write, edit or apply_patch is done, what checked it shows under its row and any content: a dim note per formatter that ran (`Formatted with rustfmt.`), then for each file a language server found errors in, its path and the `ERROR [line:col] message` lines, in red. Warnings are left out, as they are for the model. At most 12 lines.
 
 - **Parallel calls.** The model can start several tool calls at once, and they run together. Each call's output stays under its own row, in the order they started.
 
-**What the session needs to send**
-
-Today the TUI only hears `ToolStarted` and `ToolFinished`. write needs nothing new: its content is in the call's arguments, which `ToolStarted` already carries. read and bash need one more event, tool output as it arrives, keyed by call id. It is generic rather than bash-specific, so the future monitor tool streams through the same event.
-
 ## Input panel
 
 - **Default: the prompt.** See [Prompt](#prompt) below. The completion popup for `/` commands and `@` agents and files floats right above the row being typed, lined up with the `/` or `@` it completes.
 - **One style.** Every input panel looks the same; see [Input panel style](#input-panel-style).
-- **Context swaps it.** Today that is the model picker. Later come question tool answers, permission prompts, the session list and similar. Each is its own input panel.
+- **Context swaps it.** The model picker, the question tool, the session picker and settings are the ones so far; each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model and session pickers are a header, a query row and a list, 16 rows but at most half the screen. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
 - **The model picker keeps the listing's order** and opens on the model in use.
 - **Pickers filter as you type, as telescope does.** The model and session pickers have a query row under the title: `> query`, and how many items match against the right edge. Typing narrows the list by fuzzy matching (`fuzzy.rs`, nucleo, smart case, words in any order) and highlights the best match; the matched characters are bold and underlined. A model matches by its id and name, a session by its title and directory. Backspace widens the list again; ctrl+c clears the query, then closes. With an empty query the list keeps its own order: the listing's for models, newest first for sessions.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
 
-| Input panel        | Height   | Opens on              | Returns on    |
-| ------------------ | -------- | --------------------- | ------------- |
-| Prompt             | 4        | default               | —             |
-| Model picker       | ≤16      | `/models`, ctrl+m     | enter, esc    |
-| Question           | per call | the agent asks        | answer, esc   |
-| Settings           | 3        | `/settings`           | esc           |
-| Permission (later) | ~4       | a tool needs approval | allow, reject |
+| Input panel    | Height   | Opens on          | Returns on  |
+| -------------- | -------- | ----------------- | ----------- |
+| Prompt         | 4        | default           | —           |
+| Model picker   | ≤16      | `/models`, ctrl+m | enter, esc  |
+| Session picker | ≤16      | `/resume`         | enter, esc  |
+| Question       | per call | the agent asks    | answer, esc |
+| Settings       | 3        | `/settings`       | esc         |
 
 ## Input panel style
 
@@ -298,12 +295,12 @@ With models from more than one provider, the picker shows ids with their `provid
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
 - **Content under the title.** Each row starts after the bar. A highlighted item is bold magenta (`theme::pick`), the same as in the completion popup.
 
-| Panel        | Accent                            | Title                             |
-| ------------ | --------------------------------- | --------------------------------- |
+| Panel        | Accent                                                                                            | Title                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner |
-| Model picker | magenta                           | `switch model`                    |
-| Question     | cyan                              | `question`, or a tab per question |
-| Settings     | magenta                           | `settings`                        |
+| Model picker | magenta                                                                                           | `switch model`                                                                             |
+| Question     | cyan                                                                                              | `question`, or a tab per question                                                          |
+| Settings     | magenta                                                                                           | `settings`                                                                                 |
 
 ## Prompt
 
@@ -460,11 +457,11 @@ Left-aligned: `model · effort · place`, the model and effort in bright white a
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part    | Shows                                                                                                                           | Colour       |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Model   | The current model, and its effort unless default                                                                                | bright white |
-| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                              | magenta      |
-| Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white        |
+| Part    | Shows                                                                                                                                                                                          | Colour       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Model   | The current model, and its effort unless default                                                                                                                                               | bright white |
+| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta      |
+| Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window                                                                | white        |
 | Spent   | What the session spent, subagents included: its price at the catalogue's rates and the share of input read from the prompt cache behind `↻`, `$3.10 ↻ 82%`; `↻ ?` when the provider never said | white        |
 
 The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one.
@@ -520,10 +517,10 @@ While prompts wait — queued behind the turn, or on their way into it — `⏵ 
 
 Against the right edge. A dot and the id of every language server the tools have started, in the order they started. Nothing shows until a server starts.
 
-| Part | Shows | Colour |
-| --- | --- | --- |
-| Server dot | `●`, by state: connected, starting, broken | green, yellow, red |
-| Server id | The server's id, as in opencode: `rust`, `typescript` | white |
+| Part       | Shows                                                 | Colour             |
+| ---------- | ----------------------------------------------------- | ------------------ |
+| Server dot | `●`, by state: connected, starting, broken            | green, yellow, red |
+| Server id  | The server's id, as in opencode: `rust`, `typescript` | white              |
 
 Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters that run on writes are not shown; `nth formatters` lists them.
 
@@ -531,15 +528,15 @@ Servers start on the first read or write of a file they cover, so none show at s
 
 Every colour is one of the terminal's 16 standard colours, so the terminal theme decides how it looks. nth never sets a colour of its own.
 
-| Name in this doc | Terminal colour | Used for                                  |
-| ---------------- | --------------- | ----------------------------------------- |
-| red              | red             | path, deleted, conflicted, errors         |
-| green            | green           | branch, your messages, success            |
-| yellow, orange   | yellow          | ahead, behind, renamed, interrupted       |
-| blue             | blue            | model, act mode, staged, model answer bar |
+| Name in this doc | Terminal colour | Used for                                                               |
+| ---------------- | --------------- | ---------------------------------------------------------------------- |
+| red              | red             | path, deleted, conflicted, errors                                      |
+| green            | green           | branch, your messages, success                                         |
+| yellow, orange   | yellow          | ahead, behind, renamed, interrupted                                    |
+| blue             | blue            | model, act mode, staged, model answer bar                              |
 | magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified, status bar place |
-| cyan             | cyan            | tool names, tool call and output bar      |
-| white            | white           | context bar, untracked, stashed           |
-| bright white     | bright white    | status line 1 model                      |
+| cyan             | cyan            | tool names, tool call and output bar                                   |
+| white            | white           | context bar, untracked, stashed                                        |
+| bright white     | bright white    | status line 1 model                                                    |
 
 Orange is not a standard terminal colour, so it means yellow.
