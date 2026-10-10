@@ -200,7 +200,7 @@ per turn
   prices are list-price estimates from models.dev, whatever your plan bills
 ```
 
-`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one.
+`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold.
 
 ## Chat
 

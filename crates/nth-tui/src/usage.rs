@@ -11,7 +11,7 @@ use nth_session::{
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, ScrollbarState},
 };
@@ -91,7 +91,7 @@ fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'stat
         .price(cost)
         .map(|p| p.to_string())
         .unwrap_or_default();
-    lines.extend(join(&[cells("all", total, all)]).into_iter().map(plain));
+    lines.extend(styled(&[cells("all", total, all)]));
 
     lines.push(Line::default());
     lines.push(title("per model"));
@@ -105,7 +105,7 @@ fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'stat
             cells(model, total, price)
         })
         .collect();
-    lines.extend(join(&models).into_iter().map(plain));
+    lines.extend(styled(&models));
 
     lines.push(Line::default());
     lines.push(title("per turn"));
@@ -129,7 +129,7 @@ fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'stat
             cells(&who, total, price)
         })
         .collect();
-    lines.extend(join(&turns).into_iter().map(plain));
+    lines.extend(styled(&turns));
 
     lines.push(Line::default());
     lines.push(note(
@@ -155,27 +155,78 @@ fn cells(who: &str, total: Total, price: String) -> [String; 6] {
     ]
 }
 
-/// Rows as text in columns: the first left-aligned, the counts right.
-fn join(rows: &[[String; 6]]) -> Vec<String> {
+/// Rows in columns, who left-aligned and the counts right, each cell in
+/// its colour: models blue, agents cyan as a subagent's prompt is, turn
+/// numbers and steps dim, the cache share green from half on and yellow
+/// under it, prices magenta. The totals row is bold.
+fn styled(rows: &[[String; 6]]) -> Vec<Line<'static>> {
     let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
     let widths: Vec<usize> = (0..6).map(width).collect();
     rows.iter()
         .map(|row| {
-            let mut line = format!("{:<w$}", row[0], w = widths[0]);
-            for (cell, w) in row.iter().zip(&widths).skip(1) {
-                line.push_str(&format!("  {cell:>w$}"));
+            let mut spans = vec![Span::raw(theme::INDENT)];
+            spans.extend(who(&row[0], widths[0]));
+            for (i, (cell, w)) in row.iter().zip(&widths).enumerate().skip(1) {
+                // An unknown price leaves no gap at the end of the row.
+                if cell.is_empty() && i == row.len() - 1 {
+                    break;
+                }
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(format!("{cell:>w$}"), count(i, cell)));
             }
-            line.trim_end().to_string()
+            Line::from(spans)
         })
         .collect()
 }
 
-fn title(text: &'static str) -> Line<'static> {
-    Line::styled(text, Style::new().add_modifier(Modifier::BOLD))
+/// The who column, padded to `width`: `all`, a model, or a turn as
+/// `#2 @explore kimi-k3`.
+fn who(text: &str, width: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, word) in text.split(' ').enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let style = match word {
+            "all" => Style::new().add_modifier(Modifier::BOLD),
+            _ if word.starts_with('#') => theme::dim(),
+            _ if word.starts_with('@') => Style::new().fg(Color::Cyan),
+            _ => Style::new().fg(Color::Blue),
+        };
+        spans.push(Span::styled(word.to_string(), style));
+    }
+    let pad = width.saturating_sub(text.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans
 }
 
-fn plain(text: String) -> Line<'static> {
-    Line::from(vec![Span::raw(theme::INDENT), Span::raw(text)])
+/// The style of count column `i` holding `cell`.
+fn count(i: usize, cell: &str) -> Style {
+    match i {
+        1 => theme::dim(),
+        3 => cached(cell),
+        5 => Style::new().fg(Color::Magenta),
+        _ => Style::new(),
+    }
+}
+
+/// Green when at least half came from the cache, yellow under it, dim
+/// when the provider never said.
+fn cached(cell: &str) -> Style {
+    let share = cell
+        .trim_start()
+        .split('%')
+        .next()
+        .and_then(|n| n.parse::<u32>().ok());
+    match share {
+        Some(share) if share >= 50 => Style::new().fg(Color::Green),
+        Some(_) => Style::new().fg(Color::Yellow),
+        None => theme::dim(),
+    }
+}
+
+fn title(text: &'static str) -> Line<'static> {
+    Line::styled(text, Style::new().add_modifier(Modifier::BOLD))
 }
 
 fn note(text: String) -> Line<'static> {
@@ -197,6 +248,44 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn cells_are_coloured_by_what_they_say() {
+        let rows = [
+            [
+                "#2 @explore kimi".to_string(),
+                "3 steps".into(),
+                "40k in".into(),
+                "80% cached".into(),
+                "900 out".into(),
+                "≈$0.38".into(),
+            ],
+            [
+                "all".to_string(),
+                "1 step".into(),
+                "1k in".into(),
+                "cache ?".into(),
+                "9 out".into(),
+                String::new(),
+            ],
+        ];
+        let lines = styled(&rows);
+        let colour = |line: &Line, text: &str| {
+            let span = line
+                .spans
+                .iter()
+                .find(|s| s.content.trim() == text)
+                .expect(text);
+            span.style
+        };
+        assert_eq!(colour(&lines[0], "#2"), theme::dim());
+        assert_eq!(colour(&lines[0], "@explore").fg, Some(Color::Cyan));
+        assert_eq!(colour(&lines[0], "kimi").fg, Some(Color::Blue));
+        assert_eq!(colour(&lines[0], "80% cached").fg, Some(Color::Green));
+        assert_eq!(colour(&lines[0], "≈$0.38").fg, Some(Color::Magenta));
+        assert_eq!(colour(&lines[1], "cache ?"), theme::dim());
+        assert_eq!(cached("12% cached").fg, Some(Color::Yellow));
     }
 
     #[test]
