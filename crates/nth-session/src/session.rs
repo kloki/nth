@@ -16,10 +16,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend,
+    DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
-    run_turn, subagent, system_prompt,
+    subagent, system_prompt,
 };
 
 fn first_line(text: &str) -> &str {
@@ -297,21 +297,22 @@ impl Session {
             ..ToolContext::new(self.cwd.clone())
         };
         let mut spend = Spend::new(&self.model, None);
-        let result = run_turn(
+        let result = Turn {
             provider,
-            Route {
+            route: Route {
                 model: &self.model,
                 effort: self.effort,
                 session_id: &self.id.to_string(),
                 max_steps: self.max_steps,
             },
             tools,
-            &ctx,
-            &mut self.messages,
-            &mut spend,
+            ctx: &ctx,
+            messages: &mut self.messages,
+            spend: &mut spend,
             events,
             cancel,
-        )
+        }
+        .run()
         .await;
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.

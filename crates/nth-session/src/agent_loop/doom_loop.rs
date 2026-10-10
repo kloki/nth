@@ -3,9 +3,8 @@
 //! there is nobody to ask.
 
 use nth_protocol::{Message, Question, QuestionOption, Reply, ToolCall, ToolContext};
-use tokio_util::sync::CancellationToken;
 
-use super::{Error, INTERRUPTED, failed};
+use super::{Error, INTERRUPTED, Turn, failed};
 
 /// How many times the same call in a row trips the doom-loop guard.
 pub(super) const DOOM_LOOP_THRESHOLD: usize = 3;
@@ -18,38 +17,37 @@ const STOPPED: &str = "stopped by the user (the same call kept repeating)";
 /// or a headless run's.
 const UNASKED: &str = "stopped: the same call kept repeating and nobody could be asked";
 
-/// Asks before running the latest reply's `calls` when one of them
-/// completes a run of repeats since `start`, or stops when there is nobody
-/// to ask. Stopped, every call is answered, so `messages` stays valid.
-pub(super) async fn check(
-    start: usize,
-    calls: &[ToolCall],
-    ctx: &ToolContext,
-    messages: &mut Vec<Message>,
-    cancel: &CancellationToken,
-) -> Result<(), Error> {
-    let Some(call) = repeating(&messages[start..]).cloned() else {
-        return Ok(());
-    };
-    let reason = match ctx.asker.reaches_someone() {
-        true => STOPPED,
-        false => UNASKED,
-    };
-    let stopped = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => Some((INTERRUPTED, Error::Interrupted)),
-        run = confirm_doom_loop(ctx, &call) => {
-            (!run).then(|| (reason, Error::DoomLoop(call.name.clone())))
-        }
-    };
-    let Some((reason, error)) = stopped else {
-        return Ok(());
-    };
-    messages.extend(calls.iter().map(|call| Message::ToolResult {
-        call_id: call.id.clone(),
-        content: failed(reason),
-    }));
-    Err(error)
+impl Turn<'_> {
+    /// Asks before running the latest reply's `calls` when one of them
+    /// completes a run of repeats since `start`, or stops when there is
+    /// nobody to ask. Stopped, every call is answered, so the history stays
+    /// valid.
+    pub(super) async fn check(&mut self, start: usize, calls: &[ToolCall]) -> Result<(), Error> {
+        let Some(call) = repeating(&self.messages[start..]).cloned() else {
+            return Ok(());
+        };
+        let reason = match self.ctx.asker.reaches_someone() {
+            true => STOPPED,
+            false => UNASKED,
+        };
+        let (ctx, cancel) = (self.ctx, self.cancel);
+        let stopped = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Some((INTERRUPTED, Error::Interrupted)),
+            run = confirm_doom_loop(ctx, &call) => {
+                (!run).then(|| (reason, Error::DoomLoop(call.name.clone())))
+            }
+        };
+        let Some((reason, error)) = stopped else {
+            return Ok(());
+        };
+        self.messages
+            .extend(calls.iter().map(|call| Message::ToolResult {
+                call_id: call.id.clone(),
+                content: failed(reason),
+            }));
+        Err(error)
+    }
 }
 
 /// The first of the latest reply's calls that completes a run of identical
@@ -123,7 +121,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent_loop::{Error, run_turn, tests::*};
+    use crate::agent_loop::{Error, Turn, tests::*};
 
     /// `n` identical calls in one reply, then an answer.
     fn looping_reply(n: usize) -> Vec<Vec<StreamEvent>> {
@@ -248,16 +246,17 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let result = run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &cancel,
-        )
+        let result = Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
         .await;
         let _ask = unanswered.await.expect("asked");
 

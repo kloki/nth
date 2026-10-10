@@ -1,15 +1,12 @@
 //! One step's reply: streamed as it arrives, and retried with backoff on
 //! a transient provider error.
 
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use futures::StreamExt;
-use nth_protocol::{AssistantMessage, BoxError, Event, Provider, Request, StreamEvent};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use nth_protocol::{AssistantMessage, BoxError, Event, Request, StreamEvent, ToolSpec};
 
-use super::emit;
-use crate::Spend;
+use super::{Turn, emit, max_steps_messages};
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -33,87 +30,102 @@ pub(super) enum Stop {
     Cancelled(AssistantMessage),
 }
 
-/// One step's request, retried on a transient provider error with backoff:
-/// 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's `Retry-After`
-/// when it gave one no longer than `RETRY_MAX_AFTER`. The retry is announced
-/// as an [`Event::Retry`], and cancelling during the wait ends the step.
-/// What each attempt reports it used is counted to `spend`.
-pub(super) async fn stream_step(
-    provider: &dyn Provider,
-    request: Request<'_>,
-    events: &mpsc::Sender<Event>,
-    cancel: &CancellationToken,
-    spend: &mut Spend,
-) -> Result<AssistantMessage, Stop> {
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let error = match one_attempt(provider, request, events, cancel, spend).await {
-            Err(Stop::Failed(error)) => error,
-            done => return done,
+impl Turn<'_> {
+    /// One step's request, retried on a transient provider error with
+    /// backoff: 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's
+    /// `Retry-After` when it gave one no longer than `RETRY_MAX_AFTER`. The
+    /// retry is announced as an [`Event::Retry`], and cancelling during the
+    /// wait ends the step. What each attempt reports it used is counted to
+    /// the turn's spend.
+    pub(super) async fn stream_step(
+        &mut self,
+        last: bool,
+        specs: &[ToolSpec],
+    ) -> Result<AssistantMessage, Stop> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match self.one_attempt(last, specs).await {
+                Err(Stop::Failed(error)) => error,
+                done => return done,
+            };
+            let delay = self
+                .provider
+                .retry(&error)
+                .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
+                .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
+                .filter(|delay| *delay <= RETRY_MAX_AFTER);
+            let Some(delay) = delay else {
+                return Err(Stop::Failed(error));
+            };
+            emit(self.events, Event::Retry { attempt, delay }).await;
+            tokio::select! {
+                biased;
+                _ = self.cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+    }
+
+    /// Streams one reply, appending text, reasoning and tool calls to it as
+    /// they arrive. On the `last` allowed step the model is told to answer
+    /// in words, so the turn ends itself rather than being cut off; the
+    /// prompt goes only into the request, never into the saved history.
+    async fn one_attempt(
+        &mut self,
+        last: bool,
+        specs: &[ToolSpec],
+    ) -> Result<AssistantMessage, Stop> {
+        let (provider, events, cancel) = (self.provider, self.events, self.cancel);
+        let sent = if last {
+            Cow::Owned(max_steps_messages(self.messages))
+        } else {
+            Cow::Borrowed(self.messages.as_slice())
         };
-        let delay = provider
-            .retry(&error)
-            .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
-            .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
-            .filter(|delay| *delay <= RETRY_MAX_AFTER);
-        let Some(delay) = delay else {
-            return Err(Stop::Failed(error));
+        let request = Request {
+            model: self.route.model,
+            session_id: self.route.session_id,
+            effort: self.route.effort,
+            messages: &sent,
+            tools: specs,
         };
-        emit(events, Event::Retry { attempt, delay }).await;
-        tokio::select! {
+        let mut stream = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
-            _ = tokio::time::sleep(delay) => {}
-        }
-    }
-}
-
-/// Streams one reply, appending text, reasoning and tool calls to it as they
-/// arrive.
-async fn one_attempt(
-    provider: &dyn Provider,
-    request: Request<'_>,
-    events: &mpsc::Sender<Event>,
-    cancel: &CancellationToken,
-    spend: &mut Spend,
-) -> Result<AssistantMessage, Stop> {
-    let mut stream = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
-        stream = provider.stream(request) => stream.map_err(Stop::Failed)?,
-    };
-    let mut reply = AssistantMessage::default();
-    loop {
-        let event = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                // Calls from an unfinished reply never ran, so they are
-                // dropped rather than left without results.
-                reply.tool_calls.clear();
-                return Err(Stop::Cancelled(reply));
-            }
-            event = stream.next() => event,
+            stream = provider.stream(request) => stream.map_err(Stop::Failed)?,
         };
-        let Some(event) = event else { break };
-        match event.map_err(Stop::Failed)? {
-            StreamEvent::TextDelta(text) => {
-                reply.text.push_str(&text);
-                emit(events, Event::TextDelta(text)).await;
-            }
-            StreamEvent::ReasoningDelta(text) => {
-                reply.reasoning.push_str(&text);
-                emit(events, Event::ReasoningDelta(text)).await;
-            }
-            StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
-            StreamEvent::Usage(usage) => {
-                spend.steps += 1;
-                spend.tokens += usage;
-                emit(events, Event::Usage(usage)).await;
+        let mut reply = AssistantMessage::default();
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Calls from an unfinished reply never ran, so they are
+                    // dropped rather than left without results.
+                    reply.tool_calls.clear();
+                    return Err(Stop::Cancelled(reply));
+                }
+                event = stream.next() => event,
+            };
+            let Some(event) = event else { break };
+            match event.map_err(Stop::Failed)? {
+                StreamEvent::TextDelta(text) => {
+                    reply.text.push_str(&text);
+                    emit(events, Event::TextDelta(text)).await;
+                }
+                StreamEvent::ReasoningDelta(text) => {
+                    reply.reasoning.push_str(&text);
+                    emit(events, Event::ReasoningDelta(text)).await;
+                }
+                StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
+                StreamEvent::Usage(usage) => {
+                    self.spend.steps += 1;
+                    self.spend.tokens += usage;
+                    emit(events, Event::Usage(usage)).await;
+                }
             }
         }
+        Ok(reply)
     }
-    Ok(reply)
 }
 
 /// The backoff before the `attempt`-th retry: `RETRY_INITIAL_DELAY` doubled
@@ -140,7 +152,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent_loop::{Error, run_turn, tests::*};
+    use crate::agent_loop::{Error, Turn, tests::*};
 
     /// Streams `events` and then stays open, like a reply cut off mid-way.
     struct Unfinished(Vec<StreamEvent>);
@@ -182,16 +194,17 @@ mod tests {
         let mut messages = vec![Message::User("go".into())];
 
         let mut spent = spend();
-        let turn = run_turn(
-            &provider,
-            ROUTE,
-            &[],
-            &ctx,
-            &mut messages,
-            &mut spent,
-            &tx,
-            &cancel,
-        );
+        let turn = Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run();
         let interrupt = async {
             rx.recv().await;
             cancel.cancel();
@@ -271,16 +284,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(
-            &provider,
-            ROUTE,
-            &[],
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await
         .expect("turn completes");
 
@@ -309,16 +323,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let result = run_turn(
-            &provider,
-            ROUTE,
-            &[],
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        let result = Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await;
 
         assert!(matches!(result, Err(Error::Provider(_))));

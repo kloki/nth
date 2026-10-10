@@ -1,7 +1,7 @@
-//! The agent loop: one user turn, step by step. Streaming a reply with
-//! its retries is `stream`, running its tool calls `call`, the guard
-//! against a model repeating one call `doom_loop`, and handing the model
-//! what was sent while it worked `steer`.
+//! The agent loop: one user turn, step by step, run by [`Turn`]. Streaming
+//! a reply with its retries is `stream`, running its tool calls `call`,
+//! the guard against a model repeating one call `doom_loop`, and handing
+//! the model what was sent while it worked `steer`.
 
 mod call;
 mod doom_loop;
@@ -10,14 +10,14 @@ mod stream;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use std::{borrow::Cow, collections::HashMap, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Message, Provider, Request, Tool, ToolContext,
+    AssistantMessage, BoxError, Effort, Event, Message, Provider, Tool, ToolContext,
 };
-use stream::{Stop, stream_step};
+use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -71,115 +71,108 @@ pub struct Route<'a> {
     pub max_steps: usize,
 }
 
-/// Runs one user turn: stream a reply, run its tool calls in parallel, feed
-/// the results back, and repeat until the model answers without tools.
-/// Everything the model and tools produce is appended to `messages`.
-///
-/// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
-/// `messages` valid to continue from: partial text is kept, and every tool
-/// call has a result.
-///
-/// What the requests used is counted to `spend` as they report it, so a
-/// turn that fails or is interrupted still counts what it spent.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_turn(
-    provider: &dyn Provider,
-    route: Route<'_>,
-    tools: &[Box<dyn Tool>],
-    ctx: &ToolContext,
-    messages: &mut Vec<Message>,
-    spend: &mut Spend,
-    events: &mpsc::Sender<Event>,
-    cancel: &CancellationToken,
-) -> Result<(), Error> {
-    let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
-    // Looked up by name once per call; a spec is too costly to build for
-    // every lookup.
-    let by_name: HashMap<&str, &dyn Tool> = specs
-        .iter()
-        .zip(tools)
-        .map(|(spec, tool)| (spec.name, tool.as_ref()))
-        .collect();
-    // Where this turn's messages start, so the doom-loop guard counts only
-    // calls made since the user last spoke.
-    let start = messages.len();
-    for step in 0..route.max_steps {
-        // On the last allowed step the model is told to answer in words, so
-        // the turn ends itself rather than being cut off. The prompt goes
-        // only into the request, never into the saved history.
-        let last = step + 1 == route.max_steps;
-        let streamed = {
-            let sent = if last {
-                Cow::Owned(max_steps_messages(messages))
-            } else {
-                Cow::Borrowed(messages.as_slice())
-            };
-            let request = Request {
-                model: route.model,
-                session_id: route.session_id,
-                effort: route.effort,
-                messages: &sent,
-                tools: &specs,
-            };
-            stream_step(provider, request, events, cancel, spend).await
-        };
-        let reply = match streamed {
-            Ok(reply) => reply,
-            Err(Stop::Cancelled(partial)) => {
-                if !partial.text.is_empty() || !partial.reasoning.is_empty() {
-                    messages.push(Message::Assistant(partial));
+/// One user turn: where its requests go, what runs its tool calls, and
+/// where its messages, spend and progress land. [`Turn::run`] is the agent
+/// loop, and the helpers in this module's files are its methods.
+pub struct Turn<'a> {
+    pub provider: &'a dyn Provider,
+    pub route: Route<'a>,
+    pub tools: &'a [Box<dyn Tool>],
+    /// What the tool calls run with.
+    pub ctx: &'a ToolContext,
+    /// The history. Everything the model and tools produce is appended to it.
+    pub messages: &'a mut Vec<Message>,
+    /// What the requests used, counted as they report it, so a turn that
+    /// fails or is interrupted still counts what it spent.
+    pub spend: &'a mut Spend,
+    /// Where progress goes.
+    pub events: &'a mpsc::Sender<Event>,
+    pub cancel: &'a CancellationToken,
+}
+
+impl Turn<'_> {
+    /// Runs the turn: stream a reply, run its tool calls in parallel, feed
+    /// the results back, and repeat until the model answers without tools.
+    ///
+    /// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
+    /// `messages` valid to continue from: partial text is kept, and every
+    /// tool call has a result.
+    pub async fn run(mut self) -> Result<(), Error> {
+        let specs: Vec<_> = self.tools.iter().map(|t| t.spec()).collect();
+        // Looked up by name once per call; a spec is too costly to build for
+        // every lookup.
+        let by_name: HashMap<&str, &dyn Tool> = specs
+            .iter()
+            .zip(self.tools)
+            .map(|(spec, tool)| (spec.name, tool.as_ref()))
+            .collect();
+        // Where this turn's messages start, so the doom-loop guard counts
+        // only calls made since the user last spoke.
+        let start = self.messages.len();
+        let max_steps = self.route.max_steps;
+        for step in 0..max_steps {
+            let last = step + 1 == max_steps;
+            let reply = match self.stream_step(last, &specs).await {
+                Ok(reply) => reply,
+                Err(Stop::Cancelled(partial)) => {
+                    if !partial.text.is_empty() || !partial.reasoning.is_empty() {
+                        self.messages.push(Message::Assistant(partial));
+                    }
+                    return Err(Error::Interrupted);
                 }
+                Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
+            };
+
+            if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
+                // Reasoning alone is kept, as an interrupted reply's is; an
+                // assistant message with nothing in it never is.
+                if !reply.reasoning.is_empty() {
+                    self.messages.push(Message::Assistant(reply));
+                }
+                return Err(Error::EmptyReply);
+            }
+            let calls = reply.tool_calls.clone();
+            self.messages.push(Message::Assistant(reply));
+            if calls.is_empty() {
+                return Ok(());
+            }
+            // Told not to, the model called tools anyway; they don't run, and
+            // every call is answered so the session stays valid.
+            if last {
+                self.messages
+                    .extend(calls.into_iter().map(|call| Message::ToolResult {
+                        call_id: call.id,
+                        content: failed(MAX_STEPS_REACHED),
+                    }));
+                return Err(Error::TooManySteps(max_steps));
+            }
+            if self.preempt(&calls).await {
+                continue;
+            }
+            self.check(start, &calls).await?;
+
+            // Each call answers the cancel itself, so one that finished
+            // before it keeps its result and every call started also
+            // finishes.
+            let (ctx, events, cancel) = (self.ctx, self.events, self.cancel);
+            let results = futures::future::join_all(calls.iter().map(|call| {
+                let tool = by_name.get(call.name.as_str()).copied();
+                run_call(tool, ctx, call, events, cancel)
+            }))
+            .await;
+            for (call, result) in calls.into_iter().zip(results) {
+                self.messages.push(Message::ToolResult {
+                    call_id: call.id,
+                    content: result.unwrap_or_else(|reason| failed(&reason)),
+                });
+            }
+            if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
             }
-            Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
-        };
-
-        if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
-            // Reasoning alone is kept, as an interrupted reply's is; an
-            // assistant message with nothing in it never is.
-            if !reply.reasoning.is_empty() {
-                messages.push(Message::Assistant(reply));
-            }
-            return Err(Error::EmptyReply);
+            self.hand_over().await;
         }
-        let calls = reply.tool_calls.clone();
-        messages.push(Message::Assistant(reply));
-        if calls.is_empty() {
-            return Ok(());
-        }
-        // Told not to, the model called tools anyway; they don't run, and
-        // every call is answered so the session stays valid.
-        if last {
-            messages.extend(calls.into_iter().map(|call| Message::ToolResult {
-                call_id: call.id,
-                content: failed(MAX_STEPS_REACHED),
-            }));
-            return Err(Error::TooManySteps(route.max_steps));
-        }
-        if steer::preempt(&calls, ctx, messages, events, cancel).await {
-            continue;
-        }
-        doom_loop::check(start, &calls, ctx, messages, cancel).await?;
-
-        // Each call answers the cancel itself, so one that finished before
-        // it keeps its result and every call started also finishes.
-        let results = futures::future::join_all(calls.iter().map(|call| {
-            let tool = by_name.get(call.name.as_str()).copied();
-            run_call(tool, ctx, call, events, cancel)
-        }))
-        .await;
-        for (call, result) in calls.into_iter().zip(results) {
-            messages.push(Message::ToolResult {
-                call_id: call.id,
-                content: result.unwrap_or_else(|reason| failed(&reason)),
-            });
-        }
-        if cancel.is_cancelled() {
-            return Err(Error::Interrupted);
-        }
-        steer::hand_over(ctx, messages, events).await;
+        Err(Error::TooManySteps(max_steps))
     }
-    Err(Error::TooManySteps(route.max_steps))
 }
 
 /// The messages for the last allowed step: the history plus a prompt telling

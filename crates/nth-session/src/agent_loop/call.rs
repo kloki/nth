@@ -110,7 +110,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent_loop::{Error, run_turn, tests::*};
+    use crate::agent_loop::{Error, Turn, tests::*};
 
     /// Cancels the turn from inside the tool, then never finishes.
     struct Stall(CancellationToken);
@@ -192,16 +192,17 @@ mod tests {
                 .expect("tool waits");
         });
 
-        run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await
         .expect("turn completes");
         answering.await.expect("answers");
@@ -227,16 +228,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let result = run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &cancel,
-        )
+        let result = Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
         .await;
 
         assert!(matches!(result, Err(Error::Interrupted)));
