@@ -1,7 +1,10 @@
 //! Running a turn: moving the session into a task, interrupting it, and
 //! taking the session back when it ends.
 
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use nth_notify::Event;
 use nth_protocol::{Asker, FrontEnd, Screen};
@@ -338,20 +341,20 @@ impl App {
         if let Err(e) = saved {
             transcript.push_error(format!("session not saved: {e}"));
         }
-        // A worktree tool moved the session; the files, git state and plan
-        // shown follow it.
-        let moved = (session.cwd != self.cwd).then(|| session.plan_path());
-        if moved.is_some() {
+        // `Moved` has normally been followed already; this catches a move
+        // whose event never arrived.
+        if session.cwd != self.cwd {
             self.cwd = session.cwd.clone();
-            let home = std::env::var("HOME").ok();
-            self.place = status::place(&self.cwd, home.as_deref());
+            self.follow_place();
         }
+        let plan_path = session.plan_path();
         self.session = Some(session);
         self.index_files();
         self.load_git();
-        match moved {
-            Some(plan_path) => self.plan_for_session(plan_path),
-            None => self.read_plan(),
+        // The plan lives under the working directory, so a move moves it.
+        match plan_path != self.plan_path {
+            true => self.plan_for_session(plan_path),
+            false => self.read_plan(),
         }
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
@@ -379,6 +382,20 @@ impl App {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);
+    }
+
+    /// A worktree tool moved the session: the place, git state and files
+    /// shown follow it while the turn goes on.
+    pub(super) fn follow(&mut self, cwd: PathBuf) {
+        self.cwd = cwd;
+        self.follow_place();
+        self.load_git();
+        self.index_files();
+    }
+
+    fn follow_place(&mut self) {
+        let home = std::env::var("HOME").ok();
+        self.place = status::place(&self.cwd, home.as_deref());
     }
 
     /// Events sent just before the task returned may still be queued, and
@@ -1257,5 +1274,53 @@ mod tests {
         let plan = app.session.as_ref().expect("back").plan_path();
         assert!(plan.starts_with(&worktree), "{}", plan.display());
         assert_eq!(app.plan_path, plan);
+    }
+
+    #[tokio::test]
+    async fn the_status_bar_follows_a_move_while_the_turn_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical");
+        let worktree = root.join(".nth/worktrees/x");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&[
+            "-c",
+            "user.name=nth",
+            "-c",
+            "user.email=nth@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "x",
+            &worktree.to_string_lossy(),
+        ]);
+        let mut app = crate::app::tests::app();
+        // Mid-turn the session is in the turn's task.
+        app.session = None;
+
+        app.on_session(Event::Moved(worktree.clone()));
+        let status = app.git_loading.join().await.expect("loads");
+        app.git_loaded(status);
+
+        assert_eq!(app.cwd, worktree);
+        assert!(app.place.ends_with(".nth/worktrees/x"), "{}", app.place);
+        // What the status bar's git summary shows.
+        let branch = app.git.as_ref().and_then(|git| git.branch.as_deref());
+        assert_eq!(branch, Some("x"));
     }
 }

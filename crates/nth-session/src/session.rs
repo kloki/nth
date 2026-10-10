@@ -594,7 +594,7 @@ mod tests {
             vec![StreamEvent::TextDelta("done".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Move)];
-        let (tx, _rx) = mpsc::channel(64);
+        let (tx, mut rx) = mpsc::channel(64);
 
         session
             .prompt(
@@ -617,6 +617,19 @@ mod tests {
             })
             .collect();
         assert_eq!(results, ["/repo", "/repo/.nth/worktrees/x"]);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::Moved(_) | Event::ToolFinished { .. } => events.push(event),
+                _ => {}
+            }
+        }
+        // Only the call that moved says so, before it finishes.
+        assert!(matches!(
+            &events[..],
+            [Event::Moved(cwd), Event::ToolFinished { .. }, Event::ToolFinished { .. }]
+                if cwd == Path::new("/repo/.nth/worktrees/x")
+        ));
         assert_eq!(session.cwd, PathBuf::from("/repo/.nth/worktrees/x"));
         assert_eq!(session.origin, Some("/repo".into()));
         let Some(Message::System(prompt)) = session.messages.first() else {

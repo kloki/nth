@@ -58,6 +58,12 @@ impl Printer {
                     format!("⟳ {}", retry_label(*attempt, *delay)).yellow()
                 );
             }
+            // Later calls are summarised relative to where they now run.
+            Event::Moved(cwd) => {
+                self.break_line();
+                eprintln!("{}", format!("→ {}", cwd.display()).dimmed());
+                self.cwd = cwd.clone();
+            }
             // The headless run prints the result's summary, not the stream.
             Event::ToolFinished { .. }
             | Event::ToolOutput { .. }

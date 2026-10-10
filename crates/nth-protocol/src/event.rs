@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use crate::{ToolCall, ToolResult, Usage};
 
@@ -32,6 +32,10 @@ pub enum Event {
         attempt: u32,
         delay: Duration,
     },
+    /// A tool moved the session's working directory, as entering a
+    /// worktree does; the turn's later steps run in it. Comes before that
+    /// call's `ToolFinished`.
+    Moved(PathBuf),
 }
 
 /// How a retry reads, the same in every front-end: whole seconds rounded
