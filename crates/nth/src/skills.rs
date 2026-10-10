@@ -4,6 +4,7 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Context, Result};
+use nth_icons::icons;
 use owo_colors::OwoColorize;
 
 use crate::{config::Config, context};
@@ -30,7 +31,12 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
     }
 
     if context.skills.is_empty() {
-        writeln!(out, "{} {}", "→".cyan().bold(), "no skills found".dimmed())?;
+        writeln!(
+            out,
+            "{} {}",
+            icons().to.cyan().bold(),
+            "no skills found".dimmed()
+        )?;
         return Ok(());
     }
     let mut sources: Vec<_> = context.skills.iter().map(|s| s.source).collect();

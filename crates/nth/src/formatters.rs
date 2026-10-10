@@ -4,6 +4,7 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Context, Result};
+use nth_icons::icons;
 use owo_colors::OwoColorize;
 
 use crate::config::Config;
@@ -42,14 +43,14 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
             Ok(command) => writeln!(
                 out,
                 "{} {:width$}  {}",
-                "✓".green().bold(),
+                icons().ok.green().bold(),
                 formatter.name.cyan(),
                 command.join(" ").dimmed()
             )?,
             Err(reason) => writeln!(
                 out,
                 "{} {:width$}  {}",
-                "✗".red(),
+                icons().fail.red(),
                 formatter.name.dimmed(),
                 reason.dimmed()
             )?,

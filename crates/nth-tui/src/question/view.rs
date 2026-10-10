@@ -2,6 +2,7 @@
 //! its keys, then the question shown with its options and open field, or
 //! on the Submit tab every answer.
 
+use nth_icons::icons;
 use nth_protocol::{Answer, Question};
 use ratatui::{
     Frame,
@@ -25,8 +26,11 @@ const QUESTION_ROWS: usize = 3;
 /// Between the options and the preview: the only divider line in nth, since
 /// two sides of free text, one of them ASCII art, need keeping apart.
 const RULE: &str = " │ ";
+
 /// After a one-choice question's chosen label.
-const CHOSEN: &str = " ✓";
+fn chosen_mark() -> String {
+    format!(" {}", icons().ok)
+}
 
 /// The model talks to you here, so the panel has the model answer's colour.
 const ACCENT: Color = Color::Cyan;
@@ -143,7 +147,7 @@ fn split(question: &Question, width: usize) -> Option<(usize, usize)> {
         .map(|o| o.label.width())
         .max()
         .unwrap_or(0);
-    let left = (lead + label + CHOSEN.width()).min(width * 2 / 5);
+    let left = (lead + label + chosen_mark().width()).min(width * 2 / 5);
     Some((left, width.saturating_sub(left + RULE.width())))
 }
 
@@ -173,12 +177,19 @@ fn choices<'a>(
             Style::new().fg(Color::Blue)
         };
         let used: usize = spans.iter().map(|s| s.content.width()).sum();
-        let label = cut(&option.label, width.saturating_sub(used + CHOSEN.width()));
+        let label = cut(
+            &option.label,
+            width.saturating_sub(used + chosen_mark().width()),
+        );
         let gap = label_width.saturating_sub(label.width());
         spans.push(Span::styled(label, label_style));
         let chosen = !question.multiple && pane.checked[i];
         spans.push(Span::styled(
-            if chosen { CHOSEN } else { "  " },
+            if chosen {
+                chosen_mark()
+            } else {
+                "  ".to_string()
+            },
             Style::new().fg(Color::Green),
         ));
         if let (None, Some(description)) = (split, &option.description) {
@@ -238,9 +249,9 @@ fn title(panel: &QuestionPanel) -> Line<'_> {
     let mut spans = Vec::new();
     for (i, question) in panel.questions().iter().enumerate() {
         let mark = if panel.answer(i).is_some() {
-            "☒"
+            icons().checked
         } else {
-            "☐"
+            icons().unchecked
         };
         spans.push(Span::styled(
             format!("{mark} {}", question.header),
@@ -248,7 +259,10 @@ fn title(panel: &QuestionPanel) -> Line<'_> {
         ));
         spans.push(Span::raw("   "));
     }
-    spans.push(Span::styled("✓ Submit", style(panel.on_submit())));
+    spans.push(Span::styled(
+        format!("{} Submit", icons().ok),
+        style(panel.on_submit()),
+    ));
     panel_row(ACCENT, spans)
 }
 
@@ -304,7 +318,14 @@ fn summary(answer: &Answer) -> String {
 /// The arrow on the highlighted row, a box when any number may be picked,
 /// and the row's number.
 fn lead(here: bool, ticked: Option<bool>, i: usize) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(if here { "→ " } else { "  " }, pick())];
+    let mut spans = vec![Span::styled(
+        if here {
+            format!("{} ", icons().pick)
+        } else {
+            "  ".to_string()
+        },
+        pick(),
+    )];
     if let Some(ticked) = ticked {
         spans.push(Span::raw(if ticked { "[x] " } else { "[ ] " }));
     }

@@ -5,12 +5,13 @@
 
 mod view;
 
+use nth_icons::icons;
 pub use view::draw;
 
 /// What the chats show, for this run only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatSettings {
-    /// The model's reasoning under its `∴` line.
+    /// The model's reasoning under its thinking line.
     pub thinking: bool,
     /// What each tool call returned, under its row.
     pub tool_output: bool,
@@ -41,10 +42,10 @@ impl Setting {
         }
     }
 
-    pub fn about(self) -> &'static str {
+    pub fn about(self) -> String {
         match self {
-            Setting::Thinking => "the model's reasoning under ∴",
-            Setting::ToolOutput => "what each tool call returned",
+            Setting::Thinking => format!("the model's reasoning under {}", icons().thinking),
+            Setting::ToolOutput => "what each tool call returned".to_string(),
         }
     }
 

@@ -17,6 +17,10 @@
 model = ""
 # model = "opencode/deepseek-v4.1-flash"
 
+# Nerd Font icons instead of plain Unicode ones. Needs a Nerd Font
+# (nerdfonts.com) in the terminal, or the icons show as boxes.
+nerdfonts = false
+
 # Providers: one [provider.<id>] block per endpoint, and none are built in.
 # The id prefixes its models, as in opencode/kimi-k3. Each is an
 # OpenAI-compatible chat completions endpoint; models.dev says which models it

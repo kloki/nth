@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use nth_context::Paths;
+use nth_icons::icons;
 use nth_protocol::{Effort, Mode};
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,9 @@ pub struct Config {
     /// The model a new chat starts on, as `provider/model`. Before the
     /// tables, since TOML has values ahead of tables.
     pub model: String,
+    /// Nerd Font icons instead of plain Unicode ones, for a terminal whose
+    /// font has them.
+    pub nerdfonts: bool,
     /// The endpoints by id; the id prefixes their models. None is built
     /// in: these are only the ones the file lists.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -254,16 +258,16 @@ pub fn show(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
 
     match explicit.or_else(Config::default_path) {
         Some(path) if path.exists() => {
-            eprintln!("{} {}", "✓".green().bold(), path.display().dimmed())
+            eprintln!("{} {}", icons().ok.green().bold(), path.display().dimmed())
         }
         Some(path) => eprintln!(
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             format!("no {}, using defaults", path.display()).dimmed()
         ),
         None => eprintln!(
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             "no home dir, using defaults".dimmed()
         ),
     }
@@ -280,10 +284,14 @@ pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
         bail!("no home dir to put the config in; pass --config");
     };
     write_template(&path, force)?;
-    eprintln!("{} wrote {}", "✓".green().bold(), path.display().dimmed());
+    eprintln!(
+        "{} wrote {}",
+        icons().ok.green().bold(),
+        path.display().dimmed()
+    );
     eprintln!(
         "{} {}",
-        "→".cyan().bold(),
+        icons().to.cyan().bold(),
         "uncomment a [provider.<id>] in it, export its key and set model".dimmed()
     );
     Ok(())
@@ -462,6 +470,13 @@ mod tests {
             ("from-flag".into(), Effort::High)
         );
         assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
+    }
+
+    #[test]
+    fn nerdfonts_is_off_unless_asked_for() {
+        assert!(!Config::default().nerdfonts);
+        assert!(Config::parse("nerdfonts = true").expect("parses").nerdfonts);
+        assert!(Config::parse("nerdfonts = \"yes\"").is_err());
     }
 
     #[test]

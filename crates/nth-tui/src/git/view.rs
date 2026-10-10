@@ -1,6 +1,7 @@
 //! The git summary on the status bar's second line, after the starship
 //! config in docs/ui.md: each part only when it is non-zero.
 
+use nth_icons::icons;
 use ratatui::{
     style::{Color, Style},
     text::Span,
@@ -8,34 +9,27 @@ use ratatui::{
 
 use super::GitStatus;
 
-const CONFLICTED: &str = "\u{f071}";
-const DIVERGED: &str = "\u{f0c6e}";
-const STASHED: &str = "\u{f187}";
-const STAGED: &str = "\u{f0290}";
-const RENAMED: &str = "\u{f0ec}";
-const DELETED: &str = "\u{f1f8}";
-const UNTRACKED: &str = "\u{f128}";
-
 /// Empty for a clean tree that is level with its upstream.
 pub fn summary(status: &GitStatus) -> Vec<Span<'static>> {
+    let icons = &icons().git;
     let white = Style::new().fg(Color::Gray);
     let yellow = Style::new().fg(Color::Yellow);
     let mut parts: Vec<(String, Style)> = Vec::new();
     if status.conflicted > 0 {
-        parts.push((CONFLICTED.into(), Style::new().fg(Color::Red)));
+        parts.push((icons.conflicted.into(), Style::new().fg(Color::Red)));
     }
     match (status.ahead, status.behind) {
         (0, 0) => {}
         (ahead, 0) => parts.push((format!("+{ahead}"), yellow)),
         (0, behind) => parts.push((format!("-{behind}"), yellow)),
-        _ => parts.push((DIVERGED.into(), white)),
+        _ => parts.push((icons.diverged.into(), white)),
     }
     let counted = [
         (status.modified, "*", Color::Magenta),
-        (status.renamed, RENAMED, Color::Yellow),
-        (status.deleted, DELETED, Color::Red),
-        (status.staged, STAGED, Color::Blue),
-        (status.untracked, UNTRACKED, Color::Gray),
+        (status.renamed, icons.renamed, Color::Yellow),
+        (status.deleted, icons.deleted, Color::Red),
+        (status.staged, icons.staged, Color::Blue),
+        (status.untracked, icons.untracked, Color::Gray),
     ];
     for (count, icon, colour) in counted {
         if count > 0 {
@@ -45,7 +39,7 @@ pub fn summary(status: &GitStatus) -> Vec<Span<'static>> {
         }
     }
     if status.stashed {
-        parts.push((STASHED.into(), white));
+        parts.push((icons.stashed.into(), white));
     }
 
     let mut spans = Vec::new();
@@ -76,7 +70,7 @@ mod tests {
             untracked: 1,
             ..GitStatus::default()
         };
-        assert_eq!(text(&status), format!("+3 *4 {STAGED} 2 {UNTRACKED} 1"));
+        assert_eq!(text(&status), "+3 *4 ✚ 2 ? 1");
     }
 
     #[test]
@@ -88,6 +82,6 @@ mod tests {
             stashed: true,
             ..GitStatus::default()
         };
-        assert_eq!(text(&status), format!("{CONFLICTED} {DIVERGED} {STASHED}"));
+        assert_eq!(text(&status), "= ⇕ $");
     }
 }

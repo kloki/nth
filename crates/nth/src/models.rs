@@ -5,6 +5,7 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, anyhow};
+use nth_icons::icons;
 use nth_protocol::Provider;
 use owo_colors::OwoColorize;
 
@@ -16,7 +17,7 @@ pub async fn run(json: bool, config: Config) -> Result<()> {
     for failed in &listing.failed {
         eprintln!(
             "{} {}: {}",
-            "✗".red().bold(),
+            icons().fail.red().bold(),
             failed.origin.name.bold(),
             failed.error
         );
@@ -51,7 +52,12 @@ pub async fn run(json: bool, config: Config) -> Result<()> {
             .to_string();
         let id = model.wire_id();
         if model.id == current {
-            writeln!(out, "{} {:width$}  {limits}", "→".cyan().bold(), id.bold())?;
+            writeln!(
+                out,
+                "{} {:width$}  {limits}",
+                icons().to.cyan().bold(),
+                id.bold()
+            )?;
         } else {
             writeln!(out, "  {id:width$}  {limits}")?;
         }

@@ -128,7 +128,10 @@ impl MonitorView {
         }
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("$ ", Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{} ", nth_icons::icons().tab.monitor),
+                    Style::new().fg(Color::Cyan),
+                ),
                 Span::raw(self.command.clone()),
             ]),
             Line::from(vec![

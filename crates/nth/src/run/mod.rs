@@ -6,6 +6,7 @@ mod render;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
+use nth_icons::icons;
 use nth_protocol::{FrontEnd, Mode, Provider};
 use nth_session::{
     CancellationToken, Price, Store, Subagents, Total,
@@ -84,7 +85,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     };
     eprintln!(
         "{} {}",
-        "✓".green().bold(),
+        icons().ok.green().bold(),
         format!(
             "{} · {} tool calls · {} · {:.1}s",
             session.model,

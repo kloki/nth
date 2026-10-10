@@ -5,6 +5,7 @@
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
+use nth_icons::icons;
 use nth_lsp::{ServerInfo, ServerState, ServerStatus};
 use nth_protocol::{Failed, Mode};
 use ratatui::{
@@ -133,14 +134,17 @@ impl Diagnostics {
                 continue;
             };
             let root = match &server.root {
-                Some(root) => format!("→ {}", path(root, facts.home)),
+                Some(root) => format!("{} {}", icons().to, path(root, facts.home)),
                 None => "no project root here".into(),
             };
             let about = format!("{}  {root}", path(program, facts.home));
             let running = facts.running.iter().find(|s| s.id == server.id);
             let mut line = match running {
                 Some(status) => row(
-                    Span::styled("●", Style::new().fg(status::state_colour(&status.state))),
+                    Span::styled(
+                        icons().dot,
+                        Style::new().fg(status::state_colour(&status.state)),
+                    ),
                     id,
                     about,
                 ),
@@ -199,7 +203,7 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
             about.push(format!("{}k context", window / 1000));
         }
         let (mark, label) = if mode.current {
-            ("▸", Style::new())
+            (icons().current, Style::new())
         } else {
             (" ", theme::dim())
         };
@@ -290,7 +294,7 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         .unwrap_or(0);
     for skill in facts.context.skills.iter() {
         let mut line = row(
-            Span::raw("✦"),
+            Span::raw(icons().tool.skill),
             format!("{:width$}", skill.name),
             skill.source.name().into(),
         );
@@ -308,7 +312,7 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         .unwrap_or(0);
     for agent in facts.context.agents.iter() {
         let mut line = row(
-            Span::raw("↳"),
+            Span::raw(icons().subagent),
             format!("{:width$}", agent.name),
             agent.source.name().into(),
         );
@@ -360,12 +364,16 @@ fn row(mark: Span<'static>, name: String, about: String) -> Line<'static> {
 }
 
 fn tick() -> Span<'static> {
-    Span::styled("✓", Style::new().fg(Color::Green))
+    Span::styled(icons().ok, Style::new().fg(Color::Green))
 }
 
 /// A server or formatter that does not run here, dim but for its cross.
 fn unavailable(name: String, reason: String) -> Line<'static> {
-    let mut line = row(Span::styled("✗", Style::new().fg(Color::Red)), name, reason);
+    let mut line = row(
+        Span::styled(icons().fail, Style::new().fg(Color::Red)),
+        name,
+        reason,
+    );
     line.spans[2].style = theme::dim();
     line
 }
