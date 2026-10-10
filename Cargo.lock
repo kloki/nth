@@ -1606,6 +1606,7 @@ dependencies = [
  "jiff",
  "nth-context",
  "nth-protocol",
+ "nth-worktree",
  "serde",
  "serde_json",
  "similar",

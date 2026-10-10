@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Done, Job, SubagentId, Subagents, WRITERS};
+use super::{Done, Isolation, Job, SubagentId, Subagents, WRITERS};
 use crate::{Error, Session};
 
 /// Tools a subagent never gets: another task would nest without end, the
@@ -59,6 +59,14 @@ struct Args {
     prompt: String,
     subagent_type: String,
     task_id: Option<TaskIdArg>,
+    isolation: Option<IsolationArg>,
+}
+
+/// Where a new subagent works; only a worktree of its own for now.
+#[derive(Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum IsolationArg {
+    Worktree,
 }
 
 /// Models send the id back as they read it, a number or a string.
@@ -113,11 +121,26 @@ impl Task {
             .collect()
     }
 
-    /// A new subagent of `agent` in the parent's directory, on the agent's
-    /// model or the parent's, in act mode: a planning parent's child is
-    /// kept from writing by its tools instead, so it gets no plan file and
-    /// no plan-mode reminder.
-    fn spawn(&self, agent: &Agent, description: &str, ctx: &ToolContext) -> SubagentId {
+    /// A new subagent of `agent` in the parent's directory, or in a
+    /// worktree of its own when `worktree`, on the agent's model or the
+    /// parent's, in act mode: a planning parent's child is kept from
+    /// writing by its tools instead, so it gets no plan file and no
+    /// plan-mode reminder.
+    async fn spawn(
+        &self,
+        agent: &Agent,
+        description: &str,
+        worktree: bool,
+        ctx: &ToolContext,
+    ) -> Result<SubagentId, String> {
+        let isolation = match worktree {
+            // Worktrees go in the main checkout, wherever the parent is.
+            true => {
+                let origin = ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone());
+                Some(Isolation::new(&origin, description).await?)
+            }
+            false => None,
+        };
         let model = agent.model.clone().unwrap_or_else(|| ctx.llm.model.clone());
         let mut session = Session::new(model, ctx.cwd.clone())
             .with_extra_dirs(ctx.extra_dirs.clone())
@@ -127,8 +150,14 @@ impl Task {
         session.mode = Mode::Act;
         session.max_steps = self.limits.max_steps;
         let tools = self.tools_for(agent, &ctx.writable);
-        self.subagents
-            .spawn(agent, description, session, self.provider.clone(), tools)
+        Ok(self.subagents.spawn_in(
+            agent,
+            description,
+            session,
+            self.provider.clone(),
+            tools,
+            isolation,
+        ))
     }
 }
 
@@ -143,7 +172,8 @@ impl Tool for Task {
                     "description": { "type": "string", "description": "A short (3-5 words) description of the task" },
                     "prompt": { "type": "string", "description": "The task for the agent to perform" },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to use for this task" },
-                    "task_id": { "type": "integer", "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)" }
+                    "task_id": { "type": "integer", "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)" },
+                    "isolation": { "type": "string", "enum": ["worktree"], "description": "\"worktree\" runs a new agent in a git worktree of its own, so the files it changes stay out of this checkout" }
                 },
                 "required": ["description", "prompt", "subagent_type"]
             }),
@@ -195,7 +225,15 @@ impl Tool for Task {
                     }
                     (id, false)
                 }
-                None => (self.spawn(agent, &args.description, ctx), true),
+                None => {
+                    let worktree =
+                        args.isolation == Some(IsolationArg::Worktree) || agent.worktree;
+                    if worktree && planning {
+                        return Err("a subagent in a worktree is for changing files, which is not allowed while planning; leave isolation out".into());
+                    }
+                    let id = self.spawn(agent, &args.description, worktree, ctx).await?;
+                    (id, true)
+                }
             };
             let text = match planning {
                 true => format!("{}\n\n{PLANNING}", args.prompt),
@@ -526,5 +564,104 @@ mod tests {
         let reused =
             json!({ "description": "d", "prompt": "p", "subagent_type": "general", "task_id": 2 });
         assert!(task.call(reused, &planning).await.is_ok());
+    }
+
+    /// Says where it runs, and makes a file there when asked to.
+    #[derive(Default)]
+    struct Make(std::sync::Mutex<Vec<std::path::PathBuf>>);
+
+    impl Tool for Make {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "make",
+                description: String::new(),
+                parameters: json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            args: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            self.0.lock().expect("not poisoned").push(ctx.cwd.clone());
+            if args == json!({ "file": true }) {
+                std::fs::write(ctx.cwd.join("made.txt"), "made").expect("write");
+            }
+            async { Ok(String::new()) }.boxed()
+        }
+    }
+
+    /// A task for @general in a worktree of `root`, whose child calls make
+    /// with `args` and then answers.
+    async fn in_worktree(root: &std::path::Path, args: &str) -> (Arc<Make>, ToolResult) {
+        use crate::agent_loop::tests::call;
+
+        let make = Arc::new(Make::default());
+        let task = Task::new(
+            Arc::new(Scripted::new(vec![
+                vec![StreamEvent::ToolCall(call("1", "make", args))],
+                says("done"),
+            ])),
+            vec![make.clone()],
+            Subagents::default(),
+            LIMITS,
+        );
+        let args = json!({ "description": "Make a file", "prompt": "p", "subagent_type": "general", "isolation": "worktree" });
+        let ctx = ToolContext {
+            cwd: root.to_path_buf(),
+            ..ctx()
+        };
+        let result = task.call(args, &ctx).await;
+        (make, result)
+    }
+
+    #[tokio::test]
+    async fn a_worktree_that_changed_nothing_is_gone_after_the_answer() {
+        let (_dir, root) = crate::subagent::worktree::tests::repo();
+
+        let (make, result) = in_worktree(&root, "{}").await;
+
+        let worktree = root.join(".nth/worktrees/make-a-file");
+        assert_eq!(*make.0.lock().unwrap(), std::slice::from_ref(&worktree));
+        let result = result.unwrap();
+        assert!(!result.contains("worktree"), "{result}");
+        assert!(!worktree.exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_with_changes_is_kept_and_named_in_the_answer() {
+        let (_dir, root) = crate::subagent::worktree::tests::repo();
+
+        let (_, result) = in_worktree(&root, r#"{"file":true}"#).await;
+
+        let worktree = root.join(".nth/worktrees/make-a-file");
+        let result = result.unwrap();
+        assert!(
+            result.contains(&format!(
+                "done\n\nWorked in the worktree {} on branch make-a-file, which has uncommitted changes.",
+                worktree.display()
+            )),
+            "{result}"
+        );
+        assert!(worktree.join("made.txt").exists());
+        assert!(
+            !root.join("made.txt").exists(),
+            "the parent's checkout is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_planning_parent_gets_no_worktree() {
+        let task = task(vec![], Subagents::default());
+        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "general", "isolation": "worktree" });
+        let planning = ToolContext {
+            writable: Writable::Only("/repo/.nth/plans/x.md".into()),
+            ..ctx()
+        };
+
+        let out = task.call(args, &planning).await;
+
+        assert!(out.unwrap_err().contains("not allowed while planning"));
     }
 }

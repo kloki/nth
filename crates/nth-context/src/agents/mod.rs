@@ -76,6 +76,9 @@ pub struct Agent {
     /// opencode's `hidden`: the model may delegate to it, but `@` does not
     /// offer it.
     pub hidden: bool,
+    /// Claude Code's `isolation: worktree`: it always works in a git
+    /// worktree of its own, as the task tool's `isolation` asks for one.
+    pub worktree: bool,
     /// The file it was read from; built-ins have none.
     pub path: Option<PathBuf>,
     pub source: Source,
@@ -149,6 +152,7 @@ fn builtin() -> [Agent; 2] {
             denied: Vec::new(),
             model: None,
             hidden: false,
+            worktree: false,
             path: None,
             source: Source::Builtin,
         },
@@ -160,6 +164,7 @@ fn builtin() -> [Agent; 2] {
             denied: Vec::new(),
             model: None,
             hidden: false,
+            worktree: false,
             path: None,
             source: Source::Builtin,
         },
@@ -266,6 +271,7 @@ fn read(file: &Path, source: Source) -> Result<Read, String> {
         denied,
         model: frontmatter::field(&front, "model").filter(|m| !PARENTS_MODEL.contains(&m.as_str())),
         hidden: front.get("hidden").and_then(Value::as_bool) == Some(true),
+        worktree: frontmatter::field(&front, "isolation").as_deref() == Some("worktree"),
         path: Some(file.to_path_buf()),
         source,
     }))
@@ -488,6 +494,11 @@ mod tests {
             "You review.",
         )
         .agent(
+            "repo/.claude/agents/builder.md",
+            "description: Builds\nisolation: worktree",
+            "You build.",
+        )
+        .agent(
             "repo/.opencode/agents/triage.md",
             "description: Triages\nmode: subagent\ntools:\n  read: true\n  write: false\n  grep: true",
             "You triage.",
@@ -502,6 +513,8 @@ mod tests {
         );
         assert_eq!(reviewer.model.as_deref(), Some("zen/claude-sonnet-4-5"));
         assert_eq!(reviewer.prompt.as_deref(), Some("You review."));
+        assert!(!reviewer.worktree);
+        assert!(agents.get("builder").expect("builder").worktree);
         let triage = agents.get("triage").expect("triage");
         assert_eq!(triage.tools, None, "a map only changes the defaults");
         assert!(triage.allows("read") && triage.allows("bash"));
