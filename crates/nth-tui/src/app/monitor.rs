@@ -161,10 +161,13 @@ impl App {
         let Some(session) = &mut self.session else {
             return;
         };
-        let Some(notices) = self.inbox.take_notices() else {
+        let spent = self.subagents.take_spent();
+        let notices = self.inbox.take_notices();
+        if spent.is_empty() && notices.is_none() {
             return;
-        };
-        session.messages.push(Message::User(notices));
+        }
+        session.usage.extend(spent);
+        session.messages.extend(notices.map(Message::User));
         if let Some(store) = &self.store {
             // Nowhere left to show a failure.
             let _ = store.save(session).await;

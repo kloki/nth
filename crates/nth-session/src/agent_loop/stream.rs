@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::emit;
+use crate::Spend;
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -36,16 +37,18 @@ pub(super) enum Stop {
 /// 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's `Retry-After`
 /// when it gave one no longer than `RETRY_MAX_AFTER`. The retry is announced
 /// as an [`Event::Retry`], and cancelling during the wait ends the step.
+/// What each attempt reports it used is counted to `spend`.
 pub(super) async fn stream_step(
     provider: &dyn Provider,
     request: Request<'_>,
     events: &mpsc::Sender<Event>,
     cancel: &CancellationToken,
+    spend: &mut Spend,
 ) -> Result<AssistantMessage, Stop> {
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let error = match one_attempt(provider, request, events, cancel).await {
+        let error = match one_attempt(provider, request, events, cancel, spend).await {
             Err(Stop::Failed(error)) => error,
             done => return done,
         };
@@ -73,6 +76,7 @@ async fn one_attempt(
     request: Request<'_>,
     events: &mpsc::Sender<Event>,
     cancel: &CancellationToken,
+    spend: &mut Spend,
 ) -> Result<AssistantMessage, Stop> {
     let mut stream = tokio::select! {
         biased;
@@ -102,7 +106,11 @@ async fn one_attempt(
                 emit(events, Event::ReasoningDelta(text)).await;
             }
             StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
-            StreamEvent::Usage(usage) => emit(events, Event::Usage(usage)).await,
+            StreamEvent::Usage(usage) => {
+                spend.steps += 1;
+                spend.tokens += usage;
+                emit(events, Event::Usage(usage)).await;
+            }
         }
     }
     Ok(reply)
@@ -126,7 +134,7 @@ mod tests {
     };
     use nth_protocol::{
         AssistantMessage, BoxError, Event, Listing, Message, Provider, Request, Retry, StreamEvent,
-        ToolContext,
+        ToolContext, Usage,
     };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -160,6 +168,11 @@ mod tests {
     #[tokio::test]
     async fn interrupting_a_reply_keeps_its_text_but_not_its_calls() {
         let provider = Unfinished(vec![
+            StreamEvent::Usage(Usage {
+                input: 40,
+                output: 2,
+                ..Usage::default()
+            }),
             StreamEvent::TextDelta("partial".into()),
             StreamEvent::ToolCall(call("1", "echo", "")),
         ]);
@@ -168,7 +181,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let turn = run_turn(&provider, ROUTE, &[], &ctx, &mut messages, &tx, &cancel);
+        let mut spent = spend();
+        let turn = run_turn(
+            &provider,
+            ROUTE,
+            &[],
+            &ctx,
+            &mut messages,
+            &mut spent,
+            &tx,
+            &cancel,
+        );
         let interrupt = async {
             rx.recv().await;
             cancel.cancel();
@@ -183,6 +206,7 @@ mod tests {
                 ..Default::default()
             })]
         );
+        assert_eq!((spent.steps, spent.tokens.input), (1, 40), "still counted");
     }
 
     /// A transient provider failure, retried by [`Flaky`].
@@ -253,6 +277,7 @@ mod tests {
             &[],
             &ctx,
             &mut messages,
+            &mut spend(),
             &tx,
             &CancellationToken::new(),
         )
@@ -290,6 +315,7 @@ mod tests {
             &[],
             &ctx,
             &mut messages,
+            &mut spend(),
             &tx,
             &CancellationToken::new(),
         )

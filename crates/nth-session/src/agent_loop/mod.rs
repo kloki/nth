@@ -21,6 +21,8 @@ use stream::{Stop, stream_step};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::Spend;
+
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
 
@@ -76,12 +78,17 @@ pub struct Route<'a> {
 /// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
 /// `messages` valid to continue from: partial text is kept, and every tool
 /// call has a result.
+///
+/// What the requests used is counted to `spend` as they report it, so a
+/// turn that fails or is interrupted still counts what it spent.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
     provider: &dyn Provider,
     route: Route<'_>,
     tools: &[Box<dyn Tool>],
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
+    spend: &mut Spend,
     events: &mpsc::Sender<Event>,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
@@ -114,7 +121,7 @@ pub async fn run_turn(
                 messages: &sent,
                 tools: &specs,
             };
-            stream_step(provider, request, events, cancel).await
+            stream_step(provider, request, events, cancel, spend).await
         };
         let reply = match streamed {
             Ok(reply) => reply,

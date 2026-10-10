@@ -72,7 +72,7 @@ impl App {
     }
 
     /// Saves the session between turns, in the background.
-    fn save_session(&mut self) {
+    pub(super) fn save_session(&mut self) {
         let (Some(store), Some(session)) = (&self.store, &self.session) else {
             return;
         };

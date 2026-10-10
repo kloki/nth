@@ -248,7 +248,17 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        let result = run_turn(&provider, ROUTE, &tools, &ctx, &mut messages, &tx, &cancel).await;
+        let result = run_turn(
+            &provider,
+            ROUTE,
+            &tools,
+            &ctx,
+            &mut messages,
+            &mut spend(),
+            &tx,
+            &cancel,
+        )
+        .await;
         let _ask = unanswered.await.expect("asked");
 
         assert!(matches!(result, Err(Error::Interrupted)));

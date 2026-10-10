@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    DEFAULT_MAX_STEPS, Error, Route,
+    DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
     run_turn, subagent, system_prompt,
@@ -65,6 +65,10 @@ pub struct Session {
     /// does not get them again.
     #[serde(default)]
     pub loaded_instructions: BTreeSet<PathBuf>,
+    /// What every turn spent, its subagents' turns included once a
+    /// front-end hands them over. Sessions saved before it load with none.
+    #[serde(default)]
+    pub usage: Ledger,
     /// Model requests a turn may make before it gives up. Comes from the
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
@@ -102,6 +106,7 @@ impl Session {
             updated_at: now,
             messages,
             loaded_instructions: BTreeSet::new(),
+            usage: Ledger::default(),
             max_steps: DEFAULT_MAX_STEPS,
             subagent: false,
             persona: None,
@@ -291,6 +296,7 @@ impl Session {
             workdir: Workdir::new(self.origin.clone()),
             ..ToolContext::new(self.cwd.clone())
         };
+        let mut spend = Spend::new(&self.model, None);
         let result = run_turn(
             provider,
             Route {
@@ -302,10 +308,12 @@ impl Session {
             tools,
             &ctx,
             &mut self.messages,
+            &mut spend,
             events,
             cancel,
         )
         .await;
+        self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
         self.loaded_instructions = ctx

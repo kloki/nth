@@ -92,6 +92,11 @@ impl Tool for Echo {
     }
 }
 
+/// A spend for a turn whose usage the test does not look at.
+pub(super) fn spend() -> Spend {
+    Spend::new("scripted", None)
+}
+
 pub(crate) fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
     ToolCall {
         id: id.into(),
@@ -154,6 +159,7 @@ async fn runs_tools_until_the_model_answers() {
         &tools,
         &ctx,
         &mut messages,
+        &mut spend(),
         &tx,
         &CancellationToken::new(),
     )
@@ -234,6 +240,7 @@ async fn the_last_step_tells_the_model_to_stop() {
         &[],
         &ctx,
         &mut messages,
+        &mut spend(),
         &tx,
         &CancellationToken::new(),
     )
@@ -280,6 +287,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         &tools,
         &ctx,
         &mut messages,
+        &mut spend(),
         &tx,
         &CancellationToken::new(),
     )
@@ -312,7 +320,17 @@ pub(super) async fn turn(
     let (tx, mut rx) = mpsc::channel(16);
     let run = async move {
         let cancel = CancellationToken::new();
-        run_turn(provider, ROUTE, tools, ctx, messages, &tx, &cancel).await
+        run_turn(
+            provider,
+            ROUTE,
+            tools,
+            ctx,
+            messages,
+            &mut spend(),
+            &tx,
+            &cancel,
+        )
+        .await
     };
     let sent = async {
         let mut sent = Vec::new();
