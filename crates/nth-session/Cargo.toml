@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 nth-context.workspace = true
 nth-protocol.workspace = true
+nth-worktree.workspace = true
 futures.workspace = true
 jiff.workspace = true
 serde.workspace = true

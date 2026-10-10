@@ -10,6 +10,7 @@ mod actor;
 mod mention;
 mod stop;
 mod task;
+mod worktree;
 
 /// Tools that change files, kept from a subagent while its parent plans.
 pub(crate) const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
@@ -30,6 +31,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+pub(crate) use worktree::Isolation;
 
 use crate::{Error, Session};
 
@@ -165,6 +167,20 @@ impl Subagents {
         provider: Arc<dyn Provider>,
         tools: Vec<Box<dyn Tool>>,
     ) -> SubagentId {
+        self.spawn_in(agent, description, session, provider, tools, None)
+    }
+
+    /// [`Subagents::spawn`], in the worktree `isolation` keeps when there
+    /// is one.
+    pub(crate) fn spawn_in(
+        &self,
+        agent: &Agent,
+        description: &str,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        tools: Vec<Box<dyn Tool>>,
+        isolation: Option<Isolation>,
+    ) -> SubagentId {
         let (inbox, jobs) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(ChildState::default()));
         let writes = tools.iter().any(|tool| WRITERS.contains(&tool.spec().name));
@@ -179,6 +195,7 @@ impl Subagents {
             session,
             provider,
             tools,
+            isolation,
             front_end: self.0.front_end.clone(),
             shared: shared.clone(),
             closed: closed.clone(),

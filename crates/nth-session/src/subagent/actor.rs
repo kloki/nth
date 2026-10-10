@@ -10,7 +10,7 @@ use nth_protocol::{Event, FrontEnd, Message, Provider, TaskNotice, TaskOutcome, 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId};
+use super::{ChildState, Done, Isolation, Job, State, SubagentEvent, SubagentId};
 use crate::{Error, Session};
 
 pub(super) struct Actor {
@@ -20,6 +20,8 @@ pub(super) struct Actor {
     pub session: Session,
     pub provider: Arc<dyn Provider>,
     pub tools: Vec<Box<dyn Tool>>,
+    /// Its own worktree, when the task asked for one.
+    pub isolation: Option<Isolation>,
     /// `None` without a front-end: nobody watches the tab.
     pub front_end: Option<mpsc::Sender<SubagentEvent>>,
     pub shared: Arc<Mutex<ChildState>>,
@@ -37,6 +39,7 @@ pub(super) async fn run(actor: Actor) {
         mut session,
         provider,
         tools,
+        mut isolation,
         front_end,
         shared,
         closed,
@@ -89,23 +92,36 @@ pub(super) async fn run(actor: Actor) {
         // Nobody at the tab answers questions or looks at panels, and a
         // monitor's notices would go to the parent's model: headless.
         let front = FrontEnd::default();
-        let result = {
-            let turn = session.prompt(text, provider.as_ref(), &tools, &front, &tx, &cancel);
-            tokio::pin!(turn);
-            let deadline = budget(timeout);
-            tokio::pin!(deadline);
-            loop {
-                tokio::select! {
-                    result = &mut turn => break result,
-                    Some(event) = rx.recv() => {
-                        heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
-                    }
-                    // Cancelling is cooperative: the turn still ends on its
-                    // own, with every call answered, and the session stays
-                    // valid to continue from.
-                    _ = &mut deadline, if !timed_out => {
-                        timed_out = true;
-                        cancel.cancel();
+        // Made again when the last turn's was removed.
+        let entered = match &mut isolation {
+            Some(isolation) => isolation.enter().await.map(Some),
+            None => Ok(None),
+        };
+        let result = match entered {
+            Err(e) => Err(Error::Worktree(e)),
+            Ok(cwd) => {
+                if let Some(cwd) = cwd
+                    && cwd != session.cwd
+                {
+                    session.set_cwd(cwd, None);
+                }
+                let turn = session.prompt(text, provider.as_ref(), &tools, &front, &tx, &cancel);
+                tokio::pin!(turn);
+                let deadline = budget(timeout);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        result = &mut turn => break result,
+                        Some(event) = rx.recv() => {
+                            heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
+                        }
+                        // Cancelling is cooperative: the turn still ends on its
+                        // own, with every call answered, and the session stays
+                        // valid to continue from.
+                        _ = &mut deadline, if !timed_out => {
+                            timed_out = true;
+                            cancel.cancel();
+                        }
                     }
                 }
             }
@@ -120,8 +136,17 @@ pub(super) async fn run(actor: Actor) {
         while let Ok(event) = rx.try_recv() {
             heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
         }
+        // Where the parent finds what it changed.
+        let note = match &mut isolation {
+            Some(isolation) => isolation.leave().await,
+            None => None,
+        };
+        let reply = |session: &Session| match &note {
+            Some(note) => format!("{}\n\n{note}", answer(session)),
+            None => answer(session),
+        };
         let outcome = match &result {
-            Ok(()) => TaskOutcome::Completed(answer(&session)),
+            Ok(()) => TaskOutcome::Completed(reply(&session)),
             Err(Error::Interrupted) => TaskOutcome::Interrupted,
             Err(e) => TaskOutcome::Failed(e.to_string()),
         };
@@ -133,7 +158,7 @@ pub(super) async fn run(actor: Actor) {
             &agent,
             &description,
             id,
-            result.map(|()| answer(&session)),
+            result.map(|()| reply(&session)),
         );
         {
             let mut state = lock(&shared);

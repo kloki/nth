@@ -57,6 +57,10 @@ pub enum Error {
     /// started.
     #[error("could not run the skill: {0}")]
     Skill(String),
+    /// A subagent's worktree could not be opened, so its turn never
+    /// started.
+    #[error("could not open its worktree: {0}")]
+    Worktree(String),
 }
 
 /// Where a turn's requests go: which model at what effort, on behalf of
