@@ -753,6 +753,7 @@ impl App {
                 }
             }
             Event::Usage(usage) => self.usage = Some(*usage),
+            Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }
         self.chat.apply(&event);

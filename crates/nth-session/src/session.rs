@@ -8,7 +8,7 @@ use std::{
 use nth_context::Context;
 use nth_protocol::{
     AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, Tool, ToolCall,
-    ToolContext, Writable,
+    ToolContext, Workdir, Writable,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -37,6 +37,10 @@ pub struct Session {
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
     pub cwd: PathBuf,
+    /// The directory the session left to work in a worktree, which
+    /// `exit_worktree` goes back to; `None` outside one.
+    #[serde(default)]
+    pub origin: Option<PathBuf>,
     /// Working directories added with `/add-dir`, which the tools may read
     /// and edit like `cwd` itself.
     #[serde(default)]
@@ -88,6 +92,7 @@ impl Session {
         Self {
             id: Uuid::new_v4(),
             cwd,
+            origin: None,
             extra_dirs: Vec::new(),
             model,
             effort: Effort::default(),
@@ -136,6 +141,14 @@ impl Session {
     /// prompt, as a switch of model does.
     pub fn set_extra_dirs(&mut self, dirs: Vec<PathBuf>) {
         self.extra_dirs = dirs;
+        self.rewrite_system_prompt();
+    }
+
+    /// Moves the session to `cwd`, which the system prompt names. `origin`
+    /// is where it came from when `cwd` is a worktree.
+    pub fn set_cwd(&mut self, cwd: PathBuf, origin: Option<PathBuf>) {
+        self.cwd = cwd;
+        self.origin = origin;
         self.rewrite_system_prompt();
     }
 
@@ -275,6 +288,7 @@ impl Session {
                 model: self.model.clone(),
                 effort: self.effort,
             },
+            workdir: Workdir::new(self.origin.clone()),
             ..ToolContext::new(self.cwd.clone())
         };
         let result = run_turn(
@@ -299,6 +313,9 @@ impl Session {
             .lock()
             .expect("loaded instructions lock poisoned")
             .clone();
+        if let Some(cwd) = ctx.workdir.moved_to() {
+            self.set_cwd(cwd, ctx.workdir.origin());
+        }
         result
     }
 }
@@ -538,6 +555,90 @@ mod tests {
         let json = serde_json::to_string(&session).expect("serializes");
         let back: Session = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back.loaded_instructions, session.loaded_instructions);
+    }
+
+    /// Moves the session into `/repo/.nth/worktrees/x`, as enter_worktree
+    /// does, or says where it runs when asked with `"pwd"`.
+    struct Move;
+
+    impl Tool for Move {
+        fn spec(&self) -> nth_protocol::ToolSpec {
+            nth_protocol::ToolSpec {
+                name: "move",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            args: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+            if args != "pwd" {
+                ctx.workdir.enter(&ctx.cwd, "/repo/.nth/worktrees/x".into());
+            }
+            let cwd = ctx.cwd.display().to_string();
+            Box::pin(async move { Ok(cwd) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_moves_the_next_step_and_the_session() {
+        use crate::agent_loop::tests::{Scripted, call};
+
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "move", "{}"))],
+            vec![StreamEvent::ToolCall(call("2", "move", r#""pwd""#))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Move)];
+        let (tx, mut rx) = mpsc::channel(64);
+
+        session
+            .prompt(
+                "go",
+                &provider,
+                &tools,
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+
+        let results: Vec<&str> = session
+            .messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, ["/repo", "/repo/.nth/worktrees/x"]);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::Moved(_) | Event::ToolFinished { .. } => events.push(event),
+                _ => {}
+            }
+        }
+        // Only the call that moved says so, before it finishes.
+        assert!(matches!(
+            &events[..],
+            [Event::Moved(cwd), Event::ToolFinished { .. }, Event::ToolFinished { .. }]
+                if cwd == Path::new("/repo/.nth/worktrees/x")
+        ));
+        assert_eq!(session.cwd, PathBuf::from("/repo/.nth/worktrees/x"));
+        assert_eq!(session.origin, Some("/repo".into()));
+        let Some(Message::System(prompt)) = session.messages.first() else {
+            panic!("no system prompt");
+        };
+        assert!(prompt.contains("/repo/.nth/worktrees/x"), "{prompt}");
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.origin, session.origin);
     }
 
     /// Says whether the file it is asked about may be written.

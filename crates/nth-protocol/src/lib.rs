@@ -10,6 +10,7 @@ mod provider;
 mod question;
 mod screen;
 mod tool;
+mod workdir;
 mod writable;
 
 pub use event::{Event, retry_label};
@@ -29,4 +30,5 @@ pub use provider::{
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen};
 pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
+pub use workdir::Workdir;
 pub use writable::Writable;
