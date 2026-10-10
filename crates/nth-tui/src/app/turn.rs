@@ -351,6 +351,7 @@ impl App {
         self.session = Some(session);
         self.index_files();
         self.load_git();
+        self.load_pr();
         // The plan lives under the working directory, so a move moves it.
         match plan_path != self.plan_path {
             true => self.plan_for_session(plan_path),
@@ -390,6 +391,7 @@ impl App {
         self.cwd = cwd;
         self.follow_place();
         self.load_git();
+        self.load_pr();
         self.index_files();
     }
 

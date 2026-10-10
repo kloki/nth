@@ -106,6 +106,7 @@ impl App {
         self.left_session();
         self.index_files();
         self.load_git();
+        self.load_pr();
     }
 
     fn session_id(&self) -> Option<uuid::Uuid> {

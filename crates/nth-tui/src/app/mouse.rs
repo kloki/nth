@@ -1,7 +1,8 @@
 //! What the mouse does: the wheel scrolls the showing tab, a click on the
-//! header shows that tab, a click on a link in a chat opens it, and a right
-//! click on an entry copies what it says. Where it moves is kept for the
-//! empty chat's field to ripple under.
+//! header shows that tab, a click on a link in a chat or on the status
+//! bar's pull-request link opens it, and a right click on an entry copies
+//! what it says. Where it moves is kept for the empty chat's field to
+//! ripple under.
 
 use std::process::Stdio;
 
@@ -13,10 +14,12 @@ use crate::{chat::Chat, header, terminal};
 
 const WHEEL_LINES: usize = 3;
 
-/// Where the last draw put the header; the chats know their own place.
+/// Where the last draw put the header and the status bar's pull-request
+/// link; the chats know their own place.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Areas {
     pub header: Rect,
+    pub pr_link: Option<Rect>,
 }
 
 impl App {
@@ -40,6 +43,11 @@ impl App {
                     self.content.select(index);
                 }
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if self.areas.pr_link.is_some_and(|area| area.contains(at)) =>
+            {
+                self.open_pr();
+            }
             MouseEventKind::Down(MouseButton::Left) => self.click_content(at),
             MouseEventKind::Down(MouseButton::Right) => self.copy_entry(at),
             _ => {}
@@ -55,11 +63,25 @@ impl App {
         }
     }
 
+    /// The branch's pull request, which the link on the status bar names.
+    fn open_pr(&mut self) {
+        let Some(url) = self.pr.as_ref().map(|pr| pr.url.clone()) else {
+            return;
+        };
+        self.open_url(&url);
+    }
+
     fn click_content(&mut self, at: Position) {
         let Some(url) = self.shown_chat().and_then(|chat| chat.link_at(at.x, at.y)) else {
             return;
         };
-        self.hint = Some(match open(&url) {
+        self.open_url(&url);
+    }
+
+    /// Hands `url` to the desktop's opener, and says how it went on the
+    /// status bar.
+    fn open_url(&mut self, url: &str) {
+        self.hint = Some(match (self.opener)(url) {
             Ok(()) => format!("opened {url}"),
             Err(e) => format!("could not open: {e}"),
         });
@@ -88,7 +110,7 @@ impl App {
 /// let go of: tokio reaps it when it exits, and the browser it starts is
 /// meant to outlive nth. `Ok` means the opener started, not that it found
 /// a browser.
-fn open(url: &str) -> std::io::Result<()> {
+pub(super) fn open(url: &str) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -205,5 +227,41 @@ mod tests {
             app.chat.link_at(more as u16, row as u16).as_deref(),
             Some("https://x.y")
         );
+    }
+
+    #[test]
+    fn a_click_on_the_pull_request_link_opens_it() {
+        let mut app = app();
+        app.git = Some(crate::git::GitStatus {
+            branch: Some("main".into()),
+            ..Default::default()
+        });
+        app.pr = Some(crate::git::Pr {
+            number: 123,
+            url: "https://x.y/repo/pull/123".into(),
+            state: crate::git::State::Merged,
+        });
+        app.opener = |url| {
+            assert_eq!(url, "https://x.y/repo/pull/123");
+            Ok(())
+        };
+        rows(&mut app); // Where the link was drawn decides the click.
+        let link = app.areas.pr_link.expect("the link shows");
+
+        click(&mut app, MouseButton::Left, link.x + 1, link.y);
+        assert_eq!(
+            app.hint.as_deref(),
+            Some("opened https://x.y/repo/pull/123")
+        );
+
+        // A click beside the link does nothing.
+        app.hint = None;
+        click(
+            &mut app,
+            MouseButton::Left,
+            link.x.saturating_sub(2),
+            link.y,
+        );
+        assert_eq!(app.hint, None);
     }
 }
