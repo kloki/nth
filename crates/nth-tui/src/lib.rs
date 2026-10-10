@@ -25,6 +25,7 @@ mod status;
 mod subagent;
 mod terminal;
 mod theme;
+mod usage;
 
 use std::{
     io::{IsTerminal, stdin, stdout},

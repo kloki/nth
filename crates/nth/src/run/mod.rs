@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow};
 use nth_protocol::{FrontEnd, Mode, Provider};
 use nth_session::{
     CancellationToken, Price, Store, Subagents, Total,
-    usage::{self, short},
+    usage::{self, short, steps},
 };
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
@@ -123,10 +123,7 @@ async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option
 /// and the price are left out when unknown.
 fn summary(spent: Total, price: Option<Price>) -> String {
     let tokens = spent.tokens;
-    let mut parts = vec![
-        format!("{} steps", spent.steps),
-        format!("{} in", short(tokens.input)),
-    ];
+    let mut parts = vec![steps(spent.steps), format!("{} in", short(tokens.input))];
     if let Some(share) = tokens.cached_share() {
         parts.push(format!("{:.0}% cached", share * 100.0));
     }

@@ -36,7 +36,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan; they replace the side pane and agents sidebar sketched in design.md.
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
@@ -48,7 +48,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
   | red     | failed, until it is something else | turn failed             |              |         | stopped or failed   |
   | magenta | needs you                          | a question waits        |              |         |                     |
 
-  Diagnostics is always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
+  Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
@@ -180,6 +180,27 @@ formatters
 - **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
+
+## Usage
+
+Opened with `/usage`, icon `∑`. What the session spent, its subagents included: all of it, then per model, then per turn. Each row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
+
+```
+usage
+  all  4 steps  1.0M in  77% cached  20k out  ≈$0.38+
+
+per model
+  glm-5.3   1 step  1.0M in  80% cached  20k out  ≈$0.38
+  kimi-k3  3 steps   40k in     cache ?  900 out
+
+per turn
+  #1 glm-5.3             1 step  1.0M in  80% cached  20k out  ≈$0.38
+  #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
+
+  prices are list-price estimates from models.dev, whatever your plan bills
+```
+
+`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one.
 
 ## Chat
 

@@ -353,6 +353,27 @@ async fn clear_command_starts_a_fresh_session() {
 }
 
 #[tokio::test]
+async fn usage_opens_a_tab_of_what_the_session_spent() {
+    let mut app = app();
+    app.on_session(Event::Usage(Usage {
+        input: 2_000,
+        output: 30,
+        cache_read: Some(1_500),
+        cache_write: None,
+    }));
+    app.prompt.insert_str("/usage");
+    app.submit();
+    let opened = rows(&mut app);
+    assert!(opened[0].starts_with("  › chat [∑ usage] "), "{opened:#?}");
+    assert!(opened[2].starts_with(" usage "), "{opened:#?}");
+    assert!(
+        opened[3].starts_with("   all  1 step  2.0k in  75% cached"),
+        "{opened:#?}"
+    );
+    assert!(opened[6].starts_with("   glm  1 step"), "{opened:#?}");
+}
+
+#[tokio::test]
 async fn tabs_open_switch_and_close() {
     let mut app = app();
     app.prompt.insert_str("/diagnostics");
