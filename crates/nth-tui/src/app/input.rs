@@ -122,7 +122,7 @@ mod tests {
 
         assert_eq!(
             asking[14].trim_end(),
-            " glm · /repo",
+            " glm · /repo 0m",
             "the status bar stays"
         );
         let panel: Vec<&str> = asking[8..13].iter().map(|r| r.trim_end()).collect();

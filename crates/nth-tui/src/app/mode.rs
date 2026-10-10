@@ -114,7 +114,7 @@ mod tests {
         assert_eq!((app.model.as_str(), app.effort), ("kimi", Effort::High));
         let shown = rows(&mut app);
         assert_eq!(shown[9].trim_end(), " ▎ plan");
-        assert_eq!(shown[14].trim_end(), " kimi · high · /repo");
+        assert_eq!(shown[14].trim_end(), " kimi · high · /repo 0m");
 
         app.effort = Effort::Low;
         app.apply(Action::PrevTab);

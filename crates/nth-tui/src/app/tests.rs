@@ -1,7 +1,10 @@
 //! An app drawn into a test backend, and the tests of the app as a whole:
 //! its layout and its loop. Each concern's own tests sit next to its code.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
+};
 
 use crossterm::event::Event as TermEvent;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
@@ -116,7 +119,7 @@ fn prompt_and_status_rows_never_move() {
     assert_eq!(idle[10].trim_end(), " ▎ Ask anything.");
     assert_eq!(idle[11].trim_end(), " ▎");
     assert_eq!(idle[12].trim_end(), " ▎");
-    assert_eq!(idle[14].trim_end(), " glm · /repo");
+    assert_eq!(idle[14].trim_end(), " glm · /repo 0m");
     assert!(idle[15].trim().is_empty(), "no hint when idle");
 
     for i in 0..20 {
@@ -142,7 +145,11 @@ fn prompt_and_status_rows_never_move() {
         [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
         "scrolled to the cursor"
     );
-    assert_eq!(busy[14].trim_end(), " glm · /repo", "no git outside a repo");
+    assert_eq!(
+        busy[14].trim_end(),
+        " glm · /repo 0m",
+        "no git outside a repo"
+    );
     assert!(busy[15].trim().is_empty(), "nothing below while busy");
 }
 
@@ -204,8 +211,30 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
     .into();
     let rows = rows(&mut app);
 
-    assert_eq!(rows[14].trim_end(), " glm · /repo", "the first line stays");
+    assert_eq!(
+        rows[14].trim_end(),
+        " glm · /repo 0m",
+        "the first line stays"
+    );
     assert_eq!(rows[15].trim_end(), " ⏵ 2 queued · fix the build");
+}
+
+#[test]
+fn the_status_bar_shows_the_session_time() {
+    let mut app = app();
+    app.session_since = SystemTime::now() - Duration::from_secs(24 * 60);
+    let rows = rows(&mut app);
+
+    assert_eq!(rows[14].trim_end(), " glm · /repo 24m");
+}
+
+#[test]
+fn the_minute_wake_lands_within_the_minute() {
+    let now = tokio::time::Instant::now();
+    let at = super::next_minute();
+
+    assert!(at > now, "in the future");
+    assert!(at <= now + Duration::from_secs(60), "within the minute");
 }
 
 #[test]
@@ -220,7 +249,7 @@ fn a_narrow_status_line_cuts_the_right_first() {
     let rows = rows(&mut app);
 
     let row = rows[14].trim();
-    assert!(row.starts_with("glm · /repo git · a-very"), "{row:?}");
+    assert!(row.starts_with("glm · /repo 0m git · a-very"), "{row:?}");
     assert!(!row.ends_with("*1"), "the counts are cut: {row:?}");
 }
 
@@ -229,7 +258,7 @@ fn the_context_bar_fills_with_usage() {
     let mut app = app();
     let place = rows(&mut app)[14].trim_end().to_string();
     assert!(
-        place.ends_with("/repo"),
+        place.ends_with("/repo 0m"),
         "no bar while the window is unknown"
     );
 

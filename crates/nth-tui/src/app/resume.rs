@@ -86,6 +86,7 @@ impl App {
     pub(super) fn resume(&mut self, mut session: Session) {
         session.max_steps = self.max_steps;
         self.context = session.context().clone();
+        self.session_since = session.created_at;
         // The session's model and effort are its mode's now; the other mode
         // keeps what it had.
         self.mode = session.mode;
