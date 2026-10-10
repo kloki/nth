@@ -1,7 +1,8 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! effort, place (the working directory in magenta, then how many were
 //! added with `/add-dir` as `(+N)`) and context used on the left, git branch and
-//! status on the right. Line 2 shows a hint about the last key or the queued
+//! status on the right, with the branch's pull request as a clickable
+//! `#N`. Line 2 shows a hint about the last key or the queued
 //! prompts on the left, and the running monitors and the language servers
 //! that check a write on the right: a dot per server, coloured by its
 //! state. The right side is cut first when a line is too narrow.
@@ -17,6 +18,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{app::App, git};
 
@@ -25,7 +27,9 @@ pub const ROWS: u16 = 2;
 /// Characters in the context bar.
 const BAR_WIDTH: usize = 13;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+/// Draws the two lines. Where the pull-request link ended up on line 1,
+/// for a click to land on; `None` when none shows or it is cut off.
+pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
     let mut model = vec![app.model.clone()];
@@ -55,10 +59,20 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         ]);
     }
     let mut summary = Vec::new();
+    // The pull request on the branch, when the forge's tool found one:
+    // its number in yellow, where it falls among the summary's spans.
+    let mut link = None;
     if let Some(status) = &app.git {
         summary.push(Span::styled("git · ", bright_white()));
         if let Some(branch) = &status.branch {
             summary.push(Span::styled(branch.clone(), Style::new().fg(Color::Green)));
+        }
+        if let (Some(_), Some(pr)) = (&status.branch, &app.pr) {
+            summary.push(Span::raw(" "));
+            let text = format!("#{}", pr.number);
+            let at = summary.iter().map(Span::width).sum();
+            link = Some((at, text.width()));
+            summary.push(Span::styled(text, Style::new().fg(Color::Yellow)));
         }
         let counts = git::summary(status);
         if status.branch.is_some() && !counts.is_empty() {
@@ -69,12 +83,35 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             summary.clear();
         }
     }
-    split_line(frame, state, place, summary);
+    let width = summary.iter().map(Span::width).sum();
+    let right = split_line(frame, state, place, summary);
+    let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
     let left = match &app.hint {
         Some(hint) => vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))],
         None => queued(app),
     };
     split_line(frame, checks, left, servers(app));
+    link_area
+}
+
+/// Where a link drawn among the right side's spans ended up. They are
+/// right-aligned, so it sits at its offset from where the side's content
+/// starts: against its right edge, or at the area's left edge when the
+/// side is cut, which takes the link with it when it reaches past the
+/// area's right edge.
+fn link_rect(right: Rect, width: usize, at: usize, link: usize) -> Option<Rect> {
+    let edge = i32::from(right.right());
+    let start = (edge - i32::try_from(width).unwrap_or(edge)).max(i32::from(right.x));
+    let x = start + i32::try_from(at).unwrap_or(edge);
+    let end = x + i32::try_from(link).unwrap_or(edge);
+    (x >= i32::from(right.x) && end <= edge).then(|| {
+        Rect::new(
+            u16::try_from(x).unwrap_or(right.x),
+            right.y,
+            u16::try_from(link).unwrap_or(right.width),
+            1,
+        )
+    })
 }
 
 /// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`. Prompts
@@ -136,13 +173,14 @@ fn magenta() -> Style {
 }
 
 /// Draws `left` against the left edge and `right` against the right edge
-/// in what is left of the row, one column clear of it.
+/// in what is left of the row, one column clear of it, and returns where
+/// the right side was drawn.
 pub fn split_line(
     frame: &mut Frame,
     area: Rect,
     left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,
-) {
+) -> Rect {
     let left = Line::from(left);
     let width = u16::try_from(left.width())
         .unwrap_or(u16::MAX)
@@ -158,6 +196,7 @@ pub fn split_line(
         Paragraph::new(Line::from(right).right_aligned()),
         right_area,
     );
+    right_area
 }
 
 /// `cwd` as shown in the status bar, with `home` written as `~`.

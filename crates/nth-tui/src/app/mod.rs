@@ -77,7 +77,7 @@ use crate::{
     chat::Chat,
     command::Command,
     diagnostics::{self, Diagnostics},
-    git::GitStatus,
+    git::{GitStatus, Pr},
     header, hero,
     history::History,
     llm_picker::{self, usage::LlmUsage},
@@ -169,6 +169,9 @@ pub struct App {
     /// The working tree's git state; `None` outside a repository or until
     /// the first load lands.
     pub git: Option<GitStatus>,
+    /// The current branch's pull request, as gh or tea found it; `None`
+    /// until a load lands, and whenever the branch has none.
+    pub pr: Option<Pr>,
     /// The language servers the tools started, as last reported.
     pub servers: Vec<ServerStatus>,
     /// Where `servers` comes from; `None` once its sender is gone.
@@ -177,6 +180,8 @@ pub struct App {
     pub usage: Option<Usage>,
     /// Queued again when the tree may have changed mid-load, like `indexing`.
     git_loading: Job<Result<Option<GitStatus>, String>>,
+    /// The pull request on the branch, loaded with the git status.
+    pr_loading: Job<Option<Pr>>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Listing>,
@@ -251,6 +256,8 @@ pub struct App {
     areas: mouse::Areas,
     /// How a right click's text reaches the clipboard; tests put it nowhere.
     clipboard: fn(&str) -> std::io::Result<()>,
+    /// How a link reaches the desktop's opener; tests put it nowhere.
+    opener: fn(&str) -> std::io::Result<()>,
     /// ctrl+g asked for the editor, on this target; the loop opens it
     /// after this step.
     pending_editor: Option<editor::Target>,
@@ -308,6 +315,7 @@ enum Step {
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
+    PrLoaded(Result<Option<Pr>, JoinError>),
     LlmsListed(Result<Result<Listing, BoxError>, JoinError>),
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
@@ -386,10 +394,12 @@ impl App {
             files: Vec::new(),
             indexing: Job::default(),
             git: None,
+            pr: None,
             servers: Vec::new(),
             lsp: None,
             usage: None,
             git_loading: Job::default(),
+            pr_loading: Job::default(),
             llms: None,
             llm_listing: Job::default(),
             store: None,
@@ -428,6 +438,7 @@ impl App {
             hint: None,
             areas: mouse::Areas::default(),
             clipboard: crate::terminal::copy,
+            opener: mouse::open,
             pending_editor: None,
             editing: None,
             editor: Job::default(),
@@ -497,6 +508,7 @@ impl App {
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
         self.load_git();
+        self.load_pr();
         self.list_llms();
         self.read_plan();
 
@@ -529,6 +541,7 @@ impl App {
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
+                pr = self.pr_loading.join() => Step::PrLoaded(pr),
                 llms = self.llm_listing.join() => Step::LlmsListed(llms),
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
@@ -561,6 +574,9 @@ impl App {
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
                     self.git_loaded(status.context("reading git status failed")?)
+                }
+                Step::PrLoaded(pr) => {
+                    self.pr_loaded(pr.context("reading the pull request failed")?)
                 }
                 Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
                 Step::SessionsListed(sessions) => {
@@ -615,7 +631,10 @@ impl App {
         .areas(area);
 
         self.close_answered_subagents();
-        self.areas = mouse::Areas { header };
+        self.areas = mouse::Areas {
+            header,
+            pr_link: None,
+        };
         let tabs = self.tab_labels();
         header::draw(frame, header, &tabs);
         match self.content.active() {
@@ -676,7 +695,8 @@ impl App {
                 }
             }
         }
-        status::draw(frame, status, self);
+        // The link's place is kept for a click to land on.
+        self.areas.pr_link = status::draw(frame, status, self);
         match &self.input {
             Input::Prompt => {
                 // On a subagent's tab the prompt is its: the label names it

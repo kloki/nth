@@ -17,7 +17,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth +3 *4 󰊐 2 ┐ status, 2 lines
+ glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
  ● rust  ● typescript  rustfmt · prettier                              ┘
 ```
 
@@ -50,7 +50,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
   Diagnostics is always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
-- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
+- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                  |
@@ -426,10 +426,10 @@ Opened with `/settings`. What the chats show, for this run of nth only: a change
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state, never anything you interact with. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible, below the input panel. It holds general state; the one thing in it you interact with is the branch's pull-request link. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
 
 ```
- glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth +3 *4 󰊐 2
+ glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth #123 +3 *4 󰊐 2
  ⏵ 2 queued · fix the failing test                    ● rust  ● typescript
 ```
 
@@ -483,6 +483,12 @@ untracked = ' [ $count](white)'
 Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather than the default colour, because they block a commit and should be the first thing you notice.
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
+
+**The branch's pull request**
+
+After the branch, when the branch has one, the pull request's `#N` in yellow, the one clickable thing in the bar: a left click opens the PR in the browser, with `opened <url>` on line 2 until the next key. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
+
+Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs at start-up, at the end of each turn and when the session moves, not after every write, since it goes over the network; no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
 
 **Line 2, left: queued prompts**
 
