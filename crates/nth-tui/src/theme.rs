@@ -20,11 +20,11 @@ pub fn dim() -> Style {
 }
 
 /// A mode's colour, shared by the prompt's bar and label and the spinner
-/// that replaces the label: plan is magenta, act blue.
+/// that replaces the label: plan is blue, act magenta.
 pub fn mode_colour(mode: Mode) -> Color {
     match mode {
-        Mode::Plan => Color::Magenta,
-        Mode::Act => Color::Blue,
+        Mode::Plan => Color::Blue,
+        Mode::Act => Color::Magenta,
     }
 }
 
@@ -33,6 +33,9 @@ pub const SHELL_COLOUR: Color = Color::Yellow;
 /// The prompt's colour while it talks to a subagent: a model talking to
 /// you, as the question panel is.
 pub const SUBAGENT_COLOUR: Color = Color::Cyan;
+/// The provider prefix in the prompt's label: bright white, against the
+/// model's blue.
+pub const PROVIDER_COLOUR: Color = Color::White;
 
 /// A tab's colour in the header; `None` leaves the terminal's own.
 pub fn tab_colour(state: TabState) -> Option<Color> {

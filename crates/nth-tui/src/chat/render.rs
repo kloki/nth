@@ -639,7 +639,7 @@ mod tests {
 
         let total = t.layout(40, ChatSettings::default());
 
-        assert_eq!(text(&t.visible(0, total)), ["▎ ¿ question Auth"]);
+        assert_eq!(text(&t.visible(0, total)), ["▎ ? question Auth"]);
     }
 
     fn trimmed(lines: &[ratatui::text::Line]) -> Vec<String> {

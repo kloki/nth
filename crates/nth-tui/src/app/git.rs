@@ -64,7 +64,7 @@ mod tests {
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert!(rows[14].starts_with(" glm · /repo "));
+        assert!(rows[14].starts_with(" /repo "));
         assert!(rows[14].trim_end().ends_with("git · main +2 *1"));
     }
 

@@ -10,8 +10,8 @@ use crossterm::event::Event as TermEvent;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{
-    BoxError, Event, Listing, Message, Panel, Provider, Request, Screen, StreamEvent, ToolCall,
-    Usage,
+    BoxError, Effort, Event, Listing, Message, Panel, Provider, Request, Screen, StreamEvent,
+    ToolCall, Usage,
 };
 use nth_session::Session;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
@@ -115,11 +115,11 @@ fn prompt_and_status_rows_never_move() {
         [1, 8, 13].iter().all(|&i| idle[i].trim().is_empty()),
         "an empty line between bands"
     );
-    assert_eq!(idle[9].trim_end(), " ▎ act");
+    assert_eq!(idle[9].trim_end(), " ▎ act  · glm");
     assert_eq!(idle[10].trim_end(), " ▎ Ask anything.");
     assert_eq!(idle[11].trim_end(), " ▎");
     assert_eq!(idle[12].trim_end(), " ▎");
-    assert_eq!(idle[14].trim_end(), " glm · /repo 0m");
+    assert_eq!(idle[14].trim_end(), " /repo 0m");
     assert!(idle[15].trim().is_empty(), "no hint when idle");
 
     for i in 0..20 {
@@ -139,18 +139,37 @@ fn prompt_and_status_rows_never_move() {
         busy[9]
     );
     assert!(busy[9].trim_end().ends_with("esc to cancel"));
+    // Byte offsets shift with the spinner's multi-byte glyphs; count chars.
+    let at = |row: &str| row.find("· glm").map(|at| row[..at].chars().count());
+    assert_eq!(at(&busy[9]), at(&idle[9]), "the model stays put while busy");
     let text: Vec<&str> = busy[10..=12].iter().map(|r| r.trim_end()).collect();
     assert_eq!(
         text,
         [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
         "scrolled to the cursor"
     );
-    assert_eq!(
-        busy[14].trim_end(),
-        " glm · /repo 0m",
-        "no git outside a repo"
-    );
+    assert_eq!(busy[14].trim_end(), " /repo 0m", "no git outside a repo");
     assert!(busy[15].trim().is_empty(), "nothing below while busy");
+}
+
+#[test]
+fn the_prompt_shows_the_model_with_its_provider_and_effort_coloured() {
+    let mut app = app();
+    app.model = "opencode/glm-5.3".into();
+    app.effort = Effort::High;
+    let buffer = buffer(&mut app);
+    let row: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, 9)].symbol())
+        .collect();
+
+    assert_eq!(row.trim_end(), " ▎ act  · opencode/glm-5.3 · high");
+    let fg = |text: &str| {
+        let at = row.find(text).expect(text);
+        buffer[(u16::try_from(row[..at].chars().count()).expect("fits"), 9)].fg
+    };
+    assert_eq!(fg("opencode/"), Color::White, "the provider is bright");
+    assert_eq!(fg("glm-5.3"), Color::Blue);
+    assert_eq!(fg("high"), Color::Gray);
 }
 
 /// The scrollbar column (the right margin) of the content panel's rows.
@@ -211,11 +230,7 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
     .into();
     let rows = rows(&mut app);
 
-    assert_eq!(
-        rows[14].trim_end(),
-        " glm · /repo 0m",
-        "the first line stays"
-    );
+    assert_eq!(rows[14].trim_end(), " /repo 0m", "the first line stays");
     assert_eq!(rows[15].trim_end(), " ⏵ 2 queued · fix the build");
 }
 
@@ -225,7 +240,7 @@ fn the_status_bar_shows_the_session_time() {
     app.session_since = SystemTime::now() - Duration::from_secs(24 * 60);
     let rows = rows(&mut app);
 
-    assert_eq!(rows[14].trim_end(), " glm · /repo 24m");
+    assert_eq!(rows[14].trim_end(), " /repo 24m");
 }
 
 #[test]
@@ -249,7 +264,7 @@ fn a_narrow_status_line_cuts_the_right_first() {
     let rows = rows(&mut app);
 
     let row = rows[14].trim();
-    assert!(row.starts_with("glm · /repo 0m git · a-very"), "{row:?}");
+    assert!(row.starts_with("/repo 0m git · a-very"), "{row:?}");
     assert!(!row.ends_with("*1"), "the counts are cut: {row:?}");
 }
 
