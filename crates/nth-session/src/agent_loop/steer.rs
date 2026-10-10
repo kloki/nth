@@ -4,72 +4,63 @@
 //! follows their results.
 
 use nth_protocol::{Event, Message, ToolCall, ToolContext};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
-use super::{INTERRUPTED, emit, failed};
+use super::{INTERRUPTED, Turn, emit, failed};
 
 /// Appended to a prompt that pre-empted a reply's tool calls, so the model
 /// knows why they did not run and may run them itself. Appended, never
 /// alone, so the transcript shows only what you typed.
 const INTERRUPTED_REMINDER: &str = "\n\n<system-reminder>\nThe user interrupted before the tool calls above ran; they were skipped and their results are placeholders. Run any you still need yourself.\n</system-reminder>";
 
-/// When a prompt waits, answers every one of `calls` as interrupted
-/// without running it, and gives the model the prompt: `true` means the
-/// turn goes on with it rather than with the calls.
-pub(super) async fn preempt(
-    calls: &[ToolCall],
-    ctx: &ToolContext,
-    messages: &mut Vec<Message>,
-    events: &mpsc::Sender<Event>,
-    cancel: &CancellationToken,
-) -> bool {
-    if cancel.is_cancelled() {
-        return false;
+impl Turn<'_> {
+    /// When a prompt waits, answers every one of `calls` as interrupted
+    /// without running it, and gives the model the prompt: `true` means the
+    /// turn goes on with it rather than with the calls.
+    pub(super) async fn preempt(&mut self, calls: &[ToolCall]) -> bool {
+        if self.cancel.is_cancelled() {
+            return false;
+        }
+        let Some(prompts) = self.ctx.inbox.take_prompts() else {
+            return false;
+        };
+        for call in calls {
+            emit(self.events, Event::ToolStarted(call.clone())).await;
+            emit(
+                self.events,
+                Event::ToolFinished {
+                    call: call.clone(),
+                    result: Err(INTERRUPTED.to_string()),
+                },
+            )
+            .await;
+        }
+        self.messages
+            .extend(calls.iter().map(|call| Message::ToolResult {
+                call_id: call.id.clone(),
+                content: failed(INTERRUPTED),
+            }));
+        // The reminder hidden from the transcript, as the mention is.
+        let text = steered(&prompts, self.ctx) + INTERRUPTED_REMINDER;
+        self.messages.push(Message::User(text));
+        emit(self.events, Event::Notice(prompts)).await;
+        true
     }
-    let Some(prompts) = ctx.inbox.take_prompts() else {
-        return false;
-    };
-    for call in calls {
-        emit(events, Event::ToolStarted(call.clone())).await;
-        emit(
-            events,
-            Event::ToolFinished {
-                call: call.clone(),
-                result: Err(INTERRUPTED.to_string()),
-            },
-        )
-        .await;
-    }
-    messages.extend(calls.iter().map(|call| Message::ToolResult {
-        call_id: call.id.clone(),
-        content: failed(INTERRUPTED),
-    }));
-    // The reminder hidden from the transcript, as the mention is.
-    let text = steered(&prompts, ctx) + INTERRUPTED_REMINDER;
-    messages.push(Message::User(text));
-    emit(events, Event::Notice(prompts)).await;
-    true
-}
 
-/// What monitors said and you sent while the tools ran, so a model busy on
-/// a long turn hears it at its next step rather than when the turn ends:
-/// the notices first, so the transcript reads them back, then the prompts,
-/// as a turn's own prompt follows its notices.
-pub(super) async fn hand_over(
-    ctx: &ToolContext,
-    messages: &mut Vec<Message>,
-    events: &mpsc::Sender<Event>,
-) {
-    let notices = ctx.inbox.take_notices();
-    let prompts = ctx.inbox.take_prompts();
-    let shown = [notices.clone(), prompts.clone()].into_iter().flatten();
-    let shown = shown.collect::<Vec<_>>().join("\n");
-    let sent = [notices, prompts.map(|prompts| steered(&prompts, ctx))];
-    let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
-    if !sent.is_empty() {
-        messages.push(Message::User(sent));
-        emit(events, Event::Notice(shown)).await;
+    /// What monitors said and you sent while the tools ran, so a model busy
+    /// on a long turn hears it at its next step rather than when the turn
+    /// ends: the notices first, so the transcript reads them back, then the
+    /// prompts, as a turn's own prompt follows its notices.
+    pub(super) async fn hand_over(&mut self) {
+        let notices = self.ctx.inbox.take_notices();
+        let prompts = self.ctx.inbox.take_prompts();
+        let shown = [notices.clone(), prompts.clone()].into_iter().flatten();
+        let shown = shown.collect::<Vec<_>>().join("\n");
+        let sent = [notices, prompts.map(|prompts| steered(&prompts, self.ctx))];
+        let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
+        if !sent.is_empty() {
+            self.messages.push(Message::User(sent));
+            emit(self.events, Event::Notice(shown)).await;
+        }
     }
 }
 
@@ -92,7 +83,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent_loop::{run_turn, tests::*};
+    use crate::agent_loop::{Turn, tests::*};
 
     /// Starts a monitor that says one line straight away.
     struct Watch;
@@ -146,16 +137,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await
         .expect("turn completes");
 
@@ -191,16 +183,17 @@ mod tests {
         let mut messages = vec![Message::User("go".into())];
         assert!(inbox.post_prompt("never mind, just wave".into()));
 
-        run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await
         .expect("turn completes");
 
@@ -319,16 +312,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
-        run_turn(
-            &provider,
-            ROUTE,
-            &tools,
-            &ctx,
-            &mut messages,
-            &mut spend(),
-            &tx,
-            &CancellationToken::new(),
-        )
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
         .await
         .expect("turn completes");
 

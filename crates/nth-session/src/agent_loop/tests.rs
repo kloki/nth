@@ -153,16 +153,17 @@ async fn runs_tools_until_the_model_answers() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
-    run_turn(
-        &provider,
-        ROUTE,
-        &tools,
-        &ctx,
-        &mut messages,
-        &mut spend(),
-        &tx,
-        &CancellationToken::new(),
-    )
+    Turn {
+        provider: &provider,
+        route: ROUTE,
+        tools: &tools,
+        ctx: &ctx,
+        messages: &mut messages,
+        spend: &mut spend(),
+        events: &tx,
+        cancel: &CancellationToken::new(),
+    }
+    .run()
     .await
     .expect("turn completes");
 
@@ -231,19 +232,20 @@ async fn the_last_step_tells_the_model_to_stop() {
     let (tx, _rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
-    run_turn(
-        &provider,
-        Route {
+    Turn {
+        provider: &provider,
+        route: Route {
             max_steps: 1,
             ..ROUTE
         },
-        &[],
-        &ctx,
-        &mut messages,
-        &mut spend(),
-        &tx,
-        &CancellationToken::new(),
-    )
+        tools: &[],
+        ctx: &ctx,
+        messages: &mut messages,
+        spend: &mut spend(),
+        events: &tx,
+        cancel: &CancellationToken::new(),
+    }
+    .run()
     .await
     .expect("turn completes");
 
@@ -278,19 +280,20 @@ async fn tools_called_on_the_last_step_do_not_run() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
-    let result = run_turn(
-        &provider,
-        Route {
+    let result = Turn {
+        provider: &provider,
+        route: Route {
             max_steps: 1,
             ..ROUTE
         },
-        &tools,
-        &ctx,
-        &mut messages,
-        &mut spend(),
-        &tx,
-        &CancellationToken::new(),
-    )
+        tools: &tools,
+        ctx: &ctx,
+        messages: &mut messages,
+        spend: &mut spend(),
+        events: &tx,
+        cancel: &CancellationToken::new(),
+    }
+    .run()
     .await;
 
     assert!(matches!(result, Err(Error::TooManySteps(1))));
@@ -320,16 +323,17 @@ pub(super) async fn turn(
     let (tx, mut rx) = mpsc::channel(16);
     let run = async move {
         let cancel = CancellationToken::new();
-        run_turn(
+        Turn {
             provider,
-            ROUTE,
+            route: ROUTE,
             tools,
             ctx,
             messages,
-            &mut spend(),
-            &tx,
-            &cancel,
-        )
+            spend: &mut spend(),
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
         .await
     };
     let sent = async {

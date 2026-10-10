@@ -6,7 +6,7 @@ pub mod subagent;
 mod system_prompt;
 pub mod usage;
 
-pub use agent_loop::{DEFAULT_MAX_STEPS, Error, Route, run_turn};
+pub use agent_loop::{DEFAULT_MAX_STEPS, Error, Route, Turn};
 pub use session::{SHELL_PROMPT, Session};
 pub use store::{Spending, Store, Summary};
 pub use subagent::{SubagentEvent, SubagentId, Subagents, Task, TaskStop};
