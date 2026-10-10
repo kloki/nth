@@ -3,11 +3,7 @@
 
 mod render;
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
 use nth_protocol::{FrontEnd, Mode, Provider};
@@ -81,11 +77,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
 
     let elapsed = started.elapsed();
     let models = usage::by_model(session.usage.since(spends));
-    let mut spent = Total::default();
-    models.values().for_each(|total| {
-        spent.steps += total.steps;
-        spent.tokens += total.tokens;
-    });
+    let spent: Total = models.values().sum();
     let price = match spent.steps {
         0 => None,
         _ => price(provider.as_ref(), models).await,
@@ -105,18 +97,11 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     Ok(())
 }
 
-/// How long the closing line waits for the model listing to price the run.
-const LISTING_WAIT: Duration = Duration::from_secs(3);
-
 /// What the run cost at the catalogue's prices; `None` when the listing
 /// is slow or knows none of the models.
 async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option<Price> {
-    let listing = tokio::time::timeout(LISTING_WAIT, provider.models())
-        .await
-        .ok()?
-        .ok()?;
-    let cost = |model: &str| listing.models.iter().find(|m| m.id == model)?.cost;
-    usage::price(models, cost)
+    let listing = crate::usage::listing(provider).await?;
+    usage::price(models, |model| listing.cost_of(model))
 }
 
 /// `12 steps · 1.2M in · 82% cached · 40k out · $3.10`; the cache share

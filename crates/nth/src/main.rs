@@ -10,6 +10,7 @@ mod models;
 mod notify;
 mod run;
 mod skills;
+mod usage;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -90,6 +91,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Show what a saved session spent: tokens, cache hits and price
+    Usage {
+        /// The session, by its id or the start of it; the latest by default
+        session: Option<String>,
+        /// Every saved session instead, per day and model
+        #[arg(long, conflicts_with = "session")]
+        all: bool,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
     /// Send a sample notification through the configured backend
     Notify {
         /// Which notification to show
@@ -150,6 +162,7 @@ async fn dispatch(
         Command::Config => config::show(config_path.clone(), &config()?),
         Command::Init { force } => config::init(config_path.clone(), force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
+        Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
     }
 }
 

@@ -43,8 +43,22 @@ pub struct Total {
 
 impl Total {
     pub fn add(&mut self, spend: &Spend) {
-        self.steps += spend.steps;
-        self.tokens += spend.tokens;
+        *self += Total::from(spend);
+    }
+}
+
+impl std::ops::AddAssign for Total {
+    fn add_assign(&mut self, other: Self) {
+        self.steps += other.steps;
+        self.tokens += other.tokens;
+    }
+}
+
+impl<'a> std::iter::Sum<&'a Total> for Total {
+    fn sum<I: Iterator<Item = &'a Total>>(totals: I) -> Self {
+        let mut sum = Total::default();
+        totals.for_each(|total| sum += *total);
+        sum
     }
 }
 
@@ -158,6 +172,73 @@ impl std::fmt::Display for Price {
 impl Extend<Spend> for Ledger {
     fn extend<I: IntoIterator<Item = Spend>>(&mut self, spends: I) {
         spends.into_iter().for_each(|spend| self.record(spend));
+    }
+}
+
+/// One row of a usage table: who spent it, its requests, tokens in, the
+/// share read from the cache, tokens out and its price when known.
+pub fn row(who: &str, total: Total, price: Option<Price>) -> [String; 6] {
+    let tokens = total.tokens;
+    let cached = match tokens.cached_share() {
+        Some(share) => format!("{:.0}% cached", share * 100.0),
+        None => "cache ?".into(),
+    };
+    [
+        who.to_string(),
+        steps(total.steps),
+        format!("{} in", short(tokens.input)),
+        cached,
+        format!("{} out", short(tokens.output)),
+        price.map(|price| price.to_string()).unwrap_or_default(),
+    ]
+}
+
+/// Rows as text in columns: who left-aligned, the counts right.
+pub fn columns(rows: &[[String; 6]]) -> Vec<String> {
+    padded(rows)
+        .iter()
+        .map(|row| row.join("  ").trim_end().to_string())
+        .collect()
+}
+
+/// Each row's cells padded to their column's width, who left-aligned and
+/// the counts right, for a front-end that styles them one by one.
+pub fn padded(rows: &[[String; 6]]) -> Vec<[String; 6]> {
+    let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+    let widths: [usize; 6] = std::array::from_fn(width);
+    rows.iter()
+        .map(|row| {
+            std::array::from_fn(|i| match i {
+                0 => format!("{:<w$}", row[0], w = widths[0]),
+                _ => format!("{:>w$}", row[i], w = widths[i]),
+            })
+        })
+        .collect()
+}
+
+/// Each turn that made a request, numbered from 1 in that order, with who
+/// spent it: `#2 @explore kimi-k3`.
+pub fn turns(ledger: &Ledger) -> impl Iterator<Item = (String, &Spend)> {
+    ledger
+        .spends()
+        .iter()
+        .filter(|spend| spend.steps > 0)
+        .enumerate()
+        .map(|(n, spend)| {
+            let who = match &spend.agent {
+                Some(agent) => format!("#{} @{agent} {}", n + 1, spend.model),
+                None => format!("#{} {}", n + 1, spend.model),
+            };
+            (who, spend)
+        })
+}
+
+impl From<&Spend> for Total {
+    fn from(spend: &Spend) -> Self {
+        Self {
+            steps: spend.steps,
+            tokens: spend.tokens,
+        }
     }
 }
 

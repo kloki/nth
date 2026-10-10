@@ -10,7 +10,7 @@ use std::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::Session;
+use crate::{Ledger, Session};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -113,6 +113,13 @@ impl Store {
         tokio::task::spawn_blocking(move || list(&dir)).await?
     }
 
+    /// What every saved session spent, newest first; the histories are
+    /// skipped.
+    pub async fn spending(&self) -> Result<Vec<Spending>, Error> {
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || spending(&dir)).await?
+    }
+
     pub async fn load(&self, id: Uuid) -> Result<Session, Error> {
         let path = self.path(id);
         let json = tokio::fs::read(&path).await.map_err(io_at(&path))?;
@@ -144,6 +151,31 @@ fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .filter_map(|path| std::fs::read(&path).ok())
         .filter_map(|json| summary(&json))
+        .collect();
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+    Ok(sessions)
+}
+
+/// What a saved session spent, without its history.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Spending {
+    pub id: Uuid,
+    pub updated_at: SystemTime,
+    #[serde(default)]
+    pub usage: Ledger,
+}
+
+fn spending(dir: &Path) -> Result<Vec<Spending>, Error> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_at(dir)(e)),
+    };
+    let mut sessions: Vec<Spending> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| std::fs::read(&path).ok())
+        .filter_map(|json| serde_json::from_slice(&json).ok())
         .collect();
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
@@ -186,6 +218,29 @@ mod tests {
         session.messages.push(Message::User(prompt.into()));
         session.updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs);
         session
+    }
+
+    #[tokio::test]
+    async fn reads_what_every_session_spent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let mut spent = session("fix the build", 2);
+        let turn = spent.usage.begin("glm-5.3", None);
+        spent.usage.add(
+            turn,
+            nth_protocol::Usage {
+                input: 10,
+                ..Default::default()
+            },
+        );
+        store.save(&spent).await.expect("saves");
+        store.save(&session("older", 1)).await.expect("saves");
+
+        let spending = store.spending().await.expect("reads");
+        assert_eq!(spending.len(), 2);
+        assert_eq!(spending[0].id, spent.id, "newest first");
+        assert_eq!(spending[0].usage, spent.usage);
+        assert!(spending[1].usage.spends().is_empty());
     }
 
     #[tokio::test]

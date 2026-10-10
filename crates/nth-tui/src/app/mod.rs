@@ -696,7 +696,7 @@ impl App {
             Tab::Usage => {
                 // The listing alone, so the view can be drawn into.
                 let llms = self.llms.as_ref();
-                let cost = |model: &str| llms::cost_in(llms, model);
+                let cost = |model: &str| llms?.cost_of(model);
                 self.usage_view
                     .draw(frame, content, &self.spent.ledger, &cost);
                 if let Some(state) = self.usage_view.scrollbar() {
