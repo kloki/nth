@@ -150,58 +150,58 @@ pub static PLAIN: Icons = Icons {
 };
 
 pub static NERD: Icons = Icons {
-    ok: "\u{f00c}",          // fa-check
-    fail: "\u{f00d}",        // fa-xmark
-    pick: "\u{f0da}",        // fa-caret_right
-    to: "\u{f061}",          // fa-arrow_right
-    current: "\u{f0da}",     // fa-caret_right
-    dot: "\u{f111}",         // fa-circle
-    cache: "\u{f021}",       // fa-refresh
-    context: "\u{f200}",     // fa-pie_chart
-    queued: "\u{f04b}",      // fa-play
-    thinking: "\u{f400}",    // oct-light_bulb
-    done: "\u{f11e}",        // fa-flag_checkered
-    interrupted: "\u{f04d}", // fa-stop
-    retry: "\u{f021}",       // fa-refresh
-    plan_edits: "\u{f040}",  // fa-pencil
-    subagent: "\u{f06a9}",   // md-robot
-    effort_less: "\u{f0d9}", // fa-caret_left
-    effort_more: "\u{f0da}", // fa-caret_right
-    unchecked: "\u{f096}",   // fa-square_o
-    checked: "\u{f14a}",     // fa-check_square
+    ok: "",          // fa-check
+    fail: "",        // fa-xmark
+    pick: "",        // fa-caret_right
+    to: "",          // fa-arrow_right
+    current: "",     // fa-caret_right
+    dot: "",         // fa-circle
+    cache: "",       // fa-refresh
+    context: "",     // fa-pie_chart
+    queued: "",      // fa-play
+    thinking: "",    // oct-light_bulb
+    done: "",        // fa-flag_checkered
+    interrupted: "", // fa-stop
+    retry: "",       // fa-refresh
+    plan_edits: "",  // fa-pencil
+    subagent: "󰚩",    // md-robot
+    effort_less: "", // fa-caret_left
+    effort_more: "", // fa-caret_right
+    unchecked: "",   // fa-square_o
+    checked: "",     // fa-check_square
     tab: TabIcons {
-        chat: "\u{f086}",        // fa-comments
-        diagnostics: "\u{f0f1}", // fa-stethoscope
-        plan: "\u{f45e}",        // oct-checklist
-        monitor: "\u{eb7d}",     // cod-pulse
-        subagent: "\u{f06a9}",   // md-robot
-        usage: "\u{f080}",       // fa-bar_chart
+        chat: "",        // fa-comments
+        diagnostics: "", // fa-stethoscope
+        plan: "",        // oct-checklist
+        monitor: "",     // cod-pulse
+        subagent: "󰚩",    // md-robot
+        usage: "",       // fa-bar_chart
     },
     tool: ToolIcons {
-        read: "\u{f0f6}",        // fa-file_text_o
-        write: "\u{ea7f}",       // cod-new_file
-        edit: "\u{ea73}",        // cod-edit
-        apply_patch: "\u{eae1}", // cod-diff
-        bash: "\u{f489}",        // oct-terminal
-        glob: "\u{f07c}",        // fa-folder_open
-        grep: "\u{f002}",        // fa-search
-        webfetch: "\u{f019}",    // fa-download
-        websearch: "\u{f0ac}",   // fa-globe
-        skill: "\u{f0d0}",       // fa-magic
-        question: "\u{f059}",    // fa-question_circle
-        panel: "\u{ebeb}",       // cod-layout
-        monitor: "\u{eb7d}",     // cod-pulse
-        task: "\u{f06a9}",       // md-robot
-        other: "\u{f0ad}",       // fa-wrench
+        read: "",        // fa-file_text_o
+        write: "",       // cod-new_file
+        edit: "",        // cod-edit
+        apply_patch: "", // cod-diff
+        bash: "",        // oct-terminal
+        glob: "",        // fa-folder_open
+        grep: "",        // fa-search
+        webfetch: "",    // fa-download
+        websearch: "",   // fa-globe
+        skill: "",       // fa-magic
+        question: "",    // fa-question_circle
+        panel: "",       // cod-layout
+        monitor: "",     // cod-pulse
+        task: "󰚩",        // md-robot
+        other: "",       // fa-wrench
     },
     git: GitIcons {
-        conflicted: "\u{f071}", // fa-warning
-        diverged: "\u{f0c6e}",  // md-source_branch_sync
-        stashed: "\u{f187}",    // fa-archive
-        staged: "\u{f0290}",    // md-plus_box_multiple
-        renamed: "\u{f0ec}",    // fa-exchange
-        deleted: "\u{f1f8}",    // fa-trash
-        untracked: "\u{f128}",  // fa-question
+        conflicted: "", // fa-warning
+        diverged: "󰱮",   // md-source_branch_sync
+        stashed: "",    // fa-archive
+        staged: "󰊐",     // md-plus_box_multiple
+        renamed: "",    // fa-exchange
+        deleted: "",    // fa-trash
+        untracked: "",  // fa-question
     },
 };
 
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(PLAIN.tool_icon("read"), "≡");
         assert_eq!(PLAIN.tool_icon("monitor_stop"), "&");
         assert_eq!(PLAIN.tool_icon("mystery"), "•");
-        assert_eq!(NERD.tool_icon("bash"), "\u{f489}");
+        assert_eq!(NERD.tool_icon("bash"), "");
     }
 
     #[test]
