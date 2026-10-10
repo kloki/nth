@@ -508,6 +508,7 @@ impl App {
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
         self.load_git();
+        self.load_pr();
         self.list_llms();
         self.read_plan();
 

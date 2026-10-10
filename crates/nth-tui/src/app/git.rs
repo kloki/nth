@@ -11,11 +11,12 @@ impl App {
         let cwd = self.cwd.clone();
         self.git_loading
             .start_or_queue(|_| tokio::spawn(async move { git::load(&cwd).await }));
-        self.load_pr();
     }
 
     /// Reads the branch's pull request in the background; the forge's
-    /// tool is slow, and may be missing or not logged in.
+    /// tool is slow, and may be missing or not logged in. Asked at
+    /// start-up, at the end of a turn and on a move, not after every
+    /// write: it goes over the network, and an edit never changes it.
     pub(super) fn load_pr(&mut self) {
         let cwd = self.cwd.clone();
         self.pr_loading

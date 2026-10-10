@@ -488,7 +488,7 @@ The status comes from one `git status --porcelain=v2 --branch` plus a stash chec
 
 After the branch, when the branch has one, the pull request's `#N` in yellow, the one clickable thing in the bar: a left click opens the PR in the browser, with `opened <url>` on line 2 until the next key. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
 
-Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs with the git status refresh, and no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
+Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs at start-up, at the end of each turn and when the session moves, not after every write, since it goes over the network; no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
 
 **Line 2, left: queued prompts**
 
