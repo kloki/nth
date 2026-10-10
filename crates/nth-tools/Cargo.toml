@@ -8,6 +8,7 @@ nth-context.workspace = true
 nth-format.workspace = true
 nth-lsp.workspace = true
 nth-protocol.workspace = true
+nth-worktree.workspace = true
 futures.workspace = true
 htmd.workspace = true
 ignore.workspace = true
