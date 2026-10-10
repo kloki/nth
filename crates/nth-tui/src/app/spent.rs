@@ -1,7 +1,9 @@
 //! What the session spent, as far as the app has heard: its saved ledger,
 //! then each request's usage as it arrives, its own and its subagents'.
 //! The session counts the same reports in its task, so the two agree
-//! without the app waiting for the session to come back.
+//! without the app waiting for the session to come back. One exception:
+//! a subagent forgotten with a left session was counted here, but its
+//! spend never reaches the saved ledger; the next session starts afresh.
 
 use std::collections::HashMap;
 
