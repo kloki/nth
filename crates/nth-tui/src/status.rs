@@ -100,7 +100,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
 
 /// What the session spent, once it spent anything: its price at the
 /// catalogue's rates when known, and how much of what it sent came from
-/// the provider's prompt cache behind the cache icon, as ` ≈$3.10 ↻ 82%`,
+/// the provider's prompt cache behind the cache icon, as ` $3.10 ↻ 82%`,
 /// or `↻ ?` when the provider never said.
 fn spent(app: &App) -> Vec<Span<'static>> {
     let total = app.spent.ledger.total();

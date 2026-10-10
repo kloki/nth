@@ -119,7 +119,7 @@ async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option
     usage::price(models, cost)
 }
 
-/// `12 steps · 1.2M in · 82% cached · 40k out · ≈$3.10`; the cache share
+/// `12 steps · 1.2M in · 82% cached · 40k out · $3.10`; the cache share
 /// and the price are left out when unknown.
 fn summary(spent: Total, price: Option<Price>) -> String {
     let tokens = spent.tokens;
@@ -158,7 +158,7 @@ mod tests {
         };
         assert_eq!(
             summary(spent, Some(price)),
-            "12 steps · 1.2M in · 82% cached · 40k out · ≈$3.10"
+            "12 steps · 1.2M in · 82% cached · 40k out · $3.10"
         );
         spent.tokens.cache_read = None;
         assert_eq!(summary(spent, None), "12 steps · 1.2M in · 40k out");

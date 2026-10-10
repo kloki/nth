@@ -147,11 +147,11 @@ pub struct Price {
     pub partial: bool,
 }
 
-/// `≈$3.10`, with a `+` when some of it could not be priced.
+/// `$3.10`, with a `+` when some of it could not be priced.
 impl std::fmt::Display for Price {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let more = if self.partial { "+" } else { "" };
-        write!(f, "≈${:.2}{more}", self.dollars)
+        write!(f, "${:.2}{more}", self.dollars)
     }
 }
 
@@ -248,11 +248,11 @@ mod tests {
         };
         let price = ledger.price(cost).expect("glm is priced");
         assert!((price.dollars - (0.5 + 0.1 + 0.4)).abs() < 1e-9);
-        assert_eq!(price.to_string(), "≈$1.00");
+        assert_eq!(price.to_string(), "$1.00");
 
         let kimi = ledger.begin("kimi", None);
         ledger.add(kimi, usage(10, 1, None));
-        assert_eq!(ledger.price(cost).expect("partly").to_string(), "≈$1.00+");
+        assert_eq!(ledger.price(cost).expect("partly").to_string(), "$1.00+");
         assert_eq!(ledger.price(|_| None), None);
     }
 
