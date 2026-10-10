@@ -129,6 +129,12 @@ pub struct Usage {
     /// Everything sent: system prompt, history and tool results.
     pub input: u64,
     pub output: u64,
+    /// Of `input`, what was read from the provider's prompt cache; `None`
+    /// when the provider did not say, which is not the same as none.
+    pub cache_read: Option<u64>,
+    /// Of `input`, what was written to the prompt cache; `None` when the
+    /// provider did not say.
+    pub cache_write: Option<u64>,
 }
 
 impl Usage {
@@ -136,6 +142,13 @@ impl Usage {
     /// reply becomes history for the next request.
     pub fn context(self) -> u64 {
         self.input + self.output
+    }
+
+    /// The share of `input` read from the cache, from 0 to 1; `None` when
+    /// the provider did not say or nothing was sent.
+    pub fn cached_share(self) -> Option<f64> {
+        let read = self.cache_read?;
+        (self.input > 0).then(|| (read as f64 / self.input as f64).min(1.0))
     }
 }
 

@@ -274,6 +274,10 @@ impl<S> State<S> {
             self.pending.push_back(Ok(StreamEvent::Usage(Usage {
                 input: usage.input_tokens,
                 output: usage.output_tokens,
+                cache_read: usage.input_tokens_details.and_then(|d| d.cached_tokens),
+                cache_write: usage
+                    .input_tokens_details
+                    .and_then(|d| d.cache_write_tokens),
             })));
         }
     }
@@ -321,6 +325,8 @@ mod tests {
                 StreamEvent::Usage(Usage {
                     input: 1251,
                     output: 225,
+                    cache_read: Some(1152),
+                    cache_write: Some(0),
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "call_y8Tp".into(),
@@ -391,7 +397,8 @@ mod tests {
                 e,
                 Ok(StreamEvent::Usage(Usage {
                     input: 1251,
-                    output: 225
+                    output: 225,
+                    ..
                 }))
             )),
             "{events:?}"

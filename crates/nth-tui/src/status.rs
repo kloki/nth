@@ -1,6 +1,7 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! effort, place (the working directory in magenta, then how many were
-//! added with `/add-dir` as `(+N)`) and context used on the left, git branch and
+//! added with `/add-dir` as `(+N)`), context used and how much of the last
+//! request came from the provider's cache on the left, git branch and
 //! status on the right, with the branch's pull request as a clickable
 //! `#N`. Line 2 shows a hint about the last key or the queued
 //! prompts on the left, and the running monitors and the language servers
@@ -11,6 +12,7 @@ use std::path::Path;
 
 use braille_bar::BrailleBar;
 use nth_lsp::ServerState;
+use nth_protocol::Usage;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -58,6 +60,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
             ),
         ]);
     }
+    if let Some(usage) = app.usage {
+        place.extend([Span::raw(" "), cache(usage)]);
+    }
     let mut summary = Vec::new();
     // The pull request on the branch, when the forge's tool found one:
     // its number in yellow, where it falls among the summary's spans.
@@ -92,6 +97,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     };
     split_line(frame, checks, left, servers(app));
     link_area
+}
+
+/// How much of the last request the provider read from its prompt cache:
+/// `82% cached`, or `cache ?` when it did not say.
+fn cache(usage: Usage) -> Span<'static> {
+    let text = match usage.cached_share() {
+        Some(share) => format!("{:.0}% cached", share * 100.0),
+        None => "cache ?".to_string(),
+    };
+    Span::styled(text, Style::new().fg(Color::Gray))
 }
 
 /// Where a link drawn among the right side's spans ended up. They are

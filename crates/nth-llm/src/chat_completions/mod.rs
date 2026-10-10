@@ -193,6 +193,9 @@ where
                         s.pending.push_back(Ok(StreamEvent::Usage(Usage {
                             input: usage.prompt_tokens,
                             output: usage.completion_tokens,
+                            cache_read: usage.cache_read(),
+                            // No compatible server reports a cache write.
+                            cache_write: None,
                         })))
                     }
                     event::Event::Done => {
@@ -295,6 +298,8 @@ mod tests {
                 StreamEvent::Usage(Usage {
                     input: 5,
                     output: 3,
+                    cache_read: None,
+                    cache_write: None,
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "call_a".into(),
@@ -351,6 +356,8 @@ mod tests {
                 StreamEvent::Usage(Usage {
                     input: 74,
                     output: 58,
+                    cache_read: Some(0),
+                    cache_write: None,
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "WeYavUuRu".into(),

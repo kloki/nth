@@ -72,6 +72,14 @@ pub struct Usage {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    pub input_tokens_details: Option<InputTokensDetails>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+pub struct InputTokensDetails {
+    pub cached_tokens: Option<u64>,
+    /// OpenCode Zen's; OpenAI's own API leaves it out.
+    pub cache_write_tokens: Option<u64>,
 }
 
 /// The error object of a failed response, and of a failed request's body.

@@ -289,6 +289,8 @@ impl<S> State<S> {
                 self.pending.push_back(Ok(StreamEvent::Usage(Usage {
                     input: self.usage.input(),
                     output: self.usage.output(),
+                    cache_read: self.usage.cache_read_input_tokens,
+                    cache_write: self.usage.cache_creation_input_tokens,
                 })));
             }
             event::Event::MessageStop => return true,
@@ -356,6 +358,8 @@ mod tests {
                 StreamEvent::Usage(Usage {
                     input: 614,
                     output: 120,
+                    cache_read: Some(600),
+                    cache_write: Some(0),
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "toolu_01A".into(),
