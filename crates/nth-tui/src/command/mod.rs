@@ -25,10 +25,11 @@ pub enum Command {
     Models,
     Resume,
     Settings,
+    Usage,
 }
 
 impl Command {
-    const ALL: [Command; 9] = [
+    const ALL: [Command; 10] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
@@ -38,6 +39,7 @@ impl Command {
         Command::Models,
         Command::Resume,
         Command::Settings,
+        Command::Usage,
     ];
 
     pub fn name(self) -> &'static str {
@@ -51,6 +53,7 @@ impl Command {
             Command::Models => "models",
             Command::Resume => "resume",
             Command::Settings => "settings",
+            Command::Usage => "usage",
         }
     }
 
@@ -65,6 +68,7 @@ impl Command {
             Command::Models => "switch model and effort",
             Command::Resume => "reopen a past session",
             Command::Settings => "toggle thinking and tool output",
+            Command::Usage => "show what the session spent",
         }
     }
 
@@ -254,9 +258,9 @@ mod tests {
                 "models",
                 "resume",
                 "settings",
-                "deploy",
+                "usage",
             ],
-            "the popup holds the 9 commands and one skill"
+            "the commands fill the popup; the skills come after them"
         );
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(

@@ -9,7 +9,7 @@ use nth_session::subagent::SubagentId;
 use super::{App, input::Input};
 use crate::{
     chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView,
-    subagent::SubagentView,
+    subagent::SubagentView, usage::UsageView,
 };
 
 /// A view the content panel can show. Each view's state lives on the app,
@@ -24,6 +24,8 @@ pub(crate) enum Tab {
     Plan,
     /// A subagent the model delegated to; its view is on the app.
     Subagent(SubagentId),
+    /// What the session spent.
+    Usage,
 }
 
 impl Tab {
@@ -41,6 +43,7 @@ impl Tab {
             // Their own headers start with these too.
             Tab::Monitor(_) => "$",
             Tab::Subagent(_) => "@",
+            Tab::Usage => "∑",
         }
     }
 
@@ -186,6 +189,7 @@ impl App {
         match tab {
             Tab::Chat => "chat".into(),
             Tab::Diagnostics => "diagnostics".into(),
+            Tab::Usage => "usage".into(),
             Tab::Plan => self.plan.label(),
             Tab::Monitor(id) => self
                 .monitor_views
@@ -218,7 +222,7 @@ impl App {
             Tab::Chat if matches!(self.input, Input::Question(_)) => TabState::NeedsYou,
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
-            Tab::Diagnostics => TabState::Idle,
+            Tab::Diagnostics | Tab::Usage => TabState::Idle,
             Tab::Plan => self.plan.state(),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
@@ -290,6 +294,32 @@ impl Scrollable for Diagnostics {
 
     fn jump_bottom(&mut self) {
         Diagnostics::jump_bottom(self);
+    }
+}
+
+impl Scrollable for UsageView {
+    fn scroll_up(&mut self, lines: usize) {
+        UsageView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        UsageView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        UsageView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        UsageView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        UsageView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        UsageView::jump_bottom(self);
     }
 }
 
@@ -378,6 +408,7 @@ impl App {
         Some(match self.content.active() {
             Tab::Chat => &mut self.chat,
             Tab::Diagnostics => &mut self.diagnostics,
+            Tab::Usage => &mut self.usage_view,
             Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
             Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
             Tab::Plan => &mut self.plan,

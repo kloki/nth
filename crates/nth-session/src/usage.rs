@@ -161,6 +161,14 @@ impl Extend<Spend> for Ledger {
     }
 }
 
+/// `1 step`, `12 steps`.
+pub fn steps(count: u32) -> String {
+    match count {
+        1 => "1 step".into(),
+        n => format!("{n} steps"),
+    }
+}
+
 /// A token count short enough for a status line: `812`, `40k`, `10.5M`.
 pub fn short(tokens: u64) -> String {
     match tokens {

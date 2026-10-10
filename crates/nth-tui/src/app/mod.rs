@@ -90,6 +90,7 @@ use crate::{
     settings::{self, ChatSettings, SettingsPanel},
     spinner, status,
     subagent::SubagentView,
+    usage::UsageView,
 };
 
 /// How often the app redraws with nothing else happening, while a turn
@@ -137,6 +138,7 @@ pub struct App {
     /// The content panel's tabs, and which one fills it.
     content: Content,
     diagnostics: Diagnostics,
+    usage_view: UsageView,
     /// What checks the tools' writes, for the diagnostics tab to look up;
     /// `None` when nothing does.
     checkers: Option<Checkers>,
@@ -381,6 +383,7 @@ impl App {
             last_turn: TabState::Idle,
             content: Content::default(),
             diagnostics: Diagnostics::default(),
+            usage_view: UsageView::default(),
             checkers: None,
             servers_lookup: Job::default(),
             formatters_lookup: Job::default(),
@@ -690,6 +693,16 @@ impl App {
                     draw_scrollbar(frame, content, state);
                 }
             }
+            Tab::Usage => {
+                // The listing alone, so the view can be drawn into.
+                let llms = self.llms.as_ref();
+                let cost = |model: &str| llms::cost_in(llms, model);
+                self.usage_view
+                    .draw(frame, content, &self.spent.ledger, &cost);
+                if let Some(state) = self.usage_view.scrollbar() {
+                    draw_scrollbar(frame, content, state);
+                }
+            }
             Tab::Chat => {
                 if self.chat.transcript.is_empty() {
                     hero::draw(frame, content, self.hero_since.elapsed(), self.pointer);
@@ -804,6 +817,7 @@ impl App {
             Command::Models => self.open_llm_picker(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
+            Command::Usage => self.open_content(Tab::Usage),
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
             Command::Settings => {

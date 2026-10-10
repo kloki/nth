@@ -445,12 +445,12 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Approve);
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Settings);
+        assert_eq!(selected(&app), Command::Usage);
         assert_eq!(app.prompt.text(), "/");
     }
 
@@ -489,9 +489,9 @@ mod tests {
                 "models",
                 "resume",
                 "settings",
-                "fix",
+                "usage",
             ],
-            "the popup holds the 9 commands and one skill"
+            "the commands fill the popup; the skills come after them"
         );
 
         let app = skilled(dir.path(), "/f");
@@ -643,7 +643,7 @@ mod tests {
             app.apply(Action::Insert(c));
         }
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Settings);
+        assert_eq!(selected(&app), Command::Usage);
         assert_eq!(app.prompt.text(), "/");
     }
 
