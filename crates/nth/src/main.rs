@@ -139,7 +139,6 @@ fn load(path: Option<&std::path::Path>, model: Option<String>) -> Result<Config>
     if let Some(model) = model {
         config.set_model(model);
     }
-    nth_icons::init(config.nerdfonts);
     Ok(config)
 }
 

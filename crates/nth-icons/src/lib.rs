@@ -1,12 +1,8 @@
-//! Every icon nth draws, in two sets: `PLAIN`, Unicode any terminal font
-//! has, and `NERD`, Nerd Font glyphs. The config's `nerdfonts` picks one at
-//! start-up (`init`) and every front-end reads it through `icons()`.
+//! Every icon nth draws: `PLAIN`, Unicode any terminal font has, which every
+//! front-end reads through `icons()`.
 //!
-//! Each icon is one character one column wide, so swapping sets never moves
-//! a layout. Separators, ellipses, bars and spinners are not icons and stay
-//! where they are drawn.
-
-use std::sync::OnceLock;
+//! Each icon is one character one column wide. Separators, ellipses, bars
+//! and spinners are not icons and stay where they are drawn.
 
 pub struct Icons {
     /// Something worked or is chosen.
@@ -149,74 +145,9 @@ pub static PLAIN: Icons = Icons {
     },
 };
 
-pub static NERD: Icons = Icons {
-    ok: "",          // fa-check
-    fail: "",        // fa-xmark
-    pick: "",        // fa-caret_right
-    to: "",          // fa-arrow_right
-    current: "",     // fa-caret_right
-    dot: "",         // fa-circle
-    cache: "",       // fa-refresh
-    context: "",     // fa-pie_chart
-    queued: "",      // fa-play
-    thinking: "",    // oct-light_bulb
-    done: "",        // fa-flag_checkered
-    interrupted: "", // fa-stop
-    retry: "",       // fa-refresh
-    plan_edits: "",  // fa-pencil
-    subagent: "󰚩 ",   // md-robot
-    effort_less: "", // fa-caret_left
-    effort_more: "", // fa-caret_right
-    unchecked: " ",  // fa-square_o
-    checked: " ",    // fa-check_square
-    tab: TabIcons {
-        chat: "> ",        // fa-comments
-        diagnostics: " ", // fa-stethoscope
-        plan: " ",        // oct-checklist
-        monitor: "& ",     // cod-pulse
-        subagent: "󰚩 ",    // md-robot
-        usage: " ",       // fa-bar_chart
-    },
-    tool: ToolIcons {
-        read: "",        // fa-file_text_o
-        write: "",       // cod-new_file
-        edit: "",        // cod-edit
-        apply_patch: "", // cod-diff
-        bash: "",        // oct-terminal
-        glob: "",        // fa-folder_open
-        grep: "",        // fa-search
-        webfetch: "",    // fa-download
-        websearch: "",   // fa-globe
-        skill: "",       // fa-magic
-        question: "",    // fa-question_circle
-        panel: "",       // cod-layout
-        monitor: "",     // cod-pulse
-        task: "󰚩",        // md-robot
-        other: "",       // fa-wrench
-    },
-    git: GitIcons {
-        conflicted: "", // fa-warning
-        diverged: "󰱮",   // md-source_branch_sync
-        stashed: "",    // fa-archive
-        staged: "󰊐",     // md-plus_box_multiple
-        renamed: "",    // fa-exchange
-        deleted: "",    // fa-trash
-        untracked: "",  // fa-question
-    },
-};
-
-static SET: OnceLock<&'static Icons> = OnceLock::new();
-
-/// Picks the set for the rest of the process, from the config's
-/// `nerdfonts`. Only the first call counts.
-pub fn init(nerdfonts: bool) {
-    let _ = SET.set(if nerdfonts { &NERD } else { &PLAIN });
-}
-
-/// The set `init` picked; `PLAIN` before it, so tests and errors printed
-/// before the config loads read plain.
+/// The icons every front-end draws.
 pub fn icons() -> &'static Icons {
-    SET.get().copied().unwrap_or(&PLAIN)
+    &PLAIN
 }
 
 impl Icons {
@@ -335,11 +266,9 @@ mod tests {
 
     #[test]
     fn every_icon_is_one_column() {
-        for set in [&PLAIN, &NERD] {
-            for icon in set.all() {
-                assert_eq!(icon.chars().count(), 1, "{icon:?}");
-                assert_eq!(icon.width(), 1, "{icon:?}");
-            }
+        for icon in PLAIN.all() {
+            assert_eq!(icon.chars().count(), 1, "{icon:?}");
+            assert_eq!(icon.width(), 1, "{icon:?}");
         }
     }
 
@@ -348,11 +277,5 @@ mod tests {
         assert_eq!(PLAIN.tool_icon("read"), "≡");
         assert_eq!(PLAIN.tool_icon("monitor_stop"), "&");
         assert_eq!(PLAIN.tool_icon("mystery"), "•");
-        assert_eq!(NERD.tool_icon("bash"), "");
-    }
-
-    #[test]
-    fn plain_until_picked() {
-        assert!(std::ptr::eq(icons(), &PLAIN));
     }
 }

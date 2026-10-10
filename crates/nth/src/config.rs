@@ -19,9 +19,6 @@ pub struct Config {
     /// The model a new chat starts on, as `provider/model`. Before the
     /// tables, since TOML has values ahead of tables.
     pub model: String,
-    /// Nerd Font icons instead of plain Unicode ones, for a terminal whose
-    /// font has them.
-    pub nerdfonts: bool,
     /// The endpoints by id; the id prefixes their models. None is built
     /// in: these are only the ones the file lists.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -470,13 +467,6 @@ mod tests {
             ("from-flag".into(), Effort::High)
         );
         assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
-    }
-
-    #[test]
-    fn nerdfonts_is_off_unless_asked_for() {
-        assert!(!Config::default().nerdfonts);
-        assert!(Config::parse("nerdfonts = true").expect("parses").nerdfonts);
-        assert!(Config::parse("nerdfonts = \"yes\"").is_err());
     }
 
     #[test]
