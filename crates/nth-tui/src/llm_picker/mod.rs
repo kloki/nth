@@ -234,6 +234,7 @@ pub(crate) mod tests {
                 Vec::new()
             },
             origin: None,
+            cost: None,
         }
     }
 

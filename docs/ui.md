@@ -444,9 +444,9 @@ Colours here are the terminal's standard colours; see [Colours](#colours). Purpl
 | Model   | The current model, and its effort unless default                                                                                | bright white |
 | Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                              | magenta      |
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white        |
-| Cache   | How much of the last request the provider read from its prompt cache: `82% cached`, or `cache ?` when it did not say            | white        |
+| Spent   | What the session spent, subagents included: its price at the catalogue's rates and the share of input read from the prompt cache, `≈$3.10 · 82% cached`; `cache ?` when the provider never said | white        |
 
-The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden. The cache share shows from the first reported usage on.
+The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one.
 
 **Line 1, right: git status**
 

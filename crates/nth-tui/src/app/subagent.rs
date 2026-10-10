@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use nth_protocol::Event;
 use nth_session::{
     CancellationToken,
     subagent::{Done, Job, SubagentEvent, SubagentId},
@@ -23,12 +24,13 @@ impl App {
                 id,
                 agent,
                 description,
-                ..
+                model,
             } => {
                 // Forgotten before it got here: its session was left.
                 if self.subagents.forgotten(id) {
                     return;
                 }
+                self.spent.subagent_started(id, agent.clone(), model);
                 self.subagent_views
                     .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
                 // Opened, not shown: you keep looking at the chat while the
@@ -54,6 +56,9 @@ impl App {
                 }
             }
             SubagentEvent::Session { id, event } => {
+                if let Event::Usage(usage) = event {
+                    self.spent.subagent_usage(id, usage);
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
                 }
@@ -64,6 +69,7 @@ impl App {
                 elapsed,
                 model,
             } => {
+                self.spent.subagent_ended(id);
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.ended(&outcome, elapsed, &model);
                     if view.closing {

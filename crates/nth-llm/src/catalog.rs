@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use nth_protocol::Effort;
+use nth_protocol::{Cost, Effort};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
@@ -33,6 +33,9 @@ pub(crate) struct Model {
     #[serde(default, deserialize_with = "lenient")]
     pub(crate) reasoning_options: Option<Vec<ReasoningOption>>,
     pub(crate) limit: Option<Limit>,
+    /// Left out when not shaped as nth expects, as the reasoning options.
+    #[serde(default, deserialize_with = "lenient")]
+    pub(crate) cost: Option<Cost>,
     /// Set when this model needs a different SDK, and so a different wire
     /// protocol, than its provider's default.
     pub(crate) provider: Option<Override>,
@@ -112,11 +115,12 @@ impl Model {
     }
 }
 
-/// The reasoning options, or none when they are not shaped as nth expects:
-/// one odd entry must not cost the whole catalogue.
-fn lenient<'de, D>(deserializer: D) -> Result<Option<Vec<ReasoningOption>>, D::Error>
+/// A field, or none when it is not shaped as nth expects: one odd entry
+/// must not cost the whole catalogue.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).ok())

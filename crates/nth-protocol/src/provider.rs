@@ -168,6 +168,32 @@ impl std::ops::AddAssign for Usage {
     }
 }
 
+/// What a model costs in dollars per million tokens, as models.dev lists
+/// it. A cache price it leaves out is billed as plain input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+impl Cost {
+    /// What `usage` costs at these prices, in dollars.
+    pub fn price(&self, usage: Usage) -> f64 {
+        let read = usage.cache_read.unwrap_or(0);
+        let write = usage.cache_write.unwrap_or(0);
+        let fresh = usage.input.saturating_sub(read + write);
+        let millions = |tokens: u64, rate: f64| tokens as f64 * rate / 1e6;
+        millions(fresh, self.input)
+            + millions(read, self.cache_read.unwrap_or(self.input))
+            + millions(write, self.cache_write.unwrap_or(self.input))
+            + millions(usage.output, self.output)
+    }
+}
+
 /// The provider a model is served by, when the `Provider` fronts several.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Origin {
@@ -192,6 +218,8 @@ pub struct ModelInfo {
     /// pick.
     pub efforts: Vec<Effort>,
     pub origin: Option<Origin>,
+    /// What it costs, when the catalogue says.
+    pub cost: Option<Cost>,
 }
 
 /// What listing the models gave: the models, and the providers that could
@@ -278,6 +306,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_price_bills_cache_reads_and_writes_at_their_own_rates() {
+        let cost = Cost {
+            input: 2.0,
+            output: 10.0,
+            cache_read: Some(0.2),
+            cache_write: None,
+        };
+        let usage = Usage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_read: Some(800_000),
+            cache_write: Some(100_000),
+        };
+        // 100k fresh and 100k written at 2, 800k read at 0.2, 100k out at 10.
+        let price = cost.price(usage);
+        assert!((price - (0.2 + 0.2 + 0.16 + 1.0)).abs() < 1e-9, "{price}");
+    }
+
+    #[test]
     fn an_effort_snaps_to_the_nearest_allowed_level() {
         use Effort::*;
         assert_eq!(Low.nearest(&[High, Max]), High);
@@ -301,6 +348,7 @@ mod tests {
             output: Some(131_072),
             efforts: vec![Effort::High],
             origin: None,
+            cost: None,
         };
         assert_eq!(model.limits(), "1M ctx · 131k out");
         let unknown = ModelInfo {
@@ -332,6 +380,7 @@ mod tests {
             output: None,
             efforts: Vec::new(),
             origin: None,
+            cost: None,
         };
         assert_eq!(bare.wire_id(), "z-ai/glm-5.2");
         let served = ModelInfo {

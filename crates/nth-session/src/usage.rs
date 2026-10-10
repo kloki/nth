@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, time::SystemTime};
 
-use nth_protocol::Usage;
+use nth_protocol::{Cost, Usage};
 use serde::{Deserialize, Serialize};
 
 /// One turn's requests: on which model, for whom, how many, and the tokens
@@ -94,11 +94,64 @@ impl Ledger {
 
     /// Totals per model, since each is priced on its own.
     pub fn by_model(&self) -> BTreeMap<&str, Total> {
-        let mut models = BTreeMap::<&str, Total>::new();
-        for spend in &self.0 {
-            models.entry(&spend.model).or_default().add(spend);
+        by_model(&self.0)
+    }
+}
+
+impl Ledger {
+    /// What it all cost at the prices `cost` knows per model; `None` when
+    /// it knows none of the models spent on.
+    pub fn price(&self, cost: impl Fn(&str) -> Option<Cost>) -> Option<Price> {
+        price(self.by_model(), cost)
+    }
+}
+
+/// Totals of `spends` per model, since each is priced on its own.
+pub fn by_model(spends: &[Spend]) -> BTreeMap<&str, Total> {
+    let mut models = BTreeMap::<&str, Total>::new();
+    for spend in spends {
+        models.entry(&spend.model).or_default().add(spend);
+    }
+    models
+}
+
+/// What spends cost at the prices `cost` knows per model; `None` when it
+/// knows none of them.
+pub fn price<'a>(
+    totals: impl IntoIterator<Item = (&'a str, Total)>,
+    cost: impl Fn(&str) -> Option<Cost>,
+) -> Option<Price> {
+    let mut sum: Option<Price> = None;
+    let mut unpriced = false;
+    for (model, total) in totals {
+        if total.steps == 0 {
+            continue;
         }
-        models
+        match cost(model) {
+            Some(cost) => sum.get_or_insert_default().dollars += cost.price(total.tokens),
+            None => unpriced = true,
+        }
+    }
+    sum.map(|price| Price {
+        partial: unpriced,
+        ..price
+    })
+}
+
+/// A list-price estimate in dollars: what the tokens would cost at the
+/// catalogue's prices, whatever the plan they ran on bills.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Price {
+    pub dollars: f64,
+    /// Some of it ran on a model without a known price, left out.
+    pub partial: bool,
+}
+
+/// `≈$3.10`, with a `+` when some of it could not be priced.
+impl std::fmt::Display for Price {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let more = if self.partial { "+" } else { "" };
+        write!(f, "≈${:.2}{more}", self.dollars)
     }
 }
 
@@ -178,6 +231,29 @@ mod tests {
             serde_json::from_str::<Ledger>(&json).expect("loads"),
             ledger
         );
+    }
+
+    #[test]
+    fn priced_per_model_and_unpriced_models_marked() {
+        let mut ledger = Ledger::default();
+        let glm = ledger.begin("glm", None);
+        ledger.add(glm, usage(1_000_000, 100_000, Some(500_000)));
+        let cost = |model: &str| {
+            (model == "glm").then_some(Cost {
+                input: 1.0,
+                output: 4.0,
+                cache_read: Some(0.2),
+                cache_write: None,
+            })
+        };
+        let price = ledger.price(cost).expect("glm is priced");
+        assert!((price.dollars - (0.5 + 0.1 + 0.4)).abs() < 1e-9);
+        assert_eq!(price.to_string(), "≈$1.00");
+
+        let kimi = ledger.begin("kimi", None);
+        ledger.add(kimi, usage(10, 1, None));
+        assert_eq!(ledger.price(cost).expect("partly").to_string(), "≈$1.00+");
+        assert_eq!(ledger.price(|_| None), None);
     }
 
     #[test]

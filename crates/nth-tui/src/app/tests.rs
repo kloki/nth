@@ -253,27 +253,40 @@ fn the_context_bar_fills_with_usage() {
 }
 
 #[test]
-fn the_status_bar_shows_the_cache_share_of_the_last_request() {
+fn the_status_bar_shows_what_the_session_spent() {
     let mut app = app();
     let place = rows(&mut app)[14].trim_end().to_string();
     app.on_session(Event::Usage(Usage {
-        input: 1000,
-        output: 10,
-        cache_read: Some(820),
-        cache_write: None,
-    }));
-    assert!(
-        rows(&mut app)[14].starts_with(&format!("{place} 82% cached")),
-        "{:?}",
-        rows(&mut app)[14]
-    );
-
-    app.on_session(Event::Usage(Usage {
-        input: 1000,
+        input: 1_000,
         output: 10,
         ..Usage::default()
     }));
-    assert!(rows(&mut app)[14].starts_with(&format!("{place} cache ?")));
+    assert!(
+        rows(&mut app)[14].starts_with(&format!("{place} cache ?")),
+        "no price known, no cache count said: {:?}",
+        rows(&mut app)[14]
+    );
+
+    let mut glm = model("glm", true);
+    glm.cost = Some(nth_protocol::Cost {
+        input: 1_000.0,
+        output: 10_000.0,
+        cache_read: Some(100.0),
+        cache_write: None,
+    });
+    app.llms = Some(vec![glm].into());
+    app.on_session(Event::Usage(Usage {
+        input: 1_000,
+        output: 10,
+        cache_read: Some(1_000),
+        cache_write: None,
+    }));
+    // 1000 fresh at 1000/M, 1000 read at 100/M, 20 out at 10000/M.
+    assert!(
+        rows(&mut app)[14].contains(" ≈$1.30 · 50% cached"),
+        "{:?}",
+        rows(&mut app)[14]
+    );
 }
 
 #[tokio::test]

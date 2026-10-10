@@ -312,6 +312,7 @@ mod tests {
             output: None,
             efforts: Vec::new(),
             origin: None,
+            cost: None,
         }
     }
 
