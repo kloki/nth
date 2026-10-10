@@ -185,10 +185,8 @@ mod tests {
         let line = row(&buffer, 14);
         assert!(line.contains(&added), "{line:?}");
         assert!(!line.contains("other"), "{line:?}");
-        // The working directory and the count are magenta, the model
-        // bright white before them.
+        // The working directory and the count are magenta.
         let at = |needle: &str| u16::try_from(line.find(needle).expect(needle)).expect("fits");
-        assert_eq!(buffer[(at("glm"), 14)].fg, Color::White);
         for needle in [app.place.as_str(), "(+2)"] {
             assert_eq!(buffer[(at(needle), 14)].fg, Color::Magenta, "{needle}");
         }

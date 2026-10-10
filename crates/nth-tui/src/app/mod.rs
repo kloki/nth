@@ -744,7 +744,15 @@ impl App {
                 };
                 let spinner = since.map(|since| spinner::frame(since.elapsed()));
                 let target = target.map(|view| view.agent.as_str());
-                prompt::draw(frame, input, &self.prompt, self.mode, spinner, target);
+                prompt::draw(
+                    frame,
+                    input,
+                    &self.prompt,
+                    self.mode,
+                    spinner,
+                    target,
+                    &self.llm(self.mode),
+                );
                 // Last, so it pops over the content panel; it sits right
                 // above the row being typed, lined up with the token it
                 // completes.

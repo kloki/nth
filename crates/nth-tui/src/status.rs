@@ -1,12 +1,12 @@
-//! The status bar under the input panel. Line 1 is general state: model,
-//! effort, place (the working directory in magenta, then how many were
-//! added with `/add-dir` as `(+N)`), how long the session has run, context
-//! used as a percentage and what the session spent on the left, git branch and
-//! status on the right, with the branch's pull request as a clickable
-//! `#N`. Line 2 shows a hint about the last key or the queued
-//! prompts on the left, and the running monitors and the language servers
-//! that check a write on the right: a dot per server, coloured by its
-//! state. The right side is cut first when a line is too narrow.
+//! The status bar under the input panel. Line 1 is where the session is:
+//! the working directory in magenta (then how many were added with
+//! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
+//! and what the session spent on the left, git branch and status on the
+//! right, with the branch's pull request as a clickable `#N`. Line 2 shows
+//! a hint about the last key or the queued prompts on the left, and the
+//! running monitors and the language servers that check a write on the
+//! right: a dot per server, coloured by its state. The right side is cut
+//! first when a line is too narrow.
 
 use std::{path::Path, time::SystemTime};
 
@@ -31,18 +31,14 @@ pub const ROWS: u16 = 2;
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
-    let mut model = vec![app.model.clone()];
-    model.extend(app.effort.wire().map(String::from));
     // The working directory, and how many were added with `/add-dir`,
-    // say where the session works: magenta, against the bright white model
-    // and effort. Only the count, since each path would crowd out the rest.
+    // say where the session works: magenta. Only the count, since each
+    // path would crowd out the rest.
     let mut dirs = app.place.clone();
     if !app.extra_dirs.is_empty() {
         dirs.push_str(&format!(" (+{})", app.extra_dirs.len()));
     }
     let mut place = vec![
-        Span::styled(model.join(" · "), bright_white()),
-        Span::raw(" · "),
         Span::styled(dirs, magenta()),
         Span::raw(" "),
         Span::styled(

@@ -13,11 +13,11 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
  ▎ you  add retry to the fetch client                                 ┐ content
  ▎ read  src/client.rs                                                │
  ▎ Added exponential backoff with jitter …                            ┘
-▎ plan                                                                ┐
+▎ plan · opencode/glm-5.3                                             ┐
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- glm-5.3 · ~/repos/nth 24m ◘ 42%           git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
+ ~/repos/nth 24m ◘ 42%                     git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
  ● rust  ● typescript  rustfmt · prettier                              ┘
 ```
 
@@ -235,7 +235,7 @@ The chat tab is the transcript, which scrolls. While scrolled up, a grey scrollb
 | Interrupted  | none  | `⏹ interrupted · 3.0s` in yellow, after a blank line      |
 | Error        | red   | `✗ message` in red                                        |
 
-- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `>` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch, `✦` skill, `¿` question, `▣` panel, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
+- **Tool icon.** Each tool has its own icon, so calls are told apart at a glance: `≡` read, `>` write, `±` edit, `Δ` apply_patch, `$` bash, `*` glob, `/` grep, `↓` webfetch, `?` websearch and question, `✦` skill, `▣` panel, and `•` for any other. There is no success mark: the icon is dim while the call runs and cyan once it is done. A failed call turns its icon and name red and shows the error's first line.
 - **Tool summary.** read and write show the path relative to the working directory. bash shows the command itself, not the model's description of it. skill shows the skill's name. question shows the questions' headers. A multi-line command shows its first line followed by `…`.
 - **Turn summary.** `∎` closes the turn, as `∴` opens its thinking, and stays dim. The blank line above separates the summary from the last entry of the turn.
 
@@ -295,29 +295,30 @@ With models from more than one provider, the picker shows ids with their `provid
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
 - **Content under the title.** Each row starts after the bar. A highlighted item is bold magenta (`theme::pick`), the same as in the completion popup.
 
-| Panel        | Accent                                                                                            | Title                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Prompt       | the mode's colour: magenta for plan, blue for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner |
-| Model picker | magenta                                                                                           | `switch model`                                                                             |
-| Question     | cyan                                                                                              | `question`, or a tab per question                                                          |
-| Settings     | magenta                                                                                           | `settings`                                                                                 |
+| Panel        | Accent                                                                                            | Title                                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Prompt       | the mode's colour: blue for plan, magenta for act; yellow for a command; cyan on a subagent's tab | the mode label (`cmd` for a command, the agent's name on a subagent's tab), or the spinner, then the model it runs with |
+| Model picker | magenta                                                                                           | `switch model`                                                                                                          |
+| Question     | cyan                                                                                              | `question`, or a tab per question                                                                                       |
+| Settings     | magenta                                                                                           | `settings`                                                                                                              |
 
 ## Prompt
 
 Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 
 ```
-▎ plan
+▎ plan · opencode/glm-5.3
 ▎ add retry to the fetch client, and
 ▎ back off with jitter█
 ▎
 ```
 
-- **Shape.** 4 rows: the mode label, then three rows of text. Text wraps at the full width and scrolls to keep the cursor in view.
+- **Shape.** 4 rows: the mode and model label, then three rows of text. Text wraps at the full width and scrolls to keep the cursor in view.
 - **Mode label.** The top row shows the mode in lower case: `plan` or `act`. A new chat starts in plan, or in `[mode] default` from the config; a resumed session in the mode it was left in.
+- **Runs with.** After the mode, the model the next turn runs with: a dim `·` between them, the model's `provider/` prefix in bright white, the id in blue, and the effort after another `·` unless it is the default, as `▎ act  · opencode/glm-5.3 · high`. The mode field is always 4 columns wide, so `plan`, `act` and the spinner never move what follows; a bare model id (an old session) shows whole, with no provider. `cmd` and an agent's name show no model: a command runs without one, and a subagent runs its own.
 - **Switching modes.** Tab and shift+Tab at the prompt switch between plan and act. Each mode keeps its own model and effort, from `[mode.plan]` and `[mode.act]` in the config, and the model picker changes the current mode's. A running turn keeps its mode; the next one runs in the new one.
 - **Plan mode.** The model may write only its plan file, `.nth/plans/<session>.md`; write, edit and apply_patch refuse any other path. Bash is not restricted, as in opencode, but the reminder the model gets on entering plan mode forbids changing anything with it. Switching to act tells the model so and points it at the plan file.
-- **Mode colour.** The bar and the mode label share one colour per mode: plan is magenta, act is blue. The typed text is the default fg.
+- **Mode colour.** The bar and the mode label share one colour per mode: plan is blue, act is magenta. The typed text is the default fg.
 - **Commands.** `!` typed at the very start of the prompt makes it a command, as in opencode: the `!` is not kept, the label reads `cmd` and the bar turns yellow, and the placeholder becomes "Run a command.". Esc, ctrl+c on an empty prompt, or Backspace at the start goes back to the mode; Tab does nothing meanwhile. Enter runs the text with bash in the session's directory, with no timeout, and the model does not answer. The chat shows it as a bash row with its output, and the session keeps it the way opencode does: a user message saying the user ran a tool, then a bash call with its result, so the model sees it next turn. It runs like a turn: the spinner shows, Esc kills it, and a command sent while a turn runs is queued like a prompt. Prompt history keeps it with its `!`, and recalling it comes back as a command.
 - **Placeholder.** "Ask anything." in dim when the prompt is empty.
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
@@ -329,14 +330,14 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 
 **While a turn runs**
 
-The mode label is replaced by a braille spinner in the same mode colour. Its frames are the `waverows` spinner, copied into nth: 16 frames, 4 characters wide, at 80 ms a frame.
+The mode label is replaced by a braille spinner in the same mode colour; the model stays after it. Its frames are the `waverows` spinner, copied into nth: 16 frames, 4 characters wide, at 80 ms a frame.
 
 ```
 ⠖⠉⠉⠑ ⡠⠖⠉⠉ ⣠⡠⠖⠉ ⣄⣠⡠⠖ ⠢⣄⣠⡠ ⠙⠢⣄⣠ ⠉⠙⠢⣄ ⠊⠉⠙⠢ ⠜⠊⠉⠙ ⡤⠜⠊⠉ ⣀⡤⠜⠊ ⢤⣀⡤⠜ ⠣⢤⣀⡤ ⠑⠣⢤⣀ ⠉⠑⠣⢤ ⠋⠉⠑⠣
 ```
 
 ```
-▎ ⣄⣠⡠⠖                                                  esc to cancel
+▎ ⣄⣠⡠⠖ · opencode/glm-5.3                            esc to cancel
 ▎ add retry to the fetch client
 ▎
 ▎
@@ -390,7 +391,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 ▎ question                                         ↑↓ · 1-3 · enter · esc
 ▎ Which layout for the status bar?
 ▎ → 1. Two lines     │ ┌──────────────────────────┐
-▎   2. One line      │ │ glm-5.3 · ~/repos/nth    │
+▎   2. One line      │ │ ~/repos/nth              │
 ▎   3. Type your…    │ │ git · main +2 *1         │
 ▎                    │ └──────────────────────────┘
 ▎                    │ Room for git on its own row
@@ -421,7 +422,7 @@ An option can also carry a `preview`: several lines of text, such as an ASCII mo
 
 **Height.** Set once, when the panel opens: the title row plus the tallest question with its options and open field, or its tallest preview, at most half the terminal; past that the options scroll. It stays fixed while open, like every input panel, so moving between questions never makes the layout jump.
 
-**In the chat.** The call's row is `¿ question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
+**In the chat.** The call's row is `? question  Auth, Checks`, with the dim icon while you answer. It stays one row once answered, like skill: the answers are for the model.
 
 **Several at once.** Tool calls run in parallel, so two can ask together; the second waits until the first is answered or declined. When the turn ends, any question still open goes with it.
 
@@ -447,19 +448,18 @@ Opened with `/settings`. What the chats show, for this run of nth only: a change
 Fixed at 2 lines, always visible, below the input panel. It holds general state; the one thing in it you interact with is the branch's pull-request link. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
 
 ```
- glm-5.3 · ~/repos/nth 24m ◘ 42%               git · fix-auth #123 +3 *4 󰊐 2
- ⏵ 2 queued · fix the failing test                    ● rust  ● typescript
+ ~/repos/nth 24m ◘ 42%                       git · fix-auth #123 +3 *4 󰊐 2
+ ⏵ 2 queued · fix the failing test                  ● rust  ● typescript
 ```
 
 **Line 1: where you are**
 
-Left-aligned: `model · effort · place`, the model and effort in bright white and the place in magenta, then how long the session has run. The git branch and status sit against the right edge.
+Left-aligned: the place in magenta — the working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)` — then how long the session has run, context used and what it spent. The model and effort the next turn runs with sit on the prompt's label row, not here. The git branch and status sit against the right edge.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
 | Part    | Shows                                                                                                                                                                                          | Colour                 |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| Model   | The current model, and its effort unless default                                                                                                                                               | bright white           |
 | Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta                |
 | Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                                                                                                    | white                  |
 | Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%                                                                           | white, yellow, magenta |
@@ -517,15 +517,15 @@ Every icon comes from nth-icons, for the TUI and the CLI alike: the glyphs this 
 
 Every colour is one of the terminal's 16 standard colours, so the terminal theme decides how it looks. nth never sets a colour of its own.
 
-| Name in this doc | Terminal colour | Used for                                                               |
-| ---------------- | --------------- | ---------------------------------------------------------------------- |
-| red              | red             | path, deleted, conflicted, errors                                      |
-| green            | green           | branch, your messages, success                                         |
-| yellow, orange   | yellow          | ahead, behind, renamed, interrupted                                    |
-| blue             | blue            | model, act mode, staged, model answer bar                              |
-| magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified, status bar place |
-| cyan             | cyan            | tool names, tool call and output bar                                   |
-| white            | white           | context percentage, untracked, stashed                                 |
-| bright white     | bright white    | status line 1 model                                                    |
+| Name in this doc | Terminal colour | Used for                                                              |
+| ---------------- | --------------- | --------------------------------------------------------------------- |
+| red              | red             | path, deleted, conflicted, errors                                     |
+| green            | green           | branch, your messages, success                                        |
+| yellow, orange   | yellow          | ahead, behind, renamed, interrupted                                   |
+| blue             | blue            | model, plan mode, staged, model answer bar                            |
+| magenta, purple  | magenta         | act mode, model picker, highlighted items, modified, status bar place |
+| cyan             | cyan            | tool names, tool call and output bar                                  |
+| white            | white           | context percentage, untracked, stashed                                |
+| bright white     | bright white    | the `git · ` prefix and the provider in the prompt's label            |
 
 Orange is not a standard terminal colour, so it means yellow.

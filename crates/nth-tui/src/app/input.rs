@@ -120,11 +120,7 @@ mod tests {
         app.on_ask(ask);
         let asking = rows(&mut app);
 
-        assert_eq!(
-            asking[14].trim_end(),
-            " glm · /repo 0m",
-            "the status bar stays"
-        );
+        assert_eq!(asking[14].trim_end(), " /repo 0m", "the status bar stays");
         let panel: Vec<&str> = asking[8..13].iter().map(|r| r.trim_end()).collect();
         assert_eq!(
             panel,

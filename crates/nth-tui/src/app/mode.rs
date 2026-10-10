@@ -107,14 +107,19 @@ mod tests {
             act: llm("glm", Effort::Default),
         });
         assert_eq!(app.mode, Mode::Act, "a bare session acts");
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act");
+        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · glm");
 
         app.apply(Action::NextTab);
         assert_eq!(app.mode, Mode::Plan);
         assert_eq!((app.model.as_str(), app.effort), ("kimi", Effort::High));
         let shown = rows(&mut app);
-        assert_eq!(shown[9].trim_end(), " ▎ plan");
-        assert_eq!(shown[14].trim_end(), " kimi · high · /repo 0m");
+        assert_eq!(shown[9].trim_end(), " ▎ plan · kimi · high");
+        assert_eq!(shown[14].trim_end(), " /repo 0m");
+        assert_eq!(
+            shown[9].find("· kimi"),
+            " ▎ act  · glm".find("· glm"),
+            "the model keeps its column across modes"
+        );
 
         app.effort = Effort::Low;
         app.apply(Action::PrevTab);
