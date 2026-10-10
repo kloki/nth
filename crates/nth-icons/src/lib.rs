@@ -127,7 +127,7 @@ pub static PLAIN: Icons = Icons {
         webfetch: "↓",
         websearch: "?",
         skill: "✦",
-        question: "¿",
+        question: "?",
         panel: "▣",
         monitor: "&",
         task: "↳",
