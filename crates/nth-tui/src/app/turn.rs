@@ -9,7 +9,7 @@ use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
 use super::{App, NOTICE_DELAY, TabState};
-use crate::command::Command;
+use crate::{command::Command, status};
 
 /// What a turn task hands back: the session, how its turn ended, and
 /// whether saving it afterwards worked.
@@ -338,10 +338,21 @@ impl App {
         if let Err(e) = saved {
             transcript.push_error(format!("session not saved: {e}"));
         }
+        // A worktree tool moved the session; the files, git state and plan
+        // shown follow it.
+        let moved = (session.cwd != self.cwd).then(|| session.plan_path());
+        if moved.is_some() {
+            self.cwd = session.cwd.clone();
+            let home = std::env::var("HOME").ok();
+            self.place = status::place(&self.cwd, home.as_deref());
+        }
         self.session = Some(session);
         self.index_files();
         self.load_git();
-        self.read_plan();
+        match moved {
+            Some(plan_path) => self.plan_for_session(plan_path),
+            None => self.read_plan(),
+        }
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
         // that failed is no reason to keep a subagent's answer from it.
@@ -1225,5 +1236,26 @@ mod tests {
             app.chat.transcript.entries().last(),
             Some(Entry::Interrupted { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_moved_the_session_moves_the_app() {
+        let mut app = crate::app::tests::app();
+        let mut session = app.session.take().expect("idle");
+        let worktree = app.cwd.join(".nth/worktrees/x");
+        session.set_cwd(worktree.clone(), Some(app.cwd.clone()));
+
+        app.end_turn(Ended {
+            session,
+            result: Ok(()),
+            saved: Ok(()),
+            shell: false,
+        });
+
+        assert_eq!(app.cwd, worktree);
+        assert!(app.place.ends_with(".nth/worktrees/x"), "{}", app.place);
+        let plan = app.session.as_ref().expect("back").plan_path();
+        assert!(plan.starts_with(&worktree), "{}", plan.display());
+        assert_eq!(app.plan_path, plan);
     }
 }

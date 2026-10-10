@@ -17,15 +17,18 @@ use tokio_util::sync::CancellationToken;
 use super::{Done, Job, SubagentId, Subagents, WRITERS};
 use crate::{Error, Session};
 
-/// Tools a subagent never gets: another task would nest without end, and
-/// the rest need the front-end, which belongs to the parent.
-const WITHHELD: [&str; 6] = [
+/// Tools a subagent never gets: another task would nest without end, the
+/// worktree tools would take it out of its parent's directory, and the rest
+/// need the front-end, which belongs to the parent.
+const WITHHELD: [&str; 8] = [
     "task",
     "task_stop",
     "question",
     "panel",
     "monitor",
     "monitor_stop",
+    "enter_worktree",
+    "exit_worktree",
 ];
 /// Goes with every prompt from a planning parent: its child has no tool
 /// that writes, but bash could still change files.

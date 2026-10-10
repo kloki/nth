@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Event, Inbox, Llm, Monitors, Screen, Writable};
+use crate::{Asker, Event, Inbox, Llm, Monitors, Screen, Workdir, Writable};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -20,6 +20,9 @@ pub struct ToolSpec {
 
 pub struct ToolContext {
     pub cwd: PathBuf,
+    /// Where a tool moves the session's working directory, as entering a
+    /// worktree does; later steps of the turn run there.
+    pub workdir: Workdir,
     /// Working directories added with `/add-dir`, for a tool that starts
     /// another session in the same ones.
     pub extra_dirs: Vec<PathBuf>,
@@ -66,6 +69,7 @@ impl ToolContext {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
+            workdir: Workdir::default(),
             extra_dirs: Vec::new(),
             output: OutputSink::default(),
             instructions: LoadedInstructions::default(),

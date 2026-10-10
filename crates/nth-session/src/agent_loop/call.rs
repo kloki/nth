@@ -39,8 +39,10 @@ pub(crate) async fn run_call(
     emit(events, Event::ToolStarted(call.clone())).await;
     // Output goes straight onto the event channel from inside this future,
     // so it is dropped with the call and always lands before ToolFinished.
+    // A tool in an earlier step may have moved the session.
     let ctx = ToolContext {
-        cwd: ctx.cwd.clone(),
+        cwd: ctx.workdir.moved_to().unwrap_or_else(|| ctx.cwd.clone()),
+        workdir: ctx.workdir.clone(),
         extra_dirs: ctx.extra_dirs.clone(),
         output: OutputSink::new(events.clone(), call.id.clone()),
         instructions: ctx.instructions.clone(),
