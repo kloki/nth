@@ -182,12 +182,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "braille-bar"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "447d4aab853b9b1c81da0655e3d4420b55e3800b84d709601bb0787c19a76f7a"
-
-[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1644,7 +1638,6 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "braille-bar",
  "crossterm",
  "futures",
  "hoodrich",

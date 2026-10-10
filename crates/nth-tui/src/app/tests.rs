@@ -254,12 +254,12 @@ fn a_narrow_status_line_cuts_the_right_first() {
 }
 
 #[test]
-fn the_context_bar_fills_with_usage() {
+fn the_context_usage_shows_a_coloured_percentage() {
     let mut app = app();
     let place = rows(&mut app)[14].trim_end().to_string();
     assert!(
         place.ends_with("/repo 0m"),
-        "no bar while the window is unknown"
+        "nothing while the window is unknown"
     );
 
     let mut glm = model("glm", true);
@@ -267,18 +267,42 @@ fn the_context_bar_fills_with_usage() {
     app.llms = Some(vec![glm].into());
     let empty = rows(&mut app);
     assert!(
-        empty[14].starts_with(&format!("{place} {} ", " ".repeat(13))),
-        "an empty bar before the first reply: {:?}",
+        empty[14].starts_with(&format!("{place} ◘ 0%")),
+        "zero before the first reply: {:?}",
         empty[14]
     );
+
+    // The colour of the `◘ NN%` span in row 14, found by its text.
+    let colour = |app: &mut App, text: &str| -> Color {
+        let buffer = buffer(app);
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 14)].symbol())
+            .collect();
+        let at = row.find(text).expect(text);
+        let x = u16::try_from(row[..at].chars().count()).expect("fits");
+        buffer[(x, 14)].fg
+    };
+
+    app.on_session(Event::Usage(Usage {
+        input: 500,
+        output: 0,
+        ..Usage::default()
+    }));
+    assert_eq!(colour(&mut app, "◘ 50%"), Color::Yellow);
+
+    app.on_session(Event::Usage(Usage {
+        input: 800,
+        output: 0,
+        ..Usage::default()
+    }));
+    assert_eq!(colour(&mut app, "◘ 80%"), Color::Magenta);
 
     app.on_session(Event::Usage(Usage {
         input: 1000,
         output: 0,
         ..Usage::default()
     }));
-    let full = rows(&mut app);
-    assert!(full[14].starts_with(&format!("{place} {}", "⣿".repeat(13))));
+    assert_eq!(colour(&mut app, "◘ 100%"), Color::Magenta);
 }
 
 #[test]
