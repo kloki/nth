@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use clap::ValueEnum;
+use nth_icons::icons;
 use nth_notify::{Context, Event};
 use owo_colors::OwoColorize;
 
@@ -64,7 +65,7 @@ pub async fn run(sample: Sample, json: bool, config: &Config) -> Result<()> {
         writeln!(
             out,
             "{} sent via {}  {}",
-            "✓".green().bold(),
+            icons().ok.green().bold(),
             backend.name().cyan(),
             notification.summary.dimmed()
         )?;

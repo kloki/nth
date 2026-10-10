@@ -469,38 +469,22 @@ The context figure shows `◘ 0%` until the first turn reports usage, and is hid
 
 **Line 1, right: git status**
 
-Prefixed with a bright white `git · ` and the current branch in green, then a reimplementation of this starship config. Each part shows only when its count is non-zero, and the whole section is hidden outside a git repo.
+Prefixed with a bright white `git · ` and the current branch in green, then the parts of starship's `git_status`, in its order. Each part shows only when its count is non-zero, and the whole section is hidden outside a git repo.
 
-```toml
-[git_status]
-format = '[$conflicted$ahead_behind$modified$renamed$deleted$staged$untracked$stashed]($style)'
-style = "white"
-ahead = ' [+$count](yellow)'
-behind = ' [-$count](yellow)'
-conflicted = ' [](red)'
-diverged = ' 󰱮'
-stashed = ' '
-staged = ' [󰊐 $count](blue)'
-modified = ' [*$count](purple)'
-renamed = ' [ $count](yellow)'
-deleted = ' [ $count](red)'
-untracked = ' [ $count](white)'
-```
+| Part                                   | Mark  | Colour  |
+| -------------------------------------- | ----- | ------- |
+| Conflicted                             | `=`   | red     |
+| Ahead                                  | `+N`  | yellow  |
+| Behind                                 | `-N`  | yellow  |
+| Diverged, in place of ahead and behind | `⇕`   | white   |
+| Modified                               | `*N`  | magenta |
+| Renamed                                | `» N` | yellow  |
+| Deleted                                | `✘ N` | red     |
+| Staged                                 | `✚ N` | blue    |
+| Untracked                              | `? N` | white   |
+| Stashed                                | `$`   | white   |
 
-| Part                                   | Format                   | Colour  |
-| -------------------------------------- | ------------------------ | ------- |
-| Conflicted                             | `` (U+F071, warning)    | red     |
-| Ahead                                  | `+N`                     | yellow  |
-| Behind                                 | `-N`                     | yellow  |
-| Diverged, in place of ahead and behind | `󰱮` (U+F0C6E)            | white   |
-| Modified                               | `*N`                     | magenta |
-| Renamed                                | ` N` (U+F0EC, exchange) | yellow  |
-| Deleted                                | ` N` (U+F1F8, trash)    | red     |
-| Staged                                 | `󰊐 N` (U+F0290)          | blue    |
-| Untracked                              | ` N` (U+F128, question) | white   |
-| Stashed                                | `` (U+F187, archive)    | white   |
-
-Icons are Nerd Font glyphs, as in the starship config. Conflicts are red rather than the default colour, because they block a commit and should be the first thing you notice.
+The marks are starship's defaults, except where the counts' `+N` and `*N` would clash. Conflicts are red rather than the default colour, because they block a commit and should be the first thing you notice.
 
 The status comes from one `git status --porcelain=v2 --branch` plus a stash check. It is refreshed at start-up, after every tool call that can write, and at the end of each turn, off the async runtime.
 
@@ -524,6 +508,10 @@ Against the right edge. A dot and the id of every language server the tools have
 | Server id  | The server's id, as in opencode: `rust`, `typescript` | white              |
 
 Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters that run on writes are not shown; `nth formatters` lists them.
+
+## Icons
+
+Every icon comes from nth-icons, for the TUI and the CLI alike: the glyphs this document shows, Unicode any font has, each one column wide. Separators (`·`), ellipses, the block bar, the spinner and the usage bars are not icons and stay as they are.
 
 ## Colours
 

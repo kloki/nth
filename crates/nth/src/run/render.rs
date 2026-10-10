@@ -3,6 +3,7 @@
 
 use std::{io::Write, path::PathBuf};
 
+use nth_icons::icons;
 use nth_protocol::{Event, retry_label};
 use owo_colors::OwoColorize;
 
@@ -38,7 +39,7 @@ impl Printer {
                 self.break_line();
                 eprintln!(
                     "{} {}  {}",
-                    "▸".dimmed(),
+                    icons().current.dimmed(),
                     call.name.cyan(),
                     call.summary(&self.cwd)
                 );
@@ -49,19 +50,24 @@ impl Printer {
             } => {
                 self.break_line();
                 let first = e.lines().next().unwrap_or_default();
-                eprintln!("  {} {} {}", "✗".red(), call.name.red(), first.red());
+                eprintln!(
+                    "  {} {} {}",
+                    icons().fail.red(),
+                    call.name.red(),
+                    first.red()
+                );
             }
             Event::Retry { attempt, delay } => {
                 self.break_line();
                 eprintln!(
                     "{}",
-                    format!("⟳ {}", retry_label(*attempt, *delay)).yellow()
+                    format!("{} {}", icons().retry, retry_label(*attempt, *delay)).yellow()
                 );
             }
             // Later calls are summarised relative to where they now run.
             Event::Moved(cwd) => {
                 self.break_line();
-                eprintln!("{}", format!("→ {}", cwd.display()).dimmed());
+                eprintln!("{}", format!("{} {}", icons().to, cwd.display()).dimmed());
                 self.cwd = cwd.clone();
             }
             // The headless run prints the result's summary, not the stream.

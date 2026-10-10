@@ -1,6 +1,7 @@
 //! Draws the picker in the prompt's place: a header with its keys, the
 //! query, then the models matching it, scrolled to the highlighted one.
 
+use nth_icons::icons;
 use nth_protocol::{Failed, ModelInfo};
 use ratatui::{
     Frame,
@@ -38,7 +39,7 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
         State::Loading => (vec![note(Span::styled("loading models…", dim()))], body),
         State::Failed(error) => (
             vec![note(Span::styled(
-                format!("✗ {error}"),
+                format!("{} {error}", icons().fail),
                 Style::new().fg(Color::Red),
             ))],
             body,
@@ -131,12 +132,12 @@ fn rows<'a>(
             let model = &models[i];
             let here = row == selected;
             let (arrow, id_style) = if here {
-                ("→ ", pick)
+                (format!("{} ", icons().pick), pick)
             } else {
-                ("  ", Style::new().fg(Color::Blue))
+                ("  ".to_string(), Style::new().fg(Color::Blue))
             };
             let active = if model.id == picker.current {
-                "✓"
+                icons().ok
             } else {
                 " "
             };
@@ -159,7 +160,15 @@ fn rows<'a>(
                 dim(),
             ));
             if let Some(effort) = here.then(|| picker.shown_effort()).flatten() {
-                spans.push(Span::styled(format!("  ◂ {} ▸", effort.name()), pick));
+                spans.push(Span::styled(
+                    format!(
+                        "  {} {} {}",
+                        icons().effort_less,
+                        effort.name(),
+                        icons().effort_more
+                    ),
+                    pick,
+                ));
             }
             panel_row(ACCENT, spans)
         })
@@ -171,7 +180,12 @@ fn rows<'a>(
         panel_row(
             ACCENT,
             [Span::styled(
-                format!("  ✗ {}: {}", failed.origin.name, failed.error),
+                format!(
+                    "  {} {}: {}",
+                    icons().fail,
+                    failed.origin.name,
+                    failed.error
+                ),
                 Style::new().fg(Color::Red),
             )],
         )

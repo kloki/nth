@@ -1,6 +1,7 @@
 //! Draws the settings panel in the prompt's place: a header with its keys,
 //! then a row per setting with whether it is on.
 
+use nth_icons::icons;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -39,9 +40,9 @@ pub fn draw(frame: &mut Frame, area: Rect, panel: &SettingsPanel, settings: Chat
         .into_iter()
         .map(|setting| {
             let (arrow, name) = if setting == panel.selected() {
-                ("→ ", pick())
+                (format!("{} ", icons().pick), pick())
             } else {
-                ("  ", Style::new())
+                ("  ".to_string(), Style::new())
             };
             let mark = if setting.get(settings) { "[x]" } else { "[ ]" };
             panel_row(

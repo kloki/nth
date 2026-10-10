@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use nth_icons::icons;
 use nth_lsp::{Lsp, ServerState, report};
 use owo_colors::OwoColorize;
 
@@ -55,13 +56,13 @@ async fn servers(lsp: Lsp, json: bool) -> Result<()> {
         match &server.program {
             Some(program) => {
                 let root = match &server.root {
-                    Some(root) => format!("→ {}", root.display()),
+                    Some(root) => format!("{} {}", icons().to, root.display()),
                     None => "no project root here".into(),
                 };
                 writeln!(
                     out,
                     "{} {:width$}  {}  {}",
-                    "✓".green().bold(),
+                    icons().ok.green().bold(),
                     server.id.cyan(),
                     program.display().dimmed(),
                     root.dimmed()
@@ -70,7 +71,7 @@ async fn servers(lsp: Lsp, json: bool) -> Result<()> {
             None => writeln!(
                 out,
                 "{} {:width$}  {}",
-                "✗".red(),
+                icons().fail.red(),
                 server.id.dimmed(),
                 "not on PATH".dimmed()
             )?,
@@ -103,19 +104,24 @@ async fn diagnostics(lsp: Lsp, file: &Path, json: bool) -> Result<()> {
         writeln!(
             out,
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             "no language server for this file".dimmed()
         )?;
         return Ok(());
     }
     for server in &status {
         if let ServerState::Broken(reason) = &server.state {
-            writeln!(out, "{} {} {}", "✗".red(), server.id, reason.red())?;
+            writeln!(out, "{} {} {}", icons().fail.red(), server.id, reason.red())?;
         }
     }
     let text = report::after_write(&file, &diagnostics);
     match text.trim_start_matches('\n') {
-        "" => writeln!(out, "{} {}", "✓".green().bold(), "no errors".dimmed())?,
+        "" => writeln!(
+            out,
+            "{} {}",
+            icons().ok.green().bold(),
+            "no errors".dimmed()
+        )?,
         text => writeln!(out, "{text}")?,
     }
     Ok(())

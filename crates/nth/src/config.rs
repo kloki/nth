@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use nth_context::Paths;
+use nth_icons::icons;
 use nth_protocol::{Effort, Mode};
 use serde::{Deserialize, Serialize};
 
@@ -254,16 +255,16 @@ pub fn show(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
 
     match explicit.or_else(Config::default_path) {
         Some(path) if path.exists() => {
-            eprintln!("{} {}", "✓".green().bold(), path.display().dimmed())
+            eprintln!("{} {}", icons().ok.green().bold(), path.display().dimmed())
         }
         Some(path) => eprintln!(
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             format!("no {}, using defaults", path.display()).dimmed()
         ),
         None => eprintln!(
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             "no home dir, using defaults".dimmed()
         ),
     }
@@ -280,10 +281,14 @@ pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
         bail!("no home dir to put the config in; pass --config");
     };
     write_template(&path, force)?;
-    eprintln!("{} wrote {}", "✓".green().bold(), path.display().dimmed());
+    eprintln!(
+        "{} wrote {}",
+        icons().ok.green().bold(),
+        path.display().dimmed()
+    );
     eprintln!(
         "{} {}",
-        "→".cyan().bold(),
+        icons().to.cyan().bold(),
         "uncomment a [provider.<id>] in it, export its key and set model".dimmed()
     );
     Ok(())

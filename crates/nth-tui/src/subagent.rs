@@ -110,11 +110,11 @@ impl SubagentView {
     }
 
     /// In front of the label: the tabs' spinner while its turn runs, else
-    /// `@`.
+    /// its tab icon.
     pub fn icon(&self) -> &'static str {
         match self.running_since {
             Some(since) => spinner::dot(since.elapsed()),
-            None => "@",
+            None => nth_icons::icons().tab.subagent,
         }
     }
 

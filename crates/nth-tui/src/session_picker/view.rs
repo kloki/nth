@@ -4,6 +4,7 @@
 
 use std::time::SystemTime;
 
+use nth_icons::icons;
 use nth_session::Summary;
 use ratatui::{
     Frame,
@@ -44,7 +45,7 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &SessionPicker) {
         State::Loading => (vec![note(Span::styled("loading sessions…", dim()))], body),
         State::Failed(error) => (
             vec![note(Span::styled(
-                format!("✗ {error}"),
+                format!("{} {error}", icons().fail),
                 Style::new().fg(Color::Red),
             ))],
             body,
@@ -125,12 +126,12 @@ fn rows<'a>(
         .map(|(row, &i)| {
             let session = &sessions[i];
             let (arrow, title) = if row == selected {
-                ("→ ", pick)
+                (format!("{} ", icons().pick), pick)
             } else {
-                ("  ", Style::new().fg(Color::Blue))
+                ("  ".to_string(), Style::new().fg(Color::Blue))
             };
             let active = if session.id == picker.current {
-                "✓"
+                icons().ok
             } else {
                 " "
             };

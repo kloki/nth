@@ -2,6 +2,7 @@
 //! caches them so only what changed is wrapped again.
 
 use hoodrich::Change;
+use nth_icons::icons;
 use nth_protocol::{NoticeSummary, ToolCall};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -107,7 +108,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
         Entry::User(text) => return barred_markdown(text, width, Style::new().fg(Color::Green)),
         Entry::PlanEdits(edits) => vec![Line::from(vec![
             Span::raw(INDENT),
-            Span::styled("✎ ", Style::new().fg(Color::Magenta)),
+            Span::styled(
+                format!("{} ", icons().plan_edits),
+                Style::new().fg(Color::Magenta),
+            ),
             Span::styled(
                 format!("plan edits · +{} -{}", edits.added, edits.removed),
                 dim,
@@ -126,7 +130,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             };
             vec![Line::from(vec![
                 Span::raw(INDENT),
-                Span::styled("& ", Style::new().fg(Color::Magenta)),
+                Span::styled(
+                    format!("{} ", icons().tool.monitor),
+                    Style::new().fg(Color::Magenta),
+                ),
                 Span::styled(format!("monitor {id} · {description} · {said}"), dim),
             ])]
         }
@@ -134,7 +141,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             id, agent, state, ..
         }) => vec![Line::from(vec![
             Span::raw(INDENT),
-            Span::styled("↳ ", Style::new().fg(Color::Magenta)),
+            Span::styled(
+                format!("{} ", icons().subagent),
+                Style::new().fg(Color::Magenta),
+            ),
             Span::styled(format!("subagent {id} · {agent} · {state}"), dim),
         ])],
         Entry::Answer(text) => {
@@ -142,12 +152,15 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
         }
         Entry::Retry { attempt, delay } => vec![Line::from(vec![
             Span::raw(INDENT),
-            Span::styled("⟳ ", Style::new().fg(Color::Yellow)),
+            Span::styled(
+                format!("{} ", icons().retry),
+                Style::new().fg(Color::Yellow),
+            ),
             Span::styled(nth_protocol::retry_label(*attempt, *delay), dim),
         ])],
         Entry::TurnError(e) => {
             let red = Style::new().fg(Color::Red);
-            barred(&format!("✗ {e}"), width, red, red)
+            barred(&format!("{} {e}", icons().fail), width, red, red)
         }
         Entry::Reasoning {
             started,
@@ -160,7 +173,10 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
                 Some(took) if took.is_zero() => "thought".to_string(),
                 Some(took) => format!("thought · {:.1}s", took.as_secs_f64()),
             };
-            let mut lines = vec![Line::styled(format!("{INDENT}∴ {timing}"), dim)];
+            let mut lines = vec![Line::styled(
+                format!("{INDENT}{} {timing}", icons().thinking),
+                dim,
+            )];
             if !settings.thinking {
                 return Wrapped::plain(lines);
             }
@@ -191,16 +207,23 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             };
             vec![Line::from(vec![
                 Span::raw(INDENT),
-                // Closes the turn as `∴` opens its thinking.
+                // Closes the turn as the thinking icon opens its thinking.
                 Span::styled(
-                    format!("∎ {model}{calls} · {:.1}s", elapsed.as_secs_f64()),
+                    format!(
+                        "{} {model}{calls} · {:.1}s",
+                        icons().done,
+                        elapsed.as_secs_f64()
+                    ),
                     dim,
                 ),
             ])]
         }
         Entry::Interrupted { elapsed } => vec![Line::from(vec![
             Span::raw(INDENT),
-            Span::styled("⏹ ", Style::new().fg(Color::Yellow)),
+            Span::styled(
+                format!("{} ", icons().interrupted),
+                Style::new().fg(Color::Yellow),
+            ),
             Span::styled(format!("interrupted · {:.1}s", elapsed.as_secs_f64()), dim),
         ])],
     };
@@ -231,7 +254,7 @@ fn tool(
     let bar = Style::new().fg(Color::Cyan);
     let mut spans = vec![
         Span::styled(BAR, bar),
-        Span::styled(icon(&call.name), icon_style),
+        Span::styled(icons().tool_icon(&call.name), icon_style),
         Span::raw(" "),
         Span::styled(format!("{:<6} ", call.name), name_style),
         Span::styled(call.summary(cwd), dim),
@@ -257,27 +280,6 @@ fn tool(
         ])
     }));
     wrapped
-}
-
-/// The mark a tool's row starts with, so calls can be told apart at a glance.
-fn icon(tool: &str) -> &'static str {
-    match tool {
-        "read" => "≡",
-        "write" => ">",
-        "edit" => "±",
-        "apply_patch" => "Δ",
-        "bash" => "$",
-        "glob" => "*",
-        "grep" => "/",
-        "webfetch" => "↓",
-        "websearch" => "?",
-        "skill" => "✦",
-        "question" => "¿",
-        "panel" => "▣",
-        "monitor" | "monitor_stop" => "&",
-        "task" => "↳",
-        _ => "•",
-    }
 }
 
 /// What a call produced, as fits its tool: files highlighted by their

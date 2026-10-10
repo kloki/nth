@@ -18,6 +18,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
+use nth_icons::icons;
 use nth_llm::{EndpointConfig, Providers, Unavailable};
 use nth_protocol::{Listing, Mode, Provider};
 use nth_session::Session;
@@ -126,7 +127,7 @@ async fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{} {:#}", "✗".red().bold(), e.red());
+            eprintln!("{} {:#}", icons().fail.red().bold(), e.red());
             ExitCode::FAILURE
         }
     }

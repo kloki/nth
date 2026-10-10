@@ -1505,6 +1505,7 @@ dependencies = [
  "jiff",
  "nth-context",
  "nth-format",
+ "nth-icons",
  "nth-llm",
  "nth-lsp",
  "nth-notify",
@@ -1540,6 +1541,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "nth-icons"
+version = "0.10.0"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]
@@ -1644,6 +1652,7 @@ dependencies = [
  "ignore",
  "nth-context",
  "nth-format",
+ "nth-icons",
  "nth-lsp",
  "nth-notify",
  "nth-protocol",

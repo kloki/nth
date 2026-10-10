@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
+use nth_icons::icons;
 use nth_protocol::{Cost, Listing, Provider};
 use nth_session::{
     Price, Session, Spend, Store, Total,
@@ -86,7 +87,7 @@ fn session_text(
     writeln!(
         out,
         "{} {}  {}",
-        "→".cyan().bold(),
+        icons().to.cyan().bold(),
         title.bold(),
         session.id.to_string().dimmed()
     )?;
@@ -161,7 +162,7 @@ fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
         writeln!(
             out,
             "{} {}",
-            "→".cyan().bold(),
+            icons().to.cyan().bold(),
             "nothing spent yet".dimmed()
         )?;
         return Ok(());

@@ -10,6 +10,7 @@
 
 use std::{path::Path, time::SystemTime};
 
+use nth_icons::icons;
 use nth_lsp::ServerState;
 use ratatui::{
     Frame,
@@ -24,10 +25,6 @@ use crate::{app::App, git};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
-/// In front of the share of input read from the prompt cache.
-const CACHE: char = '↻';
-/// In front of how full the context window is, a dot.
-const CONTEXT: char = '◘';
 
 /// Draws the two lines. Where the pull-request link ended up on line 1,
 /// for a click to land on; `None` when none shows or it is cut off.
@@ -59,7 +56,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         let (percent, colour) = context_usage(used, window);
         place.extend([
             Span::raw(" "),
-            Span::styled(format!("{CONTEXT} {percent}%"), Style::new().fg(colour)),
+            Span::styled(
+                format!("{} {percent}%", icons().context),
+                Style::new().fg(colour),
+            ),
         ]);
     }
     place.extend(spent(app));
@@ -109,8 +109,8 @@ fn spent(app: &App) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let cache = match total.tokens.cached_share() {
-        Some(share) => format!("{CACHE} {:.0}%", share * 100.0),
-        None => format!("{CACHE} ?"),
+        Some(share) => format!("{} {:.0}%", icons().cache, share * 100.0),
+        None => format!("{} ?", icons().cache),
     };
     let text = match app.price() {
         Some(price) => format!(" {price} {cache}"),
@@ -179,7 +179,7 @@ fn queued(app: &App) -> Vec<Span<'static>> {
             None => return Vec::new(),
         },
     };
-    let line = format!("⏵ {count} queued · {first}");
+    let line = format!("{} {count} queued · {first}", icons().queued);
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }
 
@@ -191,7 +191,10 @@ fn servers(app: &App) -> Vec<Span<'static>> {
         if !spans.is_empty() {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled("● ", Style::new().fg(colour)));
+        spans.push(Span::styled(
+            format!("{} ", icons().dot),
+            Style::new().fg(colour),
+        ));
         spans.push(Span::styled(
             server.id.clone(),
             Style::new().fg(Color::Gray),

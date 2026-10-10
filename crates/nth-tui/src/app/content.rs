@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use nth_icons::icons;
 use nth_protocol::{MonitorId, Panel};
 use nth_session::subagent::SubagentId;
 
@@ -36,14 +37,15 @@ impl Tab {
 
     /// What kind of tab it is, in front of its name in the header.
     pub(crate) fn icon(self) -> &'static str {
+        let tab = &icons().tab;
         match self {
-            Tab::Chat => "›",
-            Tab::Diagnostics => "●",
-            Tab::Plan => "≡",
-            // Their own headers start with these too.
-            Tab::Monitor(_) => "$",
-            Tab::Subagent(_) => "@",
-            Tab::Usage => "∑",
+            Tab::Chat => tab.chat,
+            Tab::Diagnostics => tab.diagnostics,
+            Tab::Plan => tab.plan,
+            // A monitor's own header starts with its icon too.
+            Tab::Monitor(_) => tab.monitor,
+            Tab::Subagent(_) => tab.subagent,
+            Tab::Usage => tab.usage,
         }
     }
 
