@@ -391,7 +391,8 @@ impl Transcript {
                     *lines = None;
                 }
             }
-            Event::Usage(_) => {}
+            // The tool's own row says where it went.
+            Event::Usage(_) | Event::Moved(_) => {}
             Event::Retry { attempt, delay } => {
                 self.close_reasoning();
                 self.push(Entry::Retry {

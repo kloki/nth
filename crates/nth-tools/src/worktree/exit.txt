@@ -1,0 +1,5 @@
+Leave the worktree entered with enter_worktree and go back to the directory the session was in before. From your next step on, relative paths, glob, grep and bash run there again.
+
+Usage notes:
+- The worktree and its branch stay on disk, so its commits are kept; commit what you want to keep before leaving, and tell the user where it is.
+- Not available in plan mode, or when the session is not in a worktree.

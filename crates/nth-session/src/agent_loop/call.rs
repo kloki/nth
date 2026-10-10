@@ -37,10 +37,13 @@ pub(crate) async fn run_call(
     cancel: &CancellationToken,
 ) -> ToolResult {
     emit(events, Event::ToolStarted(call.clone())).await;
+    // A tool in an earlier step may have moved the session.
+    let moved = ctx.workdir.moved_to();
     // Output goes straight onto the event channel from inside this future,
     // so it is dropped with the call and always lands before ToolFinished.
     let ctx = ToolContext {
-        cwd: ctx.cwd.clone(),
+        cwd: moved.clone().unwrap_or_else(|| ctx.cwd.clone()),
+        workdir: ctx.workdir.clone(),
         extra_dirs: ctx.extra_dirs.clone(),
         output: OutputSink::new(events.clone(), call.id.clone()),
         instructions: ctx.instructions.clone(),
@@ -67,6 +70,15 @@ pub(crate) async fn run_call(
         _ = cancel.cancelled() => Err(INTERRUPTED.to_string()),
         result = run => result,
     };
+    // This call moved it: the front-ends follow at once, not when the turn
+    // ends.
+    if let Some(cwd) = ctx
+        .workdir
+        .moved_to()
+        .filter(|cwd| moved.as_ref() != Some(cwd))
+    {
+        emit(events, Event::Moved(cwd)).await;
+    }
     emit(
         events,
         Event::ToolFinished {

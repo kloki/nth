@@ -195,6 +195,7 @@ async fn watch(
     }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
+    watch.flush_log().await;
     monitors
         .event(MonitorEvent::Ended { id, end, events })
         .await;
@@ -304,6 +305,15 @@ impl Watch<'_> {
         let entry = format!("[{elapsed:>9.3}s] {text}\n");
         if log.write_all(entry.as_bytes()).await.is_err() {
             self.log = None;
+        }
+    }
+
+    /// Waits for the log's writes to land: a tokio `File` hands each write
+    /// to a background task, so without this whoever reads the log on
+    /// `Ended` can miss its last lines.
+    async fn flush_log(&mut self) {
+        if let Some(log) = &mut self.log {
+            let _ = log.flush().await;
         }
     }
 }

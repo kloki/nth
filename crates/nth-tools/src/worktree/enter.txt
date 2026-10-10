@@ -1,0 +1,8 @@
+Move the session into a git worktree, to work on a branch without touching the main checkout. The worktree is `.nth/worktrees/<name>` in the main checkout, on the branch `<name>`; the first call creates it (the branch from HEAD, or the existing branch if there is one), later calls just enter it. `.nth/worktrees` is ignored by git.
+
+Usage notes:
+- From your next step on, the working directory is the worktree: relative paths, glob, grep and bash run there. Tools called in the same step as this one still run in the old directory, so call it on its own.
+- Call exit_worktree to go back. Entering another worktree from inside one works too; exit_worktree then still goes back to where you started.
+- The worktree is a fresh checkout of committed files: uncommitted changes in the main checkout are not in it, and build artefacts such as target/ or node_modules/ start empty.
+- Use it when the user asks for a worktree, or to work on something in isolation; do not use it for a quick change the user expects in their own checkout.
+- Not available in plan mode.
