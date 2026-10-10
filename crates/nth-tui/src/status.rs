@@ -1,16 +1,15 @@
 //! The status bar under the input panel. Line 1 is general state: model,
 //! effort, place (the working directory in magenta, then how many were
-//! added with `/add-dir` as `(+N)`), context used and what the session
-//! spent on the left, git branch and
+//! added with `/add-dir` as `(+N)`), how long the session has run, context
+//! used as a percentage and what the session spent on the left, git branch and
 //! status on the right, with the branch's pull request as a clickable
 //! `#N`. Line 2 shows a hint about the last key or the queued
 //! prompts on the left, and the running monitors and the language servers
 //! that check a write on the right: a dot per server, coloured by its
 //! state. The right side is cut first when a line is too narrow.
 
-use std::path::Path;
+use std::{path::Path, time::SystemTime};
 
-use braille_bar::BrailleBar;
 use nth_lsp::ServerState;
 use ratatui::{
     Frame,
@@ -27,8 +26,8 @@ use crate::{app::App, git};
 pub const ROWS: u16 = 2;
 /// In front of the share of input read from the prompt cache.
 const CACHE: char = '↻';
-/// Characters in the context bar.
-const BAR_WIDTH: usize = 13;
+/// In front of how full the context window is, a dot.
+const CONTEXT: char = '◘';
 
 /// Draws the two lines. Where the pull-request link ended up on line 1,
 /// for a click to land on; `None` when none shows or it is cut off.
@@ -48,17 +47,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         Span::styled(model.join(" · "), bright_white()),
         Span::raw(" · "),
         Span::styled(dirs, magenta()),
+        Span::raw(" "),
+        Span::styled(
+            session_time(SystemTime::now(), app.session_since),
+            Style::new().fg(Color::Gray),
+        ),
     ];
-    // Unknown window, no bar; no reply yet, an empty one.
+    // Unknown window, nothing; no reply yet, 0%.
     if let Some(window) = app.context_window().filter(|&w| w > 0) {
         let used = app.usage.map_or(0, |usage| usage.context());
-        let percent = (used as f64 / window as f64 * 100.0).min(100.0);
+        let (percent, colour) = context_usage(used, window);
         place.extend([
             Span::raw(" "),
-            Span::styled(
-                BrailleBar::new(BAR_WIDTH).render(percent),
-                Style::new().fg(Color::Gray),
-            ),
+            Span::styled(format!("{CONTEXT} {percent}%"), Style::new().fg(colour)),
         ]);
     }
     place.extend(spent(app));
@@ -116,6 +117,29 @@ fn spent(app: &App) -> Vec<Span<'static>> {
         None => format!(" {cache}"),
     };
     vec![Span::styled(text, Style::new().fg(Color::Gray))]
+}
+
+/// Context used as a percentage of the window, coloured by how full it is:
+/// white, yellow from half, magenta from four fifths.
+fn context_usage(used: u64, window: u64) -> (u64, Color) {
+    let percent = (used as f64 / window as f64 * 100.0).min(100.0).round() as u64;
+    let colour = match percent {
+        80..=100 => Color::Magenta,
+        50..=79 => Color::Yellow,
+        _ => Color::Gray,
+    };
+    (percent, colour)
+}
+
+/// How long the session has run: `24m`, `1h32m`, `2d3h`. A clock set back
+/// before the session was created reads `0m` rather than failing.
+fn session_time(now: SystemTime, since: SystemTime) -> String {
+    let secs = now.duration_since(since).unwrap_or_default().as_secs();
+    match secs {
+        0..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h{}m", secs / 3_600, secs % 3_600 / 60),
+        _ => format!("{}d{}h", secs / 86_400, secs % 86_400 / 3_600),
+    }
 }
 
 /// Where a link drawn among the right side's spans ended up. They are
@@ -238,6 +262,8 @@ pub fn place(cwd: &Path, home: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -249,5 +275,37 @@ mod tests {
         assert_eq!(place("/home/kate", Some("/home/k")), "/home/kate");
         assert_eq!(place("/repo", Some("")), "/repo");
         assert_eq!(place("/repo", None), "/repo");
+    }
+
+    #[test]
+    fn session_time_reads_in_minutes_hours_and_days() {
+        let now = SystemTime::now();
+        let ago = |secs| session_time(now, now - Duration::from_secs(secs));
+
+        assert_eq!(ago(0), "0m");
+        assert_eq!(ago(59), "0m");
+        assert_eq!(ago(60), "1m");
+        assert_eq!(ago(24 * 60), "24m");
+        assert_eq!(ago(3_600), "1h0m");
+        assert_eq!(ago(3_600 + 32 * 60), "1h32m");
+        assert_eq!(ago(86_400), "1d0h");
+        assert_eq!(ago(2 * 86_400 + 3 * 3_600), "2d3h");
+        // A clock before the session began reads zero, not a panic.
+        assert_eq!(session_time(now - Duration::from_secs(5), now), "0m");
+    }
+
+    #[test]
+    fn context_usage_warns_by_how_full_it_is() {
+        let at = |used| context_usage(used, 1_000);
+        let white = Color::Gray;
+
+        assert_eq!(at(0), (0, white));
+        assert_eq!(at(490), (49, white));
+        assert_eq!(at(500), (50, Color::Yellow));
+        assert_eq!(at(790), (79, Color::Yellow));
+        assert_eq!(at(800), (80, Color::Magenta));
+        assert_eq!(at(1_000), (100, Color::Magenta));
+        // More than the window still caps at 100.
+        assert_eq!(at(2_000), (100, Color::Magenta));
     }
 }

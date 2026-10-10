@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kloki/nth"
@@ -21,7 +21,6 @@ nth-tui = { path = "crates/nth-tui" }
 nth-worktree = { path = "crates/nth-worktree" }
 base64 = "0.22"
 anyhow = "1"
-braille-bar = "0.1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["event-stream"] }

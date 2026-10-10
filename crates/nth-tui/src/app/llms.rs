@@ -168,7 +168,7 @@ mod tests {
             rows.iter().all(|r| !r.contains("Ask anything")),
             "no prompt"
         );
-        assert_eq!(rows[14].trim_end(), " glm · /repo", "status stays");
+        assert_eq!(rows[14].trim_end(), " glm · /repo 0m", "status stays");
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
-        assert_eq!(rows(&mut app)[14].trim_end(), " glm · medium · /repo");
+        assert_eq!(rows(&mut app)[14].trim_end(), " glm · medium · /repo 0m");
 
         app.apply(Action::LlmPicker);
         app.apply(Action::SelectNext);

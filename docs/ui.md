@@ -17,7 +17,7 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀      git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
+ glm-5.3 · ~/repos/nth 24m ◘ 42%           git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
  ● rust  ● typescript  rustfmt · prettier                              ┘
 ```
 
@@ -447,24 +447,25 @@ Opened with `/settings`. What the chats show, for this run of nth only: a change
 Fixed at 2 lines, always visible, below the input panel. It holds general state; the one thing in it you interact with is the branch's pull-request link. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
 
 ```
- glm-5.3 · ~/repos/nth ⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀          git · fix-auth #123 +3 *4 󰊐 2
+ glm-5.3 · ~/repos/nth 24m ◘ 42%               git · fix-auth #123 +3 *4 󰊐 2
  ⏵ 2 queued · fix the failing test                    ● rust  ● typescript
 ```
 
 **Line 1: where you are**
 
-Left-aligned: `model · effort · place`, the model and effort in bright white and the place in magenta. The git branch and status sit against the right edge.
+Left-aligned: `model · effort · place`, the model and effort in bright white and the place in magenta, then how long the session has run. The git branch and status sit against the right edge.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part    | Shows                                                                                                                                                                                          | Colour       |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Model   | The current model, and its effort unless default                                                                                                                                               | bright white |
-| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta      |
-| Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window                                                                | white        |
-| Spent   | What the session spent, subagents included: its price at the catalogue's rates and the share of input read from the prompt cache behind `↻`, `$3.10 ↻ 82%`; `↻ ?` when the provider never said | white        |
+| Part    | Shows                                                                                                                                                                                          | Colour                 |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| Model   | The current model, and its effort unless default                                                                                                                                               | bright white           |
+| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta                |
+| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                                                                                                    | white                  |
+| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%                                                                           | white, yellow, magenta |
+| Spent   | What the session spent, subagents included: its price at the catalogue's rates and the share of input read from the prompt cache behind `↻`, `$3.10 ↻ 82%`; `↻ ?` when the provider never said | white                  |
 
-The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one.
+The context figure shows `◘ 0%` until the first turn reports usage, and is hidden when the model's context window is unknown. It is rounded to the nearest percent and capped at 100%, and turns yellow at 50% and magenta at 80%. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one. The time counts from the session's creation (`created_at`), so a resumed session carries on from where it left off and shows days when it is old, while `/clear` starts it over; it updates at each whole minute even when nothing else happens.
 
 **Line 1, right: git status**
 
@@ -536,7 +537,7 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | blue             | blue            | model, act mode, staged, model answer bar                              |
 | magenta, purple  | magenta         | plan mode, model picker, highlighted items, modified, status bar place |
 | cyan             | cyan            | tool names, tool call and output bar                                   |
-| white            | white           | context bar, untracked, stashed                                        |
+| white            | white           | context percentage, untracked, stashed                                 |
 | bright white     | bright white    | status line 1 model                                                    |
 
 Orange is not a standard terminal colour, so it means yellow.

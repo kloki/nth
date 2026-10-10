@@ -31,7 +31,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -101,6 +101,15 @@ const TICK: Duration = spinner::FRAME;
 /// one burst of output reaches the model as one message.
 const NOTICE_DELAY: Duration = Duration::from_millis(200);
 
+/// The next whole minute, when the status bar's session time changes; `run`
+/// wakes with `due` then, so the bar stays true while nothing else happens.
+fn next_minute() -> tokio::time::Instant {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    tokio::time::Instant::now() + Duration::from_secs(60 - now.as_secs() % 60)
+}
+
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
@@ -158,6 +167,10 @@ pub struct App {
     pub extra_dirs: Vec<PathBuf>,
     /// When the running turn started; `None` while idle.
     pub busy_since: Option<Instant>,
+    /// When the current session was created, for the status bar's time;
+    /// from the session, so it carries across /resume and starts over with
+    /// /clear.
+    pub session_since: SystemTime,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
@@ -395,6 +408,7 @@ impl App {
             home,
             extra_dirs: session.extra_dirs.clone(),
             busy_since: None,
+            session_since: session.created_at,
             hero_since: Instant::now(),
             pointer: None,
             completion: None,
@@ -546,6 +560,8 @@ impl App {
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
+                // The status bar's session time changes on the minute.
+                _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(ended),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
@@ -839,6 +855,7 @@ impl App {
         session.max_steps = self.max_steps;
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
+        self.session_since = session.created_at;
         self.session = Some(session);
         self.usage = None;
         self.spent = Spent::default();
