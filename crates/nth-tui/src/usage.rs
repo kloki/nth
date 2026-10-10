@@ -259,7 +259,7 @@ mod tests {
                 "40k in".into(),
                 "80% cached".into(),
                 "900 out".into(),
-                "≈$0.38".into(),
+                "$0.38".into(),
             ],
             [
                 "all".to_string(),
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(colour(&lines[0], "@explore").fg, Some(Color::Cyan));
         assert_eq!(colour(&lines[0], "kimi").fg, Some(Color::Blue));
         assert_eq!(colour(&lines[0], "80% cached").fg, Some(Color::Green));
-        assert_eq!(colour(&lines[0], "≈$0.38").fg, Some(Color::Magenta));
+        assert_eq!(colour(&lines[0], "$0.38").fg, Some(Color::Magenta));
         assert_eq!(colour(&lines[1], "cache ?"), theme::dim());
         assert_eq!(cached("12% cached").fg, Some(Color::Yellow));
     }
@@ -330,14 +330,14 @@ mod tests {
             text(&ledger, &cost),
             [
                 "usage",
-                "  all  4 steps  1.0M in  77% cached  20k out  ≈$0.38+",
+                "  all  4 steps  1.0M in  77% cached  20k out  $0.38+",
                 "",
                 "per model",
-                "  glm    1 step  1.0M in  80% cached  20k out  ≈$0.38",
+                "  glm    1 step  1.0M in  80% cached  20k out  $0.38",
                 "  kimi  3 steps   40k in     cache ?  900 out",
                 "",
                 "per turn",
-                "  #1 glm             1 step  1.0M in  80% cached  20k out  ≈$0.38",
+                "  #1 glm             1 step  1.0M in  80% cached  20k out  $0.38",
                 "  #2 @explore kimi  3 steps   40k in     cache ?  900 out",
                 "",
                 "  prices are list-price estimates from models.dev, whatever your plan bills",

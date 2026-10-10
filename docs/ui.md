@@ -187,14 +187,14 @@ Opened with `/usage`, icon `∑`. What the session spent, its subagents included
 
 ```
 usage
-  all  4 steps  1.0M in  77% cached  20k out  ≈$0.38+
+  all  4 steps  1.0M in  77% cached  20k out  $0.38+
 
 per model
-  glm-5.3   1 step  1.0M in  80% cached  20k out  ≈$0.38
+  glm-5.3   1 step  1.0M in  80% cached  20k out  $0.38
   kimi-k3  3 steps   40k in     cache ?  900 out
 
 per turn
-  #1 glm-5.3             1 step  1.0M in  80% cached  20k out  ≈$0.38
+  #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
 
   prices are list-price estimates from models.dev, whatever your plan bills
