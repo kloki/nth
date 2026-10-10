@@ -8,13 +8,13 @@ use ratatui::{
 
 use super::GitStatus;
 
-const CONFLICTED: &str = "\u{f071}";
-const DIVERGED: &str = "\u{f0c6e}";
-const STASHED: &str = "\u{f187}";
-const STAGED: &str = "\u{f0290}";
-const RENAMED: &str = "\u{f0ec}";
-const DELETED: &str = "\u{f1f8}";
-const UNTRACKED: &str = "\u{f128}";
+const CONFLICTED: &str = "";
+const DIVERGED: &str = "󰱮";
+const STASHED: &str = "";
+const STAGED: &str = "󰊐";
+const RENAMED: &str = "";
+const DELETED: &str = "";
+const UNTRACKED: &str = "";
 
 /// Empty for a clean tree that is level with its upstream.
 pub fn summary(status: &GitStatus) -> Vec<Span<'static>> {
