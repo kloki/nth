@@ -25,6 +25,8 @@ use crate::{app::App, git};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
+/// In front of the share of input read from the prompt cache.
+const CACHE: char = '↻';
 /// Characters in the context bar.
 const BAR_WIDTH: usize = 13;
 
@@ -98,19 +100,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
 
 /// What the session spent, once it spent anything: its price at the
 /// catalogue's rates when known, and how much of what it sent came from
-/// the provider's prompt cache, as ` ≈$3.10 · 82% cached`, or `cache ?`
-/// when the provider never said.
+/// the provider's prompt cache behind the cache icon, as ` ≈$3.10 ↻82%`,
+/// or `↻?` when the provider never said.
 fn spent(app: &App) -> Vec<Span<'static>> {
     let total = app.spent.ledger.total();
     if total.steps == 0 {
         return Vec::new();
     }
     let cache = match total.tokens.cached_share() {
-        Some(share) => format!("{:.0}% cached", share * 100.0),
-        None => "cache ?".to_string(),
+        Some(share) => format!("{CACHE}{:.0}%", share * 100.0),
+        None => format!("{CACHE}?"),
     };
     let text = match app.price() {
-        Some(price) => format!(" {price} · {cache}"),
+        Some(price) => format!(" {price} {cache}"),
         None => format!(" {cache}"),
     };
     vec![Span::styled(text, Style::new().fg(Color::Gray))]
