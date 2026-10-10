@@ -56,7 +56,7 @@ Markdown and code go through `rich.rs`, the only module that uses [hoodrich](htt
 
 TUI tests render `App` into a `TestBackend` and assert on rows (`rows()` in `app/mod.rs` tests), so layout changes mean updating row indexes there.
 
-Style: no borders or divider lines; bands differ by background and spacing. Use only the 16 ANSI colours plus the terminal's default foreground and background, never hex or RGB (see `docs/design.md#tui`). The one exception is syntax-highlighted code, which hoodrich draws in Dracula colours.
+Style: no borders or divider lines; bands differ by background and spacing. Use only the 16 ANSI colours plus the terminal's default foreground and background, never hex or RGB (see `docs/ui.md`). The one exception is syntax-highlighted code, which hoodrich draws in Dracula colours.
 
 ## opencode reference
 
