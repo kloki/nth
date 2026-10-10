@@ -1,3 +1,5 @@
+mod rtk;
+
 use std::{process::Stdio, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
@@ -9,6 +11,7 @@ use tokio::{
     process::Child,
 };
 
+use self::rtk::Rtk;
 use crate::{
     output::{self, tail},
     process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
@@ -16,6 +19,10 @@ use crate::{
 
 /// How long to keep reading after bash exits, for output still in the pipe.
 const DRAIN: Duration = Duration::from_millis(100);
+
+/// Told to the model when rtk rewrites its commands, so it can follow the
+/// pointers rtk leaves in what it cut.
+const RTK_NOTE: &str = "\n# rtk\n- Common commands (git, cargo, test runners, linters and more) run through rtk, which compresses their output; the result then ends with the command that actually ran. Where rtk points to the full output with `rtk recall <id>`, run that to see it.\n";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -26,6 +33,9 @@ pub struct BashConfig {
     pub max_timeout_ms: u64,
     /// Longer output keeps only its tail.
     pub max_output_chars: usize,
+    /// Pass the model's commands through `rtk rewrite` when rtk is on PATH,
+    /// to compress their output.
+    pub rtk: bool,
 }
 
 impl Default for BashConfig {
@@ -34,6 +44,7 @@ impl Default for BashConfig {
             default_timeout_ms: 120_000,
             max_timeout_ms: 600_000,
             max_output_chars: output::MAX_CHARS,
+            rtk: true,
         }
     }
 }
@@ -44,22 +55,27 @@ pub struct Bash {
     /// Runs until the command exits or the call is dropped, whatever
     /// `timeout` says.
     untimed: bool,
+    rtk: Option<Rtk>,
 }
 
 impl Bash {
     pub fn new(config: BashConfig) -> Self {
+        let rtk = config.rtk.then(Rtk::find).flatten();
         Self {
             config,
             untimed: false,
+            rtk,
         }
     }
 
     /// For commands the user runs: they watch it and stop it themselves,
-    /// so a long build is never cut off.
+    /// so a long build is never cut off. Never through rtk: they read the
+    /// output themselves.
     pub fn untimed(config: BashConfig) -> Self {
         Self {
             config,
             untimed: true,
+            rtk: None,
         }
     }
 }
@@ -72,18 +88,22 @@ struct Args {
 
 impl Tool for Bash {
     fn spec(&self) -> ToolSpec {
+        let mut description = include_str!("description.txt")
+            .replace(
+                "{default_timeout_ms}",
+                &self.config.default_timeout_ms.to_string(),
+            )
+            .replace("{max_timeout_ms}", &self.config.max_timeout_ms.to_string())
+            .replace(
+                "{max_output_chars}",
+                &self.config.max_output_chars.to_string(),
+            );
+        if self.rtk.is_some() {
+            description.push_str(RTK_NOTE);
+        }
         ToolSpec {
             name: "bash",
-            description: include_str!("description.txt")
-                .replace(
-                    "{default_timeout_ms}",
-                    &self.config.default_timeout_ms.to_string(),
-                )
-                .replace("{max_timeout_ms}", &self.config.max_timeout_ms.to_string())
-                .replace(
-                    "{max_output_chars}",
-                    &self.config.max_output_chars.to_string(),
-                ),
+            description,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -113,7 +133,12 @@ impl Tool for Bash {
             let max_chars = self.config.max_output_chars;
             // `exec 2>&1` interleaves stderr into stdout in the order the
             // command wrote them, which two separate pipes cannot preserve.
-            let mut child = process::shell(&format!("exec 2>&1\n{}", args.command), &ctx.cwd)
+            let rewritten = match &self.rtk {
+                Some(rtk) => rtk.rewrite(&args.command, &ctx.cwd).await,
+                None => None,
+            };
+            let command = rewritten.as_deref().unwrap_or(&args.command);
+            let mut child = process::shell(&format!("exec 2>&1\n{command}"), &ctx.cwd)
                 .stdout(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
@@ -153,6 +178,11 @@ impl Tool for Bash {
                 Some(0) => {}
                 Some(code) => out.push_str(&format!("\n\n(exit code {code})")),
                 None => out.push_str("\n\n(killed by signal)"),
+            }
+            if let Some(rewritten) = &rewritten {
+                let note = format!("\n\n(ran as `{rewritten}`)");
+                streamed.send(note.as_bytes()).await;
+                out.push_str(&note);
             }
             Ok(out)
         }
@@ -235,6 +265,7 @@ mod tests {
     fn quick(ms: u64) -> Bash {
         Bash::new(BashConfig {
             default_timeout_ms: ms,
+            rtk: false,
             ..BashConfig::default()
         })
     }
@@ -297,6 +328,7 @@ mod tests {
         let bash = Bash::new(BashConfig {
             default_timeout_ms: 50,
             max_output_chars: 3,
+            rtk: false,
             ..BashConfig::default()
         });
         assert!(bash.spec().description.contains("time out after 50ms"));
@@ -314,6 +346,32 @@ mod tests {
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)
             .await;
         assert!(out.is_err_and(|e| e.contains("timeout 50 ms")));
+    }
+
+    #[tokio::test]
+    async fn runs_what_rtk_rewrites_the_command_to() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let bash = Bash {
+            rtk: Some(rtk::tests::fake(dir.path(), "echo 'echo b'")),
+            ..Bash::default()
+        };
+        assert!(bash.spec().description.contains("rtk recall"));
+        let out = bash
+            .call(json!({ "command": "echo a", "description": "t" }), &ctx)
+            .await;
+        assert_eq!(out, Ok("b\n\n\n(ran as `echo b`)".to_string()));
+    }
+
+    #[test]
+    fn rtk_is_off_when_the_config_says_so_and_for_the_user() {
+        let off = Bash::new(BashConfig {
+            rtk: false,
+            ..BashConfig::default()
+        });
+        assert!(off.rtk.is_none());
+        assert!(!off.spec().description.contains("rtk"));
+        assert!(Bash::untimed(BashConfig::default()).rtk.is_none());
     }
 
     #[tokio::test]

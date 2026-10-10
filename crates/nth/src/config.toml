@@ -104,6 +104,9 @@ default_timeout_ms = 120000
 max_timeout_ms = 600000
 # Longer output keeps only its last this-many characters.
 max_output_chars = 30000
+# Pass the model's commands through `rtk rewrite` (github.com/rtk-ai/rtk)
+# when rtk is on PATH, to compress their output.
+rtk = true
 
 [tools.websearch]
 # Exa's MCP endpoint. EXA_API_KEY, when set, is sent with each search.

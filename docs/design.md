@@ -45,7 +45,7 @@ CLAUDE.md holds the crate map and the internals; this is the design-level shape.
 
 **Subagents.** The task tool runs a named agent on its own session in the background; the call returns at once and the answer reaches the model as an inbox notice, or as the tool's result headless. Each gets a tab, and the prompt on that tab talks to it. A model-started turn is capped at `[task] max_steps` (50) or `[task] timeout_secs` (600, 0 for no clock), and can be stopped and continued by `task_id`.
 
-**Usage.** Every turn's reported tokens go into a ledger saved with the session; the Usage tab and `nth usage` report what it spent, per model and per turn, at models.dev's list prices. That is all the context management there is so far.
+**Usage.** Every turn's reported tokens go into a ledger saved with the session; the Usage tab and `nth usage` report what it spent, per model and per turn, at models.dev's list prices. The one output compression is [rtk](https://github.com/rtk-ai/rtk): when it is on PATH, bash runs the model's commands as `rtk rewrite` rewrites them, so git, cargo and test output reach the model already filtered. Beyond that there is no context management so far.
 
 ## Direction
 
