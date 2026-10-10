@@ -106,7 +106,7 @@ pub static PLAIN: Icons = Icons {
     done: "∎",
     interrupted: "⏹",
     retry: "⟳",
-    plan_edits: "✎",
+    plan_edits: "±",
     subagent: "↳",
     effort_less: "◂",
     effort_more: "▸",
@@ -164,18 +164,18 @@ pub static NERD: Icons = Icons {
     interrupted: "", // fa-stop
     retry: "",       // fa-refresh
     plan_edits: "",  // fa-pencil
-    subagent: "󰚩",    // md-robot
+    subagent: "󰚩 ",   // md-robot
     effort_less: "", // fa-caret_left
     effort_more: "", // fa-caret_right
-    unchecked: "",   // fa-square_o
-    checked: "",     // fa-check_square
+    unchecked: " ",  // fa-square_o
+    checked: " ",    // fa-check_square
     tab: TabIcons {
-        chat: "",        // fa-comments
-        diagnostics: "", // fa-stethoscope
-        plan: "",        // oct-checklist
-        monitor: "",     // cod-pulse
-        subagent: "󰚩",    // md-robot
-        usage: "",       // fa-bar_chart
+        chat: "> ",        // fa-comments
+        diagnostics: " ", // fa-stethoscope
+        plan: " ",        // oct-checklist
+        monitor: "& ",     // cod-pulse
+        subagent: "󰚩 ",    // md-robot
+        usage: " ",       // fa-bar_chart
     },
     tool: ToolIcons {
         read: "",        // fa-file_text_o
