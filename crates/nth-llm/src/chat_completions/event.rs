@@ -15,12 +15,37 @@ pub enum Event {
     Done,
 }
 
+/// `prompt_tokens` counts everything sent, what was read from the cache
+/// included. Servers report the cached part in one of three places.
 #[derive(Debug, Default, PartialEq, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]
     pub completion_tokens: u64,
+    /// OpenAI's place, which most compatible servers copy.
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// DeepSeek's.
+    pub prompt_cache_hit_tokens: Option<u64>,
+    /// Moonshot's, at the top level.
+    pub cached_tokens: Option<u64>,
+}
+
+#[derive(Debug, Default, PartialEq, Deserialize)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// What was read from the cache, wherever the server put it; `None`
+    /// when it put it nowhere.
+    pub fn cache_read(&self) -> Option<u64> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .or(self.prompt_cache_hit_tokens)
+            .or(self.cached_tokens)
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
@@ -243,11 +268,42 @@ mod tests {
             vec![
                 Event::Usage(Usage {
                     prompt_tokens: 120,
-                    completion_tokens: 8
+                    completion_tokens: 8,
+                    ..Usage::default()
                 }),
                 Event::Done
             ]
         );
+    }
+
+    #[test]
+    fn reads_the_cached_count_wherever_the_server_puts_it() {
+        let read = |usage: &str| {
+            let line = format!("data: {{\"choices\":[],\"usage\":{usage}}}\n");
+            match parser().push(line.as_bytes()).expect("valid").as_slice() {
+                [Event::Usage(usage)] => usage.cache_read(),
+                other => panic!("not one usage: {other:?}"),
+            }
+        };
+        assert_eq!(
+            read(r#"{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":80}}"#),
+            Some(80)
+        );
+        assert_eq!(
+            read(
+                r#"{"prompt_tokens":100,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30}"#
+            ),
+            Some(70)
+        );
+        assert_eq!(
+            read(r#"{"prompt_tokens":100,"cached_tokens":60}"#),
+            Some(60)
+        );
+        assert_eq!(
+            read(r#"{"prompt_tokens":100,"prompt_tokens_details":null}"#),
+            None
+        );
+        assert_eq!(read(r#"{"prompt_tokens":100}"#), None);
     }
 
     #[test]

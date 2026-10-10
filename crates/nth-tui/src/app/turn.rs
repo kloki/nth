@@ -939,6 +939,7 @@ mod tests {
         let usage = Usage {
             input: 10,
             output: 2,
+            ..Usage::default()
         };
         app.events_tx.try_send(Event::Usage(usage)).expect("room");
 

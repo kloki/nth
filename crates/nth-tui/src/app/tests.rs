@@ -246,9 +246,34 @@ fn the_context_bar_fills_with_usage() {
     app.on_session(Event::Usage(Usage {
         input: 1000,
         output: 0,
+        ..Usage::default()
     }));
     let full = rows(&mut app);
     assert!(full[14].starts_with(&format!("{place} {}", "⣿".repeat(13))));
+}
+
+#[test]
+fn the_status_bar_shows_the_cache_share_of_the_last_request() {
+    let mut app = app();
+    let place = rows(&mut app)[14].trim_end().to_string();
+    app.on_session(Event::Usage(Usage {
+        input: 1000,
+        output: 10,
+        cache_read: Some(820),
+        cache_write: None,
+    }));
+    assert!(
+        rows(&mut app)[14].starts_with(&format!("{place} 82% cached")),
+        "{:?}",
+        rows(&mut app)[14]
+    );
+
+    app.on_session(Event::Usage(Usage {
+        input: 1000,
+        output: 10,
+        ..Usage::default()
+    }));
+    assert!(rows(&mut app)[14].starts_with(&format!("{place} cache ?")));
 }
 
 #[tokio::test]

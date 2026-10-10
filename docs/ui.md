@@ -444,8 +444,9 @@ Colours here are the terminal's standard colours; see [Colours](#colours). Purpl
 | Model   | The current model, and its effort unless default                                                                                | bright white |
 | Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                              | magenta      |
 | Context | Context used as a [braille bar](https://github.com/kloki/braille-bar), 13 characters wide, scaled to the model's context window | white        |
+| Cache   | How much of the last request the provider read from its prompt cache: `82% cached`, or `cache ?` when it did not say            | white        |
 
-The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden.
+The context bar is empty until the first turn reports usage. When the model's context window is unknown, the bar is hidden. The cache share shows from the first reported usage on.
 
 **Line 1, right: git status**
 
