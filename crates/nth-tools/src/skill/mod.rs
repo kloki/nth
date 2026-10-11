@@ -104,7 +104,7 @@ mod tests {
 
         assert_eq!(
             out,
-            Err("Skill \"nope\" not found. Available skills: deploy".into())
+            Err("Skill \"nope\" not found. Available skills: deploy, work-plan".into())
         );
     }
 }

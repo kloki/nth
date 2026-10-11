@@ -22,7 +22,7 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
             let line = serde_json::json!({
                 "name": skill.name,
                 "description": skill.description,
-                "path": skill.path,
+                "path": skill.path(),
                 "source": skill.source.name(),
             });
             writeln!(out, "{line}")?;
