@@ -281,6 +281,9 @@ pub struct App {
     work: WorkView,
     work_dir: PathBuf,
     work_reading: Job<Option<nth_session::work::Plan>>,
+    /// The next read is of a session just opened, so a plan it finds
+    /// opens its tab without showing it.
+    work_settle: bool,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -488,6 +491,7 @@ impl App {
             work: WorkView::default(),
             work_dir,
             work_reading: Job::default(),
+            work_settle: true,
             monitor_root,
             notices_due: None,
             hold_notices: false,

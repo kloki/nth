@@ -1,13 +1,13 @@
 //! The work tab, wired to the session's work directory: read in the
 //! background after any work tool ran, in the model's turn or a
 //! subagent's, after each subagent's turn and at the end of every turn,
-//! and open in a tab while there is a plan.
+//! and shown in a tab while there is a plan.
 
 use std::path::PathBuf;
 
 use nth_session::work::{Plan, Store};
 
-use super::{App, Tab};
+use super::{App, Tab, flash::Flash};
 use crate::work::{Live, LiveTask};
 
 /// What a subagent's tab says it works on: its description.
@@ -15,9 +15,10 @@ const WORK_PREFIX: &str = "work ";
 
 impl App {
     /// Points the work tab at the directory of the session the app is on,
-    /// and reads it.
+    /// and reads it as already there.
     pub(super) fn work_for_session(&mut self, dir: PathBuf) {
         self.work_dir = dir;
+        self.work_settle = true;
         self.read_work();
     }
 
@@ -30,11 +31,20 @@ impl App {
         });
     }
 
-    /// The plan as read: its tab opens, unfocused, while there is one, and
-    /// closes once there is none.
+    /// The plan as read: its tab shows when the plan is first written,
+    /// stays open while there is one, and closes once there is none.
     pub(super) fn work_read(&mut self, plan: Option<Plan>) {
+        let settle = std::mem::take(&mut self.work_settle);
+        let existed = self.work.exists();
         self.work.update(plan);
-        if self.work.exists() {
+        if !settle && !existed && self.work.exists() {
+            // The first work plan is what you will want to watch, and it
+            // comes in after a blank like a tab the model shows you.
+            self.content.open(Tab::Work);
+            self.flash = Some(Flash::new());
+        } else if self.work.exists() {
+            // Progress opens the tab unfocused, so the reply the model is
+            // writing stays in view.
             self.content.add(Tab::Work);
         } else {
             self.content.remove(Tab::Work);
@@ -139,7 +149,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_plan_opens_its_tab_unfocused_and_shows_the_tree() {
+    async fn a_new_plan_shows_its_tab_and_the_tree() {
         let (mut app, _dir) = app_with_work();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat], "no plan, no tab");
@@ -149,8 +159,9 @@ mod tests {
         read(&mut app).await;
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Work]);
-        assert_eq!(app.content.active(), Tab::Chat);
-        app.apply(Action::Content(1));
+        assert_eq!(app.content.active(), Tab::Work);
+        assert!(app.flash.is_some(), "it comes in after a blank");
+        app.flash = None;
         let rows = rows(&mut app);
         assert!(rows[0].starts_with("  › chat [⊞ work 1/2] "), "{rows:?}");
         assert!(rows[2].starts_with(" work · 1/2 done"), "{rows:?}");
@@ -158,6 +169,21 @@ mod tests {
         assert_eq!(rows[5].trim_end(), " └─ ✓ store  1/2");
         assert_eq!(rows[6].trim_end(), " ▸ 2 b  0/1");
         assert_eq!(rows[7].trim_end(), " └─ ○ tab  1/2");
+    }
+
+    #[tokio::test]
+    async fn progress_and_a_sessions_plan_open_the_tab_unfocused() {
+        let (mut app, _dir) = app_with_work();
+        write(&app, "01-a", "store", Status::Pending, None).await;
+        read(&mut app).await;
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Work]);
+        assert_eq!(app.content.active(), Tab::Chat, "a session's plan");
+
+        app.content.remove(Tab::Work);
+        write(&app, "01-a", "store", Status::Done, None).await;
+        read(&mut app).await;
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Work]);
+        assert_eq!(app.content.active(), Tab::Chat, "progress");
     }
 
     #[tokio::test]

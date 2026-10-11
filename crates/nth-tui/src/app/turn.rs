@@ -364,7 +364,10 @@ impl App {
             true => self.plan_for_session(plan_path),
             false => self.read_plan(),
         }
-        self.work_for_session(work_dir);
+        match work_dir != self.work_dir {
+            true => self.work_for_session(work_dir),
+            false => self.read_work(),
+        }
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
         // that failed is no reason to keep a subagent's answer from it.
