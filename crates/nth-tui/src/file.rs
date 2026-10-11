@@ -9,7 +9,7 @@ use std::{
 use ratatui::{
     Frame,
     layout::Rect,
-    text::Line,
+    text::{Line, Span},
     widgets::{Paragraph, ScrollbarState},
 };
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -140,12 +140,33 @@ impl FileView {
         if rich::is_markdown(&path) {
             lines.extend(rich::markdown(text, width).lines);
         } else {
-            for line in rich::code(text, &path, width) {
-                lines.extend(rich::wrap(line, width));
-            }
+            lines.extend(numbered(rich::code(text, &path, width), width));
         }
         lines
     }
+}
+
+/// Code lines wrapped to `width` behind their line numbers, right-aligned
+/// in a dim gutter; the rows a line wraps onto leave the gutter blank.
+fn numbered(code: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let digits = code.len().max(1).to_string().len();
+    // The number and a space after it.
+    let gutter = digits + 1;
+    let room = width.saturating_sub(gutter).max(1);
+    let mut rows = Vec::new();
+    for (i, line) in code.into_iter().enumerate() {
+        for (j, row) in rich::wrap(line, room).into_iter().enumerate() {
+            let number = if j == 0 {
+                format!("{:>digits$} ", i + 1)
+            } else {
+                " ".repeat(gutter)
+            };
+            let mut spans = vec![Span::styled(number, theme::dim())];
+            spans.extend(row.spans);
+            rows.push(Line::from(spans));
+        }
+    }
+    rows
 }
 
 /// Reads the file whenever its size or modification time changes, until
@@ -224,7 +245,8 @@ mod tests {
             .into_iter()
             .map(|l| l.trim_end().to_string())
             .collect();
-        assert_eq!(body, ["fn main() { let", "answer = 42; }"]);
+        assert_eq!(body, ["1 fn main() {", "  let answer =", "  42; }"]);
+        assert_eq!(lines[2].spans[0].style, theme::dim(), "a dim number");
         assert!(
             lines[2..]
                 .iter()
@@ -232,6 +254,16 @@ mod tests {
                 .any(|s| s.style.fg.is_some()),
             "highlighted"
         );
+    }
+
+    #[test]
+    fn numbers_are_right_aligned_to_the_widest() {
+        let code: Vec<Line<'static>> = (1..=10).map(|i| Line::raw(format!("x{i}"))).collect();
+
+        let rows = text(&numbered(code, 20));
+
+        assert_eq!(rows[0], " 1 x1");
+        assert_eq!(rows[9], "10 x10");
     }
 
     #[tokio::test]

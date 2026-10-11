@@ -69,7 +69,7 @@ Ctrl with a digit only arrives as its own key in terminals that disambiguate esc
 
 ## Files
 
-The `show_user` tool puts a file in front of you: it opens a tab for it and shows it, or shows the tab it already has, so several files can be open at once. The label is `◫` and the file's name, `◫ notes.md`. The tab starts with the file's path relative to the working directory, dimmed, then the file: markdown rendered with its syntax hidden, as the plan is, and any other file highlighted by its extension and wrapped.
+The `show_user` tool puts a file in front of you: it opens a tab for it and shows it, or shows the tab it already has, so several files can be open at once. The label is `◫` and the file's name, `◫ notes.md`. The tab starts with the file's path relative to the working directory, dimmed, then the file: markdown rendered with its syntax hidden, as the plan is, and any other file highlighted by its extension and wrapped, behind dim line numbers.
 
 The tab follows the file on disk. It looks every half second, so it picks up a write by the model, by a command or by your editor, and it keeps its scroll position when the file reloads. A file that goes away leaves the tab open with `· gone` after its path, and the tab shows the file again if it comes back. Only you close the tab, with ctrl+q or `/close`. In `nth run` there is nothing to show the file on, and the tool tells the model so. Subagents don't get the tool.
 

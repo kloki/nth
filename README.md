@@ -29,3 +29,7 @@ nth comes with no providers, so it needs a config before it can chat.
 4. Run `nth models` to see what the provider serves, and set `model` to one of them as `provider/model`. Leave it empty and nth picks one at random.
 
 `nth config` prints the config nth actually uses. The template that `nth init` writes, [`crates/nth/src/config.toml`](crates/nth/src/config.toml), is the reference for every key.
+
+---
+
+_Why is it called nth? Because that's how many tries it takes._
