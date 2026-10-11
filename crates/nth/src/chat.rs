@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use nth_llm::providers::Error;
 use nth_protocol::{Effort, Mode, Provider};
 use nth_session::{Store, Subagents};
-use nth_tui::{Llm, ModeLlms};
+use nth_tui::{Llm, ModeLlms, Profile};
 
 use crate::{config::Config, context, post_write, setup};
 
@@ -36,6 +37,27 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         model: provider.qualify(&model),
         effort,
     };
+    // One per `[[profiles]]`, with why it cannot run when its provider
+    // has no key set: the chat skips those when cycling. The first is
+    // what the chat starts on; with none, `mode_llms` are the config's.
+    let profiles: Vec<Profile> = config
+        .profiles
+        .iter()
+        .map(|profile| {
+            let llms = ModeLlms {
+                plan: llm(config.profile_llm(profile, Mode::Plan)),
+                act: llm(config.profile_llm(profile, Mode::Act)),
+            };
+            let unavailable = [&llms.plan, &llms.act]
+                .into_iter()
+                .find_map(|llm| provider.check(&llm.model).err().map(why_unavailable));
+            Profile {
+                name: profile.name.clone(),
+                llms,
+                unavailable,
+            }
+        })
+        .collect();
     let mut mode_llms = ModeLlms {
         plan: llm(config.llm_for(Mode::Plan)),
         act: llm(config.llm_for(Mode::Act)),
@@ -83,6 +105,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         nth_tui::Settings {
             paths,
             mode_llms,
+            profiles,
             notifier: config.notify.notifier(),
             // The chat starts on the config's toggles; `/settings` flips
             // them for the run.
@@ -98,4 +121,27 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
     // their own before the process ends and kills them.
     lsp.shutdown().await;
     result
+}
+
+/// Why a profile cannot run, short, for the status bar hint that says it
+/// was skipped when cycling.
+fn why_unavailable(error: Error) -> String {
+    match error {
+        Error::Unavailable { api_key_env, .. } => format!("{api_key_env} is not set"),
+        error => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unavailable_profile_says_which_key_is_missing() {
+        let error = Error::Unavailable {
+            id: "zen".into(),
+            api_key_env: "ZEN_API_KEY".into(),
+        };
+        assert_eq!(why_unavailable(error), "ZEN_API_KEY is not set");
+    }
 }

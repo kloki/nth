@@ -5,7 +5,7 @@ mod wrap;
 
 use std::ops::Range;
 
-pub use view::{ROWS, draw, position};
+pub use view::{ROWS, Runs, draw, position};
 
 /// A paste enters the prompt whole until it is this many lines...
 const PASTE_LINES: usize = 3;

@@ -33,7 +33,7 @@ CLAUDE.md holds the crate map and the internals; this is the design-level shape.
 
 **Context.** nth-context discovers what goes in before the first prompt: instruction files (`AGENTS.md`, or `CLAUDE.md` where a project has none), skills (`SKILL.md` folders in the Claude Code, opencode, open-standard and nth places) and agents (opencode's built-in `general` and `explore`, plus one markdown file per agent). Instructions from the repo root down to the cwd go in, and deeper files ride on the first read below them. Skills load on demand through the `skill` tool and run as `/name args`.
 
-**Modes.** Plan and Act, Tab apart. Plan may write only its plan file, `.nth/plans/<session>.md`; Act has every tool. Each mode keeps its own model and effort. `/approve` tells the model the plan is approved and switches to Act.
+**Modes.** Plan and Act, Tab apart. Plan may write only its plan file, `.nth/plans/<session>.md`; Act has every tool. Each mode keeps its own model and effort; a profile is a named plan+act pair from `[[profiles]]`, and ctrl+p cycles through them, so a provider can be swapped with one key. `/approve` tells the model the plan is approved and switches to Act.
 
 **Providers.** Nothing is built in: each `[provider.<id>]` config block names a `base_url` and the environment variable its key lives in, and nth refuses to chat without a provider and a model. A model id is `provider/model`, so several endpoints serve one list. Requests stream over chat completions, Anthropic messages or OpenAI responses, chosen by the models.dev catalogue; a model the catalogue does not know goes over chat completions, and one whose protocol nth does not speak is not listed. 429s, 5xx and dropped streams retry with backoff.
 

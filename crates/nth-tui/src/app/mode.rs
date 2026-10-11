@@ -41,9 +41,15 @@ impl App {
     /// What each mode runs with; the current mode's model and effort come
     /// from it too.
     pub fn with_mode_llms(mut self, llms: ModeLlms) -> Self {
+        self.set_mode_llms(llms);
+        self
+    }
+
+    /// Both modes' llms at once, and the current mode's model and effort
+    /// with them: what applying a profile does.
+    pub(super) fn set_mode_llms(&mut self, llms: ModeLlms) {
         self.mode_llms = llms;
         self.load_llm();
-        self
     }
 
     /// Switches to `mode`, and to the model and effort it runs with. The

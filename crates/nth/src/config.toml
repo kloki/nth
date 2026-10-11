@@ -10,10 +10,12 @@
 #   3. set model to one of its models (`nth models` lists them), or leave it
 #      empty and nth picks one at random.
 
-# The model a new chat starts on, as provider/model: the provider id picks the
-# endpoint and the rest goes on the wire. A bare id goes to the provider this
-# key names. --model or NTH_MODEL override it. Empty means none: a mode below
-# without its own then runs on a model picked at random from `nth models`.
+# The model to fall back on, as provider/model: the provider id picks the
+# endpoint and the rest goes on the wire. A bare id goes to the provider
+# this key names. It is what a profile with an empty model runs, and what
+# both modes run when there are no profiles at all. --model or NTH_MODEL
+# override it. Empty means none: an empty model anywhere gets one picked
+# at random from `nth models`.
 model = ""
 # model = "opencode/deepseek-v4.1-flash"
 
@@ -81,19 +83,36 @@ stall_secs = 120
 # `nth run` starts in act; `nth run --mode plan` plans instead.
 default = "plan"
 
-[mode.plan]
-# The model for plan mode, as provider/model. Empty means the model above.
-# --model and NTH_MODEL override this too.
-model = ""
-# Reasoning effort: "default" (leave it to the model, for endpoints that reject
-# the field), "none", "minimal", "low", "medium", "high", "xhigh" or "max". A
-# model is sent the nearest level it takes (`nth models` lists them).
-effort = "default"
-
-[mode.act]
-# The same two keys, for act mode.
-model = ""
-effort = "default"
+# Profiles: what plan and act run with. A new chat starts on the first, and
+# ctrl+p cycles through them in the chat; a profile whose provider has no
+# key set is skipped. Each gives the model and effort for plan and act. An
+# empty model means the one above. Effort is "default" (leave it to the
+# model, for endpoints that reject the field), "none", "minimal", "low",
+# "medium", "high", "xhigh" or "max"; a model is sent the nearest level it
+# takes (`nth models` lists them). With no profiles at all, both modes run
+# on the model above with the default effort.
+#
+#   name  What the prompt's label and the cycling hint call it. Required.
+#
+# [[profiles]]
+# name = "opencode go"
+#
+# [profiles.plan]
+# model = "opencode/deepseek-v4.1-flash"
+# effort = "high"
+#
+# [profiles.act]
+# model = "opencode/kimi-k3"
+# effort = "default"
+#
+# [[profiles]]
+# name = "zen"
+#
+# [profiles.plan]
+# model = "zen/deepseek-v4.1-flash"
+#
+# [profiles.act]
+# model = "zen/glm-5.3"
 
 [chat]
 # What the chat shows of what the model did. `/settings` toggles these for the

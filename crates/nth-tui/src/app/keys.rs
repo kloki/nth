@@ -19,6 +19,9 @@ pub enum Action {
     ClearOrQuit,
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
+    /// Cycles to the next profile, both modes on its model and effort; a
+    /// model picked by hand is put back on the current profile first.
+    NextProfile,
     /// Opens the showing view in your editor: the plan on its tab, else
     /// the prompt.
     Edit,
@@ -64,6 +67,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
+        KeyCode::Char('p') if ctrl => Action::NextProfile,
         KeyCode::Char('g') if ctrl => Action::Edit,
         // Terminals report ctrl+shift+t either way; only those that
         // disambiguate escape codes tell it from ctrl+t at all.
@@ -274,6 +278,7 @@ impl App {
             | Action::Top
             | Action::Bottom => {}
             Action::LlmPicker => self.open_llm_picker(),
+            Action::NextProfile => self.next_profile(),
             Action::Edit => self.edit(),
             Action::Submit => self.submit(),
             // Leaving command mode comes before cancelling the turn.
@@ -370,6 +375,7 @@ mod tests {
         assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
         assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
         assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
+        assert_eq!(key(KeyCode::Char('p'), ctrl), Some(Action::NextProfile));
         assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
         assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
         assert_eq!(key(KeyCode::Tab, none), Some(Action::NextTab));

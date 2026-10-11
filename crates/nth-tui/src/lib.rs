@@ -35,7 +35,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-pub use app::{Llm, ModeLlms};
+pub use app::{Llm, ModeLlms, Profile};
 use nth_context::Paths;
 use nth_format::Formatters;
 use nth_lsp::Lsp;
@@ -68,11 +68,14 @@ pub struct Tools {
 }
 
 /// What the config decided: where nth looks for project files, the model
-/// and effort each mode runs on, where notifications go, and how the chat
-/// shows what the model did.
+/// and effort each mode runs on, the profiles ctrl+p cycles, where
+/// notifications go, and how the chat shows what the model did.
 pub struct Settings {
     pub paths: Paths,
     pub mode_llms: ModeLlms,
+    /// The `[[profiles]]` in config order; the chat starts on the first,
+    /// and empty means there are none to cycle.
+    pub profiles: Vec<Profile>,
     pub notifier: Notifier,
     pub chat: ChatSettings,
     /// The terminal width from which the chat and another tab show side by
@@ -93,6 +96,7 @@ pub async fn run(
     Settings {
         paths,
         mode_llms,
+        profiles,
         notifier,
         chat,
         split_width,
@@ -122,6 +126,7 @@ pub async fn run(
         .with_llm_usage(llm_usage)
         .with_checkers(checkers)
         .with_mode_llms(mode_llms)
+        .with_profiles(profiles)
         .with_notifier(notifier)
         .with_chat_settings(chat)
         .with_split_width(split_width)
