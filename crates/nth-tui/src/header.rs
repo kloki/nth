@@ -1,6 +1,7 @@
 //! The header above the content panel: one line with the content panel's
-//! tabs on the left, each coloured by how it is doing and the one showing
-//! bracketed, and the app's name and version on the right.
+//! tabs on the left, each coloured by how it is doing, the one with the
+//! focus bracketed and the one the split's right pane shows underlined,
+//! and the app's name and version on the right.
 
 use ratatui::{
     Frame,
@@ -20,8 +21,10 @@ pub struct TabLabel {
     pub icon: &'static str,
     pub name: String,
     pub state: TabState,
-    /// It is the one showing.
+    /// It has the focus.
     pub active: bool,
+    /// The split's right pane shows it.
+    pub beside: bool,
 }
 
 impl TabLabel {
@@ -37,12 +40,21 @@ impl TabLabel {
 pub fn draw(frame: &mut Frame, area: Rect, tabs: &[TabLabel]) {
     let tabs = tabs
         .iter()
-        .map(|tab| {
+        .flat_map(|tab| {
             let style = match theme::tab_colour(tab.state) {
                 Some(colour) => Style::new().fg(colour),
                 None => Style::new(),
             };
-            Span::styled(tab.text(), style)
+            if tab.beside && !tab.active {
+                // The name alone, so the line does not run into the spaces;
+                // the same width as `text`, so the strip never shifts.
+                return vec![
+                    Span::styled(format!(" {} ", tab.icon), style),
+                    Span::styled(tab.name.clone(), style.add_modifier(Modifier::UNDERLINED)),
+                    Span::styled(" ", style),
+                ];
+            }
+            vec![Span::styled(tab.text(), style)]
         })
         .collect();
     let name = vec![
@@ -79,12 +91,14 @@ mod tests {
                 name: "chat".into(),
                 state: TabState::Idle,
                 active: true,
+                beside: false,
             },
             TabLabel {
                 icon: "≡",
                 name: "diagnostics".into(),
                 state: TabState::Idle,
                 active: false,
+                beside: true,
             },
         ]
     }

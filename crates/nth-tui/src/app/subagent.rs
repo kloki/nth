@@ -119,8 +119,8 @@ impl App {
             .count()
     }
 
-    /// Closes the tabs of subagents that answered, once you are not looking
-    /// at them. Their views stay, so a continued one opens again with its
+    /// Closes the tabs of subagents that answered, once neither pane shows
+    /// them. Their views stay, so a continued one opens again with its
     /// earlier turns; a failed or stopped one stays open to say why.
     pub(super) fn close_answered_subagents(&mut self) {
         let answered: Vec<Tab> = self
@@ -128,7 +128,7 @@ impl App {
             .tabs()
             .iter()
             .copied()
-            .filter(|&tab| tab != self.content.active())
+            .filter(|&tab| !self.panes().shows(tab))
             .filter(|tab| match tab {
                 Tab::Subagent(id) => self
                     .subagent_views

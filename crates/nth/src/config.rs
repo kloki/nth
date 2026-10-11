@@ -28,6 +28,7 @@ pub struct Config {
     pub work: WorkConfig,
     pub mode: ModeConfig,
     pub chat: ChatConfig,
+    pub layout: LayoutConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
     pub format: nth_format::FormatConfig,
@@ -196,6 +197,21 @@ impl Default for ChatConfig {
             thinking: true,
             tool_output: true,
         }
+    }
+}
+
+/// How the TUI lays out its content panel.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LayoutConfig {
+    /// From this many columns the chat shows on the left and the other
+    /// tabs on the right; 0 never splits.
+    pub split_width: u16,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self { split_width: 160 }
     }
 }
 
@@ -521,6 +537,14 @@ mod tests {
         assert_eq!(round, config);
         assert!(Config::parse("[chat]\nthinking = \"x\"").is_err());
         assert!(Config::parse("[chat]\ntoggl = true").is_err());
+    }
+
+    #[test]
+    fn layout_sets_the_split_width() {
+        assert_eq!(Config::default().layout.split_width, 160);
+        let config = Config::parse("[layout]\nsplit_width = 0").expect("parses");
+        assert_eq!(config.layout.split_width, 0);
+        assert!(Config::parse("[layout]\nsplit_width = -1").is_err());
     }
 
     #[test]

@@ -101,6 +101,11 @@ effort = "default"
 thinking = true
 tool_output = true
 
+[layout]
+# From this many columns wide, the chat shows on the left and the other tabs
+# on the right, once one is open. 0 never splits.
+split_width = 160
+
 [tools.read]
 # Lines returned when the model gives no limit.
 default_limit = 2000

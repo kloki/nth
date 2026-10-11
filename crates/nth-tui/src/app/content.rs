@@ -1,5 +1,6 @@
 //! The content panel above the input panel: what you look at. It holds a
-//! list of tabs, the chat always first, and shows one of them.
+//! list of tabs, the chat always first, and shows one of them; on a wide
+//! terminal it shows the chat on the left and another tab on the right.
 
 use std::collections::HashSet;
 
@@ -90,11 +91,34 @@ impl From<Panel> for Tab {
     }
 }
 
-/// The open tabs, in the order they were opened, and the one showing.
+/// What the content panel draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Panes {
+    /// One tab fills it.
+    Single(Tab),
+    /// The chat on the left, this tab on the right.
+    Split(Tab),
+}
+
+impl Panes {
+    pub(crate) fn shows(self, tab: Tab) -> bool {
+        match self {
+            Panes::Single(shown) => shown == tab,
+            Panes::Split(side) => tab == Tab::Chat || side == tab,
+        }
+    }
+}
+
+/// The open tabs, in the order they were opened, the one showing, and the
+/// one the right pane shows when split.
 #[derive(Debug)]
 pub(crate) struct Content {
     tabs: Vec<Tab>,
+    /// The focus: the tab the keys and the prompt act on.
     active: usize,
+    /// The last tab other than the chat that had the focus, kept while the
+    /// chat has it so the right pane does not empty.
+    side: Option<Tab>,
     /// Finished tabs that have shown since they finished.
     seen: HashSet<Tab>,
 }
@@ -104,6 +128,7 @@ impl Default for Content {
         Self {
             tabs: vec![Tab::Chat],
             active: 0,
+            side: None,
             seen: HashSet::new(),
         }
     }
@@ -118,14 +143,23 @@ impl Content {
         self.tabs[self.active]
     }
 
+    /// What to draw: split when `split` (the terminal is wide enough) and
+    /// there is another tab to put beside the chat.
+    pub(crate) fn panes(&self, split: bool) -> Panes {
+        match self.side {
+            Some(side) if split => Panes::Split(side),
+            _ => Panes::Single(self.active()),
+        }
+    }
+
     /// What the header shows for `tab` doing `state`: done turns idle once
     /// the tab has shown, until it is something else and finishes again.
-    pub(super) fn shown_state(&mut self, tab: Tab, state: TabState) -> TabState {
+    pub(super) fn shown_state(&mut self, tab: Tab, state: TabState, panes: Panes) -> TabState {
         if state != TabState::Done || !tab.fades() {
             self.seen.remove(&tab);
             return state;
         }
-        if tab == self.active() {
+        if panes.shows(tab) {
             self.seen.insert(tab);
         }
         if self.seen.contains(&tab) {
@@ -140,22 +174,51 @@ impl Content {
     pub(super) fn open(&mut self, tab: Tab) -> bool {
         match self.tabs.iter().position(|&t| t == tab) {
             Some(i) => {
-                self.active = i;
+                self.focus(i);
                 false
             }
             None => {
                 self.tabs.push(tab);
-                self.active = self.tabs.len() - 1;
+                self.focus(self.tabs.len() - 1);
                 true
             }
         }
     }
 
     /// Opens `tab` after the others without showing it, so whatever you are
-    /// looking at stays.
+    /// looking at stays; the right pane takes it if it had nothing.
     pub(super) fn add(&mut self, tab: Tab) {
         if !self.tabs.contains(&tab) {
             self.tabs.push(tab);
+            if self.side.is_none() && tab != Tab::Chat {
+                self.side = Some(tab);
+            }
+        }
+    }
+
+    /// Gives the tab at `index` the focus, and the right pane unless it is
+    /// the chat.
+    fn focus(&mut self, index: usize) {
+        self.active = index;
+        let tab = self.tabs[index];
+        if tab != Tab::Chat {
+            self.side = Some(tab);
+        }
+    }
+
+    /// After the tab at `index` closed: the right pane keeps its tab if it
+    /// is still open, else takes the focused tab, else the nearest other.
+    fn settle_side(&mut self, closed: Tab, index: usize) {
+        if self.active() != Tab::Chat {
+            self.side = Some(self.active());
+        } else if self.side == Some(closed) {
+            let (before, after) = self.tabs.split_at(index);
+            self.side = before
+                .iter()
+                .rev()
+                .chain(after)
+                .copied()
+                .find(|&tab| tab != Tab::Chat);
         }
     }
 
@@ -170,20 +233,37 @@ impl Content {
         }
         self.tabs.remove(i);
         self.seen.remove(&tab);
+        let was_active = i == self.active;
         if i <= self.active {
             self.active = self.active.saturating_sub(1);
+        }
+        // Closing a tab out of sight leaves the focus where it was.
+        if was_active || self.side == Some(tab) {
+            self.settle_side(tab, i);
         }
     }
 
     /// Shows the next tab, from the last back to the chat.
     pub(super) fn next(&mut self) {
-        self.active = (self.active + 1) % self.tabs.len();
+        self.focus((self.active + 1) % self.tabs.len());
+    }
+
+    /// Shows the previous tab, from the chat back to the last.
+    pub(super) fn prev(&mut self) {
+        self.focus((self.active + self.tabs.len() - 1) % self.tabs.len());
     }
 
     /// Shows the tab at `index`, counted from 0; there may be no such tab.
     pub(super) fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
-            self.active = index;
+            self.focus(index);
+        }
+    }
+
+    /// Gives `tab` the focus if it is open.
+    pub(super) fn select_tab(&mut self, tab: Tab) {
+        if let Some(i) = self.tabs.iter().position(|&t| t == tab) {
+            self.focus(i);
         }
     }
 
@@ -191,9 +271,7 @@ impl Content {
     /// the chat.
     pub(super) fn close(&mut self) {
         if self.active().closable() {
-            let tab = self.tabs.remove(self.active);
-            self.seen.remove(&tab);
-            self.active -= 1;
+            self.remove(self.active());
         }
     }
 }
@@ -475,10 +553,15 @@ impl Scrollable for FileView {
 }
 
 impl App {
-    /// The view the content panel shows, to scroll it; `None` for a
-    /// monitor tab whose view is gone.
+    /// The view with the focus, to scroll it; `None` for a monitor tab
+    /// whose view is gone.
     pub(super) fn active_view(&mut self) -> Option<&mut dyn Scrollable> {
-        Some(match self.content.active() {
+        self.view_mut(self.content.active())
+    }
+
+    /// The view of `tab`, to scroll it; `None` for a tab whose view is gone.
+    pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
+        Some(match tab {
             Tab::Chat => &mut self.chat,
             Tab::Diagnostics => &mut self.diagnostics,
             Tab::Usage => &mut self.usage_view,
@@ -533,6 +616,61 @@ mod tests {
         content.remove(Tab::Monitor(2));
         assert_eq!(content.tabs(), [Tab::Chat]);
         assert_eq!(content.active(), Tab::Chat);
+    }
+
+    #[test]
+    fn the_side_keeps_its_tab_while_the_chat_has_the_focus() {
+        let mut content = Content::default();
+        assert_eq!(content.panes(true), Panes::Single(Tab::Chat), "only chat");
+
+        content.open(Tab::Diagnostics);
+        content.open(Tab::Usage);
+        content.select(0);
+        assert_eq!(content.active(), Tab::Chat);
+        assert_eq!(content.panes(true), Panes::Split(Tab::Usage));
+        assert_eq!(content.panes(false), Panes::Single(Tab::Chat), "narrow");
+
+        content.remove(Tab::Usage);
+        assert_eq!(content.panes(true), Panes::Split(Tab::Diagnostics));
+        content.remove(Tab::Diagnostics);
+        assert_eq!(content.panes(true), Panes::Single(Tab::Chat));
+    }
+
+    #[test]
+    fn an_added_tab_fills_an_empty_side_only() {
+        let mut content = Content::default();
+        content.add(Tab::Monitor(1));
+        assert_eq!(content.active(), Tab::Chat);
+        assert_eq!(content.panes(true), Panes::Split(Tab::Monitor(1)));
+        content.add(Tab::Monitor(2));
+        assert_eq!(content.panes(true), Panes::Split(Tab::Monitor(1)));
+    }
+
+    #[test]
+    fn closing_the_focused_tab_moves_the_side_with_the_focus() {
+        let mut content = Content::default();
+        content.open(Tab::Diagnostics);
+        content.open(Tab::Usage);
+        content.close();
+        assert_eq!(content.active(), Tab::Diagnostics);
+        assert_eq!(content.panes(true), Panes::Split(Tab::Diagnostics));
+        content.close();
+        assert_eq!(content.panes(true), Panes::Single(Tab::Chat));
+    }
+
+    #[test]
+    fn prev_wraps_from_the_chat_to_the_last() {
+        let mut content = Content::default();
+        content.prev();
+        assert_eq!(content.active(), Tab::Chat, "one tab");
+
+        content.open(Tab::Diagnostics);
+        content.open(Tab::Usage);
+        content.select(0);
+        content.prev();
+        assert_eq!(content.active(), Tab::Usage);
+        content.prev();
+        assert_eq!(content.active(), Tab::Diagnostics);
     }
 
     #[test]

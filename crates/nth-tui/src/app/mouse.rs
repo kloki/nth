@@ -1,8 +1,8 @@
-//! What the mouse does: the wheel scrolls the showing tab, a click on the
+//! What the mouse does: the wheel scrolls the tab under it, a click on the
 //! header shows that tab, a click on a link in a chat or on the status
 //! bar's pull-request link opens it, and a right click on an entry copies
 //! what it says. Where it moves is kept for the empty chat's field to
-//! ripple under.
+//! ripple under, and in a split it gives the pane under it the focus.
 
 use std::process::Stdio;
 
@@ -14,11 +14,13 @@ use crate::{chat::Chat, header, terminal};
 
 const WHEEL_LINES: usize = 3;
 
-/// Where the last draw put the header and the status bar's pull-request
-/// link; the chats know their own place.
-#[derive(Debug, Default, Clone, Copy)]
+/// Where the last draw put the header, the content panel's panes and the
+/// status bar's pull-request link; the chats know their own place.
+#[derive(Debug, Default, Clone)]
 pub(super) struct Areas {
     pub header: Rect,
+    /// Each tab drawn, one or two.
+    pub panes: Vec<(Tab, Rect)>,
     pub pr_link: Option<Rect>,
 }
 
@@ -26,14 +28,20 @@ impl App {
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = Position::new(mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Moved | MouseEventKind::Drag(_) => self.pointer = Some(at),
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.pointer = Some(at);
+                // Only a split has a pane without the focus.
+                if let Some(tab) = self.pane_at(at) {
+                    self.content.select_tab(tab);
+                }
+            }
             MouseEventKind::ScrollUp => {
-                if let Some(view) = self.active_view() {
+                if let Some(view) = self.view_at(at) {
                     view.scroll_up(WHEEL_LINES);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(view) = self.active_view() {
+                if let Some(view) = self.view_at(at) {
                     view.scroll_down(WHEEL_LINES);
                 }
             }
@@ -54,9 +62,25 @@ impl App {
         }
     }
 
-    /// The chat showing, if a chat is: the session's or a subagent's.
-    fn shown_chat(&self) -> Option<&Chat> {
-        match self.content.active() {
+    /// The tab of the pane under `at`, if the last draw put one there.
+    fn pane_at(&self, at: Position) -> Option<Tab> {
+        self.areas
+            .panes
+            .iter()
+            .find(|(_, area)| area.contains(at))
+            .map(|&(tab, _)| tab)
+    }
+
+    /// The view of the pane under `at`, else the focused one.
+    fn view_at(&mut self, at: Position) -> Option<&mut dyn super::content::Scrollable> {
+        let tab = self.pane_at(at).unwrap_or(self.content.active());
+        self.view_mut(tab)
+    }
+
+    /// The chat under `at`, if a chat is there: the session's or a
+    /// subagent's.
+    fn chat_at(&self, at: Position) -> Option<&Chat> {
+        match self.pane_at(at)? {
             Tab::Chat => Some(&self.chat),
             Tab::Subagent(id) => self.subagent_views.get(&id).map(|view| &view.chat),
             Tab::Diagnostics
@@ -77,7 +101,7 @@ impl App {
     }
 
     fn click_content(&mut self, at: Position) {
-        let Some(url) = self.shown_chat().and_then(|chat| chat.link_at(at.x, at.y)) else {
+        let Some(url) = self.chat_at(at).and_then(|chat| chat.link_at(at.x, at.y)) else {
             return;
         };
         self.open_url(&url);
@@ -94,7 +118,7 @@ impl App {
 
     fn copy_entry(&mut self, at: Position) {
         let Some(text) = self
-            .shown_chat()
+            .chat_at(at)
             .and_then(|chat| chat.entry_at(at.x, at.y))
             .and_then(|entry| entry.clipboard())
         else {
@@ -138,7 +162,7 @@ mod tests {
     use nth_protocol::Event;
 
     use super::{
-        super::tests::{app, rows},
+        super::tests::{app, rows, rows_of},
         *,
     };
 
@@ -149,6 +173,33 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }));
+    }
+
+    fn hover(app: &mut App, column: u16, row: u16) {
+        app.on_terminal(TermEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[tokio::test]
+    async fn hovering_a_pane_of_the_split_gives_it_the_focus() {
+        let mut app = app().with_split_width(80);
+        app.open_content(Tab::Diagnostics);
+        app.apply(super::super::keys::Action::Content(0));
+        rows_of(&mut app, 100);
+        hover(&mut app, 80, 5);
+        assert_eq!(app.content.active(), Tab::Diagnostics);
+        hover(&mut app, 10, 5);
+        assert_eq!(app.content.active(), Tab::Chat);
+        hover(&mut app, 80, 0);
+        assert_eq!(app.content.active(), Tab::Chat, "the header is no pane");
+
+        rows_of(&mut app, 60);
+        hover(&mut app, 50, 5);
+        assert_eq!(app.content.active(), Tab::Chat, "narrow, one pane");
     }
 
     /// An app whose chat shows one answer, drawn once so clicks can land.

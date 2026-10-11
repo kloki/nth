@@ -16,7 +16,7 @@ use nth_protocol::{
 use nth_session::Session;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
-use super::{App, Queued, Tab, input::Input, keys::Action};
+use super::{App, Panes, Queued, Tab, input::Input, keys::Action};
 use crate::llm_picker::tests::model;
 
 pub(crate) struct Idle;
@@ -54,7 +54,11 @@ pub(crate) fn with_fix_skill(dir: &std::path::Path) -> Arc<ProjectContext> {
 }
 
 pub(crate) fn buffer(app: &mut App) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(40, 16)).expect("test backend");
+    buffer_of(app, 40)
+}
+
+fn buffer_of(app: &mut App, width: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, 16)).expect("test backend");
     terminal.draw(|frame| app.draw(frame)).expect("draws");
     terminal.backend().buffer().clone()
 }
@@ -72,7 +76,12 @@ pub(crate) fn tab_colour(app: &mut App, tab: &str) -> Color {
 }
 
 pub(crate) fn rows(app: &mut App) -> Vec<String> {
-    let buffer = buffer(app);
+    rows_of(app, 40)
+}
+
+/// The rows of `app` drawn `width` columns wide.
+pub(crate) fn rows_of(app: &mut App, width: u16) -> Vec<String> {
+    let buffer = buffer_of(app, width);
     (0..buffer.area.height)
         .map(|y| {
             (0..buffer.area.width)
@@ -474,6 +483,71 @@ async fn tabs_open_switch_and_close() {
     app.prompt.insert_str("/close");
     app.submit();
     assert_eq!(app.content.tabs(), [Tab::Chat]);
+}
+
+/// An app whose chat says `hello there`, splitting from 80 columns, with
+/// the diagnostics tab open.
+fn split_app() -> App {
+    let mut app = app().with_split_width(80);
+    app.chat.apply(&Event::TextDelta("hello there".into()));
+    app.chat
+        .transcript
+        .finish_turn(Ok(()), "glm", Duration::from_secs(1));
+    app.open_content(Tab::Diagnostics);
+    app
+}
+
+/// Whether some content row holds `text` in the columns `columns`.
+fn shows_in(rows: &[String], columns: std::ops::Range<usize>, text: &str) -> bool {
+    rows[2..].iter().any(|row| {
+        let row: Vec<char> = row.chars().collect();
+        row[columns.clone()]
+            .iter()
+            .collect::<String>()
+            .contains(text)
+    })
+}
+
+#[tokio::test]
+async fn a_wide_terminal_shows_the_chat_beside_the_other_tab() {
+    let mut app = split_app();
+    let split = rows_of(&mut app, 100);
+    assert!(shows_in(&split, 0..50, "hello there"), "{split:#?}");
+    assert!(shows_in(&split, 50..100, "model"), "{split:#?}");
+    assert!(split[0].contains("[● diagnostics]"), "{:?}", split[0]);
+
+    app.apply(Action::Content(0));
+    let focused = rows_of(&mut app, 100);
+    assert!(focused[0].contains("[› chat]"), "{:?}", focused[0]);
+    assert!(
+        shows_in(&focused, 50..100, "model"),
+        "the side keeps its tab"
+    );
+
+    app.apply(Action::NextContent);
+    assert_eq!(app.content.active(), Tab::Diagnostics);
+
+    let narrow = rows_of(&mut app, 79);
+    assert!(!shows_in(&narrow, 0..79, "hello there"), "{narrow:#?}");
+    assert!(shows_in(&narrow, 0..79, "model"));
+}
+
+#[tokio::test]
+async fn a_lone_chat_keeps_the_whole_width() {
+    let mut app = split_app();
+    app.apply(Action::CloseContent);
+    let rows = rows_of(&mut app, 100);
+    assert_eq!(app.panes(), Panes::Single(Tab::Chat));
+    assert!(shows_in(&rows, 0..100, "hello there"));
+}
+
+#[tokio::test]
+async fn a_zero_split_width_never_splits() {
+    let mut app = split_app().with_split_width(0);
+    app.apply(Action::Content(0));
+    let rows = rows_of(&mut app, 200);
+    assert_eq!(app.panes(), Panes::Single(Tab::Chat));
+    assert!(!shows_in(&rows, 0..200, "model"), "{rows:#?}");
 }
 
 #[tokio::test]

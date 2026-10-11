@@ -40,6 +40,8 @@ pub enum Action {
     Bottom,
     /// Shows the content panel's next tab.
     NextContent,
+    /// Shows the content panel's previous tab.
+    PrevContent,
     /// Shows the content panel's tab at this index, from 0.
     Content(usize),
     /// Closes the content panel's tab showing, unless it is the chat or a
@@ -63,6 +65,10 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
         KeyCode::Char('g') if ctrl => Action::Edit,
+        // Terminals report ctrl+shift+t either way; only those that
+        // disambiguate escape codes tell it from ctrl+t at all.
+        KeyCode::Char('T') if ctrl => Action::PrevContent,
+        KeyCode::Char('t') if ctrl && shift => Action::PrevContent,
         KeyCode::Char('t') if ctrl => Action::NextContent,
         KeyCode::Char('q') if ctrl => Action::CloseContent,
         KeyCode::Char('w') if ctrl => Action::StopContent,
@@ -112,6 +118,7 @@ impl App {
         // never changes with them.
         match action {
             Action::NextContent => return self.content.next(),
+            Action::PrevContent => return self.content.prev(),
             Action::Content(index) => return self.content.select(index),
             Action::CloseContent => return self.close_content(),
             Action::StopContent => return self.stop_content(),
@@ -258,6 +265,7 @@ impl App {
             Action::NextTab | Action::PrevTab => self.set_mode(self.mode.toggled()),
             // Taken before any input panel sees them.
             Action::NextContent
+            | Action::PrevContent
             | Action::Content(_)
             | Action::CloseContent
             | Action::StopContent
@@ -368,6 +376,15 @@ mod tests {
         assert_eq!(key(KeyCode::BackTab, none), Some(Action::PrevTab));
         assert_eq!(key(KeyCode::Char('g'), ctrl), Some(Action::Edit));
         assert_eq!(key(KeyCode::Char('t'), ctrl), Some(Action::NextContent));
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(
+            key(KeyCode::Char('T'), ctrl_shift),
+            Some(Action::PrevContent)
+        );
+        assert_eq!(
+            key(KeyCode::Char('t'), ctrl_shift),
+            Some(Action::PrevContent)
+        );
         assert_eq!(key(KeyCode::Char('q'), ctrl), Some(Action::CloseContent));
         assert_eq!(key(KeyCode::Char('1'), ctrl), Some(Action::Content(0)));
         assert_eq!(key(KeyCode::Char('4'), ctrl), Some(Action::Content(3)));

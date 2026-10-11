@@ -38,6 +38,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
 - **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, Work, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  ⊞ work 3/7  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
+- **Split.** On a terminal at least `[layout] split_width` columns wide (160 by default; 0 never splits), once a tab besides chat is open, the content panel splits in two equal halves with no line between them: chat always on the left, the other tabs on the right. The tab with the focus is the bracketed one, as in a single panel: the scroll keys move it, ctrl+q closes it, and on a subagent's tab the prompt talks to it. Focusing chat keeps the right pane on its tab, and the strip underlines that tab's name while it lacks the focus. Moving the mouse over a pane gives it the focus. Narrower, or with only chat open, one tab fills the panel as before.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
   | Colour  | State                              | Chat                    | Plan         | Monitor | Subagent            |
@@ -50,20 +51,21 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
   Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays. The work tab is blue while an item runs, magenta while an item is lost (see [Work](#work)), red while an item failed, and green once every item is done.
 
-- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
+- **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys move the focused tab, and the mouse wheel the one under it.
 - **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                                                                        |
 | ---------------- | ----------------------------------------------------------------------------------------------------------- |
 | ctrl+t           | Shows the next tab, from the last back to chat                                                              |
+| ctrl+shift+t     | Shows the previous tab, from chat back to the last                                                          |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                                                                            |
 | ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the plan while there is one    |
 | ctrl+w           | On a monitor's tab: stops it, and the tab closes. On a subagent's: stops it, or closes the tab once stopped |
 | esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn                              |
 | ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan)                       |
 
-Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
+Ctrl with a digit, and ctrl+shift+t, only arrive as their own keys in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
 - **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
 

@@ -75,6 +75,9 @@ pub struct Settings {
     pub mode_llms: ModeLlms,
     pub notifier: Notifier,
     pub chat: ChatSettings,
+    /// The terminal width from which the chat and another tab show side by
+    /// side; 0 never splits.
+    pub split_width: u16,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -92,6 +95,7 @@ pub async fn run(
         mode_llms,
         notifier,
         chat,
+        split_width,
     }: Settings,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
@@ -120,6 +124,7 @@ pub async fn run(
         .with_mode_llms(mode_llms)
         .with_notifier(notifier)
         .with_chat_settings(chat)
+        .with_split_width(split_width)
         .run(&mut terminal)
         .await;
     terminal::restore();
