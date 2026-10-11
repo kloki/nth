@@ -1109,6 +1109,8 @@ mod tests {
         assert!(app.notices_due.is_some(), "the wakeup still arms the timer");
         app.notices_due();
         assert!(app.is_busy(), "the model asked for this turn");
+        // This provider never answers: stop the wakeup's turn too.
+        app.on_key(KeyEvent::from(KeyCode::Esc));
         end(&mut app).await;
         let sent = sent(&app);
         assert!(
