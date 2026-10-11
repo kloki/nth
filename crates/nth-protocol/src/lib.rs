@@ -28,7 +28,7 @@ pub use provider::{
     StreamEvent, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
-pub use screen::{Panel, Screen};
+pub use screen::{Panel, Screen, Show};
 pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
 pub use workdir::Workdir;
 pub use writable::Writable;

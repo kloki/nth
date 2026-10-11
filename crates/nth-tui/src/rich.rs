@@ -109,7 +109,7 @@ fn renderer(mode: Mode, width: usize) -> Renderer {
     Renderer::new(mode).with_width(u16::try_from(width).unwrap_or(u16::MAX))
 }
 
-fn is_markdown(path: &str) -> bool {
+pub fn is_markdown(path: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|ext| ext == "md" || ext == "markdown")

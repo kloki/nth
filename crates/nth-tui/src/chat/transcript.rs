@@ -194,8 +194,10 @@ impl Transcript {
                         None if call.name == "skill" => Ok(content.clone()),
                         // A question is one row too; the answers are for the model.
                         None if call.name == "question" => Ok(content.clone()),
-                        // The panel it switched to says what it did.
-                        None if call.name == "panel" => Ok(content.clone()),
+                        // The panel or file it showed says what it did.
+                        None if call.name == "panel" || call.name == "show_user" => {
+                            Ok(content.clone())
+                        }
                         // Its page shows once finished, as it did live.
                         None if call.name == "webfetch" => Ok(content.clone()),
                         // An edit shows its diff, from its arguments; what

@@ -9,8 +9,13 @@ use nth_session::subagent::SubagentId;
 
 use super::{App, input::Input};
 use crate::{
-    chat::Chat, diagnostics::Diagnostics, monitor::MonitorView, plan::PlanView,
-    subagent::SubagentView, usage::UsageView,
+    chat::Chat,
+    diagnostics::Diagnostics,
+    file::{FileId, FileView},
+    monitor::MonitorView,
+    plan::PlanView,
+    subagent::SubagentView,
+    usage::UsageView,
 };
 
 /// A view the content panel can show. Each view's state lives on the app,
@@ -19,6 +24,8 @@ use crate::{
 pub(crate) enum Tab {
     Chat,
     Diagnostics,
+    /// A file the model showed you; its view is on the app.
+    File(FileId),
     /// A background command the model started; its view is on the app.
     Monitor(MonitorId),
     /// The plan file, open while there is one.
@@ -42,6 +49,7 @@ impl Tab {
             Tab::Chat => tab.chat,
             Tab::Diagnostics => tab.diagnostics,
             Tab::Plan => tab.plan,
+            Tab::File(_) => tab.file,
             // A monitor's own header starts with its icon too.
             Tab::Monitor(_) => tab.monitor,
             Tab::Subagent(_) => tab.subagent,
@@ -193,6 +201,10 @@ impl App {
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
             Tab::Plan => self.plan.label(),
+            Tab::File(id) => self
+                .file_views
+                .get(&id)
+                .map_or_else(|| format!("file {id}"), FileView::label),
             Tab::Monitor(id) => self
                 .monitor_views
                 .get(&id)
@@ -224,7 +236,7 @@ impl App {
             Tab::Chat if matches!(self.input, Input::Question(_)) => TabState::NeedsYou,
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
-            Tab::Diagnostics | Tab::Usage => TabState::Idle,
+            Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
             Tab::Plan => self.plan.state(),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
@@ -403,6 +415,32 @@ impl Scrollable for PlanView {
     }
 }
 
+impl Scrollable for FileView {
+    fn scroll_up(&mut self, lines: usize) {
+        FileView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        FileView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        FileView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        FileView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        FileView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        FileView::jump_bottom(self);
+    }
+}
+
 impl App {
     /// The view the content panel shows, to scroll it; `None` for a
     /// monitor tab whose view is gone.
@@ -414,6 +452,7 @@ impl App {
             Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
             Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
             Tab::Plan => &mut self.plan,
+            Tab::File(id) => self.file_views.get_mut(&id)?,
         })
     }
 }

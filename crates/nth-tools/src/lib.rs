@@ -11,6 +11,7 @@ mod post_write;
 mod process;
 mod question;
 mod read;
+mod show_user;
 mod skill;
 mod webfetch;
 mod websearch;
@@ -29,6 +30,7 @@ pub use post_write::PostWrite;
 pub use question::Question;
 pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
+pub use show_user::ShowUser;
 pub use skill::Skill;
 pub use webfetch::WebFetch;
 pub use websearch::{Websearch, WebsearchConfig};
@@ -62,6 +64,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Websearch::new(config.websearch.clone())),
         Box::new(Question),
         Box::new(Panel),
+        Box::new(ShowUser),
         Box::new(EnterWorktree),
         Box::new(ExitWorktree),
     ]
