@@ -21,6 +21,7 @@ mod monitor;
 mod mouse;
 mod notify;
 mod plan;
+mod profiles;
 mod resume;
 mod shown;
 mod spent;
@@ -63,6 +64,7 @@ use nth_session::{
     Session, Store, Subagents, Summary, store,
     subagent::{SubagentEvent, SubagentId},
 };
+pub use profiles::Profile;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
@@ -123,6 +125,12 @@ pub struct App {
     /// The model and effort each mode runs with; the current mode's are
     /// `model` and `effort`, which it is synced with on a switch.
     mode_llms: ModeLlms,
+    /// The profiles ctrl+p cycles, in config order; empty when the config
+    /// lists none.
+    profiles: Vec<Profile>,
+    /// The profile ctrl+p is on. A model picked by hand hides its name
+    /// from the label until the next ctrl+p puts the profile back.
+    profile: Option<usize>,
     /// Prompts sent before, recalled with Up and Down.
     history: History,
     /// Each save writes the whole history; one asked for mid-save runs
@@ -419,6 +427,8 @@ impl App {
                 model: session.model.clone(),
                 effort: session.effort,
             }),
+            profiles: Vec::new(),
+            profile: None,
             history: History::default(),
             history_saving: Job::default(),
             llm_usage: LlmUsage::default(),
@@ -790,9 +800,12 @@ impl App {
                     input,
                     &self.prompt,
                     self.mode,
-                    spinner,
-                    target,
-                    &self.llm(self.mode),
+                    prompt::Runs {
+                        spinner,
+                        target,
+                        llm: &self.llm(self.mode),
+                        profile: self.profile_name(),
+                    },
                 );
                 // Last, so it pops over the content panel; it sits right
                 // above the row being typed, lined up with the token it

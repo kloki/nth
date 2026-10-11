@@ -184,12 +184,9 @@ async fn dispatch(
 async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Session, Providers)> {
     let cwd = std::env::current_dir().context("no working directory")?;
     let providers = providers(config)?;
-    // Per mode, so a config that gives each mode its own model needs no
-    // top-level one. Setting the top-level model leaves a mode's own alone.
-    if Mode::ALL
-        .iter()
-        .any(|&mode| config.llm_for(mode).0.is_empty())
-    {
+    // The model above fills in for every profile slot that has none, and
+    // both modes when the config lists no profiles at all.
+    if config.needs_model() {
         config.model = random_model(&providers).await?;
         eprintln!(
             "no model set, picked {} (set model in the config or pass --model)",
@@ -274,9 +271,13 @@ fn providers(config: &Config) -> Result<Providers> {
         .with_context(|| format!("model {} cannot run", config.model))?;
     for mode in [Mode::Plan, Mode::Act] {
         let (model, _) = config.llm_for(mode);
+        let what = match config.profiles.first() {
+            Some(profile) => format!("{mode:?} in profile {}", profile.name),
+            None => format!("{mode:?} mode"),
+        };
         providers
             .check(&model)
-            .with_context(|| format!("model {model} for {mode:?} mode cannot run"))?;
+            .with_context(|| format!("model {model} for {what} cannot run"))?;
     }
     Ok(providers)
 }

@@ -30,28 +30,31 @@ const TEXT_ROWS: u16 = 3;
 /// to it, so the model after the mode never shifts when either changes.
 const MODE_WIDTH: usize = 4;
 
-/// `spinner` replaces the mode's label while a turn runs, and the label
-/// row says how to cancel. The text stays as it is: Enter queues it. A
-/// command to run shows as `cmd` in yellow instead of the mode, and on a
-/// subagent's tab the label names the subagent, `target`, in cyan. After
-/// the mode, a model with its provider and effort: ` · opencode/glm-5.3`.
-pub fn draw(
-    frame: &mut Frame,
-    area: Rect,
-    prompt: &Prompt,
-    mode: Mode,
-    spinner: Option<&str>,
-    target: Option<&str>,
-    llm: &Llm,
-) {
-    let (label, colour, placeholder) = match (prompt.shell(), target) {
+/// What the label row says besides the mode: the spinner while a turn
+/// runs, the subagent the prompt talks to, the model the next turn runs
+/// with, and the profile it comes from while one is active.
+pub struct Runs<'a> {
+    pub spinner: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub llm: &'a Llm,
+    pub profile: Option<&'a str>,
+}
+
+/// `runs.spinner` replaces the mode's label while a turn runs, and the
+/// label row says how to cancel. The text stays as it is: Enter queues
+/// it. A command to run shows as `cmd` in yellow instead of the mode, and
+/// on a subagent's tab the label names the subagent, `target`, in cyan.
+/// After the mode, a model with its provider and effort, and the profile
+/// it comes from while one is active: ` · opencode/glm-5.3 · high · go`.
+pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, runs: Runs<'_>) {
+    let (label, colour, placeholder) = match (prompt.shell(), runs.target) {
         (true, _) => (SHELL_LABEL, SHELL_COLOUR, SHELL_PLACEHOLDER),
         (false, Some(agent)) => (agent, SUBAGENT_COLOUR, PLACEHOLDER),
         (false, None) => (mode.label(), mode_colour(mode), PLACEHOLDER),
     };
     // A command and a subagent run without this session's model.
-    let running_with = !prompt.shell() && target.is_none();
-    let label = spinner.unwrap_or(label);
+    let running_with = !prompt.shell() && runs.target.is_none();
+    let label = runs.spinner.unwrap_or(label);
     let wrapped = prompt.wrap(room(area));
     let top = scroll(wrapped.cursor_row);
     let text: Vec<Span> = if prompt.is_empty() {
@@ -65,12 +68,12 @@ pub fn draw(
     };
 
     let mut lines = vec![match running_with {
-        true => label_row(label, colour, llm),
+        true => label_row(label, colour, runs.llm, runs.profile),
         false => panel_title(label, colour),
     }];
     lines.extend((0..usize::from(TEXT_ROWS)).map(|i| panel_row(colour, text.get(i).cloned())));
     frame.render_widget(Paragraph::new(lines), area);
-    if spinner.is_some() {
+    if runs.spinner.is_some() {
         let label_row = Rect { height: 1, ..area };
         frame.render_widget(
             Paragraph::new(Line::styled(CANCEL_HINT, dim()).right_aligned()),
@@ -82,14 +85,26 @@ pub fn draw(
 }
 
 /// The top row for plan and act: the bar and mode label in the mode's
-/// colour, the label padded to [`MODE_WIDTH`], then the model.
-fn label_row<'a>(label: &'a str, colour: Color, llm: &'a Llm) -> Line<'a> {
+/// colour, the label padded to [`MODE_WIDTH`], then the model, and the
+/// active profile's name while one is.
+fn label_row<'a>(
+    label: &'a str,
+    colour: Color,
+    llm: &'a Llm,
+    profile: Option<&'a str>,
+) -> Line<'a> {
     let style = Style::new().fg(colour);
     let mut spans = vec![Span::styled(BAR, style), Span::styled(label, style)];
     if let Some(pad) = MODE_WIDTH.checked_sub(label.chars().count()) {
         spans.push(Span::raw(" ".repeat(pad)));
     }
     spans.extend(model_spans(&llm.model, llm.effort));
+    if let Some(name) = profile {
+        spans.push(Span::styled(
+            format!(" · {name}"),
+            Style::new().fg(Color::Gray),
+        ));
+    }
     Line::from(spans)
 }
 
@@ -190,7 +205,7 @@ mod tests {
     fn the_mode_field_keeps_the_model_in_place() {
         let model = llm("opencode/glm-5.3", Effort::Default);
         let at = |label: &str| {
-            let line = label_row(label, Color::Blue, &model);
+            let line = label_row(label, Color::Blue, &model, None);
             let row = text(&line.spans);
             let byte = row.find(" · ").expect("separator");
             row[..byte].chars().count()
@@ -199,11 +214,23 @@ mod tests {
         assert_eq!(at("act"), at("plan"), "act is padded to plan's width");
         assert_eq!(at("plan"), at("⠖⠉⠉⠑"), "the spinner is 4 wide too");
         let plain = llm("glm", Effort::Default);
-        let act = label_row("act", Color::Blue, &plain);
+        let act = label_row("act", Color::Blue, &plain, None);
         assert!(
             text(&act.spans).starts_with("▎ act  · "),
             "{:?}",
             text(&act.spans)
         );
+    }
+
+    #[test]
+    fn the_profile_follows_the_effort() {
+        let modeled = llm("opencode/glm-5.3", Effort::High);
+
+        let line = label_row("act", Color::Blue, &modeled, Some("go"));
+        assert_eq!(text(&line.spans), "▎ act  · opencode/glm-5.3 · high · go");
+        assert_eq!(line.spans.last().expect("name").style.fg, Some(Color::Gray));
+
+        let line = label_row("act", Color::Blue, &modeled, None);
+        assert_eq!(text(&line.spans), "▎ act  · opencode/glm-5.3 · high");
     }
 }

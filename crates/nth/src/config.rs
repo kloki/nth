@@ -27,6 +27,11 @@ pub struct Config {
     pub task: TaskConfig,
     pub work: WorkConfig,
     pub mode: ModeConfig,
+    /// Named presets of a plan and an act LLM, cycled with ctrl+p. The
+    /// first is where a new chat starts; empty means no presets, and
+    /// both modes run the model above.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileConfig>,
     pub chat: ChatConfig,
     pub layout: LayoutConfig,
     pub tools: nth_tools::ToolsConfig,
@@ -150,34 +155,52 @@ impl WorkConfig {
     }
 }
 
-/// Which mode a new chat starts in, and the model and effort each mode
-/// runs with.
+/// Which mode a new chat starts in. What each mode runs with comes from
+/// a profile.
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModeConfig {
     /// Before the tables, since TOML has values ahead of tables.
     pub default: Mode,
-    pub plan: ModeDefaults,
-    pub act: ModeDefaults,
 }
 
 impl Default for ModeConfig {
     fn default() -> Self {
         Self {
             default: Mode::Plan,
-            plan: ModeDefaults::default(),
-            act: ModeDefaults::default(),
         }
     }
 }
 
+/// A named preset: the model and effort plan and act run with. The first
+/// is where a new chat starts; ctrl+p in the TUI cycles through them.
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProfileConfig {
+    /// What the label and ctrl+p call it. Required.
+    pub name: String,
+    pub plan: ModeDefaults,
+    pub act: ModeDefaults,
+}
+
+/// The model and effort one mode runs with in a profile.
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModeDefaults {
-    /// Empty means the config's model, so `--model` reaches every mode
-    /// that has none of its own.
+    /// Empty means the config's model.
     pub model: String,
     pub effort: Effort,
+}
+
+impl ProfileConfig {
+    /// Rejects a profile without a name: the label and the cycling hint
+    /// need one.
+    fn complete(&self, index: usize) -> Result<()> {
+        if self.name.is_empty() {
+            bail!("profile {} has no name", index + 1);
+        }
+        Ok(())
+    }
 }
 
 /// How the chat shows what the model did. `/settings` still flips these for
@@ -232,25 +255,51 @@ impl Config {
         Some(Paths::from_env().config_dir()?.join("config.toml"))
     }
 
-    /// The model from `--model` or `NTH_MODEL`. It is for every mode, so
-    /// the per-mode models go: those only fill in when nothing was given.
+    /// The model from `--model` or `NTH_MODEL`. It is for every mode and
+    /// profile, so their own models go: those only fill in when nothing
+    /// was given.
     pub fn set_model(&mut self, model: String) {
         self.model = model;
-        self.mode.plan.model.clear();
-        self.mode.act.model.clear();
+        for profile in &mut self.profiles {
+            profile.plan.model.clear();
+            profile.act.model.clear();
+        }
     }
 
-    /// The model and effort `mode` runs with.
+    /// The model and effort `mode` starts on: the first profile's, or
+    /// the model above with the default effort when there are no
+    /// profiles.
     pub fn llm_for(&self, mode: Mode) -> (String, Effort) {
+        match self.profiles.first() {
+            Some(profile) => self.profile_llm(profile, mode),
+            None => (self.model.clone(), Effort::default()),
+        }
+    }
+
+    /// The model and effort `mode` runs with in `profile`; an empty model
+    /// falls back to the model above.
+    pub fn profile_llm(&self, profile: &ProfileConfig, mode: Mode) -> (String, Effort) {
         let defaults = match mode {
-            Mode::Plan => &self.mode.plan,
-            Mode::Act => &self.mode.act,
+            Mode::Plan => &profile.plan,
+            Mode::Act => &profile.act,
         };
         let model = match defaults.model.as_str() {
             "" => self.model.clone(),
             model => model.to_string(),
         };
         (model, defaults.effort)
+    }
+
+    /// Whether a random model has to fill the one above in: it is empty
+    /// and something that may run has no model of its own — a profile
+    /// slot, or, with no profiles, both modes' only model.
+    pub fn needs_model(&self) -> bool {
+        self.model.is_empty()
+            && (self.profiles.is_empty()
+                || self
+                    .profiles
+                    .iter()
+                    .any(|p| p.plan.model.is_empty() || p.act.model.is_empty()))
     }
 
     /// Where nth looks for files about a project, with the configured skill
@@ -290,6 +339,9 @@ impl Config {
         let mut config: Self = toml::from_str(text)?;
         for (id, provider) in &mut config.provider {
             provider.complete(id)?;
+        }
+        for (index, profile) in config.profiles.iter().enumerate() {
+            profile.complete(index)?;
         }
         Ok(config)
     }
@@ -477,36 +529,167 @@ mod tests {
     }
 
     #[test]
-    fn each_mode_falls_back_to_the_provider_model() {
-        let mut config = Config::parse(
+    fn the_first_profile_is_where_a_chat_starts() {
+        let config = Config::parse(
             r#"
             [mode]
             default = "act"
 
-            [mode.plan]
+            [[profiles]]
+            name = "go"
+
+            [profiles.plan]
             model = "kimi-k3"
             effort = "high"
+
+            [profiles.act]
+            model = "glm"
+            effort = "low"
+
+            [[profiles]]
+            name = "zen"
+
+            [profiles.plan]
+            model = "zen/gpt"
             "#,
         )
         .expect("parses");
-        assert_eq!(config.mode.default, Mode::Act);
-        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
 
-        config.model = "from-file".into();
+        assert_eq!(config.mode.default, Mode::Act);
+        assert_eq!(config.profiles.len(), 2);
+        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
+        assert_eq!(config.llm_for(Mode::Act), ("glm".into(), Effort::Low));
         assert_eq!(
-            config.llm_for(Mode::Act),
-            ("from-file".into(), Effort::Default)
+            config.profile_llm(&config.profiles[1], Mode::Act),
+            ("".into(), Effort::Default),
+            "not the first profile"
         );
         assert!(Config::parse("[mode]\ndefault = \"build\"").is_err());
     }
 
     #[test]
-    fn a_model_from_the_flag_beats_the_per_mode_ones() {
+    fn a_profile_model_falls_back_to_the_one_above() {
         let mut config = Config::parse(
             r#"
-            [mode.plan]
+            [[profiles]]
+            name = "go"
+
+            [profiles.plan]
             model = "kimi-k3"
             effort = "high"
+
+            [profiles.act]
+            effort = "low"
+            "#,
+        )
+        .expect("parses");
+
+        config.model = "from-file".into();
+
+        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
+        assert_eq!(
+            config.llm_for(Mode::Act),
+            ("from-file".into(), Effort::Low),
+            "an empty profile model means the config's"
+        );
+        assert!(Config::parse("[mode.plan]\nmodel = \"kimi-k3\"").is_err());
+    }
+
+    #[test]
+    fn without_profiles_both_modes_run_the_model_above() {
+        let config = Config::parse("model = \"glm\"\n").expect("parses");
+        assert_eq!(config.llm_for(Mode::Plan), ("glm".into(), Effort::Default));
+        assert_eq!(config.llm_for(Mode::Act), ("glm".into(), Effort::Default));
+        assert!(!config.needs_model());
+
+        let empty = Config::parse("").expect("parses");
+        assert!(empty.needs_model(), "no model anywhere to run on");
+    }
+
+    #[test]
+    fn needs_model_reads_every_profile() {
+        let config = Config::parse(
+            r#"
+            [[profiles]]
+            name = "go"
+
+            [profiles.plan]
+            model = "kimi-k3"
+
+            [profiles.act]
+            model = "glm"
+
+            [[profiles]]
+            name = "zen"
+            "#,
+        )
+        .expect("parses");
+        assert!(config.needs_model(), "zen's modes would run an empty model");
+
+        let config = Config::parse(
+            r#"
+            model = "glm"
+
+            [[profiles]]
+            name = "go"
+            "#,
+        )
+        .expect("parses");
+        assert!(!config.needs_model(), "the model above fills every slot");
+    }
+
+    #[test]
+    fn a_profile_needs_a_name() {
+        let err = Config::parse("[[profiles]]\nname = \"\"").expect_err("no name");
+        assert!(err.to_string().contains("profile 1 has no name"), "{err}");
+
+        let err =
+            Config::parse("[[profiles]]\n[profiles.plan]\nmodel = \"x\"").expect_err("no name");
+        assert!(err.to_string().contains("profile 1 has no name"), "{err}");
+    }
+
+    #[test]
+    fn profiles_round_trip_through_toml() {
+        let config = Config::parse(
+            r#"
+            [[profiles]]
+            name = "go"
+
+            [profiles.plan]
+            model = "kimi-k3"
+            effort = "high"
+
+            [profiles.act]
+            model = "glm"
+
+            [[profiles]]
+            name = "zen"
+
+            [profiles.act]
+            effort = "low"
+            "#,
+        )
+        .expect("parses");
+
+        let text = config.to_toml().expect("serializes");
+        assert!(text.contains("[[profiles]]"), "{text}");
+        assert_eq!(Config::parse(&text).expect("parses"), config);
+    }
+
+    #[test]
+    fn a_model_from_the_flag_beats_the_profiles() {
+        let mut config = Config::parse(
+            r#"
+            [[profiles]]
+            name = "go"
+
+            [profiles.plan]
+            model = "kimi-k3"
+            effort = "high"
+
+            [profiles.act]
+            model = "glm"
+            effort = "low"
             "#,
         )
         .expect("parses");
@@ -517,7 +700,11 @@ mod tests {
             config.llm_for(Mode::Plan),
             ("from-flag".into(), Effort::High)
         );
-        assert_eq!(config.llm_for(Mode::Act).0, "from-flag");
+        assert_eq!(
+            config.llm_for(Mode::Act),
+            ("from-flag".into(), Effort::Low),
+            "the profile keeps its effort, not its model"
+        );
     }
 
     #[test]
