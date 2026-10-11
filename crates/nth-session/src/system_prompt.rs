@@ -127,7 +127,7 @@ fn render(
             Some(
                 SKILL
                     .replace("{name}", &escape(&skill.name))
-                    .replace("{location}", &escape(&skill.path.display().to_string()))
+                    .replace("{location}", &escape(&location(skill)))
                     .replace("{description}", &escape(description)),
             )
         })
@@ -155,6 +155,15 @@ fn render(
 }
 
 /// Keeps a description from closing the tags around it.
+/// Where the model is told a skill lives: its file, or `<built-in>` for one
+/// shipped inside nth, as opencode lists its own.
+fn location(skill: &nth_context::skills::Skill) -> String {
+    match skill.path() {
+        Some(path) => path.display().to_string(),
+        None => "<built-in>".into(),
+    }
+}
+
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -237,8 +246,17 @@ mod tests {
                  Use the skill tool to load a skill when a task matches its description.\n\
                  <available_skills>\n  <skill>\n    <name>deploy</name>\n    \
                  <description>Ship &lt;it&gt; &amp; tag</description>\n    \
-                 <location>{}</location>\n  </skill>\n",
-                location.display()
+                 <location>{}</location>\n  </skill>\n  <skill>\n    \
+                 <name>work-plan</name>\n    <description>{}</description>\n    \
+                 <location>&lt;built-in&gt;</location>\n  </skill>\n",
+                location.display(),
+                escape(
+                    context
+                        .skills
+                        .get("work-plan")
+                        .and_then(|s| s.description.as_deref())
+                        .expect("described")
+                )
             )
         );
         assert!(

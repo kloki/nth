@@ -3,6 +3,7 @@
 //! them where Claude Code, opencode and the open standard keep them, so a
 //! skill written for any of those works here too.
 
+mod internal;
 mod template;
 
 use std::{
@@ -17,6 +18,8 @@ use crate::{Paths, frontmatter, project_root};
 const FILE: &str = "SKILL.md";
 /// What the model gets when a skill is loaded, as in opencode.
 const CONTENT: &str = include_str!("content.md");
+/// The same for an internal skill, which has no folder or files beside it.
+const INTERNAL_CONTENT: &str = include_str!("internal/content.md");
 /// Files listed next to a skill's body, so the model knows what it can
 /// read or run without listing the folder first.
 const MAX_FILES: usize = 10;
@@ -35,6 +38,8 @@ const PROJECT_DIRS: [&str; 5] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
+    /// Shipped inside nth, about using nth itself.
+    Internal,
     /// The user's own folders, for every project.
     Global,
     /// Checked into the project, from its root down to the working
@@ -47,6 +52,7 @@ pub enum Source {
 impl Source {
     pub fn name(self) -> &'static str {
         match self {
+            Source::Internal => "internal",
             Source::Global => "global",
             Source::Project => "project",
             Source::Config => "config",
@@ -60,15 +66,32 @@ pub struct Skill {
     /// What the model reads to decide whether to load the skill. A skill
     /// without one can be run by name but is not offered to the model.
     pub description: Option<String>,
-    /// The `SKILL.md` itself.
-    pub path: PathBuf,
+    pub location: Location,
     pub source: Source,
 }
 
+/// Where a skill's `SKILL.md` is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Location {
+    File(PathBuf),
+    /// Its whole text, shipped inside nth.
+    Internal(&'static str),
+}
+
 impl Skill {
-    /// The skill's folder, which relative paths in its body start from.
-    pub fn dir(&self) -> &Path {
-        self.path.parent().unwrap_or(Path::new("."))
+    /// The `SKILL.md` it was read from; internal skills have none.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.location {
+            Location::File(path) => Some(path),
+            Location::Internal(_) => None,
+        }
+    }
+
+    /// The skill's folder, which relative paths in its body start from;
+    /// internal skills have none.
+    pub fn dir(&self) -> Option<&Path> {
+        self.path()
+            .map(|path| path.parent().unwrap_or(Path::new(".")))
     }
 
     /// The skill's body with where it lives and the files beside it, read
@@ -84,19 +107,27 @@ impl Skill {
 
     /// The `SKILL.md` without its frontmatter.
     fn body(&self) -> Result<String, String> {
-        let text = std::fs::read_to_string(&self.path)
-            .map_err(|e| format!("cannot read {}: {e}", self.path.display()))?;
+        let text = match &self.location {
+            Location::File(path) => std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+            Location::Internal(text) => text.to_string(),
+        };
         let (_, body) = frontmatter::split(&text)?;
         Ok(body.to_string())
     }
 
     /// `body` wrapped with where the skill lives and the files beside it.
     fn render_body(&self, body: &str) -> String {
-        let files: Vec<String> = files(self.dir())
+        let Some(dir) = self.dir() else {
+            return INTERNAL_CONTENT
+                .replace("{name}", &self.name)
+                .replace("{body}", body.trim());
+        };
+        let files: Vec<String> = files(dir)
             .iter()
             .map(|file| format!("<file>{}</file>", file.display()))
             .collect();
-        let dir = self.dir().display().to_string();
+        let dir = dir.display().to_string();
         // Body last, so placeholders inside it are left alone.
         CONTENT
             .replace("{name}", &self.name)
@@ -122,7 +153,8 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Every skill found, by name. When two share a name, the one found later
-/// wins: project over global, config over both, nearer over further.
+/// wins: a file over an internal skill, project over global, config over
+/// both, nearer over further.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Skills(BTreeMap<String, Skill>);
 
@@ -147,6 +179,9 @@ impl Skills {
 
 pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) -> Skills {
     let mut skills = Skills::default();
+    for skill in internal::skills() {
+        skills.insert(skill);
+    }
     for (root, source) in roots(cwd, paths) {
         for file in find(&root) {
             match read(&file, source) {
@@ -239,7 +274,7 @@ fn read(file: &Path, source: Source) -> Result<Skill, String> {
     Ok(Skill {
         name,
         description: front.description,
-        path: file.to_path_buf(),
+        location: Location::File(file.to_path_buf()),
         source,
     })
 }
@@ -286,8 +321,10 @@ mod tests {
             let skills = discover(&self.path(cwd), paths, &mut warnings);
             let found = skills
                 .iter()
+                .filter(|s| s.source != Source::Internal)
                 .map(|s| {
-                    let dir = s.dir().strip_prefix(self.0.path()).expect("inside");
+                    let dir = s.dir().expect("read from a file");
+                    let dir = dir.strip_prefix(self.0.path()).expect("inside");
                     (
                         s.name.clone(),
                         s.description.clone().unwrap_or_default(),
@@ -432,5 +469,49 @@ mod tests {
         assert_eq!(skills, found(&[("ok", "", "home/.agents/skills/ok")]));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(warnings.iter().all(|w| w.starts_with("skipped skill ")));
+    }
+
+    #[test]
+    fn internal_skills_are_always_there() {
+        let tree = Tree::new();
+        let skills = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
+
+        let plan = skills.get("work-plan").expect("work-plan");
+        assert_eq!(plan.source, Source::Internal);
+        assert!(plan.description.is_some());
+        assert_eq!(plan.path(), None);
+    }
+
+    #[test]
+    fn a_file_beats_an_internal_skill() {
+        let tree = Tree::new();
+        tree.skill(
+            "home/.agents/skills/work-plan",
+            "name: work-plan\ndescription: mine",
+        );
+
+        assert_eq!(
+            tree.discover("home", &tree.paths()).0,
+            found(&[("work-plan", "mine", "home/.agents/skills/work-plan")])
+        );
+    }
+
+    #[tokio::test]
+    async fn renders_an_internal_skill_without_a_folder() {
+        let skills = discover(Path::new("/nowhere"), &Paths::default(), &mut Vec::new());
+        let skill = skills.get("work-plan").expect("work-plan");
+
+        let content = skill.render().await.expect("renders");
+
+        assert!(
+            content.starts_with("<skill_content name=\"work-plan\">\n# Skill: work-plan\n\n"),
+            "{content}"
+        );
+        assert!(content.ends_with("\n</skill_content>\n"), "{content}");
+        assert!(!content.contains("Base directory"), "{content}");
+        assert!(
+            !content.contains("name: work-plan"),
+            "the frontmatter is left out"
+        );
     }
 }
