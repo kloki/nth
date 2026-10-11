@@ -1594,6 +1594,7 @@ name = "nth-protocol"
 version = "0.10.0"
 dependencies = [
  "futures",
+ "jiff",
  "nth-context",
  "serde",
  "serde_json",
@@ -1626,6 +1627,7 @@ dependencies = [
  "futures",
  "htmd",
  "ignore",
+ "jiff",
  "libc",
  "nth-context",
  "nth-format",
@@ -1650,6 +1652,7 @@ dependencies = [
  "futures",
  "hoodrich",
  "ignore",
+ "jiff",
  "nth-context",
  "nth-format",
  "nth-icons",

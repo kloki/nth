@@ -12,6 +12,7 @@ nth-worktree.workspace = true
 futures.workspace = true
 htmd.workspace = true
 ignore.workspace = true
+jiff.workspace = true
 libc.workspace = true
 regex.workspace = true
 reqwest.workspace = true

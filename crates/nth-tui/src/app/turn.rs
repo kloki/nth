@@ -7,7 +7,7 @@ use std::{
 };
 
 use nth_notify::Event;
-use nth_protocol::{Asker, FrontEnd, Screen};
+use nth_protocol::{Alarm, Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
@@ -254,6 +254,7 @@ impl App {
             screen: Screen::new(self.screen_tx.clone()),
             monitors: self.monitors.clone(),
             inbox: self.inbox.clone(),
+            alarm: Alarm::new(self.alarm_tx.clone()),
         };
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -385,7 +386,7 @@ impl App {
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && self.notices_may_wake() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);
@@ -1061,6 +1062,62 @@ mod tests {
             }))
         ));
         assert_eq!(last_user(&app), None, "nothing typed");
+    }
+
+    #[tokio::test]
+    async fn a_due_wakeup_wakes_the_agent_even_after_esc() {
+        let mut app = app_logging_to_tmp(Arc::new(Answer));
+        // As after Esc: notices wait for the next prompt.
+        app.hold_notices = true;
+        app.wakeup = Some(nth_protocol::Wakeup {
+            at: jiff::Timestamp::now(),
+            prompt: "look at CI".into(),
+            reason: "ci".into(),
+        });
+
+        app.wakeup_due();
+        assert_eq!(app.wakeup, None, "fired");
+        app.notices_due();
+        assert!(app.is_busy(), "the model asked for this turn");
+        assert!(app.hold_notices, "the hold is yours to lift");
+        end(&mut app).await;
+
+        let sent = sent(&app);
+        let notice = sent.last().expect("sent");
+        assert!(notice.contains("<wakeup reason=\"ci\" at=\""), "{notice}");
+        assert!(notice.contains("\nlook at CI\n</wakeup>"), "{notice}");
+        assert!(app.chat.transcript.entries().any(|entry| matches!(
+            entry,
+            Entry::Notice(nth_protocol::NoticeSummary::Wakeup { reason }) if reason == "ci"
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_wakeup_that_fires_during_a_stopped_turn_still_wakes_the_agent() {
+        let (mut app, _) = busy_app().await;
+        app.monitors.set_log_dir("/tmp/logs".into());
+        app.wakeup = Some(nth_protocol::Wakeup {
+            at: jiff::Timestamp::now(),
+            prompt: "look at CI".into(),
+            reason: "ci".into(),
+        });
+        app.wakeup_due();
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.hold_notices, "you stopped the turn");
+        assert!(app.notices_due.is_some(), "the wakeup still arms the timer");
+        app.notices_due();
+        assert!(app.is_busy(), "the model asked for this turn");
+        // This provider never answers: stop the wakeup's turn too.
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+        let sent = sent(&app);
+        assert!(
+            sent.last()
+                .is_some_and(|s| s.contains("<wakeup reason=\"ci\"")),
+            "{sent:?}"
+        );
     }
 
     #[tokio::test]

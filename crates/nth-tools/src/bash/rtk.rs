@@ -46,17 +46,25 @@ impl Rtk {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     /// An rtk that runs `script` (with the command as `$2`), written into
     /// `dir`.
+    ///
+    /// A child shell writes it: a write fd held here would be inherited by
+    /// whatever another test forks meanwhile, and exec'ing the script while
+    /// that child still holds it fails with ETXTBSY.
     pub fn fake(dir: &Path, script: &str) -> Rtk {
         let program = dir.join("rtk");
-        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("write fake rtk");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("make fake rtk executable");
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '#!/bin/sh\n%s\n' "$1" > "$2" && chmod 755 "$2""#)
+            .arg("sh")
+            .arg(script)
+            .arg(&program)
+            .status()
+            .expect("run sh");
+        assert!(status.success(), "write fake rtk");
         Rtk { program }
     }
 

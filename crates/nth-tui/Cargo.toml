@@ -17,6 +17,7 @@ crossterm.workspace = true
 futures.workspace = true
 hoodrich.workspace = true
 ignore.workspace = true
+jiff.workspace = true
 nucleo-matcher.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true

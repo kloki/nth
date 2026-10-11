@@ -75,6 +75,8 @@ pub struct ToolIcons {
     pub panel: &'static str,
     pub monitor: &'static str,
     pub task: &'static str,
+    /// Also marks the pending wakeup on the status bar.
+    pub wakeup: &'static str,
     /// Any tool without its own.
     pub other: &'static str,
 }
@@ -134,6 +136,7 @@ pub static PLAIN: Icons = Icons {
         panel: "▣",
         monitor: "&",
         task: "↳",
+        wakeup: "◷",
         other: "•",
     },
     // Starship's defaults, but for those the counts' `+N` and `*N` use.
@@ -172,6 +175,7 @@ impl Icons {
             "panel" | "show_user" => tool.panel,
             "monitor" | "monitor_stop" => tool.monitor,
             "task" => tool.task,
+            "schedule_wakeup" => tool.wakeup,
             _ => tool.other,
         }
     }
@@ -247,6 +251,7 @@ impl Icons {
             tool.panel,
             tool.monitor,
             tool.task,
+            tool.wakeup,
             tool.other,
         ]);
         all.extend([

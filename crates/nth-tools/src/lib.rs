@@ -13,6 +13,7 @@ mod question;
 mod read;
 mod show_user;
 mod skill;
+mod wakeup;
 mod webfetch;
 mod websearch;
 mod worktree;
@@ -32,6 +33,7 @@ pub use read::{Read, ReadConfig};
 use serde::{Deserialize, Serialize};
 pub use show_user::ShowUser;
 pub use skill::Skill;
+pub use wakeup::ScheduleWakeup;
 pub use webfetch::WebFetch;
 pub use websearch::{Websearch, WebsearchConfig};
 pub use worktree::{EnterWorktree, ExitWorktree};
@@ -65,6 +67,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Question),
         Box::new(Panel),
         Box::new(ShowUser),
+        Box::new(ScheduleWakeup),
         Box::new(EnterWorktree),
         Box::new(ExitWorktree),
     ]

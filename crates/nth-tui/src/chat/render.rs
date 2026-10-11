@@ -137,6 +137,14 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
                 Span::styled(format!("monitor {id} · {description} · {said}"), dim),
             ])]
         }
+        Entry::Notice(NoticeSummary::Wakeup { reason }) => vec![Line::from(vec![
+            Span::raw(INDENT),
+            Span::styled(
+                format!("{} ", icons().tool.wakeup),
+                Style::new().fg(Color::Magenta),
+            ),
+            Span::styled(format!("wakeup · {reason}"), dim),
+        ])],
         Entry::Notice(NoticeSummary::Task {
             id, agent, state, ..
         }) => vec![Line::from(vec![

@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Event, Inbox, Llm, Monitors, Screen, Workdir, Writable};
+use crate::{Alarm, Asker, Event, Inbox, Llm, Monitors, Screen, Workdir, Writable};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -41,6 +41,8 @@ pub struct ToolContext {
     pub monitors: Monitors,
     /// Where what the background says waits for the model.
     pub inbox: Inbox,
+    /// Where a tool asks for a turn later.
+    pub alarm: Alarm,
     /// The files the tools may write: all of them, or in plan mode only
     /// the plan file.
     pub writable: Writable,
@@ -50,8 +52,8 @@ pub struct ToolContext {
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
-/// switch what they see, to leave commands running, and to leave the model
-/// a notice it is woken for. The default reaches nobody, as in a headless
+/// switch what they see, to leave commands running, to leave the model a
+/// notice it is woken for, and to wake it later. The default reaches nobody, as in a headless
 /// run.
 #[derive(Debug, Clone, Default)]
 pub struct FrontEnd {
@@ -59,13 +61,14 @@ pub struct FrontEnd {
     pub screen: Screen,
     pub monitors: Monitors,
     pub inbox: Inbox,
+    pub alarm: Alarm,
 }
 
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
 
 impl ToolContext {
     /// A context whose output goes nowhere, that has loaded nothing and has
-    /// nobody to ask or show anything to, no monitors and no inbox.
+    /// nobody to ask or show anything to, no monitors, no inbox and no alarm.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
@@ -78,6 +81,7 @@ impl ToolContext {
             screen: Screen::default(),
             monitors: Monitors::default(),
             inbox: Inbox::default(),
+            alarm: Alarm::default(),
             writable: Writable::Any,
             llm: Llm::default(),
         }
