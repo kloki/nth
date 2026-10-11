@@ -2,6 +2,7 @@ Show a file to the user in a tab of its own above their prompt. Markdown is rend
 
 Usage notes:
 - Use it when the user asks to see a file, or when the file says what you mean better than a summary does: a document or report you wrote for them, a config you want them to check, code you are about to walk through.
+- To explain code, such as when the user asks how something works, write an annotated copy and show that instead of the original: the same code with your explanation as inline comments at the lines it concerns. Write it outside the project, for example under /tmp/nth/, and keep the original's extension so it is highlighted the same way. Never add the comments to the user's own file.
 - The tab reloads by itself whenever the file changes on disk, so after you edit a file you showed, the user already sees the new version. Do not call this again for that.
 - Showing a file that is already open switches to its tab. Several files can be open at once, each in its own tab.
 - Only the user closes the tab. It returns nothing of the file's content; read it yourself if you need to.
