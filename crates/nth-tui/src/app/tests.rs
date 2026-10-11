@@ -497,15 +497,15 @@ async fn the_agent_switches_the_tab() {
     };
     app.show(show);
     assert_eq!(app.content.active(), Tab::Diagnostics);
-    assert!(app.reveal.is_some(), "the tab sweeps in");
+    assert!(app.flash.is_some(), "the tab flashes");
 }
 
 #[tokio::test]
-async fn a_tab_you_switch_to_does_not_sweep_in() {
+async fn a_tab_you_switch_to_does_not_flash() {
     let mut app = app();
     app.open_content(Tab::Diagnostics);
     app.apply(Action::Content(0));
-    assert!(app.reveal.is_none());
+    assert!(app.flash.is_none());
 }
 
 #[test]

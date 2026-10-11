@@ -9,6 +9,7 @@ mod content;
 mod dirs;
 mod editor;
 mod files;
+mod flash;
 mod git;
 mod history;
 mod input;
@@ -21,7 +22,6 @@ mod mouse;
 mod notify;
 mod plan;
 mod resume;
-mod reveal;
 mod shown;
 mod spent;
 mod subagent;
@@ -179,8 +179,8 @@ pub struct App {
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
-    /// The sweep of a tab the model just showed.
-    reveal: Option<reveal::Reveal>,
+    /// The flash of a tab the model just showed.
+    flash: Option<flash::Flash>,
     pointer: Option<Position>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
     completion: Option<Completion>,
@@ -428,7 +428,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             hero_since: Instant::now(),
-            reveal: None,
+            flash: None,
             pointer: None,
             completion: None,
             files: Vec::new(),
@@ -573,7 +573,7 @@ impl App {
                 || self.running_monitors() > 0
                 || self.running_subagents() > 0
                 || self.showing_hero()
-                || self.reveal.as_ref().is_some_and(reveal::Reveal::running);
+                || self.flash.as_ref().is_some_and(flash::Flash::running);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -671,7 +671,7 @@ impl App {
         Ok(())
     }
 
-    /// The model shows you a tab; one it switches to sweeps in, so the
+    /// The model shows you a tab; one it switches to flashes, so the
     /// switch does not go unnoticed.
     fn show(&mut self, show: Show) {
         let before = self.content.active();
@@ -680,7 +680,7 @@ impl App {
             Show::File(path) => self.show_file(path),
         }
         if self.content.active() != before {
-            self.reveal = Some(reveal::Reveal::new());
+            self.flash = Some(flash::Flash::new());
         }
     }
 
@@ -789,8 +789,8 @@ impl App {
                 }
             }
         }
-        if let Some(reveal) = self.reveal.as_ref().filter(|r| r.running()) {
-            reveal.draw(frame.buffer_mut(), content);
+        if let Some(flash) = self.flash.as_ref().filter(|r| r.running()) {
+            flash.draw(frame.buffer_mut(), content);
         }
         // The link's place is kept for a click to land on.
         self.areas.pr_link = status::draw(frame, status, self);
