@@ -331,6 +331,12 @@ impl Subagents {
         id <= self.0.lock().forgotten
     }
 
+    /// Cancelled once subagent `id` is forgotten with its session, for
+    /// what it posts outside its own turn's settling.
+    pub(crate) fn closed(&self, id: SubagentId) -> Option<CancellationToken> {
+        Some(self.0.lock().children.get(&id)?.closed.clone())
+    }
+
     /// Whether subagent `id` has tools that change files.
     pub fn writes(&self, id: SubagentId) -> bool {
         self.0.lock().children.get(&id).is_some_and(|c| c.writes)

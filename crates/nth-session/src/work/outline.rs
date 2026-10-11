@@ -210,6 +210,7 @@ mod tests {
     fn a_plan_outlines_as_cycles_items_and_the_todos_in_play() {
         let plan = Plan {
             title: Some("Retry".into()),
+            ignored: Vec::new(),
             goal: Some("Add retries.".into()),
             cycles: vec![
                 Cycle {

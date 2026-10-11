@@ -24,16 +24,27 @@ impl App {
 
     /// Reads the plan in the background; a tool may just have written it.
     pub(super) fn read_work(&mut self) {
-        let store = Store::new(self.work_dir.clone());
+        let dir = self.work_dir.clone();
         self.work_reading.start_or_queue(|_| {
             // A plan that can't be read shows as none, as the plan file does.
-            tokio::spawn(async move { store.load().await.ok().flatten() })
+            tokio::spawn(async move {
+                let plan = Store::new(dir.clone()).load().await.ok().flatten();
+                (dir, plan)
+            })
         });
     }
 
-    /// The plan as read: its tab shows when the plan is first written,
-    /// stays open while there is one, and closes once there is none.
-    pub(super) fn work_read(&mut self, plan: Option<Plan>) {
+    /// The plan as read from `dir`: its tab shows when the plan is first
+    /// written, stays open while there is one, and closes once there is
+    /// none. A read of a session the app has since left is dropped; the
+    /// one queued behind it reads this one's.
+    pub(super) fn work_read(&mut self, (dir, plan): (PathBuf, Option<Plan>)) {
+        if dir != self.work_dir {
+            if self.work_reading.take_again() {
+                self.read_work();
+            }
+            return;
+        }
         let settle = std::mem::take(&mut self.work_settle);
         let existed = self.work.exists();
         self.work.update(plan);
@@ -133,8 +144,8 @@ mod tests {
 
     async fn read(app: &mut App) {
         app.read_work();
-        let plan = app.work_reading.join().await.unwrap();
-        app.work_read(plan);
+        let read = app.work_reading.join().await.unwrap();
+        app.work_read(read);
     }
 
     fn tool_finished(name: &str) -> Event {
@@ -240,6 +251,51 @@ mod tests {
         std::fs::remove_dir_all(dir.path().join("work")).unwrap();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
+    }
+
+    #[tokio::test]
+    async fn todo_ticks_wait_for_a_wake_and_a_return_is_one() {
+        let mut app = app();
+        let notice = |state| nth_protocol::WorkNotice {
+            cycle: "01-a".into(),
+            item: "store".into(),
+            task: 1,
+            agent: "general".into(),
+            state,
+        };
+        app.inbox
+            .post_work(notice(nth_protocol::WorkState::Todo(Vec::new())));
+        app.on_subagent(SubagentEvent::Session {
+            id: 1,
+            event: tool_finished("work_todo"),
+        });
+        assert_eq!(app.notices_due, None, "a tick alone wakes nobody");
+
+        app.inbox
+            .post_work(notice(nth_protocol::WorkState::Returned {
+                outcome: nth_protocol::WorkOutcome::Completed("ok".into()),
+                done: 0,
+                total: 0,
+            }));
+        app.on_subagent(SubagentEvent::Stalled {
+            id: 1,
+            quiet: std::time::Duration::from_secs(1),
+        });
+        assert!(app.notices_due.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_read_of_a_session_left_is_dropped() {
+        let (mut app, dir) = app_with_work();
+        write(&app, "01-a", "store", Status::Pending, None).await;
+        app.read_work();
+        app.work_for_session(dir.path().join("other"));
+
+        let stale = app.work_reading.join().await.unwrap();
+        app.work_read(stale);
+
+        assert_eq!(app.content.tabs(), [Tab::Chat], "the old plan never showed");
+        assert!(app.work_reading.is_running(), "the new one is read");
     }
 
     #[tokio::test]

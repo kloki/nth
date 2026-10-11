@@ -255,6 +255,7 @@ mod tests {
         ];
         Plan {
             title: Some("Retry".into()),
+            ignored: Vec::new(),
             goal: Some("Add retries.".into()),
             cycles: vec![
                 Cycle {

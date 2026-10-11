@@ -190,7 +190,7 @@ impl App {
     /// Starts a turn with `text` after what monitors said since the last
     /// turn; `text` is empty when only the monitors have something to say.
     pub(super) fn start_turn(&mut self, text: String) {
-        if self.session.is_none() || (text.is_empty() && !self.inbox.has_notices()) {
+        if self.session.is_none() || (text.is_empty() && !self.inbox.wakes()) {
             return;
         }
         let Some(mut session) = self.session.take() else {
@@ -390,7 +390,7 @@ impl App {
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);

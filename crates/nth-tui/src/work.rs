@@ -391,6 +391,7 @@ mod tests {
     fn plan() -> Plan {
         Plan {
             title: Some("Retry".into()),
+            ignored: Vec::new(),
             goal: Some("Add retries with jitter to every client call.".into()),
             cycles: vec![
                 Cycle {
