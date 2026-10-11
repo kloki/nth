@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Clear, Widget},
 };
 
-const DURATION: Duration = Duration::from_millis(150);
+const DURATION: Duration = Duration::from_millis(200);
 
 #[derive(Debug)]
 pub(super) struct Flash {
