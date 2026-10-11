@@ -64,6 +64,18 @@ max_steps = 100
 max_steps = 50
 timeout_secs = 600
 
+[work]
+# A subagent the model puts on a work item with work_assign returns the
+# item failed after this many model requests without an answer, or timed
+# out after this many seconds (0 for no time limit). More than a task's: an
+# item is a whole piece of work.
+max_steps = 100
+timeout_secs = 600
+# A subagent on a work item that has said nothing (no reply, no tool call)
+# for this many seconds is reported to the model as stalled, and left
+# running (0 never reports one).
+stall_secs = 120
+
 [mode]
 # The mode a new chat starts in: "plan" or "act". Tab switches between them.
 # `nth run` starts in act; `nth run --mode plan` plans instead.

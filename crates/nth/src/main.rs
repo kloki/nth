@@ -285,6 +285,12 @@ fn tools(
         .map(Arc::from)
         .collect();
     let stop = nth_session::TaskStop::new(subagents.clone());
+    let work = nth_session::Work::new(
+        provider.clone(),
+        shared.clone(),
+        subagents.clone(),
+        config.work.limits(),
+    );
     let task = nth_session::Task::new(provider, shared.clone(), subagents, config.task.limits());
     let mut tools: Vec<Box<dyn nth_protocol::Tool>> = shared
         .into_iter()
@@ -292,7 +298,7 @@ fn tools(
         .collect();
     tools.push(Box::new(task));
     tools.push(Box::new(stop));
-    tools.extend(nth_session::Work::new().tools());
+    tools.extend(work.tools());
     tools
 }
 

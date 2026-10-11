@@ -5,20 +5,26 @@
 //! items wait for every earlier cycle to be closed, a running item is not
 //! rewritten) and report; the model decides.
 
+mod assign;
 mod close;
 mod item;
 mod status;
 pub mod store;
+mod todo;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
+pub use assign::Assigned;
+use assign::WorkAssign;
 use close::WorkClose;
 use item::WorkItem;
-use nth_protocol::{Tool, ToolContext};
+use nth_protocol::{
+    Inbox, Provider, TaskId, Tool, ToolContext, WorkNotice, WorkOutcome, WorkState,
+};
 use status::WorkStatus;
 pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir};
 
-use crate::SubagentId;
+use crate::{Error, SubagentId, Subagents};
 
 /// The tools that write and read the plan, which no subagent gets: the one
 /// on an item sees that item only.
@@ -27,32 +33,79 @@ pub const ORCHESTRATOR_TOOLS: [&str; 4] = ["work_item", "work_assign", "work_clo
 /// Told to the model for an item left running by a run of nth that ended.
 const GONE: &str = "nth stopped while this item ran, and its subagent with it. Assign it again, without task_id: its ticked steps are kept.";
 
-/// Item files by path, and the subagent of this process on each running
-/// one. Every change to an item file is made holding it, so a file that
-/// says `running` and this map never disagree for long enough to matter.
-type Live = BTreeMap<PathBuf, SubagentId>;
+/// Which item files the subagents of this process work on, by path.
+#[derive(Debug, Default)]
+pub(crate) struct Live {
+    /// The one on each running item. A file that says `running` without
+    /// an entry here was left so by a run of nth that ended.
+    running: BTreeMap<PathBuf, SubagentId>,
+    /// The last one on each item, running or not: the only one `task_id`
+    /// may continue it with, since an id in a file may be another run's.
+    worked: BTreeMap<PathBuf, SubagentId>,
+}
 
-#[derive(Default)]
+/// The lock every change to an item file is made under, which owns what
+/// it guards: a file that says `running` and `Live` never disagree while
+/// a tool looks.
+#[derive(Debug, Default)]
 pub(crate) struct Files(tokio::sync::Mutex<Live>);
 
-/// What the work tools share; cheap to clone.
-#[derive(Clone, Default)]
-pub struct Work {
+/// What an assigned item's subagent may spend.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Steps its turn may take.
+    pub max_steps: usize,
+    /// How long its turn may run before it returns as timed out; `None`
+    /// leaves it to its steps.
+    pub timeout: Option<Duration>,
+    /// How long it may say nothing before the orchestrator hears it
+    /// stalled; `None` never.
+    pub stall: Option<Duration>,
+}
+
+/// What the work tools share; cheap to clone. Only the orchestrator's
+/// tools hold it: what a subagent's tool holds must not hold `Subagents`,
+/// which holds the subagent.
+#[derive(Clone)]
+pub struct Work(Arc<Shared>);
+
+struct Shared {
+    provider: Arc<dyn Provider>,
+    /// Every tool the model has; each assigned subagent gets its share.
+    tools: Vec<Arc<dyn Tool>>,
+    subagents: Subagents,
+    limits: Limits,
     files: Arc<Files>,
 }
 
 impl Work {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(
+        provider: Arc<dyn Provider>,
+        tools: Vec<Arc<dyn Tool>>,
+        subagents: Subagents,
+        limits: Limits,
+    ) -> Self {
+        Self(Arc::new(Shared {
+            provider,
+            tools,
+            subagents,
+            limits,
+            files: Arc::default(),
+        }))
     }
 
     /// The orchestrator's tools.
     pub fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(WorkItem::new(self.clone())),
+            Box::new(WorkAssign::new(self.clone())),
             Box::new(WorkClose::new(self.clone())),
             Box::new(WorkStatus::new(self.clone())),
         ]
+    }
+
+    fn files(&self) -> &Files {
+        &self.0.files
     }
 
     /// The store of the session the call runs for.
@@ -74,7 +127,7 @@ async fn reconciled(store: &Store, live: &Live) -> Result<Plan, String> {
         .map_err(|e| format!("reading the work plan failed: {e}"))?
         .unwrap_or_default();
     for item in plan.cycles.iter_mut().flat_map(|cycle| &mut cycle.items) {
-        if item.status != Status::Running || live.contains_key(&item.at.path(store.dir())) {
+        if item.status != Status::Running || live.running.contains_key(&item.at.path(store.dir())) {
             continue;
         }
         item.status = Status::Returned;
@@ -86,6 +139,81 @@ async fn reconciled(store: &Store, live: &Live) -> Result<Plan, String> {
             .map_err(|e| format!("writing {} failed: {e}", item.at))?;
     }
     Ok(plan)
+}
+
+/// How a turn ended, as a work item keeps it.
+fn outcome(turn: &crate::subagent::Turn) -> WorkOutcome {
+    match turn {
+        Ok(answer) => WorkOutcome::Completed(answer.clone()),
+        Err(Error::Interrupted) => WorkOutcome::Interrupted,
+        Err(e @ Error::TimedOut(_)) => WorkOutcome::TimedOut(e.to_string()),
+        Err(e) => WorkOutcome::Failed(e.to_string()),
+    }
+}
+
+/// Told to the next subagent on an item whose last one was stopped.
+const STOPPED: &str = "The last subagent on this item was stopped before it answered.";
+
+/// Subagent `task`'s turn on the item at `at` ended with `outcome`: the
+/// file returns with it, unless someone wrote the item since, and the
+/// item is no longer running in this process. Returns the notice telling
+/// the orchestrator. Takes the lock itself, so the caller must not hold it.
+async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
+    let Assignment {
+        files,
+        store,
+        at,
+        task,
+        agent,
+        ..
+    } = assignment;
+    let path = at.path(store.dir());
+    let mut live = files.0.lock().await;
+    if live.running.get(&path) == Some(task) {
+        live.running.remove(&path);
+    }
+    let mut progress = (0, 0);
+    // A missing or rewritten file is the orchestrator's now; the notice
+    // still tells it how the turn ended.
+    if let Ok(Some(mut item)) = store.read(at).await {
+        progress = item.progress();
+        if item.status == Status::Running && item.task == Some(*task) {
+            item.status = Status::Returned;
+            item.result = Some(match outcome.text().trim() {
+                "" => STOPPED.to_string(),
+                text => text.to_string(),
+            });
+            item.outcome = Some(outcome.clone());
+            // Nothing more to do on failure: the notice carries what the
+            // file would have.
+            let _ = store.write(&item).await;
+        }
+    }
+    WorkNotice {
+        cycle: at.cycle.clone(),
+        item: at.item.clone(),
+        task: *task,
+        agent: agent.clone(),
+        state: WorkState::Returned {
+            outcome,
+            done: progress.0,
+            total: progress.1,
+        },
+    }
+}
+
+/// Where a subagent's tool reaches its item and the model that assigned
+/// it. Holds no `Work`, so no `Subagents`: a subagent holding its own
+/// registry would never end.
+#[derive(Clone)]
+struct Assignment {
+    files: Arc<Files>,
+    store: Store,
+    at: ItemRef,
+    task: TaskId,
+    agent: String,
+    /// The orchestrator's.
+    inbox: Inbox,
 }
 
 /// A name for a cycle or an item: lowercase letters and digits, words
@@ -123,6 +251,28 @@ pub(crate) mod tests {
     use nth_protocol::ToolContext;
 
     use super::*;
+    use crate::agent_loop::tests::Scripted;
+
+    /// Work tools whose subagents would answer `replies`, one turn each.
+    pub(crate) fn work_with(
+        replies: Vec<Vec<nth_protocol::StreamEvent>>,
+        tools: Vec<Arc<dyn Tool>>,
+        subagents: Subagents,
+        limits: Limits,
+    ) -> Work {
+        Work::new(Arc::new(Scripted::new(replies)), tools, subagents, limits)
+    }
+
+    pub(crate) const LIMITS: Limits = Limits {
+        max_steps: 10,
+        timeout: None,
+        stall: None,
+    };
+
+    /// Work tools with no subagent to run.
+    pub(crate) fn work() -> Work {
+        work_with(Vec::new(), Vec::new(), Subagents::default(), LIMITS)
+    }
 
     /// A call in session `s1`, in `dir`.
     pub(crate) fn ctx(dir: &std::path::Path) -> ToolContext {
@@ -156,8 +306,8 @@ pub(crate) mod tests {
             ..Item::pending(at.clone(), "X", "", Vec::new())
         };
         store.write(&running).await.unwrap();
-        let mut live = Live::new();
-        live.insert(at.path(store.dir()), 3);
+        let mut live = Live::default();
+        live.running.insert(at.path(store.dir()), 3);
 
         let plan = reconciled(&store, &live).await.unwrap();
         assert_eq!(
@@ -166,7 +316,7 @@ pub(crate) mod tests {
             "still ours"
         );
 
-        let plan = reconciled(&store, &Live::new()).await.unwrap();
+        let plan = reconciled(&store, &Live::default()).await.unwrap();
         let item = plan.item(&at).unwrap();
         assert_eq!(item.status, Status::Returned);
         assert_eq!(item.outcome, Some(nth_protocol::WorkOutcome::Interrupted));

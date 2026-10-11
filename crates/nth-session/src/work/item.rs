@@ -70,7 +70,7 @@ impl Tool for WorkItem {
             if splits_sections(&args.instruction) {
                 return Err("the instruction may not have a line \"## Todo\" or \"## Result\": the item file has those sections of its own".into());
             }
-            let live = self.work.files.0.lock().await;
+            let live = self.work.files().0.lock().await;
             let plan = reconciled(&store, &live).await?;
             let cycle = plan.cycle(args.cycle);
             let folder = match (cycle, &args.cycle_name) {
@@ -165,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn it_writes_the_item_file_and_names_the_cycle_once() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = WorkItem::new(Work::new());
+        let tool = WorkItem::new(crate::work::tests::work());
         let ctx = ctx(dir.path());
 
         assert_eq!(
@@ -214,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn a_running_item_is_not_rewritten_and_a_closed_cycle_opens_again() {
         let dir = tempfile::tempdir().unwrap();
-        let work = Work::new();
+        let work = crate::work::tests::work();
         let tool = WorkItem::new(work.clone());
         let ctx = ctx(dir.path());
         tool.call(args(1, Some("a"), "x"), &ctx).await.unwrap();
@@ -228,7 +228,12 @@ mod tests {
         item.status = Status::Running;
         item.task = Some(4);
         store.write(&item).await.unwrap();
-        work.files.0.lock().await.insert(at.path(store.dir()), 4);
+        work.files()
+            .0
+            .lock()
+            .await
+            .running
+            .insert(at.path(store.dir()), 4);
 
         assert_eq!(
             tool.call(args(1, None, "x"), &ctx).await.unwrap_err(),

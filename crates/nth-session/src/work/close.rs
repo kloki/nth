@@ -58,7 +58,7 @@ impl Tool for WorkClose {
         async move {
             let args: Args = crate::agent_loop::parse_args(args)?;
             let store = Work::store(ctx)?;
-            let live = self.work.files.0.lock().await;
+            let live = self.work.files().0.lock().await;
             let mut plan = reconciled(&store, &live).await?;
             let Some(cycle) = plan.cycle(args.cycle) else {
                 return Err(format!("there is no cycle {}", args.cycle));
@@ -135,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn closing_says_what_the_plan_waits_for() {
         let dir = tempfile::tempdir().unwrap();
-        let work = Work::new();
+        let work = crate::work::tests::work();
         let ctx = ctx(dir.path());
         let write = WorkItem::new(work.clone());
         for (cycle, name, item) in [(1, "a", "x"), (1, "a", "y"), (2, "b", "z")] {

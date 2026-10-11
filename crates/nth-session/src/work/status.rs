@@ -32,7 +32,7 @@ impl Tool for WorkStatus {
         async move {
             let store = Work::store(ctx)?;
             let plan = {
-                let live = self.work.files.0.lock().await;
+                let live = self.work.files().0.lock().await;
                 reconciled(&store, &live).await?
             };
             if plan.cycles.is_empty() {
@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn it_shows_each_cycle_and_item_with_where_it_stands() {
         let dir = tempfile::tempdir().unwrap();
-        let work = Work::new();
+        let work = crate::work::tests::work();
         let ctx = ctx(dir.path());
         let status = WorkStatus::new(work.clone());
         assert_eq!(

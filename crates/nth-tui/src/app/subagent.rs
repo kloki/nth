@@ -63,6 +63,8 @@ impl App {
                     view.apply(&event);
                 }
             }
+            // Its notice is in the inbox; waking the model for it is below.
+            SubagentEvent::Stalled { .. } => {}
             SubagentEvent::TurnEnded {
                 id,
                 outcome,

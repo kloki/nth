@@ -7,21 +7,21 @@ use std::{sync::Arc, time::Duration};
 use futures::{FutureExt, future::BoxFuture};
 use nth_context::Agent;
 use nth_protocol::{
-    Mode, Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec, Writable,
+    Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec, Writable,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Done, Job, SubagentId, Subagents, WRITERS};
-use crate::{Error, Session, work::ORCHESTRATOR_TOOLS};
+use super::{Done, Job, PLANNING, SubagentId, Subagents, child_session};
+use crate::{Error, work::ORCHESTRATOR_TOOLS};
 
 /// Tools a subagent never gets: another task would nest without end, the
 /// worktree tools would take it out of its parent's directory, the work
 /// plan is its parent's to run, and the rest need the front-end, which
 /// belongs to the parent.
-const WITHHELD: [&str; 13] = [
+pub(super) const WITHHELD: [&str; 13] = [
     "task",
     "task_stop",
     "question",
@@ -36,9 +36,6 @@ const WITHHELD: [&str; 13] = [
     ORCHESTRATOR_TOOLS[2],
     ORCHESTRATOR_TOOLS[3],
 ];
-/// Goes with every prompt from a planning parent: its child has no tool
-/// that writes, but bash could still change files.
-const PLANNING: &str = "<system-reminder>\nThe agent that sent you this task is planning and may not change the project. Do not change any file, with bash or otherwise: research, then report what you found.\n</system-reminder>";
 
 pub struct Task {
     provider: Arc<dyn Provider>,
@@ -70,13 +67,13 @@ struct Args {
 /// Models send the id back as they read it, a number or a string.
 #[derive(Deserialize)]
 #[serde(untagged)]
-pub(super) enum TaskIdArg {
+pub(crate) enum TaskIdArg {
     Number(SubagentId),
     Text(String),
 }
 
 impl TaskIdArg {
-    pub(super) fn parse(&self) -> Result<SubagentId, String> {
+    pub(crate) fn parse(&self) -> Result<SubagentId, String> {
         match self {
             TaskIdArg::Number(id) => Ok(*id),
             TaskIdArg::Text(text) => text
@@ -102,36 +99,13 @@ impl Task {
         }
     }
 
-    /// The tools `agent` gets: never the withheld ones, no writers while
-    /// the parent may only write its plan, and only the agent's own list
-    /// when it has one.
+    /// The tools `agent` gets.
     fn tools_for(&self, agent: &Agent, writable: &Writable) -> Vec<Box<dyn Tool>> {
-        let planning = matches!(writable, Writable::Only(_));
-        self.tools
-            .iter()
-            .filter(|tool| {
-                let name = tool.spec().name;
-                !WITHHELD.contains(&name)
-                    && !(planning && WRITERS.contains(&name))
-                    && agent.allows(name)
-            })
-            .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
-            .collect()
+        super::tools_for(&self.tools, agent, writable)
     }
 
-    /// A new subagent of `agent` in the parent's directory, on the agent's
-    /// model or the parent's, in act mode: a planning parent's child is
-    /// kept from writing by its tools instead, so it gets no plan file and
-    /// no plan-mode reminder.
     fn spawn(&self, agent: &Agent, description: &str, ctx: &ToolContext) -> SubagentId {
-        let model = agent.model.clone().unwrap_or_else(|| ctx.llm.model.clone());
-        let mut session = Session::new(model, ctx.cwd.clone())
-            .with_extra_dirs(ctx.extra_dirs.clone())
-            .with_context(ctx.context.clone())
-            .as_subagent(agent.prompt.clone());
-        session.effort = ctx.llm.effort;
-        session.mode = Mode::Act;
-        session.max_steps = self.limits.max_steps;
+        let session = child_session(agent, ctx, self.limits.max_steps);
         let tools = self.tools_for(agent, &ctx.writable);
         self.subagents
             .spawn(agent, description, session, self.provider.clone(), tools)
