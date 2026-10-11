@@ -114,9 +114,18 @@ impl Work {
         if ctx.session.is_empty() {
             return Err("this call runs outside a session, which has no work plan".into());
         }
-        Ok(Store::new(work_dir(&ctx.cwd, &ctx.session)))
+        Ok(Store::new(work_dir(&root(ctx), &ctx.session)))
     }
 }
+
+/// Where the session keeps its work: the main checkout, even after a
+/// worktree tool moved the session, so the plan stays one plan and the
+/// subagents still on it keep writing where the model reads.
+pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
+    ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone())
+}
+
+impl Work {}
 
 /// The plan, with every item a gone run of nth left running settled as
 /// interrupted: no subagent of this process is on it. Subagent ids start
@@ -215,6 +224,9 @@ struct Assignment {
     agent: String,
     /// The orchestrator's.
     inbox: Inbox,
+    /// Cancelled once the subagent is forgotten with the session that
+    /// assigned it: what it says after goes to no model.
+    closed: tokio_util::sync::CancellationToken,
 }
 
 /// A name for a cycle or an item: lowercase letters and digits, words

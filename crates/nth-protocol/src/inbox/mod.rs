@@ -131,6 +131,24 @@ impl Inbox {
         self.0.as_ref().is_some_and(|p| !lock(p).is_empty())
     }
 
+    /// Whether anything waiting is worth waking the model for: anything
+    /// but a work item's todo ticks, which go along with the next wake or
+    /// between the steps of a turn that runs. Ticks of parallel items would
+    /// otherwise each cost a turn whose only answer is "noted".
+    pub fn wakes(&self) -> bool {
+        self.0.as_ref().is_some_and(|p| {
+            lock(p).iter().any(|pending| {
+                !matches!(
+                    pending,
+                    Pending::Work(WorkNotice {
+                        state: WorkState::Todo(_),
+                        ..
+                    })
+                )
+            })
+        })
+    }
+
     /// The prompts waiting, oldest first, and forgets them. Notices stay
     /// for [`Inbox::take_notices`]: a turn that pre-empts its tool calls
     /// takes only these.
@@ -406,6 +424,12 @@ mod tests {
             ],
             "the first list took the later ticks; the one after the return stands alone"
         );
-        assert!(!Inbox::default().post_work(work("x", returned)));
+        assert!(!Inbox::default().post_work(work("x", returned.clone())));
+
+        inbox.post_work(work("x", ticked(1)));
+        assert!(inbox.has_notices());
+        assert!(!inbox.wakes(), "ticks wait for a wake");
+        inbox.post_work(work("y", returned));
+        assert!(inbox.wakes(), "a return is one");
     }
 }

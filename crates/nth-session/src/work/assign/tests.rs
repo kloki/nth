@@ -133,7 +133,8 @@ async fn with_an_inbox_it_returns_at_once_and_every_change_is_a_notice() {
         .unwrap();
 
     assert!(
-        result.starts_with("Assigned 01-c1/store to subagent 1 (@general). Its todo updates"),
+        result
+            .starts_with("Assigned 01-c1/store to subagent 1 (@general). Its answer and any stall"),
         "{result}"
     );
     assert_eq!(
@@ -399,4 +400,98 @@ async fn a_planning_orchestrators_subagent_gets_no_writers() {
     assert!(prompt.contains("may not change the project"), "{prompt}");
     assert!(prompt.contains("<work_item>\n# Store\n"), "{prompt}");
     assert!(prompt.contains("- [ ] parse\n- [ ] write"), "{prompt}");
+}
+
+/// Polls until the item's file says `status`, or gives up.
+async fn until_status(dir: &Path, item: &str, status: Status) -> Item {
+    for _ in 0..200 {
+        let read = read(dir, "01-c1", item).await;
+        if read.status == status {
+            return read;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{item} never became {status}");
+}
+
+#[tokio::test]
+async fn a_headless_call_dropped_while_it_waits_still_returns_the_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::default(), LIMITS);
+    let ctx = ctx(dir.path(), Inbox::default());
+    write(&work, &ctx, 1, "a").await;
+
+    let tool = WorkAssign::new(work.clone());
+    let call = tool.call(assign(1, "a"), &ctx);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), call)
+            .await
+            .is_err()
+    );
+
+    let item = until_status(dir.path(), "a", Status::Returned).await;
+    assert_eq!(item.outcome, Some(WorkOutcome::Interrupted));
+    assert!(work.files().0.lock().await.running.is_empty());
+}
+
+#[tokio::test]
+async fn a_front_end_gone_still_returns_the_items_queued_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    // Full, so the actor waits to announce itself until the receiver goes.
+    let (tx, rx) = mpsc::channel(1);
+    tx.try_send(SubagentEvent::Prompted {
+        id: 99,
+        text: "filler".into(),
+    })
+    .unwrap();
+    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::new(tx), LIMITS);
+    let ctx = ctx(dir.path(), Inbox::new());
+    write(&work, &ctx, 1, "a").await;
+    WorkAssign::new(work.clone())
+        .call(assign(1, "a"), &ctx)
+        .await
+        .unwrap();
+
+    drop(rx);
+
+    let item = until_status(dir.path(), "a", Status::Returned).await;
+    assert_eq!(item.outcome, Some(WorkOutcome::Interrupted));
+    assert!(work.files().0.lock().await.running.is_empty());
+}
+
+#[tokio::test]
+async fn the_plan_stays_in_the_main_checkout_when_the_session_enters_a_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_with(vec![says("done")], Vec::new(), Subagents::default(), LIMITS);
+    let main = ctx(dir.path(), Inbox::default());
+    write(&work, &main, 1, "a").await;
+    let workdir = nth_protocol::Workdir::default();
+    let tree = dir.path().join(".nth/worktrees/feat");
+    workdir.enter(dir.path(), tree.clone());
+    let moved = ToolContext {
+        cwd: tree,
+        workdir,
+        ..ctx(dir.path(), Inbox::default())
+    };
+
+    let result = WorkAssign::new(work).call(assign(1, "a"), &moved).await;
+
+    assert!(result.unwrap().contains("state=\"returned\""));
+    assert_eq!(
+        read(dir.path(), "01-c1", "a").await.status,
+        Status::Returned
+    );
+}
+
+#[tokio::test]
+async fn a_timeout_of_zero_is_no_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_with(vec![says("done")], Vec::new(), Subagents::default(), LIMITS);
+    let ctx = ctx(dir.path(), Inbox::default());
+    write(&work, &ctx, 1, "a").await;
+    let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "timeout_secs": 0 });
+
+    let result = WorkAssign::new(work).call(args, &ctx).await.unwrap();
+
+    assert!(result.contains("outcome=\"completed\""), "{result}");
 }
