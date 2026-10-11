@@ -151,11 +151,6 @@ model
   ▸ act   glm-5.3 · 128k context
   25 models served
 
-model usage
-  opencode/glm-5.3  ██████████████████████████████  142
-  openrouter/kimi   ███████▍                         35
-  opencode/qwen-4   ▏                                 1
-
 instructions
   ~/repos/nth/CLAUDE.md
 
@@ -174,20 +169,23 @@ language servers
 formatters
   ✓ rustfmt   rustfmt $FILE
   ✗ prettier  no package.json here
+
+tools
+  ✓ rtk  ~/.cargo/bin/rtk
 ```
 
-- **Sections.** A bold title each, and rows under it: model, model usage, instructions, skills, agents, language servers, formatters. Context warnings follow the agents in yellow.
+- **Sections.** A bold title each, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
 - **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
-- **Model usage.** A bar per model that ran a turn, by its `provider/model` id, most first, in blue and scaled to the busiest one; the eighth blocks give the end of a bar, and any used model shows at least one. The count follows dim. "no turns yet" until there is one.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
-- **Fresh on open.** Servers and formatters are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
+- **Tools.** The `rtk` bash would rewrite the model's commands through, when it is on PATH: a green `✓` with the path in cyan, or dim with a red `✗` and why — "not on PATH", or "disabled in the config" when `[tools.bash] rtk` is off.
+- **Fresh on open.** Servers, formatters and rtk are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 
 ## Usage
 
-Opened with `/usage`, icon `∑`. What the session spent, its subagents included: all of it, then per model, then per turn. Each row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
+Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session spent, its subagents included — all of it, then per model, then per turn — and `all time`, the turns run on each model across runs. Each spend row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
 
 ```
-usage
+current session
   all  4 steps  1.0M in  77% cached  20k out  $0.38+
 
 per model
@@ -199,9 +197,14 @@ per turn
   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
 
   prices are list-price estimates from models.dev, whatever your plan bills
+
+all time
+  opencode/glm-5.3  ██████████████████████████████  142
+  openrouter/kimi   ███████▍                         35
+  opencode/qwen-4   ▏                                 1
 ```
 
-`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold.
+`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold. The `all time` bars are one per model that ran a turn, most first, blue and scaled to the busiest one; the eighth blocks give the end of a bar, any used model shows at least one, and the count follows dim — "no turns yet" until there is one.
 
 ## Chat
 

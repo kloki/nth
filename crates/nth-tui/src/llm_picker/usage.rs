@@ -1,5 +1,5 @@
-//! How many turns ran on each model, kept across runs in one JSON file,
-//! for the diagnostics tab to graph.
+//! How many turns ran on each model, kept across runs in one JSON file:
+//! the order of the picker, and the usage tab's `all time` graph.
 
 use std::{
     cmp::Reverse,
