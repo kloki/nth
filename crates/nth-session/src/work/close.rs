@@ -85,10 +85,18 @@ impl Tool for WorkClose {
                 }
                 _ => {}
             }
-            item.status = match args.outcome {
+            let status = match args.outcome {
                 Outcome::Done => Status::Done,
                 Outcome::Failed => Status::Failed,
             };
+            // A second verdict that says the same is a model that lost
+            // track; a different one is a change of mind, which stands.
+            if item.status == status {
+                return Err(format!(
+                    "{at} is closed as {status} already; work_item writes it again if there is more to do"
+                ));
+            }
+            item.status = status;
             item.note = args
                 .note
                 .map(|note| one_line(&note))
@@ -164,6 +172,10 @@ mod tests {
         };
         let item = store.read(&at).await.unwrap().unwrap();
         assert_eq!(item.note.as_deref(), Some("checked by hand"));
+        assert_eq!(
+            close.call(args(1, "x", "done"), &ctx).await.unwrap_err(),
+            "01-a/x is closed as done already; work_item writes it again if there is more to do"
+        );
         assert_eq!(
             close.call(args(3, "x", "done"), &ctx).await.unwrap_err(),
             "there is no cycle 3"

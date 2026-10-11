@@ -445,12 +445,12 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Approve);
-        for _ in 0..9 {
+        for _ in 0..10 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Usage);
+        assert_eq!(selected(&app), Command::Work);
         assert_eq!(app.prompt.text(), "/");
     }
 
@@ -490,6 +490,7 @@ mod tests {
                 "resume",
                 "settings",
                 "usage",
+                "work",
             ],
             "the commands fill the popup; the skills come after them"
         );
@@ -643,7 +644,7 @@ mod tests {
             app.apply(Action::Insert(c));
         }
         app.apply(Action::SelectPrev);
-        assert_eq!(selected(&app), Command::Usage);
+        assert_eq!(selected(&app), Command::Work);
         assert_eq!(app.prompt.text(), "/");
     }
 

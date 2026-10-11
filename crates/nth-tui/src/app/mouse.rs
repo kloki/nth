@@ -59,7 +59,12 @@ impl App {
         match self.content.active() {
             Tab::Chat => Some(&self.chat),
             Tab::Subagent(id) => self.subagent_views.get(&id).map(|view| &view.chat),
-            Tab::Diagnostics | Tab::File(_) | Tab::Monitor(_) | Tab::Plan | Tab::Usage => None,
+            Tab::Diagnostics
+            | Tab::File(_)
+            | Tab::Monitor(_)
+            | Tab::Plan
+            | Tab::Usage
+            | Tab::Work => None,
         }
     }
 

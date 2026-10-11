@@ -35,7 +35,7 @@ impl Tool for WorkStatus {
                 let live = self.work.files().0.lock().await;
                 reconciled(&store, &live).await?
             };
-            if plan.cycles.is_empty() {
+            if plan.cycles.is_empty() && plan.ignored.is_empty() {
                 return Ok(
                     "There is no work plan yet: write its first items with work_item.".into(),
                 );
@@ -71,6 +71,13 @@ fn render(plan: &Plan, dir: &str) -> String {
             cycle.items.len()
         ));
         out.extend(cycle.items.iter().map(line));
+    }
+    if !plan.ignored.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "Ignored folders, which the tools cannot reach (rename one to NN-slug, one folder a cycle number): {}",
+            plan.ignored.join(", ")
+        ));
     }
     out.join("\n")
 }
@@ -152,6 +159,7 @@ mod tests {
             "# Retry\n\nAdd retries.\nMore.",
         )
         .unwrap();
+        std::fs::create_dir(store.dir().join("1-c")).unwrap();
 
         let text = status.call(json!({}), &ctx).await.unwrap();
 
@@ -163,7 +171,8 @@ mod tests {
                  - x: done · @general task 2 · 1/2 ticked · note: merged\n\
                  - y: pending · 0/2 ticked\n\n\
                  ## 02-b: waits for 01-a, 0 of 1 closed\n\
-                 - z: pending · 0/2 ticked",
+                 - z: pending · 0/2 ticked\n\n\
+                 Ignored folders, which the tools cannot reach (rename one to NN-slug, one folder a cycle number): 1-c",
                 store.dir().display()
             )
         );

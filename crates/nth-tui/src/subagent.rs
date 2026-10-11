@@ -95,6 +95,11 @@ impl SubagentView {
         self.running_since.is_some()
     }
 
+    /// Tool calls of the running or last turn.
+    pub fn tool_calls(&self) -> usize {
+        self.tool_calls
+    }
+
     /// When the running turn began, for the prompt's spinner.
     pub fn running_since(&self) -> Option<Instant> {
         self.running_since

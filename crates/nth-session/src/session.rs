@@ -191,9 +191,11 @@ impl Session {
         plan::plan_path(&self.cwd, &self.id)
     }
 
-    /// Where this session's orchestration keeps its work items.
+    /// Where this session's orchestration keeps its work items: under the
+    /// main checkout, wherever a worktree tool moved the session.
     pub fn work_dir(&self) -> PathBuf {
-        work::work_dir(&self.cwd, &self.id.to_string())
+        let root = self.origin.as_ref().unwrap_or(&self.cwd);
+        work::work_dir(root, &self.id.to_string())
     }
 
     /// Later turns go to `model`. The history is kept; only the system
@@ -740,6 +742,17 @@ mod tests {
             plan.display()
         )));
         assert_eq!(send(&mut session, "next").await, "next");
+    }
+
+    #[test]
+    fn the_work_plan_stays_in_the_main_checkout() {
+        let mut session = Session::new("glm", "/repo".into());
+        let before = session.work_dir();
+
+        session.set_cwd("/repo/.nth/worktrees/feat".into(), Some("/repo".into()));
+
+        assert_eq!(session.work_dir(), before);
+        assert!(before.starts_with("/repo/.nth/work/"));
     }
 
     #[tokio::test]
