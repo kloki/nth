@@ -9,7 +9,7 @@ use ratatui::{
     style::{Modifier, Style},
 };
 
-const DURATION: Duration = Duration::from_millis(300);
+const DURATION: Duration = Duration::from_millis(600);
 
 /// The content panel coming in from the top, the rows not reached yet dim.
 #[derive(Debug)]
