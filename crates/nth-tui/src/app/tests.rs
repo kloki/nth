@@ -433,7 +433,7 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
     app.submit();
     let opened = rows(&mut app);
     assert!(opened[0].starts_with("  › chat [∑ usage] "), "{opened:#?}");
-    assert!(opened[2].starts_with(" usage "), "{opened:#?}");
+    assert!(opened[2].starts_with(" current session "), "{opened:#?}");
     assert!(
         opened[3].starts_with("   all  1 step  2.0k in  75% cached"),
         "{opened:#?}"

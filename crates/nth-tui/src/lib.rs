@@ -43,13 +43,16 @@ use nth_session::{Session, Store, Subagents, subagent::SubagentEvent};
 pub use settings::ChatSettings;
 use tokio::sync::mpsc;
 
-/// What checks the tools' writes: the same language servers and formatters
-/// the tools use. The status bar shows the servers' states, and the
-/// diagnostics tab what applies to the project.
+/// What the tools reach for besides themselves: the same language servers
+/// and formatters the tools use to check their writes, and whether bash
+/// passes the model's commands through rtk. The status bar shows the
+/// servers' states, and the diagnostics tab what applies to the project.
 #[derive(Clone)]
 pub struct Checkers {
     pub lsp: Lsp,
     pub formatters: Arc<Formatters>,
+    /// `[tools.bash] rtk`.
+    pub rtk: bool,
 }
 
 /// What the chat runs commands with: the model's tools, the shell for the

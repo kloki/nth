@@ -78,7 +78,7 @@ use crate::{
     Checkers,
     chat::Chat,
     command::Command,
-    diagnostics::{self, Diagnostics},
+    diagnostics::{self, Diagnostics, Rtk},
     git::{GitStatus, Pr},
     header, hero,
     history::History,
@@ -124,7 +124,8 @@ pub struct App {
     /// after it, since an aborted task can't stop a write already on the
     /// blocking pool.
     history_saving: Job<std::io::Result<()>>,
-    /// Turns run on each model, which orders the picker.
+    /// Turns run on each model, which orders the picker and graphs in the
+    /// usage tab.
     llm_usage: LlmUsage,
     /// How the chats show what the model did: the config's `[chat]` to
     /// start, `/settings` to change it for this run.
@@ -153,6 +154,7 @@ pub struct App {
     checkers: Option<Checkers>,
     servers_lookup: Job<Vec<ServerInfo>>,
     formatters_lookup: Job<Vec<FormatterStatus>>,
+    rtk_lookup: Job<Option<PathBuf>>,
     /// What fills the input panel.
     input: Input,
     /// The model and effort the next turn runs with.
@@ -345,6 +347,7 @@ enum Step {
     PlanRead(Result<Option<String>, JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
+    RtkFound(Result<Option<PathBuf>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
     /// The notification backend failed for the first time.
@@ -400,6 +403,7 @@ impl App {
             checkers: None,
             servers_lookup: Job::default(),
             formatters_lookup: Job::default(),
+            rtk_lookup: Job::default(),
             input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
@@ -575,6 +579,7 @@ impl App {
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
+                rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
             };
@@ -628,6 +633,12 @@ impl App {
                 Step::FormattersFound(formatters) => {
                     self.diagnostics.formatters =
                         Some(formatters.context("checking formatters failed")?)
+                }
+                Step::RtkFound(rtk) => {
+                    self.diagnostics.rtk = Some(match rtk.context("finding rtk failed")? {
+                        Some(program) => Rtk::Found(program),
+                        None => Rtk::Missing,
+                    });
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 // Nothing changed but time: the redraw advances the timers.
@@ -699,10 +710,10 @@ impl App {
                     failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
                     listing: self.llm_listing.is_running(),
                     checks: self.checkers.is_some(),
+                    rtk: self.checkers.as_ref().is_some_and(|checkers| checkers.rtk),
                     running: &self.servers,
                     context: &self.context,
                     home: self.home.as_deref(),
-                    usage: self.llm_usage.ranked(),
                 };
                 self.diagnostics.draw(frame, content, &facts);
                 if let Some(state) = self.diagnostics.scrollbar() {
@@ -713,8 +724,13 @@ impl App {
                 // The listing alone, so the view can be drawn into.
                 let llms = self.llms.as_ref();
                 let cost = |model: &str| llms?.cost_of(model);
-                self.usage_view
-                    .draw(frame, content, &self.spent.ledger, &cost);
+                self.usage_view.draw(
+                    frame,
+                    content,
+                    &self.spent.ledger,
+                    &self.llm_usage.ranked(),
+                    &cost,
+                );
                 if let Some(state) = self.usage_view.scrollbar() {
                     draw_scrollbar(frame, content, state);
                 }
