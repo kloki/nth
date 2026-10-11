@@ -256,12 +256,6 @@ impl Tool for WorkAssign {
                 note: None,
                 ..before.clone()
             };
-            store
-                .write(&running)
-                .await
-                .map_err(|e| format!("writing {at} failed: {e}"))?;
-            live.running.insert(path.clone(), id);
-            live.worked.insert(path.clone(), id);
             // With an inbox every change to the item wakes the model.
             // Headless there is none, so the call waits for the notice.
             let headless = !ctx.inbox.reaches_model();
@@ -293,12 +287,22 @@ impl Tool for WorkAssign {
                 done: Done::Work(assigned),
                 timeout,
             };
+            // The job goes out before the file says running, all under the
+            // lock the job's settling takes: a call dropped before this
+            // leaves the item pending, and one dropped after is settled by
+            // the actor, which sees the file only once it is written.
+            live.running.insert(path.clone(), id);
+            live.worked.insert(path.clone(), id);
             if !shared.subagents.prompt(id, job) {
                 live.running.remove(&path);
-                let _ = store.write(&before).await;
                 return Err(format!(
                     "subagent {id} has ended; leave task_id out to start a fresh one"
                 ));
+            }
+            if let Err(e) = store.write(&running).await {
+                live.running.remove(&path);
+                shared.subagents.cancel(id);
+                return Err(format!("writing {at} failed: {e}"));
             }
             let Some(waiting) = waiting else {
                 let verb = match continued {

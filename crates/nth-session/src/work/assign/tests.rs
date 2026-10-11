@@ -417,17 +417,20 @@ async fn until_status(dir: &Path, item: &str, status: Status) -> Item {
 #[tokio::test]
 async fn a_headless_call_dropped_while_it_waits_still_returns_the_item() {
     let dir = tempfile::tempdir().unwrap();
-    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::default(), LIMITS);
+    // The receiver stays, so the actor's events always have room.
+    let (tx, _rx) = mpsc::channel(64);
+    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::new(tx), LIMITS);
+    // No inbox, so the call waits as `nth run`'s does.
     let ctx = ctx(dir.path(), Inbox::default());
     write(&work, &ctx, 1, "a").await;
-
     let tool = WorkAssign::new(work.clone());
-    let call = tool.call(assign(1, "a"), &ctx);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), call)
-            .await
-            .is_err()
-    );
+
+    // Dropped once the item is running, as a cancelled turn drops the
+    // call it waits in. Dropped before, the item stays pending.
+    tokio::select! {
+        result = tool.call(assign(1, "a"), &ctx) => panic!("the model never answers: {result:?}"),
+        _ = until_status(dir.path(), "a", Status::Running) => {}
+    }
 
     let item = until_status(dir.path(), "a", Status::Returned).await;
     assert_eq!(item.outcome, Some(WorkOutcome::Interrupted));
