@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use nth_protocol::Mode;
 use nth_session::plan;
 
-use super::{App, Queued, Tab};
+use super::{App, Queued, Tab, reveal::Reveal};
 
 impl App {
     /// Points the plan tab at the plan of the session the app is on, and
@@ -38,8 +38,10 @@ impl App {
             self.plan.update(text);
         }
         if created {
-            // The first plan is what you will want to read.
+            // The first plan is what you will want to read, and it sweeps
+            // in like a tab the model shows you.
             self.content.open(Tab::Plan);
+            self.reveal = Some(Reveal::new());
         } else if self.plan.exists() {
             // A revision opens the tab unfocused, so the reply the model is
             // writing stays in view; the tab's label says what changed.
@@ -142,6 +144,7 @@ mod tests {
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
         assert_eq!(app.content.active(), Tab::Plan, "the first plan shows");
+        assert!(app.reveal.is_some(), "and sweeps in");
         assert_eq!(
             app.tab_label(Tab::Plan),
             "plan",
