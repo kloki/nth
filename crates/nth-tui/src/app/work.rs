@@ -90,6 +90,9 @@ mod tests {
     fn app_with_work() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app();
+        // Under the working directory, so the header names it short on
+        // any platform's temporary directory.
+        app.cwd = dir.path().to_path_buf();
         app.work_dir = dir.path().join("work");
         (app, dir)
     }
@@ -150,7 +153,7 @@ mod tests {
         app.apply(Action::Content(1));
         let rows = rows(&mut app);
         assert!(rows[0].starts_with("  › chat [⊞ work 1/2] "), "{rows:?}");
-        assert!(rows[2].contains("work · 1/2 done"), "{rows:?}");
+        assert!(rows[2].starts_with(" work · 1/2 done"), "{rows:?}");
         assert_eq!(rows[4].trim_end(), " ✓ 1 a  1/1");
         assert_eq!(rows[5].trim_end(), " └─ ✓ store  1/2");
         assert_eq!(rows[6].trim_end(), " ▸ 2 b  0/1");
