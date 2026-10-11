@@ -386,7 +386,7 @@ impl App {
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && self.notices_may_wake() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);
@@ -1078,7 +1078,8 @@ mod tests {
         app.wakeup_due();
         assert_eq!(app.wakeup, None, "fired");
         app.notices_due();
-        assert!(app.is_busy(), "you asked for this turn");
+        assert!(app.is_busy(), "the model asked for this turn");
+        assert!(app.hold_notices, "the hold is yours to lift");
         end(&mut app).await;
 
         let sent = sent(&app);
@@ -1089,6 +1090,32 @@ mod tests {
             entry,
             Entry::Notice(nth_protocol::NoticeSummary::Wakeup { reason }) if reason == "ci"
         )));
+    }
+
+    #[tokio::test]
+    async fn a_wakeup_that_fires_during_a_stopped_turn_still_wakes_the_agent() {
+        let (mut app, _) = busy_app().await;
+        app.monitors.set_log_dir("/tmp/logs".into());
+        app.wakeup = Some(nth_protocol::Wakeup {
+            at: jiff::Timestamp::now(),
+            prompt: "look at CI".into(),
+            reason: "ci".into(),
+        });
+        app.wakeup_due();
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.hold_notices, "you stopped the turn");
+        assert!(app.notices_due.is_some(), "the wakeup still arms the timer");
+        app.notices_due();
+        assert!(app.is_busy(), "the model asked for this turn");
+        end(&mut app).await;
+        let sent = sent(&app);
+        assert!(
+            sent.last()
+                .is_some_and(|s| s.contains("<wakeup reason=\"ci\"")),
+            "{sent:?}"
+        );
     }
 
     #[tokio::test]

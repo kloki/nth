@@ -37,25 +37,35 @@ impl Alarm {
         self.0.is_some()
     }
 
-    /// Sets `wakeup`, returning the one it replaced; `None` when no
-    /// front-end took it.
-    pub async fn set(&self, wakeup: Wakeup) -> Option<Option<Wakeup>> {
+    /// Sets `wakeup`, returning the one it replaced.
+    pub async fn set(&self, wakeup: Wakeup) -> Result<Option<Wakeup>, Gone> {
         self.ask(WakeupRequest::Set(wakeup)).await
     }
 
-    /// Drops the pending wakeup, returning it; `None` when no front-end
-    /// answered.
-    pub async fn cancel(&self) -> Option<Option<Wakeup>> {
+    /// Drops the pending wakeup, returning it.
+    pub async fn cancel(&self) -> Result<Option<Wakeup>, Gone> {
         self.ask(WakeupRequest::Cancel).await
     }
 
-    async fn ask(&self, request: WakeupRequest) -> Option<Option<Wakeup>> {
-        let front_end = self.0.as_ref()?;
+    async fn ask(&self, request: WakeupRequest) -> Result<Option<Wakeup>, Gone> {
+        let front_end = self.0.as_ref().ok_or(Gone)?;
         let (reply, answer) = oneshot::channel();
-        front_end.send((request, reply)).await.ok()?;
-        answer.await.ok()
+        front_end.send((request, reply)).await.map_err(|_| Gone)?;
+        answer.await.map_err(|_| Gone)
     }
 }
+
+/// No front-end answered the alarm, so nothing would start the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gone;
+
+impl std::fmt::Display for Gone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the front-end is gone; nothing would wake you")
+    }
+}
+
+impl std::error::Error for Gone {}
 
 /// A moment as the model reads it: the date as the system prompt writes
 /// it, then the time and the zone.

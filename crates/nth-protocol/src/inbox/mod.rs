@@ -121,6 +121,16 @@ impl Inbox {
         self.0.as_ref().is_some_and(|p| !lock(p).is_empty())
     }
 
+    /// Whether a fired wakeup waits: the model asked for that turn, so it
+    /// comes even while you hold the other notices back.
+    pub fn has_wakeup(&self) -> bool {
+        self.0.as_ref().is_some_and(|p| {
+            lock(p)
+                .iter()
+                .any(|pending| matches!(pending, Pending::Wakeup { .. }))
+        })
+    }
+
     /// The prompts waiting, oldest first, and forgets them. Notices stay
     /// for [`Inbox::take_notices`]: a turn that pre-empts its tool calls
     /// takes only these.
@@ -264,7 +274,20 @@ mod tests {
         assert!(!inbox.post_wakeup("ci".into(), "15:00".into(), "look".into()));
         inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
         assert!(!inbox.has_notices());
+        assert!(!inbox.has_wakeup());
         assert_eq!(inbox.take_notices(), None);
+    }
+
+    #[test]
+    fn has_wakeup_only_with_a_wakeup_waiting() {
+        let inbox = Inbox::new();
+        assert!(inbox.post_task(task()));
+        assert!(inbox.post_prompt("hold on".into()));
+        assert!(!inbox.has_wakeup());
+        assert!(inbox.post_wakeup("ci".into(), "15:00".into(), "look".into()));
+        assert!(inbox.has_wakeup());
+        inbox.take_notices();
+        assert!(!inbox.has_wakeup());
     }
 
     #[test]

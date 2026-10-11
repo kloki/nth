@@ -33,7 +33,7 @@ impl Tool for ScheduleWakeup {
                     "prompt": { "type": "string", "description": "What you get when you wake: what to check and what to do with it" },
                     "reason": { "type": "string", "description": "A few words on why, shown to the user while it is pending" },
                     "delay_seconds": { "type": "integer", "minimum": 1, "maximum": 86400, "description": "Wake this many seconds from now" },
-                    "at": { "type": "string", "description": "Wake at this local time of day (HH:MM, next occurrence) or date and time (2026-10-11T15:00)" },
+                    "at": { "type": "string", "description": "Wake at this local time of day (HH:MM, next occurrence) or date and time (2026-10-11T15:00, or with an offset or [Area/City] zone)" },
                     "cancel": { "type": "boolean", "description": "Drop the pending wakeup instead of scheduling one" }
                 }
             }),
@@ -55,7 +55,7 @@ impl Tool for ScheduleWakeup {
             }
             let now = Zoned::now();
             if args.cancel {
-                let dropped = ctx.alarm.cancel().await.ok_or(GONE)?;
+                let dropped = ctx.alarm.cancel().await.map_err(|e| e.to_string())?;
                 return Ok(match dropped {
                     Some(old) => format!("Cancelled the wakeup {}.", describe(&old, &now)),
                     None => "No wakeup was pending.".into(),
@@ -71,7 +71,7 @@ impl Tool for ScheduleWakeup {
                 span(at.duration_since(now.timestamp())),
                 clock(&now),
             );
-            Ok(match ctx.alarm.set(wakeup).await.ok_or(GONE)? {
+            Ok(match ctx.alarm.set(wakeup).await.map_err(|e| e.to_string())? {
                 Some(old) => format!("{set} It replaced the wakeup {}.", describe(&old, &now)),
                 None => set,
             })
@@ -80,8 +80,6 @@ impl Tool for ScheduleWakeup {
     }
 }
 
-const GONE: &str = "the front-end is gone; nothing would wake you";
-
 fn required(value: Option<String>, name: &str) -> Result<String, String> {
     value
         .filter(|v| !v.trim().is_empty())
@@ -89,7 +87,7 @@ fn required(value: Option<String>, name: &str) -> Result<String, String> {
 }
 
 /// When to wake, from a delay or a time: a bare time of day is its next
-/// occurrence, a date and time without an offset is local.
+/// occurrence, a date and time without an offset or zone is local.
 fn target(delay: Option<i64>, at: Option<&str>, now: &Zoned) -> Result<Timestamp, String> {
     let target = match (delay, at) {
         (Some(_), Some(_)) => return Err("pass `delay_seconds` or `at`, not both".into()),
@@ -103,7 +101,12 @@ fn target(delay: Option<i64>, at: Option<&str>, now: &Zoned) -> Result<Timestamp
             }
             now.timestamp() + SignedDuration::from_secs(seconds)
         }
-        (None, Some(at)) => at_time(at.trim(), now)?,
+        (None, Some(at)) => match date_and_time(at.trim(), now)? {
+            Some(target) => target,
+            // Always within a day of the calendar, so not held to the
+            // 24 hours: the night the clocks go back makes it 25.
+            None => return time_of_day(at.trim(), now),
+        },
     };
     let ahead = target.duration_since(now.timestamp());
     if ahead <= SignedDuration::ZERO {
@@ -122,32 +125,45 @@ fn target(delay: Option<i64>, at: Option<&str>, now: &Zoned) -> Result<Timestamp
     Ok(target)
 }
 
-fn at_time(at: &str, now: &Zoned) -> Result<Timestamp, String> {
-    let tz = now.time_zone().clone();
-    let local = |datetime: civil::DateTime| {
-        datetime
-            .to_zoned(tz.clone())
-            .map(|z| z.timestamp())
-            .map_err(|e| format!("cannot place {at:?} in the local timezone: {e}"))
-    };
-    // A time parses out of a full datetime too, so the full forms go first.
+/// `at` as a full date and time, or `None` when it is not one. A time
+/// parses out of a full datetime too, so these go before a time of day.
+fn date_and_time(at: &str, now: &Zoned) -> Result<Option<Timestamp>, String> {
     if let Ok(timestamp) = at.parse::<Timestamp>() {
-        return Ok(timestamp);
+        return Ok(Some(timestamp));
     }
-    if let Ok(datetime) = at.parse::<civil::DateTime>() {
-        return local(datetime);
+    // A zone annotation without an offset is no Timestamp, and as a civil
+    // datetime its zone would be dropped.
+    if let Ok(zoned) = at.parse::<Zoned>() {
+        return Ok(Some(zoned.timestamp()));
     }
+    match at.parse::<civil::DateTime>() {
+        Ok(datetime) => local(datetime, now).map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The next time the clock reads `at`: later today, or tomorrow when it
+/// has passed.
+fn time_of_day(at: &str, now: &Zoned) -> Result<Timestamp, String> {
     let Ok(time) = at.parse::<civil::Time>() else {
         return Err(format!(
             "cannot read {at:?} as a time: use HH:MM or a date and time such as 2026-10-11T15:00"
         ));
     };
-    let today = local(now.date().to_datetime(time))?;
+    let today = local(now.date().to_datetime(time), now)?;
     if today > now.timestamp() {
         return Ok(today);
     }
     let tomorrow = now.date().tomorrow().map_err(|e| e.to_string())?;
-    local(tomorrow.to_datetime(time))
+    local(tomorrow.to_datetime(time), now)
+}
+
+/// A civil datetime in the local timezone.
+fn local(datetime: civil::DateTime, now: &Zoned) -> Result<Timestamp, String> {
+    datetime
+        .to_zoned(now.time_zone().clone())
+        .map(|z| z.timestamp())
+        .map_err(|e| format!("cannot place {datetime} in the local timezone: {e}"))
 }
 
 /// A pending wakeup in a result: when, and why.
@@ -159,7 +175,8 @@ fn describe(wakeup: &Wakeup, now: &Zoned) -> String {
     )
 }
 
-/// How long until a wakeup, to the second: `1h 12m`, `5m 30s`, `45s`.
+/// How long until a wakeup: `1h 12m`, `5m 30s`, `45s`; to the second under
+/// an hour, to the minute past it.
 fn span(duration: SignedDuration) -> String {
     let total = duration.as_secs().max(0);
     let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
@@ -221,6 +238,30 @@ mod tests {
             target(None, Some("2026-10-11T15:00:00Z"), &now()),
             Ok(at("2026-10-11T17:00:00+02:00[Europe/Amsterdam]"))
         );
+        assert_eq!(
+            target(None, Some("2026-10-11T15:00[America/New_York]"), &now()),
+            Ok(at("2026-10-11T19:00:00Z[UTC]")),
+            "the zone is kept"
+        );
+    }
+
+    #[test]
+    fn a_time_of_day_is_tomorrow_even_when_the_clocks_go_back() {
+        // The clocks go back in the night to Sunday the 25th: tomorrow
+        // 13:30 is 24.5 hours away.
+        let now = "2026-10-24T14:00:00+02:00[Europe/Amsterdam]"
+            .parse::<Zoned>()
+            .unwrap();
+        assert_eq!(
+            target(None, Some("13:30"), &now),
+            Ok(at("2026-10-25T13:30:00+01:00[Europe/Amsterdam]"))
+        );
+        assert!(
+            target(None, Some("2026-10-25T13:30"), &now)
+                .unwrap_err()
+                .contains("within 24 hours"),
+            "a full date and time is held to them"
+        );
     }
 
     #[test]
@@ -236,13 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn spans_read_to_the_second() {
+    fn spans_drop_seconds_past_an_hour() {
         let span = |s| span(SignedDuration::from_secs(s));
         assert_eq!(span(45), "45s");
         assert_eq!(span(300), "5m");
         assert_eq!(span(330), "5m 30s");
         assert_eq!(span(7200), "2h");
         assert_eq!(span(4320), "1h 12m");
+        assert_eq!(span(7230), "2h");
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ Schedules a wakeup: after a delay or at a time of day, you get a new turn with t
 
 Pass exactly one of:
 - `delay_seconds`: how long from now, from 1 to 86400 (24 hours).
-- `at`: a local time of day, `HH:MM` or `HH:MM:SS`, meaning its next occurrence (later today, or tomorrow when it has passed), or a full date and time such as `2026-10-11T15:00` (local) or `2026-10-11T15:00:00+02:00`. It must be in the future and within 24 hours.
+- `at`: a local time of day, `HH:MM` or `HH:MM:SS`, meaning its next occurrence (later today, or tomorrow when it has passed), or a full date and time such as `2026-10-11T15:00` (local) or with an offset or zone, `2026-10-11T15:00:00+02:00` or `2026-10-11T15:00[America/New_York]`. It must be in the future and within 24 hours.
 
 You do not need to know the time to use it: give the delay or the time you were told, and the result says the current time, when you will wake and how long that is from now.
 

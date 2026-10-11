@@ -18,11 +18,15 @@ const RECHECK: Duration = Duration::from_secs(30);
 impl App {
     /// Sets or drops the wakeup, answering with the one it replaced.
     pub(super) fn on_alarm(&mut self, (request, reply): AlarmRequest) {
+        // The tool call was stopped before its answer: the model never
+        // heard the change, so it does not happen.
+        if reply.is_closed() {
+            return;
+        }
         let old = match request {
             WakeupRequest::Set(wakeup) => self.wakeup.replace(wakeup),
             WakeupRequest::Cancel => self.wakeup.take(),
         };
-        // The tool is gone if its turn was stopped; the change stands.
         let _ = reply.send(old);
     }
 
@@ -36,18 +40,15 @@ impl App {
 
     /// Fires the wakeup if it is due: its notice goes in the inbox, and
     /// starts a turn unless one runs, which hands it over between steps.
-    /// It starts one even after you stopped the last turn: you or the
-    /// model asked for this one.
+    /// It starts one even after you stopped the last turn, without lifting
+    /// that hold: the model asked for this one (`notices_may_wake`). What
+    /// you held back goes with it, as it would with your next prompt.
     pub(super) fn wakeup_due(&mut self) {
-        if self.wakeup.as_ref().is_none_or(|w| w.at > Timestamp::now()) {
-            return;
-        }
-        let Some(wakeup) = self.wakeup.take() else {
+        let Some(wakeup) = self.wakeup.take_if(|w| w.at <= Timestamp::now()) else {
             return;
         };
         self.inbox
             .post_wakeup(wakeup.reason, clock(&Zoned::now()), wakeup.prompt);
-        self.hold_notices = false;
         if self.notices_due.is_none() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
@@ -80,7 +81,7 @@ mod tests {
         });
         let request = app.alarm_rx.recv().await.expect("asked");
         app.on_alarm(request);
-        assert_eq!(set.await.unwrap(), Some(None), "nothing replaced");
+        assert_eq!(set.await.unwrap(), Ok(None), "nothing replaced");
 
         let set = tokio::spawn({
             let alarm = alarm.clone();
@@ -88,7 +89,7 @@ mod tests {
         });
         let request = app.alarm_rx.recv().await.expect("asked");
         app.on_alarm(request);
-        let replaced = set.await.unwrap().flatten().expect("replaced");
+        let replaced = set.await.unwrap().ok().flatten().expect("replaced");
         assert_eq!(replaced.reason, "ci");
         assert_eq!(
             app.wakeup.as_ref().map(|w| w.reason.as_str()),
@@ -98,8 +99,19 @@ mod tests {
         let cancel = tokio::spawn(async move { alarm.cancel().await });
         let request = app.alarm_rx.recv().await.expect("asked");
         app.on_alarm(request);
-        assert!(cancel.await.unwrap().flatten().is_some());
+        assert!(cancel.await.unwrap().ok().flatten().is_some());
         assert_eq!(app.wakeup, None);
+    }
+
+    #[tokio::test]
+    async fn a_set_whose_call_was_stopped_is_dropped() {
+        let mut app = app();
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        drop(answer);
+
+        app.on_alarm((WakeupRequest::Set(wakeup("ci", 600)), reply));
+
+        assert_eq!(app.wakeup, None, "the model never heard it was set");
     }
 
     #[tokio::test]
