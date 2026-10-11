@@ -38,8 +38,8 @@ impl App {
             self.plan.update(text);
         }
         if created {
-            // The first plan is what you will want to read, and it flashes
-            // like a tab the model shows you.
+            // The first plan is what you will want to read, and it comes
+            // in after a blank like a tab the model shows you.
             self.content.open(Tab::Plan);
             self.flash = Some(Flash::new());
         } else if self.plan.exists() {
@@ -187,6 +187,8 @@ mod tests {
         write_plan(&app, "# Plan\nstep 1\n");
         app.read_plan();
         read(&mut app).await;
+        // The plan as drawn, not the blank it comes in after.
+        app.flash = None;
 
         let rows = crate::app::tests::rows(&mut app);
 

@@ -179,7 +179,7 @@ pub struct App {
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
-    /// The flash of a tab the model just showed.
+    /// The blank before a tab the model just showed.
     flash: Option<flash::Flash>,
     pointer: Option<Position>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
@@ -671,7 +671,7 @@ impl App {
         Ok(())
     }
 
-    /// The model shows you a tab; one it switches to flashes, so the
+    /// The model shows you a tab; one it switches to comes in after a blank, so the
     /// switch does not go unnoticed.
     fn show(&mut self, show: Show) {
         let before = self.content.active();

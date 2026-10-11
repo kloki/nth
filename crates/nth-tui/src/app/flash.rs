@@ -1,12 +1,12 @@
-//! A tab the model shows you flashes white: a switch in one frame would
-//! leave you wondering where the chat went.
+//! A tab the model shows you comes in after a moment of blank screen: a
+//! switch in one frame would leave you wondering where the chat went.
 
 use std::time::{Duration, Instant};
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    widgets::{Clear, Widget},
 };
 
 const DURATION: Duration = Duration::from_millis(150);
@@ -27,7 +27,8 @@ impl Flash {
         self.since.elapsed() < DURATION
     }
 
+    /// Clears `area` to the terminal's own background.
     pub(super) fn draw(&self, buf: &mut Buffer, area: Rect) {
-        buf.set_style(area, Style::new().bg(Color::White));
+        Clear.render(area, buf);
     }
 }
