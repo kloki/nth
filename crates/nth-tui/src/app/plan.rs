@@ -187,6 +187,8 @@ mod tests {
         write_plan(&app, "# Plan\nstep 1\n");
         app.read_plan();
         read(&mut app).await;
+        // The plan as drawn, not partway through coming in.
+        app.reveal = None;
 
         let rows = crate::app::tests::rows(&mut app);
 
