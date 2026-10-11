@@ -1,7 +1,10 @@
 //! The diagnostics tab: nth's own state, for when something does not work
-//! as expected. The model each mode runs with and the turns run on each
-//! model, the instruction files, skills and agents found for the project,
-//! and the language servers and formatters that check writes.
+//! as expected. The model each mode runs with, the instruction files,
+//! skills and agents found for the project, the language servers and
+//! formatters that check writes, and the rtk the bash tool would rewrite
+//! commands through.
+
+use std::path::PathBuf;
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
@@ -25,10 +28,22 @@ pub struct Diagnostics {
     /// `None` while being looked up.
     pub servers: Option<Vec<ServerInfo>>,
     pub formatters: Option<Vec<FormatterStatus>>,
+    /// The `rtk` on PATH, looked up each time the tab opens; `None` while
+    /// being looked up.
+    pub rtk: Option<Rtk>,
     /// The first line in view, and how far it can go, as of the last draw.
     top: usize,
     max_top: usize,
     height: usize,
+}
+
+/// What the `rtk` lookup found.
+#[derive(Debug)]
+pub enum Rtk {
+    /// On PATH.
+    Found(PathBuf),
+    /// Not on PATH.
+    Missing,
 }
 
 /// The model a mode runs with.
@@ -53,11 +68,11 @@ pub struct Facts<'a> {
     /// Whether the app checks writes at all; a bare app has no servers or
     /// formatters to look up.
     pub checks: bool,
+    /// Whether bash passes the model's commands through rtk.
+    pub rtk: bool,
     pub running: &'a [ServerStatus],
     pub context: &'a Context,
     pub home: Option<&'a str>,
-    /// Turns run on each model, most first.
-    pub usage: Vec<(&'a str, u64)>,
 }
 
 impl Diagnostics {
@@ -107,13 +122,13 @@ impl Diagnostics {
         let mut lines = Vec::new();
         model(&mut lines, facts);
         lines.push(Line::default());
-        usage(&mut lines, facts);
-        lines.push(Line::default());
         context(&mut lines, facts);
         lines.push(Line::default());
         self.servers(&mut lines, facts);
         lines.push(Line::default());
         self.formatters(&mut lines, facts);
+        lines.push(Line::default());
+        self.tools(&mut lines, facts);
         lines
     }
 
@@ -186,6 +201,29 @@ impl Diagnostics {
             });
         }
     }
+
+    /// The `rtk` bash would rewrite the model's commands through, or why
+    /// it would not.
+    fn tools(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
+        lines.push(title("tools"));
+        if !facts.checks {
+            lines.push(note("not checked in this session".into()));
+            return;
+        }
+        if !facts.rtk {
+            lines.push(unavailable("rtk".into(), "disabled in the config".into()));
+            return;
+        }
+        match &self.rtk {
+            None => lines.push(note("checking…".into())),
+            Some(Rtk::Found(program)) => {
+                let mut line = row(tick(), "rtk".into(), path(program, facts.home));
+                line.spans[2].style = Style::new().fg(Color::Cyan);
+                lines.push(line);
+            }
+            Some(Rtk::Missing) => lines.push(unavailable("rtk".into(), "not on PATH".into())),
+        }
+    }
 }
 
 /// A row per mode, the current one marked.
@@ -227,44 +265,6 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
             failed.error.clone(),
         ));
     }
-}
-
-/// Cells the busiest model's bar fills.
-const BAR_WIDTH: u64 = 30;
-
-/// A bar per model, scaled to the busiest one, then its turns.
-fn usage(lines: &mut Vec<Line<'static>>, facts: &Facts) {
-    lines.push(title("model usage"));
-    let Some(most) = facts.usage.iter().map(|(_, turns)| *turns).max() else {
-        lines.push(note("no turns yet".into()));
-        return;
-    };
-    let width = facts.usage.iter().map(|(m, _)| m.len()).max().unwrap_or(0);
-    let digits = most.to_string().len();
-    for (model, turns) in &facts.usage {
-        lines.push(Line::from(vec![
-            Span::raw(theme::INDENT),
-            Span::raw(format!("{model:width$}  ")),
-            Span::styled(
-                format!("{:bar$}", bar(*turns, most), bar = BAR_WIDTH as usize),
-                Style::new().fg(Color::Blue),
-            ),
-            Span::styled(format!("  {turns:>digits$}"), theme::dim()),
-        ]));
-    }
-}
-
-/// `turns` of `most` in eighths of a cell, at least one so every used
-/// model shows.
-fn bar(turns: u64, most: u64) -> String {
-    const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-    let eighths = (turns * BAR_WIDTH * 8 / most.max(1)).max(1);
-    let mut bar = "█".repeat((eighths / 8) as usize);
-    let rest = (eighths % 8) as usize;
-    if rest > 0 {
-        bar.push(EIGHTHS[rest]);
-    }
-    bar
 }
 
 /// The instruction files in the system prompt, the skills and agents
@@ -423,10 +423,10 @@ mod tests {
             failed: &[],
             listing: false,
             checks: true,
+            rtk: true,
             running,
             context,
             home: None,
-            usage: Vec::new(),
         }
     }
 
@@ -458,6 +458,7 @@ mod tests {
                 extensions: vec![],
                 command: Ok(vec!["rustfmt".into(), "$FILE".into()]),
             }]),
+            rtk: Some(Rtk::Found("/bin/rtk".into())),
             ..Diagnostics::default()
         };
 
@@ -472,6 +473,8 @@ mod tests {
         assert_eq!(text[servers + 2], "  ✗ gopls  not on PATH");
         let formatters = section(&text, "formatters");
         assert_eq!(text[formatters + 1], "  ✓ rustfmt  rustfmt $FILE");
+        let tools = section(&text, "tools");
+        assert_eq!(text[tools + 1], "  ✓ rtk  /bin/rtk");
         assert!(text.contains(&"  none found".to_string()));
     }
 
@@ -519,24 +522,37 @@ mod tests {
         let checking = text(&Diagnostics::default(), &facts);
         let servers = section(&checking, "language servers");
         assert_eq!(checking[servers + 1], "  checking…");
+        let tools = section(&checking, "tools");
+        assert_eq!(checking[tools + 1], "  checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
         assert_eq!(unchecked[servers + 1], "  not checked in this session");
+        assert_eq!(unchecked[tools + 1], "  not checked in this session");
     }
 
     #[test]
-    fn graphs_the_turns_on_each_model() {
+    fn says_why_rtk_does_not_run() {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
-        let empty = text(&Diagnostics::default(), &facts);
-        assert_eq!(empty[5..7], ["model usage", "  no turns yet"]);
 
-        facts.usage = vec![("glm", 120), ("kimi", 30), ("qwen", 1)];
-        let text = text(&Diagnostics::default(), &facts);
-        let row = |model: &str, bar: &str, turns: &str| format!("  {model}  {bar:30}  {turns}");
-        assert_eq!(text[6], row("glm ", &"█".repeat(30), "120"));
-        assert_eq!(text[7], row("kimi", "███████▌", " 30"));
-        assert_eq!(text[8], row("qwen", "▎", "  1"), "every used model shows");
+        let found = Diagnostics {
+            rtk: Some(Rtk::Found("/bin/rtk".into())),
+            ..Diagnostics::default()
+        };
+        let lines = text(&found, &facts);
+        let tools = section(&lines, "tools");
+        assert_eq!(lines[tools + 1], "  ✓ rtk  /bin/rtk");
+
+        let missing = Diagnostics {
+            rtk: Some(Rtk::Missing),
+            ..Diagnostics::default()
+        };
+        let lines = text(&missing, &facts);
+        assert_eq!(lines[tools + 1], "  ✗ rtk  not on PATH");
+
+        facts.rtk = false;
+        let lines = text(&missing, &facts);
+        assert_eq!(lines[tools + 1], "  ✗ rtk  disabled in the config");
     }
 }

@@ -1,6 +1,6 @@
-//! What checks the tools' writes, as the app shows it: the servers' states
-//! on the status bar, and what applies to the project in the diagnostics
-//! tab.
+//! What checks the tools' writes and rewrites their commands, as the app
+//! shows it: the servers' states on the status bar, and what applies to
+//! the project in the diagnostics tab.
 
 use nth_lsp::ServerStatus;
 use tokio::sync::watch;
@@ -36,6 +36,7 @@ impl App {
         };
         self.diagnostics.servers = None;
         self.diagnostics.formatters = None;
+        self.diagnostics.rtk = None;
         // Finding programs and roots walks PATH and the directory tree.
         let (lsp, cwd) = (checkers.lsp.clone(), self.cwd.clone());
         self.servers_lookup
@@ -43,6 +44,12 @@ impl App {
         let (formatters, cwd) = (checkers.formatters.clone(), self.cwd.clone());
         self.formatters_lookup
             .start(|_| tokio::spawn(async move { formatters.status(&cwd).await }));
+        // Where the `rtk` bash would rewrite through; the config may turn
+        // rewriting off, and then where it is does not matter.
+        if checkers.rtk {
+            self.rtk_lookup
+                .start(|_| tokio::task::spawn_blocking(|| nth_context::which("rtk")));
+        }
     }
 
     /// Takes the servers' new states, or stops listening once the sender

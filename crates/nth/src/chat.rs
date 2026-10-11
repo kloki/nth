@@ -57,6 +57,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
     let checkers = nth_tui::Checkers {
         lsp: lsp.clone(),
         formatters: post_write.formatters().clone(),
+        rtk: config.tools.bash.rtk,
     };
     let provider: Arc<dyn Provider> = Arc::new(provider);
     // The subagents the task tool starts report to the chat, a tab each.

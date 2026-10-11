@@ -1,7 +1,8 @@
-//! The usage tab: what the session spent, its subagents included. The
-//! totals, then per model and per turn: requests, tokens in, the share of
-//! them read from the provider's cache, tokens out and the price at the
-//! catalogue's rates.
+//! The usage tab: what the session spent, its subagents included, then the
+//! turns run on each model across runs. The spend is the totals, then per
+//! model and per turn: requests, tokens in, the share of them read from
+//! the provider's cache, tokens out and the price at the catalogue's
+//! rates; the `all time` bars graph the picker's turn counts.
 
 use nth_protocol::Cost;
 use nth_session::{
@@ -60,15 +61,17 @@ impl UsageView {
         })
     }
 
-    /// `cost` is what each model costs, when the catalogue says.
+    /// `cost` is what each model costs, when the catalogue says; `turns`
+    /// is how many ran on each model, most first.
     pub fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         ledger: &Ledger,
+        turns: &[(&str, u64)],
         cost: &dyn Fn(&str) -> Option<Cost>,
     ) {
-        let lines = lines(ledger, cost);
+        let lines = lines(ledger, turns, cost);
         self.height = usize::from(area.height);
         self.max_top = lines.len().saturating_sub(self.height);
         self.top = self.top.min(self.max_top);
@@ -77,40 +80,84 @@ impl UsageView {
     }
 }
 
-fn lines(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<Line<'static>> {
+fn lines(
+    ledger: &Ledger,
+    turns: &[(&str, u64)],
+    cost: &dyn Fn(&str) -> Option<Cost>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![title("current session")];
     let total = ledger.total();
     if total.steps == 0 {
-        return vec![
-            title("usage"),
-            note("nothing spent yet in this session".into()),
-        ];
+        lines.push(note("nothing spent yet in this session".into()));
+    } else {
+        let price = |model: &str, total: Total| usage::price([(model, total)], cost);
+        let all = row("all", total, ledger.price(cost));
+        lines.extend(styled(&[all]));
+
+        lines.push(Line::default());
+        lines.push(title("per model"));
+        let models: Vec<_> = ledger
+            .by_model()
+            .into_iter()
+            .map(|(model, total)| row(model, total, price(model, total)))
+            .collect();
+        lines.extend(styled(&models));
+
+        lines.push(Line::default());
+        lines.push(title("per turn"));
+        let per_turn: Vec<_> = usage::turns(ledger)
+            .map(|(who, spend)| row(&who, spend.into(), price(&spend.model, spend.into())))
+            .collect();
+        lines.extend(styled(&per_turn));
+
+        lines.push(Line::default());
+        lines.push(note(
+            "prices are list-price estimates from models.dev, whatever your plan bills".into(),
+        ));
     }
-    let price = |model: &str, total: Total| usage::price([(model, total)], cost);
-    let mut lines = vec![title("usage")];
-    let all = row("all", total, ledger.price(cost));
-    lines.extend(styled(&[all]));
 
     lines.push(Line::default());
-    lines.push(title("per model"));
-    let models: Vec<_> = ledger
-        .by_model()
-        .into_iter()
-        .map(|(model, total)| row(model, total, price(model, total)))
-        .collect();
-    lines.extend(styled(&models));
-
-    lines.push(Line::default());
-    lines.push(title("per turn"));
-    let turns: Vec<_> = usage::turns(ledger)
-        .map(|(who, spend)| row(&who, spend.into(), price(&spend.model, spend.into())))
-        .collect();
-    lines.extend(styled(&turns));
-
-    lines.push(Line::default());
-    lines.push(note(
-        "prices are list-price estimates from models.dev, whatever your plan bills".into(),
-    ));
+    lines.push(title("all time"));
+    model_usage(&mut lines, turns);
     lines
+}
+
+/// Cells the busiest model's bar fills.
+const BAR_WIDTH: u64 = 30;
+
+/// A bar per model that ran a turn, scaled to the busiest one, then its
+/// turns.
+fn model_usage(lines: &mut Vec<Line<'static>>, turns: &[(&str, u64)]) {
+    let Some(most) = turns.iter().map(|(_, turns)| *turns).max() else {
+        lines.push(note("no turns yet".into()));
+        return;
+    };
+    let width = turns.iter().map(|(m, _)| m.len()).max().unwrap_or(0);
+    let digits = most.to_string().len();
+    for (model, turns) in turns {
+        lines.push(Line::from(vec![
+            Span::raw(theme::INDENT),
+            Span::raw(format!("{model:width$}  ")),
+            Span::styled(
+                format!("{:bar$}", bar(*turns, most), bar = BAR_WIDTH as usize),
+                Style::new().fg(Color::Blue),
+            ),
+            Span::styled(format!("  {turns:>digits$}"), theme::dim()),
+        ]));
+    }
+}
+
+/// `turns` of `most` in eighths of a cell, at least one so every used
+/// model shows.
+fn bar(turns: u64, most: u64) -> String {
+    const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    let eighths = (turns * BAR_WIDTH * 8 / most.max(1)).max(1);
+    let mut bar = "█".repeat((eighths / 8) as usize);
+    let rest = (eighths % 8) as usize;
+    if rest > 0 {
+        bar.push(EIGHTHS[rest]);
+    }
+    bar
 }
 
 /// Rows in columns, who left-aligned and the counts right, each cell in
@@ -201,8 +248,12 @@ mod tests {
 
     use super::*;
 
-    fn text(ledger: &Ledger, cost: &dyn Fn(&str) -> Option<Cost>) -> Vec<String> {
-        lines(ledger, cost)
+    fn text(
+        ledger: &Ledger,
+        turns: &[(&str, u64)],
+        cost: &dyn Fn(&str) -> Option<Cost>,
+    ) -> Vec<String> {
+        lines(ledger, turns, cost)
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -249,8 +300,14 @@ mod tests {
     #[test]
     fn an_empty_session_says_so() {
         assert_eq!(
-            text(&Ledger::default(), &|_| None),
-            ["usage", "  nothing spent yet in this session"]
+            text(&Ledger::default(), &[], &|_| None),
+            [
+                "current session",
+                "  nothing spent yet in this session",
+                "",
+                "all time",
+                "  no turns yet",
+            ]
         );
     }
 
@@ -285,9 +342,9 @@ mod tests {
         };
 
         assert_eq!(
-            text(&ledger, &cost),
+            text(&ledger, &[], &cost),
             [
-                "usage",
+                "current session",
                 "  all  4 steps  1.0M in  77% cached  20k out  $0.38+",
                 "",
                 "per model",
@@ -299,7 +356,21 @@ mod tests {
                 "  #2 @explore kimi  3 steps   40k in     cache ?  900 out",
                 "",
                 "  prices are list-price estimates from models.dev, whatever your plan bills",
+                "",
+                "all time",
+                "  no turns yet",
             ]
         );
+    }
+
+    #[test]
+    fn graphs_the_turns_on_each_model() {
+        let turns = [("glm", 120), ("kimi", 30), ("qwen", 1)];
+        let text = text(&Ledger::default(), &turns, &|_| None);
+        assert_eq!(text[3], "all time", "after the empty session's line");
+        let row = |model: &str, bar: &str, turns: &str| format!("  {model}  {bar:30}  {turns}");
+        assert_eq!(text[4], row("glm ", &"█".repeat(30), "120"));
+        assert_eq!(text[5], row("kimi", "███████▌", " 30"));
+        assert_eq!(text[6], row("qwen", "▎", "  1"), "every used model shows");
     }
 }
