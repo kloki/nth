@@ -59,6 +59,12 @@ impl App {
                 if let Event::Usage(usage) = event {
                     self.spent.subagent_usage(id, usage);
                 }
+                // A subagent on a work item ticked its todo.
+                if let Event::ToolFinished { call, .. } = &event
+                    && call.name == "work_todo"
+                {
+                    self.read_work();
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
                 }
@@ -72,6 +78,10 @@ impl App {
                 model,
             } => {
                 self.spent.subagent_ended(id);
+                // A work item's subagent returned it.
+                if self.work.exists() {
+                    self.read_work();
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.ended(&outcome, elapsed, &model);
                     if view.closing {

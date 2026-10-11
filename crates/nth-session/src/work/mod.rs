@@ -8,6 +8,7 @@
 mod assign;
 mod close;
 mod item;
+pub mod outline;
 mod status;
 pub mod store;
 mod todo;

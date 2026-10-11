@@ -10,16 +10,18 @@ pub enum Panel {
     Chat,
     Diagnostics,
     Plan,
+    Work,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 3] = [Panel::Chat, Panel::Diagnostics, Panel::Plan];
+    pub const ALL: [Panel; 4] = [Panel::Chat, Panel::Diagnostics, Panel::Plan, Panel::Work];
 
     pub fn name(self) -> &'static str {
         match self {
             Panel::Chat => "chat",
             Panel::Diagnostics => "diagnostics",
             Panel::Plan => "plan",
+            Panel::Work => "work",
         }
     }
 }

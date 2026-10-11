@@ -354,6 +354,7 @@ impl App {
             self.follow_place();
         }
         let plan_path = session.plan_path();
+        let work_dir = session.work_dir();
         self.session = Some(session);
         self.index_files();
         self.load_git();
@@ -363,6 +364,7 @@ impl App {
             true => self.plan_for_session(plan_path),
             false => self.read_plan(),
         }
+        self.work_for_session(work_dir);
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
         // that failed is no reason to keep a subagent's answer from it.
