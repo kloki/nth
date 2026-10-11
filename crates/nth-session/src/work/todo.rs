@@ -101,6 +101,11 @@ impl Tool for WorkTodo {
                     .map_err(|e| format!("writing {} failed: {e}", a.at))?;
             }
             let (done, total) = todo_counts(&todos);
+            // Forgotten with the session that assigned it: a later one's
+            // model would read about another plan.
+            if a.closed.is_cancelled() {
+                return Ok(format!("Todo updated: {done}/{total} done."));
+            }
             a.inbox.post_work(WorkNotice {
                 cycle: a.at.cycle.clone(),
                 item: a.at.item.clone(),

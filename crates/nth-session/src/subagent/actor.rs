@@ -52,6 +52,7 @@ pub(super) async fn run(actor: Actor) {
         model: session.model.clone(),
     };
     if !send(&front_end, started).await {
+        abandon(&mut jobs, &closed, &agent, &description, id).await;
         return;
     }
     while let Some(job) = jobs.recv().await {
@@ -87,6 +88,10 @@ pub(super) async fn run(actor: Actor) {
         )
         .await
         {
+            lock(&shared).running = None;
+            let done = told(done, &closed);
+            settle(done, &agent, &description, id, Err(Error::Interrupted)).await;
+            abandon(&mut jobs, &closed, &agent, &description, id).await;
             return;
         }
         let began = Instant::now();
@@ -199,8 +204,32 @@ pub(super) async fn run(actor: Actor) {
         };
         heard &= send(&front_end, ended).await;
         if !heard {
+            abandon(&mut jobs, &closed, &agent, &description, id).await;
             return;
         }
+    }
+}
+
+/// The front-end is gone, so the actor ends: every job still in its inbox
+/// settles as interrupted, so whoever waits on one hears, and a work item
+/// on one does not stay running.
+async fn abandon(
+    jobs: &mut mpsc::UnboundedReceiver<Job>,
+    closed: &CancellationToken,
+    agent: &str,
+    description: &str,
+    id: SubagentId,
+) {
+    jobs.close();
+    while let Some(job) = jobs.recv().await {
+        settle(
+            told(job.done, closed),
+            agent,
+            description,
+            id,
+            Err(Error::Interrupted),
+        )
+        .await;
     }
 }
 
