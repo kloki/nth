@@ -9,7 +9,8 @@ A work plan is for work too big to do well in one conversation: parts that each 
 
 A cycle is a barrier: its items run in parallel, and the next cycle starts only when you have closed every one of them.
 
-- Put items in the same cycle only when they do not depend on each other and **do not edit the same files**. Every subagent works in the same directory, so two items touching one file overwrite each other.
+- Put items in the same cycle only when they do not depend on each other.
+- A subagent works in the directory you are in when you assign it. Items that share a checkout must **not edit the same files**, or they overwrite each other. When parallel items would collide, or each should land as its own branch, give each item a worktree (see below).
 - Work that needs another item's output goes in a later cycle.
 - Keep the number of cycles small; each one costs a full round of waiting and judging.
 
@@ -32,7 +33,7 @@ The subagent sees its item and nothing else: not the plan, not the other items, 
 
 - **Goal**: what to change and why, in a sentence or two.
 - **Where**: the files, functions and types involved. Give the paths you already found, so it does not search for them again.
-- **Constraints**: conventions to follow, what not to touch (the files other items of the cycle own), decisions already made.
+- **Constraints**: conventions to follow, what not to touch (the files other items in the same checkout own), decisions already made.
 - **Verify**: the exact command that shows it works, such as one test or the crate's test suite.
 - **Report**: what to say in its answer: files changed, how it verified them, what it could not do.
 
@@ -42,11 +43,17 @@ Seed the todo with the steps you expect; the subagent ticks them and adds its ow
 
 `work_assign` takes `subagent_type`, an agent from your agents list. Use `general` for items that change code and `explore` for read-only investigation; a project agent (an opencode-style markdown agent with `mode: subagent`) when one fits the item better, such as a reviewer whose tools cannot write.
 
+## Give items their own worktrees
+
+To put an item in its own checkout, call enter_worktree with a name for it, assign the item, and move on to the next item's worktree; exit_worktree takes you back to the main checkout. Each enter_worktree goes in a step of its own, before that item's work_assign, since the subagent starts wherever you are when you assign it. The assignments still return at once, so the items run in parallel. Say in the brief that the item works on its worktree's branch and should commit there.
+
+Each worktree is a branch named after it. Bringing them together is work of its own: a later cycle (or you) merges the branches into one and resolves conflicts, and the test and review cycles run on the merged result. The plan stays in the main checkout wherever you are. Worktrees are refused in plan mode.
+
 ## Run it
 
 1. Write `plan.md` in the plan's folder (work_status names it): a `# Title` line, then the goal. The user sees it above the cycles.
 2. Write the current cycle's items with work_item.
-3. Assign every item of the cycle with work_assign, all in one message, so they run in parallel.
+3. Assign every item of the cycle with work_assign, all in one message, so they run in parallel (items in their own worktrees are assigned one after another, each after its enter_worktree).
 4. End your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep, poll, or call work_status to wait.
 
 ## Judge what comes back
