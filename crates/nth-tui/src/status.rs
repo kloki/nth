@@ -3,13 +3,15 @@
 //! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
 //! and what the session spent on the left, git branch and status on the
 //! right, with the branch's pull request as a clickable `#N`. Line 2 shows
-//! a hint about the last key or the queued prompts on the left, and the
+//! a hint about the last key, or the queued prompts and the pending wakeup,
+//! on the left, and the
 //! running monitors and the language servers that check a write on the
 //! right: a dot per server, coloured by its state. The right side is cut
 //! first when a line is too narrow.
 
 use std::{path::Path, time::SystemTime};
 
+use jiff::tz::TimeZone;
 use nth_icons::icons;
 use nth_lsp::ServerState;
 use ratatui::{
@@ -89,7 +91,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
     let left = match &app.hint {
         Some(hint) => vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))],
-        None => queued(app),
+        None => {
+            let mut left = queued(app);
+            let wakeup = wakeup(app);
+            if !left.is_empty() && !wakeup.is_empty() {
+                left.push(Span::raw("  "));
+            }
+            left.extend(wakeup);
+            left
+        }
     };
     split_line(frame, checks, left, servers(app));
     link_area
@@ -177,6 +187,17 @@ fn queued(app: &App) -> Vec<Span<'static>> {
     };
     let line = format!("{} {count} queued · {first}", icons().queued);
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
+}
+
+/// Line 2, left, after the queue: `◷ 15:00 · check CI`, the wakeup the
+/// model scheduled, so you know a turn will start by itself.
+fn wakeup(app: &App) -> Vec<Span<'static>> {
+    let Some(wakeup) = &app.wakeup else {
+        return Vec::new();
+    };
+    let at = wakeup.at.to_zoned(TimeZone::system()).strftime("%H:%M");
+    let line = format!("{} {at} · {}", icons().tool.wakeup, wakeup.reason);
+    vec![Span::styled(line, Style::new().fg(Color::Cyan))]
 }
 
 /// Line 2, right: `● rust  ● typescript`.

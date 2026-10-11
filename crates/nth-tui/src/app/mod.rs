@@ -27,6 +27,7 @@ mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
 mod turn;
+mod wakeup;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -54,8 +55,8 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId, Monitors,
-    Provider, Show, Tool, Usage, monitor_log_dir,
+    AlarmRequest, Ask, BoxError, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId,
+    Monitors, Provider, Show, Tool, Usage, Wakeup, monitor_log_dir,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, store,
@@ -279,6 +280,12 @@ pub struct App {
     /// Notices wait for your next prompt rather than start a turn, after
     /// you stopped one.
     hold_notices: bool,
+    /// Where the running turn's tools schedule a wakeup.
+    alarm_tx: mpsc::Sender<AlarmRequest>,
+    alarm_rx: mpsc::Receiver<AlarmRequest>,
+    /// The turn the model asked for later, if one is pending: kept here
+    /// only, so it is gone when nth quits.
+    pub(crate) wakeup: Option<Wakeup>,
     /// A word on what the last key did not do, on the status bar until the
     /// next key.
     pub hint: Option<String>,
@@ -343,6 +350,8 @@ enum Step {
     Monitor(MonitorEvent),
     Subagent(SubagentEvent),
     NoticesDue,
+    Alarm(AlarmRequest),
+    WakeupDue,
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
@@ -376,6 +385,7 @@ impl App {
         let (screen_tx, screen_rx) = mpsc::channel(4);
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
         let (file_tx, file_rx) = mpsc::channel(16);
+        let (alarm_tx, alarm_rx) = mpsc::channel(4);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
         let monitor_root = std::env::temp_dir().join("nth");
@@ -476,6 +486,9 @@ impl App {
             monitor_root,
             notices_due: None,
             hold_notices: false,
+            alarm_tx,
+            alarm_rx,
+            wakeup: None,
             hint: None,
             areas: mouse::Areas::default(),
             clipboard: crate::terminal::copy,
@@ -569,6 +582,7 @@ impl App {
                 || self.running_monitors() > 0
                 || self.running_subagents() > 0
                 || self.showing_hero();
+            let wakeup_check = self.wakeup_check();
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -580,6 +594,8 @@ impl App {
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
+                Some(request) = self.alarm_rx.recv() => Step::Alarm(request),
+                _ = due(wakeup_check) => Step::WakeupDue,
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(ended),
@@ -616,6 +632,8 @@ impl App {
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::Subagent(event) => self.on_subagent(event),
                 Step::NoticesDue => self.notices_due(),
+                Step::Alarm(request) => self.on_alarm(request),
+                Step::WakeupDue => self.wakeup_due(),
                 Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
                 Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),

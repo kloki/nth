@@ -53,14 +53,16 @@ impl App {
     }
 
     /// Stops the monitors of a session that was left, after `/clear` or a
-    /// resume: they were watching for that conversation. Their tabs close
-    /// as each process stops, as they always do.
+    /// resume: they were watching for that conversation, as its pending
+    /// wakeup was for it. Their tabs close as each process stops, as they
+    /// always do.
     pub(super) fn left_session(&mut self) {
         self.left_subagents();
         self.monitors.forget_all();
         self.inbox.clear();
         self.notices_due = None;
         self.hold_notices = false;
+        self.wakeup = None;
         self.log_monitors_for_session();
     }
 

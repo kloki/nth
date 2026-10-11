@@ -1,0 +1,11 @@
+Schedules a wakeup: after a delay or at a time of day, you get a new turn with the prompt you leave yourself, as a `<wakeup>` notice. Use it when the user asks you to come back to something later ("check the deploy in 10 minutes", "look at CI at 15:00"), or when you are waiting on something slow that nothing will notify you about and there is nothing else to do meanwhile.
+
+Pass exactly one of:
+- `delay_seconds`: how long from now, from 1 to 86400 (24 hours).
+- `at`: a local time of day, `HH:MM` or `HH:MM:SS`, meaning its next occurrence (later today, or tomorrow when it has passed), or a full date and time such as `2026-10-11T15:00` (local) or `2026-10-11T15:00:00+02:00`. It must be in the future and within 24 hours.
+
+You do not need to know the time to use it: give the delay or the time you were told, and the result says the current time, when you will wake and how long that is from now.
+
+One wakeup is pending at a time: scheduling another replaces it, and the result says what it replaced. `cancel: true` drops the pending one. Write the `prompt` so that you understand it with nothing else: say what to check and what to do with the answer. Keep `reason` to a few words; the user sees it while the wakeup is pending.
+
+The wakeup lives only as long as nth runs: it is gone when the user quits. When it fires while you are working, the notice reaches you between your steps.

@@ -20,7 +20,7 @@ use crate::{Error, Session};
 /// Tools a subagent never gets: another task would nest without end, the
 /// worktree tools would take it out of its parent's directory, and the rest
 /// need the front-end, which belongs to the parent.
-const WITHHELD: [&str; 9] = [
+const WITHHELD: [&str; 10] = [
     "task",
     "task_stop",
     "question",
@@ -30,6 +30,7 @@ const WITHHELD: [&str; 9] = [
     "monitor_stop",
     "enter_worktree",
     "exit_worktree",
+    "schedule_wakeup",
 ];
 /// Goes with every prompt from a planning parent: its child has no tool
 /// that writes, but bash could still change files.
@@ -348,6 +349,7 @@ mod tests {
             "panel",
             "monitor",
             "monitor_stop",
+            "schedule_wakeup",
         ];
         let task = Task::new(
             Arc::new(Scripted::new(vec![])),

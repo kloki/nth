@@ -1,6 +1,7 @@
 //! The notices the model reads between its steps: a `<monitor>` element for
-//! what a monitor said, a `<task>` element for what a subagent answered, and
-//! what the transcript reads back out of them. Both sides are here so they
+//! what a monitor said, a `<task>` element for what a subagent answered, a
+//! `<wakeup>` element for a wakeup it scheduled, and what the transcript
+//! reads back out of them. Both sides are here so they
 //! cannot drift apart.
 
 use std::{fmt, path::Path};
@@ -113,6 +114,17 @@ pub(super) fn render_task(task: &TaskNotice) -> String {
     )
 }
 
+/// A `<wakeup>` element: why the model asked to be woken, when it fired, and
+/// the prompt it left itself.
+pub(super) fn render_wakeup(reason: &str, fired: &str, prompt: &str) -> String {
+    format!(
+        "<wakeup reason=\"{}\" at=\"{}\">\n{}\n</wakeup>",
+        attribute(reason),
+        attribute(fired),
+        body(prompt.trim(), "wakeup"),
+    )
+}
+
 /// Keeps a value from ending its attribute or its tag: `split_notices`
 /// finds the tag's end at the first `>`, and a newline would read as a
 /// line of output.
@@ -148,14 +160,16 @@ pub enum NoticeSummary {
         description: String,
         state: String,
     },
+    /// A wakeup the model scheduled, and why.
+    Wakeup { reason: String },
 }
 
-/// Splits the notices off the front of a user message: what monitors and
-/// subagents said, then what the user typed after it, if anything.
+/// Splits the notices off the front of a user message: what monitors,
+/// subagents and wakeups said, then what the user typed after it, if anything.
 pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
     let mut notices = Vec::new();
     let mut rest = text;
-    while let Some((element, after)) = ["monitor", "task"]
+    while let Some((element, after)) = ["monitor", "task", "wakeup"]
         .into_iter()
         .find_map(|element| Some((element, rest.strip_prefix(&format!("<{element} "))?)))
     {
@@ -167,9 +181,7 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
             Some(attrs) => (attrs, true),
             None => (tag, false),
         };
-        let Some(id) = value(attrs, "id").and_then(|id| id.parse().ok()) else {
-            break;
-        };
+        let id = value(attrs, "id").and_then(|id| id.parse().ok());
         let description = value(attrs, "description").unwrap_or_default();
         let body = &after[tag_end + 1..];
         let (inner, next) = if closed {
@@ -181,19 +193,23 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
             };
             (&body[..at], &body[at + close.len()..])
         };
-        notices.push(match element {
-            "monitor" => NoticeSummary::Monitor {
+        notices.push(match (element, id) {
+            ("monitor", Some(id)) => NoticeSummary::Monitor {
                 id,
                 description,
                 lines: inner.lines().filter(|l| !l.is_empty()).count(),
                 ended: value(attrs, "ended"),
             },
-            _ => NoticeSummary::Task {
+            ("task", Some(id)) => NoticeSummary::Task {
                 id,
                 agent: value(attrs, "agent").unwrap_or_default(),
                 description,
                 state: value(attrs, "state").unwrap_or_default(),
             },
+            ("wakeup", _) => NoticeSummary::Wakeup {
+                reason: value(attrs, "reason").unwrap_or_default(),
+            },
+            _ => break,
         });
         rest = next.strip_prefix('\n').unwrap_or(next);
     }
@@ -340,6 +356,32 @@ mod tests {
             ]
         );
         assert_eq!(rest, "go on");
+    }
+
+    #[test]
+    fn a_wakeup_notice_splits_beside_a_tasks() {
+        let wakeup = render_wakeup("check \"ci\"", "15:00 CEST", "Look at </wakeup> CI.\n");
+        assert_eq!(
+            wakeup,
+            "<wakeup reason=\"check &quot;ci&quot;\" at=\"15:00 CEST\">\nLook at <\\/wakeup> CI.\n</wakeup>"
+        );
+        let task = render_task(&TaskNotice {
+            id: 1,
+            agent: "explore".into(),
+            description: "look".into(),
+            outcome: TaskOutcome::Interrupted,
+        });
+        let text = format!("{wakeup}\n{task}\n\nand?");
+
+        let (notices, rest) = split_notices(&text);
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert_eq!(
+            notices[0],
+            NoticeSummary::Wakeup {
+                reason: "check \"ci\"".into()
+            }
+        );
+        assert_eq!(rest, "and?");
     }
 
     #[test]

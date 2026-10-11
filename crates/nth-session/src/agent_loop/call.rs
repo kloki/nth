@@ -52,6 +52,7 @@ pub(crate) async fn run_call(
         screen: ctx.screen.clone(),
         monitors: ctx.monitors.clone(),
         inbox: ctx.inbox.clone(),
+        alarm: ctx.alarm.clone(),
         writable: ctx.writable.clone(),
         llm: ctx.llm.clone(),
     };

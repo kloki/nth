@@ -1,6 +1,6 @@
 //! The model's inbox: what it has not heard yet, handed over between its
 //! steps or as a turn of its own when idle. Monitors put their output here
-//! and subagents their answers; `notice` is the text that carries them,
+//! and subagents their answers, and a wakeup the model scheduled its prompt; `notice` is the text that carries them,
 //! written for the model and read back by the transcript. A prompt you send
 //! while a turn runs waits here too, and pre-empts its next tool calls.
 
@@ -27,6 +27,13 @@ pub struct Inbox(Option<Arc<Mutex<Vec<Pending>>>>);
 enum Pending {
     Monitor(MonitorNotice),
     Task(TaskNotice),
+    /// A wakeup the model scheduled, fired.
+    Wakeup {
+        reason: String,
+        /// When it fired, as the model reads the time.
+        fired: String,
+        prompt: String,
+    },
     /// A prompt sent while a turn runs, for its next step.
     Prompt(String),
 }
@@ -58,6 +65,18 @@ impl Inbox {
     pub fn post_task(&self, task: TaskNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         lock(pending).push(Pending::Task(task));
+        true
+    }
+
+    /// Puts a fired wakeup in: the prompt the model left itself, why, and
+    /// when it fired. `false` without an inbox.
+    pub fn post_wakeup(&self, reason: String, fired: String, prompt: String) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        lock(pending).push(Pending::Wakeup {
+            reason,
+            fired,
+            prompt,
+        });
         true
     }
 
@@ -185,7 +204,7 @@ fn monitor_notice<'a>(
     match &mut pending[index] {
         Pending::Monitor(monitor) => monitor,
         // Just pushed or found as a monitor's.
-        Pending::Task(_) | Pending::Prompt(_) => {
+        Pending::Task(_) | Pending::Wakeup { .. } | Pending::Prompt(_) => {
             unreachable!("the index is a monitor's notice")
         }
     }
@@ -205,6 +224,11 @@ impl Pending {
                 m.ended,
             )),
             Pending::Task(task) => Some(notice::render_task(task)),
+            Pending::Wakeup {
+                reason,
+                fired,
+                prompt,
+            } => Some(notice::render_wakeup(reason, fired, prompt)),
             Pending::Prompt(_) => None,
         }
     }
@@ -213,7 +237,7 @@ impl Pending {
     fn prompt(&self) -> Option<&str> {
         match self {
             Pending::Prompt(text) => Some(text),
-            Pending::Monitor(_) | Pending::Task(_) => None,
+            Pending::Monitor(_) | Pending::Task(_) | Pending::Wakeup { .. } => None,
         }
     }
 }
@@ -237,6 +261,7 @@ mod tests {
         assert!(!inbox.reaches_model());
         assert!(!inbox.post_task(task()));
         assert!(!inbox.post_prompt("hold on".into()));
+        assert!(!inbox.post_wakeup("ci".into(), "15:00".into(), "look".into()));
         inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
         assert!(!inbox.has_notices());
         assert_eq!(inbox.take_notices(), None);
@@ -292,6 +317,18 @@ mod tests {
             "an ended notice is closed; a later line starts a new one"
         );
         assert_eq!(inbox.take_notices(), None, "taken");
+    }
+
+    #[test]
+    fn a_wakeup_is_a_notice() {
+        let inbox = Inbox::new();
+        assert!(inbox.post_wakeup("ci".into(), "15:00 CEST".into(), "look at CI".into()));
+
+        assert!(inbox.has_notices());
+        assert_eq!(
+            inbox.take_notices().unwrap(),
+            "<wakeup reason=\"ci\" at=\"15:00 CEST\">\nlook at CI\n</wakeup>"
+        );
     }
 
     #[test]

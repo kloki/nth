@@ -10,6 +10,7 @@ mod provider;
 mod question;
 mod screen;
 mod tool;
+mod wakeup;
 mod workdir;
 mod writable;
 
@@ -30,5 +31,6 @@ pub use provider::{
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
 pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
+pub use wakeup::{Alarm, AlarmRequest, Wakeup, WakeupRequest, clock};
 pub use workdir::Workdir;
 pub use writable::Writable;

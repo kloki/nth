@@ -7,7 +7,7 @@ use std::{
 };
 
 use nth_notify::Event;
-use nth_protocol::{Asker, FrontEnd, Screen};
+use nth_protocol::{Alarm, Asker, FrontEnd, Screen};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
@@ -254,6 +254,7 @@ impl App {
             screen: Screen::new(self.screen_tx.clone()),
             monitors: self.monitors.clone(),
             inbox: self.inbox.clone(),
+            alarm: Alarm::new(self.alarm_tx.clone()),
         };
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -1061,6 +1062,33 @@ mod tests {
             }))
         ));
         assert_eq!(last_user(&app), None, "nothing typed");
+    }
+
+    #[tokio::test]
+    async fn a_due_wakeup_wakes_the_agent_even_after_esc() {
+        let mut app = app_logging_to_tmp(Arc::new(Answer));
+        // As after Esc: notices wait for the next prompt.
+        app.hold_notices = true;
+        app.wakeup = Some(nth_protocol::Wakeup {
+            at: jiff::Timestamp::now(),
+            prompt: "look at CI".into(),
+            reason: "ci".into(),
+        });
+
+        app.wakeup_due();
+        assert_eq!(app.wakeup, None, "fired");
+        app.notices_due();
+        assert!(app.is_busy(), "you asked for this turn");
+        end(&mut app).await;
+
+        let sent = sent(&app);
+        let notice = sent.last().expect("sent");
+        assert!(notice.contains("<wakeup reason=\"ci\" at=\""), "{notice}");
+        assert!(notice.contains("\nlook at CI\n</wakeup>"), "{notice}");
+        assert!(app.chat.transcript.entries().any(|entry| matches!(
+            entry,
+            Entry::Notice(nth_protocol::NoticeSummary::Wakeup { reason }) if reason == "ci"
+        )));
     }
 
     #[tokio::test]
