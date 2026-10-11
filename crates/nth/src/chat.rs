@@ -90,6 +90,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 thinking: config.chat.thinking,
                 tool_output: config.chat.tool_output,
             },
+            split_width: config.layout.split_width,
         },
     )
     .await;

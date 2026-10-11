@@ -40,7 +40,7 @@ use std::{
 use anyhow::{Context, Result};
 use checks::lsp_changed;
 use completion::Completion;
-pub(crate) use content::{Content, Tab, TabState};
+pub(crate) use content::{Content, Panes, Tab, TabState};
 use crossterm::{
     event::{Event as TermEvent, EventStream, KeyEventKind},
     execute, queue,
@@ -135,6 +135,11 @@ pub struct App {
     /// How the chats show what the model did: the config's `[chat]` to
     /// start, `/settings` to change it for this run.
     settings: ChatSettings,
+    /// The terminal width from which the content panel splits, chat on the
+    /// left; 0 never splits. `[layout] split_width`.
+    split_width: u16,
+    /// Whether the last draw was that wide.
+    wide: bool,
     /// Saved like the history, one write at a time.
     llm_usage_saving: Job<std::io::Result<()>>,
     /// Prompts sent while a turn runs, oldest first; each runs as its own
@@ -419,6 +424,8 @@ impl App {
             llm_usage: LlmUsage::default(),
             llm_usage_saving: Job::default(),
             settings: ChatSettings::default(),
+            split_width: 0,
+            wide: false,
             queue: VecDeque::new(),
             steerable: None,
             interrupted: false,
@@ -559,6 +566,13 @@ impl App {
     /// `[chat]`; `/settings` flips them for the run.
     pub fn with_chat_settings(mut self, settings: ChatSettings) -> Self {
         self.settings = settings;
+        self
+    }
+
+    /// The terminal width from which the chat gets the left half of the
+    /// content panel, from `[layout]`; 0 never splits.
+    pub fn with_split_width(mut self, width: u16) -> Self {
+        self.split_width = width;
         self
     }
 
@@ -707,7 +721,12 @@ impl App {
 
     /// Whether the empty chat's field shows, which moves on every tick.
     fn showing_hero(&self) -> bool {
-        self.content.active() == Tab::Chat && self.chat.transcript.is_empty()
+        self.panes().shows(Tab::Chat) && self.chat.transcript.is_empty()
+    }
+
+    /// What the content panel shows, as of the last draw's width.
+    pub(super) fn panes(&self) -> Panes {
+        self.content.panes(self.wide)
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -724,102 +743,32 @@ impl App {
         self.close_answered_subagents();
         self.areas = mouse::Areas {
             header,
-            pr_link: None,
+            ..mouse::Areas::default()
         };
-        let tabs = self.tab_labels();
-        header::draw(frame, header, &tabs);
-        match self.content.active() {
-            Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.draw(frame, content, self.home.as_deref());
-                }
+        self.wide = self.split_width != 0 && frame.area().width >= self.split_width;
+        let panes = match self.panes() {
+            Panes::Single(tab) => vec![(tab, content)],
+            Panes::Split(side) => {
+                // Two columns between them: the chat's scrollbar and a gap.
+                let [left, right] =
+                    Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .spacing(2)
+                        .areas(content);
+                vec![(Tab::Chat, left), (side, right)]
             }
-            Tab::Subagent(id) => {
-                if let Some(view) = self.subagent_views.get_mut(&id) {
-                    let chat = view.draw(frame, content, self.settings);
-                    if let Some(state) = view.chat.scrollbar() {
-                        draw_scrollbar(frame, chat, state);
-                    }
-                }
-            }
-            Tab::Plan => {
-                let place = self.plan_place();
-                self.plan.draw(frame, content, &place);
-                if let Some(state) = self.plan.scrollbar() {
-                    draw_scrollbar(frame, content, state);
-                }
-            }
-            Tab::Work => {
-                let place = self.work_place();
-                let live = self.live_work();
-                self.work.draw(frame, content, &place, &live);
-                if let Some(state) = self.work.scrollbar() {
-                    draw_scrollbar(frame, content, state);
-                }
-            }
-            Tab::File(id) => {
-                let place = self.file_place(id);
-                if let Some(view) = self.file_views.get_mut(&id) {
-                    view.draw(frame, content, &place);
-                    if let Some(state) = view.scrollbar() {
-                        draw_scrollbar(frame, content, state);
-                    }
-                }
-            }
-            Tab::Diagnostics => {
-                let modes = Mode::ALL.map(|mode| {
-                    let llm = self.llm(mode);
-                    diagnostics::ModeModel {
-                        mode,
-                        effort: llm.effort.wire(),
-                        context_window: self.context_window_of(&llm.model),
-                        model: llm.model,
-                        current: mode == self.mode,
-                    }
-                });
-                let facts = diagnostics::Facts {
-                    modes,
-                    llms: self.llms.as_ref().map(|l| l.models.len()),
-                    failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
-                    listing: self.llm_listing.is_running(),
-                    checks: self.checkers.is_some(),
-                    rtk: self.checkers.as_ref().is_some_and(|checkers| checkers.rtk),
-                    running: &self.servers,
-                    context: &self.context,
-                    home: self.home.as_deref(),
-                };
-                self.diagnostics.draw(frame, content, &facts);
-                if let Some(state) = self.diagnostics.scrollbar() {
-                    draw_scrollbar(frame, content, state);
-                }
-            }
-            Tab::Usage => {
-                // The listing alone, so the view can be drawn into.
-                let llms = self.llms.as_ref();
-                let cost = |model: &str| llms?.cost_of(model);
-                self.usage_view.draw(
-                    frame,
-                    content,
-                    &self.spent.ledger,
-                    &self.llm_usage.ranked(),
-                    &cost,
-                );
-                if let Some(state) = self.usage_view.scrollbar() {
-                    draw_scrollbar(frame, content, state);
-                }
-            }
-            Tab::Chat => {
-                if self.chat.transcript.is_empty() {
-                    hero::draw(frame, content, self.hero_since.elapsed(), self.pointer);
-                }
-                self.chat.draw(frame, content, self.settings);
-                if let Some(state) = self.chat.scrollbar() {
-                    draw_scrollbar(frame, content, state);
-                }
-            }
+        };
+        for &(tab, area) in &panes {
+            self.draw_tab(frame, tab, area);
         }
+        let focused = panes
+            .iter()
+            .find(|(tab, _)| *tab == self.content.active())
+            .map_or(content, |&(_, area)| area);
+        self.areas.panes = panes;
+        let tabs = self.tab_labels();
+        header::draw(frame, header, &tabs, self.areas.header_split());
         if let Some(flash) = self.flash.as_ref().filter(|r| r.running()) {
-            flash.draw(frame.buffer_mut(), content);
+            flash.draw(frame.buffer_mut(), focused);
         }
         // The link's place is kept for a click to land on.
         self.areas.pr_link = status::draw(frame, status, self);
@@ -860,8 +809,104 @@ impl App {
         }
     }
 
+    /// `tab`'s view into `area`, with its scrollbar.
+    fn draw_tab(&mut self, frame: &mut Frame, tab: Tab, area: Rect) {
+        match tab {
+            Tab::Monitor(id) => {
+                if let Some(view) = self.monitor_views.get_mut(&id) {
+                    view.draw(frame, area, self.home.as_deref());
+                }
+            }
+            Tab::Subagent(id) => {
+                if let Some(view) = self.subagent_views.get_mut(&id) {
+                    let chat = view.draw(frame, area, self.settings);
+                    if let Some(state) = view.chat.scrollbar() {
+                        draw_scrollbar(frame, chat, state);
+                    }
+                }
+            }
+            Tab::Plan => {
+                let place = self.plan_place();
+                self.plan.draw(frame, area, &place);
+                if let Some(state) = self.plan.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
+            Tab::Work => {
+                let place = self.work_place();
+                let live = self.live_work();
+                self.work.draw(frame, area, &place, &live);
+                if let Some(state) = self.work.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
+            Tab::File(id) => {
+                let place = self.file_place(id);
+                if let Some(view) = self.file_views.get_mut(&id) {
+                    view.draw(frame, area, &place);
+                    if let Some(state) = view.scrollbar() {
+                        draw_scrollbar(frame, area, state);
+                    }
+                }
+            }
+            Tab::Diagnostics => {
+                let modes = Mode::ALL.map(|mode| {
+                    let llm = self.llm(mode);
+                    diagnostics::ModeModel {
+                        mode,
+                        effort: llm.effort.wire(),
+                        context_window: self.context_window_of(&llm.model),
+                        model: llm.model,
+                        current: mode == self.mode,
+                    }
+                });
+                let facts = diagnostics::Facts {
+                    modes,
+                    llms: self.llms.as_ref().map(|l| l.models.len()),
+                    failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
+                    listing: self.llm_listing.is_running(),
+                    checks: self.checkers.is_some(),
+                    rtk: self.checkers.as_ref().is_some_and(|checkers| checkers.rtk),
+                    running: &self.servers,
+                    context: &self.context,
+                    home: self.home.as_deref(),
+                };
+                self.diagnostics.draw(frame, area, &facts);
+                if let Some(state) = self.diagnostics.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
+            Tab::Usage => {
+                // The listing alone, so the view can be drawn into.
+                let llms = self.llms.as_ref();
+                let cost = |model: &str| llms?.cost_of(model);
+                self.usage_view.draw(
+                    frame,
+                    area,
+                    &self.spent.ledger,
+                    &self.llm_usage.ranked(),
+                    &cost,
+                );
+                if let Some(state) = self.usage_view.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
+            Tab::Chat => {
+                if self.chat.transcript.is_empty() {
+                    hero::draw(frame, area, self.hero_since.elapsed(), self.pointer);
+                }
+                self.chat.draw(frame, area, self.settings);
+                if let Some(state) = self.chat.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
+        }
+    }
+
     /// The header's tabs as it shows them now.
     fn tab_labels(&mut self) -> Vec<header::TabLabel> {
+        let panes = self.panes();
+        let split = matches!(panes, Panes::Split(_));
         self.content
             .tabs()
             .to_vec()
@@ -871,8 +916,9 @@ impl App {
                 header::TabLabel {
                     icon: self.tab_icon(tab),
                     name: self.tab_label(tab),
-                    state: self.content.shown_state(tab, state),
-                    active: tab == self.content.active(),
+                    state: self.content.shown_state(tab, state, panes),
+                    shown: panes.shows(tab),
+                    focused: split && tab == self.content.active(),
                 }
             })
             .collect()
