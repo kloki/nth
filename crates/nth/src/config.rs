@@ -787,6 +787,44 @@ mod tests {
     }
 
     #[test]
+    fn template_profiles_parse_when_uncommented() {
+        // Uncomments the profile example the way a user would: from the
+        // first `# [[profiles]]` to the end of the commented block.
+        let mut text = String::new();
+        let mut inside = false;
+        for line in TEMPLATE.lines() {
+            if line == "# [[profiles]]" {
+                inside = true;
+            } else if !line.starts_with('#') {
+                inside = false;
+            }
+            match line.strip_prefix("# ") {
+                Some(rest) if inside => text.push_str(rest),
+                _ => text.push_str(line),
+            }
+            text.push('\n');
+        }
+
+        let config = Config::parse(&text).expect("parses");
+
+        assert_eq!(config.profiles.len(), 2);
+        assert_eq!(config.profiles[0].name, "opencode go");
+        assert_eq!(
+            config.profile_llm(&config.profiles[0], Mode::Plan),
+            ("opencode/deepseek-v4.1-flash".into(), Effort::High)
+        );
+        assert_eq!(
+            config.profile_llm(&config.profiles[0], Mode::Act),
+            ("opencode/kimi-k3".into(), Effort::Default)
+        );
+        assert_eq!(config.profiles[1].name, "zen");
+        assert_eq!(
+            config.profile_llm(&config.profiles[1], Mode::Act),
+            ("zen/glm-5.3".into(), Effort::Default)
+        );
+    }
+
+    #[test]
     fn a_provider_needs_an_endpoint_and_a_key_variable() {
         let err = Config::parse("[provider.lyceum]\napi_key_env = \"K\"").expect_err("no url");
         assert!(err.to_string().contains("lyceum has no base_url"), "{err}");

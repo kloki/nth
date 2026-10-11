@@ -104,6 +104,15 @@ default = "plan"
 # [profiles.act]
 # model = "opencode/kimi-k3"
 # effort = "default"
+#
+# [[profiles]]
+# name = "zen"
+#
+# [profiles.plan]
+# model = "zen/deepseek-v4.1-flash"
+#
+# [profiles.act]
+# model = "zen/glm-5.3"
 
 [chat]
 # What the chat shows of what the model did. `/settings` toggles these for the
