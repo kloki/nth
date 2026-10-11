@@ -24,6 +24,14 @@ pub(super) struct Areas {
     pub pr_link: Option<Rect>,
 }
 
+impl Areas {
+    /// Where the right pane starts when the panel is split, which the
+    /// header lines its tabs up with.
+    pub fn header_split(&self) -> Option<u16> {
+        self.panes.get(1).map(|&(_, area)| area.x)
+    }
+}
+
 impl App {
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = Position::new(mouse.column, mouse.row);
@@ -47,7 +55,8 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) if self.areas.header.contains(at) => {
                 let tabs = self.tab_labels();
-                if let Some(index) = header::tab_at(&tabs, self.areas.header, at.x) {
+                let split = self.areas.header_split();
+                if let Some(index) = header::tab_at(&tabs, self.areas.header, split, at.x) {
                     self.content.select(index);
                 }
             }

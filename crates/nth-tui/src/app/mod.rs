@@ -746,8 +746,6 @@ impl App {
             ..mouse::Areas::default()
         };
         self.wide = self.split_width != 0 && frame.area().width >= self.split_width;
-        let tabs = self.tab_labels();
-        header::draw(frame, header, &tabs);
         let panes = match self.panes() {
             Panes::Single(tab) => vec![(tab, content)],
             Panes::Split(side) => {
@@ -767,6 +765,8 @@ impl App {
             .find(|(tab, _)| *tab == self.content.active())
             .map_or(content, |&(_, area)| area);
         self.areas.panes = panes;
+        let tabs = self.tab_labels();
+        header::draw(frame, header, &tabs, self.areas.header_split());
         if let Some(flash) = self.flash.as_ref().filter(|r| r.running()) {
             flash.draw(frame.buffer_mut(), focused);
         }
@@ -906,6 +906,7 @@ impl App {
     /// The header's tabs as it shows them now.
     fn tab_labels(&mut self) -> Vec<header::TabLabel> {
         let panes = self.panes();
+        let split = matches!(panes, Panes::Split(_));
         self.content
             .tabs()
             .to_vec()
@@ -916,8 +917,8 @@ impl App {
                     icon: self.tab_icon(tab),
                     name: self.tab_label(tab),
                     state: self.content.shown_state(tab, state, panes),
-                    active: tab == self.content.active(),
-                    beside: matches!(panes, Panes::Split(side) if side == tab),
+                    shown: panes.shows(tab),
+                    focused: split && tab == self.content.active(),
                 }
             })
             .collect()

@@ -514,11 +514,20 @@ async fn a_wide_terminal_shows_the_chat_beside_the_other_tab() {
     let split = rows_of(&mut app, 100);
     assert!(shows_in(&split, 0..50, "hello there"), "{split:#?}");
     assert!(shows_in(&split, 50..100, "model"), "{split:#?}");
-    assert!(split[0].contains("[● diagnostics]"), "{:?}", split[0]);
+    assert!(split[0].starts_with(" [› chat]"), "{:?}", split[0]);
+    let header: Vec<char> = split[0].chars().collect();
+    let right: String = header[50..].iter().collect();
+    assert!(
+        right.starts_with(" [● diagnostics]"),
+        "over the right pane: {right:?}"
+    );
 
     app.apply(Action::Content(0));
     let focused = rows_of(&mut app, 100);
-    assert!(focused[0].contains("[› chat]"), "{:?}", focused[0]);
+    assert!(
+        focused[0].contains("[● diagnostics]"),
+        "both showing tabs bracketed"
+    );
     assert!(
         shows_in(&focused, 50..100, "model"),
         "the side keeps its tab"
