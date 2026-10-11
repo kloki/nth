@@ -54,6 +54,7 @@ pub(crate) async fn run_call(
         inbox: ctx.inbox.clone(),
         writable: ctx.writable.clone(),
         llm: ctx.llm.clone(),
+        session: ctx.session.clone(),
     };
     let run = async {
         match tool {

@@ -15,10 +15,10 @@ const PLAN_MODE: &str = include_str!("plan_mode.md");
 const BUILD_SWITCH: &str = include_str!("build_switch.md");
 const APPROVED: &str = include_str!("approved.md");
 
-/// The project `.nth`'s `.gitignore`: nth's plan files stay out of git,
-/// while project skills (`.nth/skills`) stay tracked. It lists itself
-/// too, so nth's own directory stays invisible to git.
-const GITIGNORE: &str = "# nth's plan files.\nplans/\n.gitignore\n";
+/// The project `.nth`'s `.gitignore`: nth's plan and work files stay out
+/// of git, while project skills (`.nth/skills`) stay tracked. It lists
+/// itself too, so nth's own directory stays invisible to git.
+const GITIGNORE: &str = "# nth's plan and work files.\nplans/\nwork/\n.gitignore\n";
 
 /// Where the session `id` keeps its plan: `<cwd>/.nth/plans/<id>.md`.
 pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
@@ -26,8 +26,9 @@ pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
 }
 
 /// Creates `<cwd>/.nth` and, unless one is already there, the
-/// `.gitignore` that keeps nth's plan files out of git. Called when plan
-/// mode starts, so the directory is ready before the model writes the plan.
+/// `.gitignore` that keeps nth's plan and work files out of git. Called
+/// when plan mode starts, so the directory is ready before the model
+/// writes the plan, and before a work item is first written.
 ///
 /// A `.gitignore` already there is left alone: the user's rules win.
 pub async fn ensure_dir(cwd: &Path) -> io::Result<()> {

@@ -15,12 +15,13 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{Done, Job, SubagentId, Subagents, WRITERS};
-use crate::{Error, Session};
+use crate::{Error, Session, work::ORCHESTRATOR_TOOLS};
 
 /// Tools a subagent never gets: another task would nest without end, the
-/// worktree tools would take it out of its parent's directory, and the rest
-/// need the front-end, which belongs to the parent.
-const WITHHELD: [&str; 9] = [
+/// worktree tools would take it out of its parent's directory, the work
+/// plan is its parent's to run, and the rest need the front-end, which
+/// belongs to the parent.
+const WITHHELD: [&str; 13] = [
     "task",
     "task_stop",
     "question",
@@ -30,6 +31,10 @@ const WITHHELD: [&str; 9] = [
     "monitor_stop",
     "enter_worktree",
     "exit_worktree",
+    ORCHESTRATOR_TOOLS[0],
+    ORCHESTRATOR_TOOLS[1],
+    ORCHESTRATOR_TOOLS[2],
+    ORCHESTRATOR_TOOLS[3],
 ];
 /// Goes with every prompt from a planning parent: its child has no tool
 /// that writes, but bash could still change files.
@@ -348,6 +353,8 @@ mod tests {
             "panel",
             "monitor",
             "monitor_stop",
+            "work_item",
+            "work_status",
         ];
         let task = Task::new(
             Arc::new(Scripted::new(vec![])),

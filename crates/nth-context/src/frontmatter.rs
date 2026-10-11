@@ -53,6 +53,12 @@ pub fn field(value: &Value, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// A whole-number field of the frontmatter; `None` when missing or not
+/// a number.
+pub fn number(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
+}
+
 /// Splits at the closing `---` line into the YAML and the body after it.
 fn close(rest: &str) -> Option<(&str, &str)> {
     let mut start = 0;

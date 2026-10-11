@@ -19,7 +19,7 @@ use crate::{
     DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
-    subagent, system_prompt,
+    subagent, system_prompt, work,
 };
 
 fn first_line(text: &str) -> &str {
@@ -191,6 +191,11 @@ impl Session {
         plan::plan_path(&self.cwd, &self.id)
     }
 
+    /// Where this session's orchestration keeps its work items.
+    pub fn work_dir(&self) -> PathBuf {
+        work::work_dir(&self.cwd, &self.id.to_string())
+    }
+
     /// Later turns go to `model`. The history is kept; only the system
     /// prompt changes, since it names the model.
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -294,6 +299,7 @@ impl Session {
                 effort: self.effort,
             },
             workdir: Workdir::new(self.origin.clone()),
+            session: self.id.to_string(),
             ..ToolContext::new(self.cwd.clone())
         };
         let mut spend = Spend::new(&self.model, None);
@@ -746,6 +752,7 @@ mod tests {
 
         let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
         assert!(gitignore.contains("plans/"), "{gitignore}");
+        assert!(gitignore.contains("work/"), "{gitignore}");
         assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 

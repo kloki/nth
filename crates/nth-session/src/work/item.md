@@ -1,0 +1,14 @@
+Write one item of a work plan: an orchestration of a long piece of work that you run and subagents do.
+
+A work plan is a list of cycles, run one after another; each cycle is a list of items, worked on in parallel, one subagent an item. An item is a brief (the instruction) and a todo list. The plan lives under `.nth/work/<session>/`, one folder per cycle and one markdown file per item.
+
+You are the orchestrator. The subagent on an item sees that item only: not the plan, not the other items, not this conversation. Write each instruction so it stands on its own: what to do, where, how to verify it, and what to report back.
+
+How to run a plan:
+1. Write the items of a cycle with work_item, one call per item. Give `cycle_name` the first time you use a cycle number.
+2. Assign each item of the current cycle to a subagent with work_assign, all in one message so they run in parallel.
+3. Then stop and wait. Every change to an item reaches you as a `<work_item>` notice, which wakes you: `state="todo"` as the subagent ticks its steps, `state="returned"` when it answers (with its answer, or its error), and `state="stalled"` when it has been quiet for a while (it still runs). Do not sleep, poll or call work_status to wait; end your turn when there is nothing to do.
+4. When an item returns, judge it: close it with work_close as done or failed, or fix the brief with work_item and assign it again. Its ticked steps are kept.
+5. Once every item of a cycle is closed, the next cycle's items can be assigned. Nothing moves on by itself.
+
+Writing an item that exists replaces it and makes it pending again, unless it is running. You may write items of later cycles at any time; they wait for the earlier cycles to be closed.

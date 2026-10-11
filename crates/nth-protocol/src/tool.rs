@@ -47,6 +47,9 @@ pub struct ToolContext {
     /// The model and effort the session runs on, for a tool that starts
     /// another session on the same.
     pub llm: Llm,
+    /// The id of the session the call runs for, for a tool that keeps
+    /// something per session; empty outside one.
+    pub session: String,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -80,6 +83,7 @@ impl ToolContext {
             inbox: Inbox::default(),
             writable: Writable::Any,
             llm: Llm::default(),
+            session: String::new(),
         }
     }
 }

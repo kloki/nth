@@ -272,7 +272,8 @@ fn providers(config: &Config) -> Result<Providers> {
 }
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands
-/// each subagent its share of the same list, and task_stop.
+/// each subagent its share of the same list, task_stop, and the work
+/// plan's tools.
 fn tools(
     config: &Config,
     post_write: nth_tools::PostWrite,
@@ -291,6 +292,7 @@ fn tools(
         .collect();
     tools.push(Box::new(task));
     tools.push(Box::new(stop));
+    tools.extend(nth_session::Work::new().tools());
     tools
 }
 
