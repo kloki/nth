@@ -70,7 +70,7 @@ impl Tool for WorkItem {
             if splits_sections(&args.instruction) {
                 return Err("the instruction may not have a line \"## Todo\" or \"## Result\": the item file has those sections of its own".into());
             }
-            let live = self.work.files.0.lock().await;
+            let live = self.work.files().0.lock().await;
             let plan = reconciled(&store, &live).await?;
             let cycle = plan.cycle(args.cycle);
             let folder = match (cycle, &args.cycle_name) {
@@ -106,26 +106,40 @@ impl Tool for WorkItem {
                     "{at} is running{task}; wait for it to return, or stop it with task_stop first"
                 ));
             }
+            // Steps kept word for word keep their ticks, and the last result
+            // stays for the next subagent: rewriting a brief should not lose
+            // what was done.
+            let ticked = |text: &str| {
+                before.is_some_and(|b| b.todos.iter().any(|t| t.done && t.text == text))
+            };
             let todos: Vec<Todo> = args
                 .todos
                 .iter()
-                .filter(|text| !text.trim().is_empty())
+                .map(|text| nth_protocol::one_line(text))
+                .filter(|text| !text.is_empty())
                 .map(|text| Todo {
-                    text: nth_protocol::one_line(text),
-                    done: false,
+                    done: ticked(&text),
+                    text,
                 })
                 .collect();
             let count = todos.len();
-            let item = Item::pending(at.clone(), &args.title, &args.instruction, todos);
-            let _ = plan::ensure_dir(&ctx.cwd).await;
+            let kept = todos.iter().filter(|t| t.done).count();
+            let item = Item {
+                result: before.and_then(|b| b.result.clone()),
+                ..Item::pending(at.clone(), &args.title, &args.instruction, todos)
+            };
+            let _ = plan::ensure_dir(&super::root(ctx)).await;
             store
                 .write(&item)
                 .await
                 .map_err(|e| format!("writing {at} failed: {e}"))?;
-            let steps = match count {
+            let mut steps = match count {
                 1 => "1 step".to_string(),
                 n => format!("{n} steps"),
             };
+            if kept > 0 {
+                steps.push_str(&format!(", {kept} still ticked"));
+            }
             let mut said = match before {
                 Some(_) => format!("Wrote {at} again: pending, {steps}."),
                 None => format!("Wrote {at}: pending, {steps}."),
@@ -165,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn it_writes_the_item_file_and_names_the_cycle_once() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = WorkItem::new(Work::new());
+        let tool = WorkItem::new(crate::work::tests::work());
         let ctx = ctx(dir.path());
 
         assert_eq!(
@@ -214,7 +228,7 @@ mod tests {
     #[tokio::test]
     async fn a_running_item_is_not_rewritten_and_a_closed_cycle_opens_again() {
         let dir = tempfile::tempdir().unwrap();
-        let work = Work::new();
+        let work = crate::work::tests::work();
         let tool = WorkItem::new(work.clone());
         let ctx = ctx(dir.path());
         tool.call(args(1, Some("a"), "x"), &ctx).await.unwrap();
@@ -228,7 +242,12 @@ mod tests {
         item.status = Status::Running;
         item.task = Some(4);
         store.write(&item).await.unwrap();
-        work.files.0.lock().await.insert(at.path(store.dir()), 4);
+        work.files()
+            .0
+            .lock()
+            .await
+            .running
+            .insert(at.path(store.dir()), 4);
 
         assert_eq!(
             tool.call(args(1, None, "x"), &ctx).await.unwrap_err(),
@@ -236,10 +255,26 @@ mod tests {
         );
 
         item.status = Status::Done;
+        item.todos[0].done = true;
+        item.result = Some("parsed".into());
         store.write(&item).await.unwrap();
+        let mut renamed = args(1, None, "x");
+        renamed["todos"] = json!(["parse", "write it all"]);
+        assert_eq!(
+            tool.call(renamed, &ctx).await.unwrap(),
+            "Wrote 01-a/x again: pending, 2 steps, 1 still ticked. This opens cycle 01-a again: later cycles wait for it."
+        );
+        let rewritten = store.read(&at).await.unwrap().unwrap();
+        assert!(rewritten.todos[0].done && !rewritten.todos[1].done);
+        assert_eq!(
+            rewritten.result.as_deref(),
+            Some("parsed"),
+            "for the next subagent"
+        );
         assert_eq!(
             tool.call(args(1, None, "z"), &ctx).await.unwrap(),
-            "Wrote 01-a/z: pending, 2 steps. This opens cycle 01-a again: later cycles wait for it."
+            "Wrote 01-a/z: pending, 2 steps.",
+            "the cycle is open already"
         );
     }
 }

@@ -187,6 +187,9 @@ pub struct Plan {
     pub goal: Option<String>,
     /// By number.
     pub cycles: Vec<Cycle>,
+    /// Folders in the work directory that are not a cycle: not named
+    /// `NN-slug`, or a second folder for a cycle's number.
+    pub ignored: Vec<String>,
 }
 
 impl Plan {
@@ -259,7 +262,11 @@ impl Store {
         if let Some(folder) = path.parent() {
             tokio::fs::create_dir_all(folder).await?;
         }
-        let tmp = path.with_extension("md.tmp");
+        // Its own name per write: a write cancelled mid-way still lands,
+        // and must not land in the file another write is about to rename.
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("md.{}.{n}.tmp", std::process::id()));
         tokio::fs::write(&tmp, render(item)).await?;
         tokio::fs::rename(&tmp, &path).await
     }
@@ -278,7 +285,11 @@ fn load(dir: &Path) -> io::Result<Option<Plan>> {
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        let Some((number, slug)) = parse_cycle(&name) else {
+        // The tools find a cycle's items by `cycle_name`, so a folder named
+        // otherwise (`1-a`) would hold items nobody can reach.
+        let Some((number, slug)) = parse_cycle(&name).filter(|(n, s)| cycle_name(*n, s) == name)
+        else {
+            plan.ignored.push(name);
             continue;
         };
         let mut items = Vec::new();
@@ -308,6 +319,15 @@ fn load(dir: &Path) -> io::Result<Option<Plan>> {
     }
     plan.cycles
         .sort_by(|a, b| (a.number, &a.slug).cmp(&(b.number, &b.slug)));
+    // One folder a number: the tools reach the first only, and the rest
+    // would hold every later cycle up for good.
+    let mut seen = std::collections::BTreeSet::new();
+    let (cycles, doubles): (Vec<_>, Vec<_>) = std::mem::take(&mut plan.cycles)
+        .into_iter()
+        .partition(|cycle| seen.insert(cycle.number));
+    plan.cycles = cycles;
+    plan.ignored.extend(doubles.iter().map(Cycle::name));
+    plan.ignored.sort();
     match fs::read_to_string(dir.join("plan.md")) {
         Ok(text) => (plan.title, plan.goal) = overview(&text),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -398,7 +418,10 @@ pub fn parse(at: ItemRef, text: &str) -> Result<Item, String> {
         ),
         None => None,
     };
-    let task = match frontmatter::number(&front, "task") {
+    // A hand edit may quote it.
+    let task = frontmatter::number(&front, "task")
+        .or_else(|| frontmatter::field(&front, "task")?.parse().ok());
+    let task = match task {
         Some(task) => Some(TaskId::try_from(task).map_err(|_| format!("task {task} is too big"))?),
         None => None,
     };
@@ -462,14 +485,14 @@ fn sections(body: &str) -> Result<Sections, String> {
     let (mut instruction, mut result) = (Vec::new(), Vec::new());
     let mut todos = Vec::new();
     for line in lines {
-        match line.trim_end() {
-            TODO => part = Part::Todo,
-            RESULT => part = Part::Result,
-            line => match part {
-                Part::Instruction => instruction.push(line),
-                Part::Todo => todos.extend(todo(line)),
-                Part::Result => result.push(line),
-            },
+        match (&part, line.trim_end()) {
+            // The result is last and the subagent's own words, so a heading
+            // in it is just text.
+            (Part::Result, _) => result.push(line),
+            (_, TODO) => part = Part::Todo,
+            (_, RESULT) => part = Part::Result,
+            (Part::Instruction, line) => instruction.push(line),
+            (Part::Todo, line) => todos.extend(todo(line)),
         }
     }
     let result = result.join("\n").trim().to_string();
@@ -614,6 +637,30 @@ mod tests {
     }
 
     #[test]
+    fn a_result_keeps_its_own_headings() {
+        let item = Item {
+            status: Status::Returned,
+            todos: todos(&[("one", true)]),
+            result: Some(
+                "Done. Follow-ups:\n\n## Todo\n\n- [ ] add tests\n\n## Result\n\nThat is all."
+                    .into(),
+            ),
+            ..Item::pending(at("01-a", "x"), "X", "", Vec::new())
+        };
+
+        let back = parse(item.at.clone(), &render(&item)).unwrap();
+
+        assert_eq!(back.todos, item.todos);
+        assert_eq!(back.result, item.result);
+        let quoted = parse(
+            at("01-a", "x"),
+            "---\nstatus: running\ntask: \"3\"\n---\n# X\n",
+        )
+        .unwrap();
+        assert_eq!(quoted.task, Some(3));
+    }
+
+    #[test]
     fn a_file_that_is_not_an_item_says_why() {
         assert_eq!(
             parse(at("01-a", "x"), "---\nstatus: sleeping\n---\n# X\n"),
@@ -665,6 +712,15 @@ mod tests {
         assert_eq!(
             plan.first_open_cycle().map(Cycle::name).as_deref(),
             Some("02-b")
+        );
+        assert_eq!(plan.ignored, ["misc"]);
+        std::fs::create_dir(store.dir().join("1-x")).unwrap();
+        std::fs::create_dir(store.dir().join("02-a")).unwrap();
+        let reloaded = store.load().await.unwrap().unwrap();
+        assert_eq!(
+            reloaded.ignored,
+            ["02-b", "1-x", "misc"],
+            "02-a sorts first"
         );
         assert_eq!(
             store

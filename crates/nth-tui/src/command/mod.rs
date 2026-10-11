@@ -12,7 +12,7 @@ use crate::popup::Popup;
 /// Longest skill description shown in the popup, so it stays narrow.
 const ABOUT_CHARS: usize = 48;
 /// Rows of the command popup; enough for every command and a skill or two.
-const LIMIT: usize = 10;
+const LIMIT: usize = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
@@ -26,10 +26,11 @@ pub enum Command {
     Resume,
     Settings,
     Usage,
+    Work,
 }
 
 impl Command {
-    const ALL: [Command; 10] = [
+    const ALL: [Command; 11] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
@@ -40,6 +41,7 @@ impl Command {
         Command::Resume,
         Command::Settings,
         Command::Usage,
+        Command::Work,
     ];
 
     pub fn name(self) -> &'static str {
@@ -54,6 +56,7 @@ impl Command {
             Command::Resume => "resume",
             Command::Settings => "settings",
             Command::Usage => "usage",
+            Command::Work => "work",
         }
     }
 
@@ -69,6 +72,7 @@ impl Command {
             Command::Resume => "reopen a past session",
             Command::Settings => "toggle thinking and tool output",
             Command::Usage => "show what the session spent",
+            Command::Work => "show the work plan",
         }
     }
 
@@ -259,6 +263,7 @@ mod tests {
                 "resume",
                 "settings",
                 "usage",
+                "work",
             ],
             "the commands fill the popup; the skills come after them"
         );

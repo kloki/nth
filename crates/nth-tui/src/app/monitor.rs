@@ -38,7 +38,7 @@ impl App {
                 self.content.remove(Tab::Monitor(id));
             }
         }
-        if self.notices_due.is_none() && self.inbox.has_notices() {
+        if self.notices_due.is_none() && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
     }
@@ -47,7 +47,7 @@ impl App {
     /// running, which hands them over itself, or you stopped the last one.
     pub(super) fn notices_due(&mut self) {
         self.notices_due = None;
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.start_turn(String::new());
         }
     }
@@ -93,10 +93,14 @@ impl App {
     }
 
     /// Closes the tab showing, unless it is a monitor or subagent still
-    /// running or the plan, which shows while there is one.
+    /// running, or the plan or the work plan, which show while there is one.
     pub(super) fn close_content(&mut self) {
         if self.content.active() == Tab::Plan && self.plan.exists() {
             self.hint = Some("the plan tab stays while there is a plan".into());
+            return;
+        }
+        if self.content.active() == Tab::Work && self.work.exists() {
+            self.hint = Some("the work tab stays while there is a plan".into());
             return;
         }
         let running = match self.content.active() {

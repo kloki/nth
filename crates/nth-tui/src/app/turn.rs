@@ -190,7 +190,7 @@ impl App {
     /// Starts a turn with `text` after what monitors said since the last
     /// turn; `text` is empty when only the monitors have something to say.
     pub(super) fn start_turn(&mut self, text: String) {
-        if self.session.is_none() || (text.is_empty() && !self.inbox.has_notices()) {
+        if self.session.is_none() || (text.is_empty() && !self.inbox.wakes()) {
             return;
         }
         let Some(mut session) = self.session.take() else {
@@ -354,6 +354,7 @@ impl App {
             self.follow_place();
         }
         let plan_path = session.plan_path();
+        let work_dir = session.work_dir();
         self.session = Some(session);
         self.index_files();
         self.load_git();
@@ -362,6 +363,10 @@ impl App {
         match plan_path != self.plan_path {
             true => self.plan_for_session(plan_path),
             false => self.read_plan(),
+        }
+        match work_dir != self.work_dir {
+            true => self.work_for_session(work_dir),
+            false => self.read_work(),
         }
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
@@ -385,7 +390,7 @@ impl App {
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
         self.notify_turn_ended(shell, error, elapsed);

@@ -1,0 +1,1 @@
+Update the todo list of the work item you are on. Send the whole list as it is now, in order: it replaces the one before. Tick each step as soon as you finish it rather than all at the end, since whoever assigned the item watches the list, and add a step when you find one that is needed. Keep the steps short.

@@ -58,7 +58,7 @@ impl Tool for WorkClose {
         async move {
             let args: Args = crate::agent_loop::parse_args(args)?;
             let store = Work::store(ctx)?;
-            let live = self.work.files.0.lock().await;
+            let live = self.work.files().0.lock().await;
             let mut plan = reconciled(&store, &live).await?;
             let Some(cycle) = plan.cycle(args.cycle) else {
                 return Err(format!("there is no cycle {}", args.cycle));
@@ -85,10 +85,18 @@ impl Tool for WorkClose {
                 }
                 _ => {}
             }
-            item.status = match args.outcome {
+            let status = match args.outcome {
                 Outcome::Done => Status::Done,
                 Outcome::Failed => Status::Failed,
             };
+            // A second verdict that says the same is a model that lost
+            // track; a different one is a change of mind, which stands.
+            if item.status == status {
+                return Err(format!(
+                    "{at} is closed as {status} already; work_item writes it again if there is more to do"
+                ));
+            }
+            item.status = status;
             item.note = args
                 .note
                 .map(|note| one_line(&note))
@@ -135,7 +143,7 @@ mod tests {
     #[tokio::test]
     async fn closing_says_what_the_plan_waits_for() {
         let dir = tempfile::tempdir().unwrap();
-        let work = Work::new();
+        let work = crate::work::tests::work();
         let ctx = ctx(dir.path());
         let write = WorkItem::new(work.clone());
         for (cycle, name, item) in [(1, "a", "x"), (1, "a", "y"), (2, "b", "z")] {
@@ -164,6 +172,10 @@ mod tests {
         };
         let item = store.read(&at).await.unwrap().unwrap();
         assert_eq!(item.note.as_deref(), Some("checked by hand"));
+        assert_eq!(
+            close.call(args(1, "x", "done"), &ctx).await.unwrap_err(),
+            "01-a/x is closed as done already; work_item writes it again if there is more to do"
+        );
         assert_eq!(
             close.call(args(3, "x", "done"), &ctx).await.unwrap_err(),
             "there is no cycle 3"

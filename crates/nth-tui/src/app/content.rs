@@ -16,6 +16,7 @@ use crate::{
     plan::PlanView,
     subagent::SubagentView,
     usage::UsageView,
+    work::WorkView,
 };
 
 /// A view the content panel can show. Each view's state lives on the app,
@@ -34,6 +35,8 @@ pub(crate) enum Tab {
     Subagent(SubagentId),
     /// What the session spent.
     Usage,
+    /// The orchestration's work plan, open while there is one.
+    Work,
 }
 
 impl Tab {
@@ -54,6 +57,7 @@ impl Tab {
             Tab::Monitor(_) => tab.monitor,
             Tab::Subagent(_) => tab.subagent,
             Tab::Usage => tab.usage,
+            Tab::Work => tab.work,
         }
     }
 
@@ -81,6 +85,7 @@ impl From<Panel> for Tab {
             Panel::Chat => Tab::Chat,
             Panel::Diagnostics => Tab::Diagnostics,
             Panel::Plan => Tab::Plan,
+            Panel::Work => Tab::Work,
         }
     }
 }
@@ -201,6 +206,7 @@ impl App {
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
             Tab::Plan => self.plan.label(),
+            Tab::Work => self.work.label(),
             Tab::File(id) => self
                 .file_views
                 .get(&id)
@@ -238,6 +244,7 @@ impl App {
             Tab::Chat => self.last_turn,
             Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
             Tab::Plan => self.plan.state(),
+            Tab::Work => self.work.state(&self.live_work()),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
             Tab::Subagent(id) => self
@@ -415,6 +422,32 @@ impl Scrollable for PlanView {
     }
 }
 
+impl Scrollable for WorkView {
+    fn scroll_up(&mut self, lines: usize) {
+        WorkView::scroll_up(self, lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        WorkView::scroll_down(self, lines);
+    }
+
+    fn page_up(&mut self) {
+        WorkView::page_up(self);
+    }
+
+    fn page_down(&mut self) {
+        WorkView::page_down(self);
+    }
+
+    fn jump_top(&mut self) {
+        WorkView::jump_top(self);
+    }
+
+    fn jump_bottom(&mut self) {
+        WorkView::jump_bottom(self);
+    }
+}
+
 impl Scrollable for FileView {
     fn scroll_up(&mut self, lines: usize) {
         FileView::scroll_up(self, lines);
@@ -452,6 +485,7 @@ impl App {
             Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
             Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
             Tab::Plan => &mut self.plan,
+            Tab::Work => &mut self.work,
             Tab::File(id) => self.file_views.get_mut(&id)?,
         })
     }
