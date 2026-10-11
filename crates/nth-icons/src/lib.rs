@@ -41,6 +41,8 @@ pub struct Icons {
     /// A question not yet answered, and one answered.
     pub unchecked: &'static str,
     pub checked: &'static str,
+    pub work: WorkIcons,
+    pub tree: TreeIcons,
     pub tab: TabIcons,
     pub tool: ToolIcons,
     pub git: GitIcons,
@@ -56,6 +58,30 @@ pub struct TabIcons {
     pub monitor: &'static str,
     pub subagent: &'static str,
     pub usage: &'static str,
+    /// The orchestration's work items.
+    pub work: &'static str,
+}
+
+/// The work tab's own marks; its items otherwise reuse `ok`, `fail`, `dot`,
+/// `done` and `interrupted`.
+pub struct WorkIcons {
+    /// An item nobody has been assigned to yet.
+    pub pending: &'static str,
+    /// A cycle after the current one.
+    pub upcoming: &'static str,
+}
+
+/// The guides of a tree, as the work tab and `nth work` draw cycles and
+/// their items.
+pub struct TreeIcons {
+    /// An earlier sibling's line passing by.
+    pub bar: &'static str,
+    /// A child with more after it.
+    pub tee: &'static str,
+    /// The last child.
+    pub elbow: &'static str,
+    /// What leads from a tee or an elbow to the child.
+    pub dash: &'static str,
 }
 
 /// The mark a tool call's row starts with; `Icons::tool_icon` picks one by
@@ -75,6 +101,8 @@ pub struct ToolIcons {
     pub panel: &'static str,
     pub monitor: &'static str,
     pub task: &'static str,
+    /// Every `work_*` tool.
+    pub work: &'static str,
     /// Any tool without its own.
     pub other: &'static str,
 }
@@ -110,6 +138,16 @@ pub static PLAIN: Icons = Icons {
     effort_more: "▸",
     unchecked: "☐",
     checked: "☒",
+    work: WorkIcons {
+        pending: "○",
+        upcoming: "◇",
+    },
+    tree: TreeIcons {
+        bar: "│",
+        tee: "├",
+        elbow: "└",
+        dash: "─",
+    },
     tab: TabIcons {
         chat: "›",
         diagnostics: "●",
@@ -118,6 +156,7 @@ pub static PLAIN: Icons = Icons {
         monitor: "$",
         subagent: "@",
         usage: "∑",
+        work: "⊞",
     },
     tool: ToolIcons {
         read: "≡",
@@ -134,6 +173,7 @@ pub static PLAIN: Icons = Icons {
         panel: "▣",
         monitor: "&",
         task: "↳",
+        work: "⊞",
         other: "•",
     },
     // Starship's defaults, but for those the counts' `+N` and `*N` use.
@@ -172,6 +212,7 @@ impl Icons {
             "panel" | "show_user" => tool.panel,
             "monitor" | "monitor_stop" => tool.monitor,
             "task" => tool.task,
+            name if name.starts_with("work_") => tool.work,
             _ => tool.other,
         }
     }
@@ -198,6 +239,8 @@ impl Icons {
             effort_more,
             unchecked,
             checked,
+            work,
+            tree,
             tab,
             tool,
             git,
@@ -222,6 +265,12 @@ impl Icons {
             *effort_more,
             *unchecked,
             *checked,
+            work.pending,
+            work.upcoming,
+            tree.bar,
+            tree.tee,
+            tree.elbow,
+            tree.dash,
         ];
         all.extend([
             tab.chat,
@@ -231,6 +280,7 @@ impl Icons {
             tab.monitor,
             tab.subagent,
             tab.usage,
+            tab.work,
         ]);
         all.extend([
             tool.read,
@@ -247,6 +297,7 @@ impl Icons {
             tool.panel,
             tool.monitor,
             tool.task,
+            tool.work,
             tool.other,
         ]);
         all.extend([
@@ -280,6 +331,7 @@ mod tests {
     fn tools_have_their_own_icon() {
         assert_eq!(PLAIN.tool_icon("read"), "≡");
         assert_eq!(PLAIN.tool_icon("monitor_stop"), "&");
+        assert_eq!(PLAIN.tool_icon("work_todo"), "⊞");
         assert_eq!(PLAIN.tool_icon("mystery"), "•");
     }
 }

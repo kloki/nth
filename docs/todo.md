@@ -9,7 +9,6 @@ What opencode has that nth does not yet, plus nth's own review backlog. Each ite
 
 ### Subagents and orchestrations
 
-- [ ] Orchestrations view
 - [ ] Save subagent sessions under the parent's, so `/resume` brings them back
 - [ ] `[agents] paths` in the config, like `[skills] paths`
 - [ ] A global cap on concurrent model requests across subagents

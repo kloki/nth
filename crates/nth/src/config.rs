@@ -25,6 +25,7 @@ pub struct Config {
     pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
     pub task: TaskConfig,
+    pub work: WorkConfig,
     pub mode: ModeConfig,
     pub chat: ChatConfig,
     pub tools: nth_tools::ToolsConfig,
@@ -110,6 +111,40 @@ impl TaskConfig {
         nth_session::subagent::Limits {
             max_steps: self.max_steps,
             timeout: (self.timeout_secs > 0).then(|| Duration::from_secs(self.timeout_secs)),
+        }
+    }
+}
+
+/// What a subagent the model puts on a work item may spend, and how long
+/// it may say nothing before the model hears it stalled. More steps than a
+/// task's: an item is a whole piece of work, not one question.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkConfig {
+    pub max_steps: usize,
+    /// `0` leaves an item to its steps alone.
+    pub timeout_secs: u64,
+    /// `0` never reports a stall.
+    pub stall_secs: u64,
+}
+
+impl Default for WorkConfig {
+    fn default() -> Self {
+        Self {
+            max_steps: 100,
+            timeout_secs: 600,
+            stall_secs: 120,
+        }
+    }
+}
+
+impl WorkConfig {
+    pub fn limits(&self) -> nth_session::work::Limits {
+        let secs = |secs: u64| (secs > 0).then(|| Duration::from_secs(secs));
+        nth_session::work::Limits {
+            max_steps: self.max_steps,
+            timeout: secs(self.timeout_secs),
+            stall: secs(self.stall_secs),
         }
     }
 }

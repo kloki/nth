@@ -28,6 +28,7 @@ mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
 mod turn;
+mod work;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -94,6 +95,7 @@ use crate::{
     spinner, status,
     subagent::SubagentView,
     usage::UsageView,
+    work::WorkView,
 };
 
 /// How often the app redraws with nothing else happening, while a turn
@@ -275,6 +277,14 @@ pub struct App {
     /// The next read is of a session just opened, so it marks nothing as
     /// changed.
     plan_settle: bool,
+    /// The session's work plan and what the work tab shows of it.
+    work: WorkView,
+    work_dir: PathBuf,
+    /// Reads of the work plan, with the directory each read.
+    work_reading: Job<(PathBuf, Option<nth_session::work::Plan>)>,
+    /// The next read is of a session just opened, so a plan it finds
+    /// opens its tab without showing it.
+    work_settle: bool,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -358,6 +368,7 @@ enum Step {
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
+    WorkRead(Result<(PathBuf, Option<nth_session::work::Plan>), JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     RtkFound(Result<Option<PathBuf>, JoinError>),
@@ -392,6 +403,7 @@ impl App {
         // Replaced by `with_notifier`.
         let notifier = Notifier::off();
         let plan_path = session.plan_path();
+        let work_dir = session.work_dir();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
         Self {
@@ -477,6 +489,10 @@ impl App {
             plan_path,
             plan_reading: Job::default(),
             plan_settle: true,
+            work: WorkView::default(),
+            work_dir,
+            work_reading: Job::default(),
+            work_settle: true,
             monitor_root,
             notices_due: None,
             hold_notices: false,
@@ -556,6 +572,7 @@ impl App {
         self.load_pr();
         self.list_llms();
         self.read_plan();
+        self.read_work();
 
         while !self.quit {
             if self.pending_editor.is_some() {
@@ -598,6 +615,7 @@ impl App {
                 saved = self.session_saving.join() => Step::SessionSaved(saved),
                 saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
+                plan = self.work_reading.join() => Step::WorkRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
@@ -649,6 +667,9 @@ impl App {
                     self.editor_closed(terminal, &mut input, ended).await?
                 }
                 Step::PlanRead(plan) => self.plan_read(plan.context("reading the plan failed")?),
+                Step::WorkRead(plan) => {
+                    self.work_read(plan.context("reading the work plan failed")?)
+                }
                 Step::ServersFound(servers) => {
                     self.diagnostics.servers = Some(servers.context("finding servers failed")?)
                 }
@@ -725,6 +746,14 @@ impl App {
                 let place = self.plan_place();
                 self.plan.draw(frame, content, &place);
                 if let Some(state) = self.plan.scrollbar() {
+                    draw_scrollbar(frame, content, state);
+                }
+            }
+            Tab::Work => {
+                let place = self.work_place();
+                let live = self.live_work();
+                self.work.draw(frame, content, &place, &live);
+                if let Some(state) = self.work.scrollbar() {
                     draw_scrollbar(frame, content, state);
                 }
             }
@@ -877,6 +906,7 @@ impl App {
                     self.read_plan();
                 }
             }
+            Event::ToolFinished { call, .. } if call.name.starts_with("work_") => self.read_work(),
             Event::Usage(usage) => {
                 self.usage = Some(*usage);
                 self.spent.usage(&self.model, *usage);
@@ -905,6 +935,7 @@ impl App {
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Usage => self.open_content(Tab::Usage),
+            Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
             Command::Settings => {
@@ -926,11 +957,13 @@ impl App {
         session.max_steps = self.max_steps;
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
+        let work_dir = session.work_dir();
         self.session_since = session.created_at;
         self.session = Some(session);
         self.usage = None;
         self.spent = Spent::default();
         self.plan_for_session(plan_path);
+        self.work_for_session(work_dir);
         self.left_session();
     }
 

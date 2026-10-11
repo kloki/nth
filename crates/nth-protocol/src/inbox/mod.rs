@@ -1,6 +1,7 @@
 //! The model's inbox: what it has not heard yet, handed over between its
 //! steps or as a turn of its own when idle. Monitors put their output here
-//! and subagents their answers; `notice` is the text that carries them,
+//! and subagents their answers, and work items what happened to them;
+//! `notice` is the text that carries them,
 //! written for the model and read back by the transcript. A prompt you send
 //! while a turn runs waits here too, and pre-empts its next tool calls.
 
@@ -11,7 +12,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub use notice::{NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, split_notices};
+pub use notice::{
+    NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice, WorkOutcome,
+    WorkState, one_line, quiet_text, split_notices, todo_counts, todo_lines,
+};
 
 use crate::{MonitorEnd, MonitorId};
 
@@ -27,6 +31,7 @@ pub struct Inbox(Option<Arc<Mutex<Vec<Pending>>>>);
 enum Pending {
     Monitor(MonitorNotice),
     Task(TaskNotice),
+    Work(WorkNotice),
     /// A prompt sent while a turn runs, for its next step.
     Prompt(String),
 }
@@ -58,6 +63,30 @@ impl Inbox {
     pub fn post_task(&self, task: TaskNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         lock(pending).push(Pending::Task(task));
+        true
+    }
+
+    /// Puts what happened to a work item in. A todo list replaces the
+    /// item's latest notice when that is a todo list too, so a burst of
+    /// ticks reads as one notice with the last list; after a return or a
+    /// stall it starts a new one, so the order stays as it happened.
+    /// `false` without an inbox.
+    pub fn post_work(&self, notice: WorkNotice) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        let mut pending = lock(pending);
+        let latest = pending.iter_mut().rev().find_map(|p| match p {
+            Pending::Work(w) if w.cycle == notice.cycle && w.item == notice.item => Some(w),
+            _ => None,
+        });
+        match latest {
+            Some(latest)
+                if matches!(latest.state, WorkState::Todo(_))
+                    && matches!(notice.state, WorkState::Todo(_)) =>
+            {
+                *latest = notice;
+            }
+            _ => pending.push(Pending::Work(notice)),
+        }
         true
     }
 
@@ -100,6 +129,24 @@ impl Inbox {
     /// Whether anything waits for the model, notices or prompts.
     pub fn has_notices(&self) -> bool {
         self.0.as_ref().is_some_and(|p| !lock(p).is_empty())
+    }
+
+    /// Whether anything waiting is worth waking the model for: anything
+    /// but a work item's todo ticks, which go along with the next wake or
+    /// between the steps of a turn that runs. Ticks of parallel items would
+    /// otherwise each cost a turn whose only answer is "noted".
+    pub fn wakes(&self) -> bool {
+        self.0.as_ref().is_some_and(|p| {
+            lock(p).iter().any(|pending| {
+                !matches!(
+                    pending,
+                    Pending::Work(WorkNotice {
+                        state: WorkState::Todo(_),
+                        ..
+                    })
+                )
+            })
+        })
     }
 
     /// The prompts waiting, oldest first, and forgets them. Notices stay
@@ -185,7 +232,7 @@ fn monitor_notice<'a>(
     match &mut pending[index] {
         Pending::Monitor(monitor) => monitor,
         // Just pushed or found as a monitor's.
-        Pending::Task(_) | Pending::Prompt(_) => {
+        Pending::Task(_) | Pending::Work(_) | Pending::Prompt(_) => {
             unreachable!("the index is a monitor's notice")
         }
     }
@@ -205,6 +252,7 @@ impl Pending {
                 m.ended,
             )),
             Pending::Task(task) => Some(notice::render_task(task)),
+            Pending::Work(work) => Some(notice::render_work(work)),
             Pending::Prompt(_) => None,
         }
     }
@@ -213,7 +261,7 @@ impl Pending {
     fn prompt(&self) -> Option<&str> {
         match self {
             Pending::Prompt(text) => Some(text),
-            Pending::Monitor(_) | Pending::Task(_) => None,
+            Pending::Monitor(_) | Pending::Task(_) | Pending::Work(_) => None,
         }
     }
 }
@@ -312,5 +360,76 @@ mod tests {
         inbox.post_task(task());
         inbox.clear();
         assert!(!inbox.has_notices(), "shared, and cleared");
+    }
+    fn work(item: &str, state: WorkState) -> WorkNotice {
+        WorkNotice {
+            cycle: "01-a".into(),
+            item: item.into(),
+            task: 1,
+            agent: "general".into(),
+            state,
+        }
+    }
+
+    fn ticked(done: usize) -> WorkState {
+        WorkState::Todo(
+            (0..2)
+                .map(|i| Todo {
+                    text: format!("step {i}"),
+                    done: i < done,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_burst_of_ticks_is_one_notice_and_a_return_keeps_its_place() {
+        let inbox = Inbox::new();
+        let returned = WorkState::Returned {
+            outcome: WorkOutcome::Completed("ok".into()),
+            done: 2,
+            total: 2,
+        };
+        assert!(inbox.post_work(work("x", ticked(0))));
+        inbox.post_work(work("y", ticked(1)));
+        inbox.post_work(work("x", ticked(1)));
+        inbox.post_work(work("x", ticked(2)));
+        inbox.post_work(work("x", returned.clone()));
+        inbox.post_work(work("x", ticked(0)));
+
+        let text = inbox.take_notices().unwrap();
+        let (notices, _) = split_notices(&text);
+        type Seen = (String, String, Option<(usize, usize)>);
+        let seen: Vec<Seen> = notices
+            .into_iter()
+            .map(|notice| match notice {
+                NoticeSummary::Work {
+                    item,
+                    state,
+                    progress,
+                    ..
+                } => (item, state, progress),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let row =
+            |item: &str, state: &str, done| (item.to_string(), state.to_string(), Some((done, 2)));
+        assert_eq!(
+            seen,
+            [
+                row("x", "todo", 2),
+                row("y", "todo", 1),
+                row("x", "returned", 2),
+                row("x", "todo", 0),
+            ],
+            "the first list took the later ticks; the one after the return stands alone"
+        );
+        assert!(!Inbox::default().post_work(work("x", returned.clone())));
+
+        inbox.post_work(work("x", ticked(1)));
+        assert!(inbox.has_notices());
+        assert!(!inbox.wakes(), "ticks wait for a wake");
+        inbox.post_work(work("y", returned));
+        assert!(inbox.wakes(), "a return is one");
     }
 }

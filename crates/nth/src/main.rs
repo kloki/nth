@@ -11,6 +11,7 @@ mod notify;
 mod run;
 mod skills;
 mod usage;
+mod work;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -103,6 +104,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show a saved session's work plan: its cycles, items and todo lists
+    Work {
+        /// The session, by its id or the start of it; the latest by default
+        session: Option<String>,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
     /// Send a sample notification through the configured backend
     Notify {
         /// Which notification to show
@@ -164,6 +173,7 @@ async fn dispatch(
         Command::Init { force } => config::init(config_path.clone(), force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
+        Command::Work { session, json } => work::run(session, json).await,
     }
 }
 
@@ -272,7 +282,8 @@ fn providers(config: &Config) -> Result<Providers> {
 }
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands
-/// each subagent its share of the same list, and task_stop.
+/// each subagent its share of the same list, task_stop, and the work
+/// plan's tools.
 fn tools(
     config: &Config,
     post_write: nth_tools::PostWrite,
@@ -284,6 +295,12 @@ fn tools(
         .map(Arc::from)
         .collect();
     let stop = nth_session::TaskStop::new(subagents.clone());
+    let work = nth_session::Work::new(
+        provider.clone(),
+        shared.clone(),
+        subagents.clone(),
+        config.work.limits(),
+    );
     let task = nth_session::Task::new(provider, shared.clone(), subagents, config.task.limits());
     let mut tools: Vec<Box<dyn nth_protocol::Tool>> = shared
         .into_iter()
@@ -291,6 +308,7 @@ fn tools(
         .collect();
     tools.push(Box::new(task));
     tools.push(Box::new(stop));
+    tools.extend(work.tools());
     tools
 }
 

@@ -52,6 +52,7 @@ pub(super) async fn run(actor: Actor) {
         model: session.model.clone(),
     };
     if !send(&front_end, started).await {
+        abandon(&mut jobs, &closed, &agent, &description, id).await;
         return;
     }
     while let Some(job) = jobs.recv().await {
@@ -61,18 +62,22 @@ pub(super) async fn run(actor: Actor) {
             done,
             timeout,
         } = job;
-        {
+        let skipped = {
             let mut state = lock(&shared);
             state.waiting.pop_front();
             // Stopped while it waited: it never ran, so nothing to show.
-            if cancel.is_cancelled() || closed.is_cancelled() {
-                drop(state);
-                let done = told(done, &closed);
-                settle(done, &agent, &description, id, Err(Error::Interrupted));
-                continue;
+            let skipped = cancel.is_cancelled() || closed.is_cancelled();
+            if !skipped {
+                state.running = Some(cancel.clone());
+                state.state = Some(State::Running);
             }
-            state.running = Some(cancel.clone());
-            state.state = Some(State::Running);
+            skipped
+        };
+        // Settled with the state's lock let go: settling may wait.
+        if skipped {
+            let done = told(done, &closed);
+            settle(done, &agent, &description, id, Err(Error::Interrupted)).await;
+            continue;
         }
         if !send(
             &front_end,
@@ -83,6 +88,10 @@ pub(super) async fn run(actor: Actor) {
         )
         .await
         {
+            lock(&shared).running = None;
+            let done = told(done, &closed);
+            settle(done, &agent, &description, id, Err(Error::Interrupted)).await;
+            abandon(&mut jobs, &closed, &agent, &description, id).await;
             return;
         }
         let began = Instant::now();
@@ -90,6 +99,13 @@ pub(super) async fn run(actor: Actor) {
         let (tx, mut rx) = mpsc::channel::<Event>(256);
         let mut heard = true;
         let mut timed_out = false;
+        // A work item's subagent that says nothing for this long is
+        // reported once, then again only after it said something.
+        let stall = match &done {
+            Done::Work(assigned) => assigned.stall(),
+            _ => None,
+        };
+        let mut stalled = false;
         // Nobody at the tab answers questions or looks at panels, and a
         // monitor's notices would go to the parent's model: headless.
         let front = FrontEnd::default();
@@ -98,11 +114,30 @@ pub(super) async fn run(actor: Actor) {
             tokio::pin!(turn);
             let deadline = budget(timeout);
             tokio::pin!(deadline);
+            // A `Sleep`, not a one-off future like the deadline: it is
+            // pushed back with every event, and once it fired its arm is
+            // off until then, or `select!` would take it on every pass.
+            let quiet = tokio::time::sleep(stall.unwrap_or_default());
+            tokio::pin!(quiet);
             loop {
                 tokio::select! {
                     result = &mut turn => break result,
                     Some(event) = rx.recv() => {
+                        if let Some(stall) = stall {
+                            quiet.as_mut().reset(tokio::time::Instant::now() + stall);
+                            stalled = false;
+                        }
                         heard &= send(&front_end, SubagentEvent::Session { id, event }).await;
+                    }
+                    _ = &mut quiet, if stall.is_some() && !stalled && !timed_out => {
+                        stalled = true;
+                        let quiet = stall.unwrap_or_default();
+                        if let Done::Work(assigned) = &done
+                            && !closed.is_cancelled()
+                        {
+                            assigned.stalled(quiet);
+                        }
+                        heard &= send(&front_end, SubagentEvent::Stalled { id, quiet }).await;
                     }
                     // Cancelling is cooperative: the turn still ends on its
                     // own, with every call answered, and the session stays
@@ -150,7 +185,8 @@ pub(super) async fn run(actor: Actor) {
             &description,
             id,
             result.map(|()| answer(&session)),
-        );
+        )
+        .await;
         {
             let mut state = lock(&shared);
             state.running = None;
@@ -168,8 +204,32 @@ pub(super) async fn run(actor: Actor) {
         };
         heard &= send(&front_end, ended).await;
         if !heard {
+            abandon(&mut jobs, &closed, &agent, &description, id).await;
             return;
         }
+    }
+}
+
+/// The front-end is gone, so the actor ends: every job still in its inbox
+/// settles as interrupted, so whoever waits on one hears, and a work item
+/// on one does not stay running.
+async fn abandon(
+    jobs: &mut mpsc::UnboundedReceiver<Job>,
+    closed: &CancellationToken,
+    agent: &str,
+    description: &str,
+    id: SubagentId,
+) {
+    jobs.close();
+    while let Some(job) = jobs.recv().await {
+        settle(
+            told(job.done, closed),
+            agent,
+            description,
+            id,
+            Err(Error::Interrupted),
+        )
+        .await;
     }
 }
 
@@ -196,16 +256,18 @@ fn answer(session: &Session) -> String {
 }
 
 /// Who still hears how a job ended: once the child is forgotten, its
-/// session was left, and the model of the one after it never asked.
+/// session was left, and the model of the one after it never asked. A
+/// work item's file still returns, or it would read as running forever.
 fn told(done: Done, closed: &CancellationToken) -> Done {
     match done {
         Done::Notify(_) if closed.is_cancelled() => Done::Nothing,
+        Done::Work(assigned) if closed.is_cancelled() => Done::Work(assigned.unheard()),
         done => done,
     }
 }
 
 /// Tells whoever waits on the job how it ended.
-fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Turn) {
+async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Turn) {
     match done {
         // A dropped receiver is a parent that stopped waiting, which is fine.
         Done::Reply(reply) => {
@@ -224,6 +286,7 @@ fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: supe
                 outcome,
             });
         }
+        Done::Work(assigned) => assigned.settle(turn).await,
         Done::Nothing => {}
     }
 }

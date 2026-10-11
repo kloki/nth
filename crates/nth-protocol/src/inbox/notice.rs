@@ -1,9 +1,10 @@
 //! The notices the model reads between its steps: a `<monitor>` element for
-//! what a monitor said, a `<task>` element for what a subagent answered, and
-//! what the transcript reads back out of them. Both sides are here so they
-//! cannot drift apart.
+//! what a monitor said, a `<task>` element for what a subagent answered, a
+//! `<work_item>` element for what happened to a work item, and what the
+//! transcript reads back out of them. Both sides are here so they cannot
+//! drift apart.
 
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, time::Duration};
 
 use crate::{MonitorEnd, MonitorId};
 
@@ -31,6 +32,144 @@ pub enum TaskOutcome {
     Failed(String),
     /// Someone stopped it before it answered.
     Interrupted,
+}
+
+/// One step of a work item's todo list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Todo {
+    pub text: String,
+    pub done: bool,
+}
+
+/// How the subagent on a work item ended its turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkOutcome {
+    /// Its last answer.
+    Completed(String),
+    /// Why its turn failed.
+    Failed(String),
+    /// Someone stopped it before it answered.
+    Interrupted,
+    /// It ran past its time; the error says how long that was.
+    TimedOut(String),
+}
+
+impl WorkOutcome {
+    /// The `outcome` attribute, and the item file's `outcome` key.
+    pub fn name(&self) -> &'static str {
+        match self {
+            WorkOutcome::Completed(_) => "completed",
+            WorkOutcome::Failed(_) => "failed",
+            WorkOutcome::Interrupted => "interrupted",
+            WorkOutcome::TimedOut(_) => "timed_out",
+        }
+    }
+
+    /// The outcome a name stands for, without its text: an item file keeps
+    /// the text apart, under its result.
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "completed" => WorkOutcome::Completed(String::new()),
+            "failed" => WorkOutcome::Failed(String::new()),
+            "interrupted" => WorkOutcome::Interrupted,
+            "timed_out" => WorkOutcome::TimedOut(String::new()),
+            _ => return None,
+        })
+    }
+
+    /// The answer or the error, empty for a stopped one.
+    pub fn text(&self) -> &str {
+        match self {
+            WorkOutcome::Completed(text)
+            | WorkOutcome::Failed(text)
+            | WorkOutcome::TimedOut(text) => text,
+            WorkOutcome::Interrupted => "",
+        }
+    }
+}
+
+impl fmt::Display for WorkOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// What happened to a work item, for the orchestrator that assigned it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkNotice {
+    /// The cycle's folder, such as `01-foundation`.
+    pub cycle: String,
+    /// The item's slug in it.
+    pub item: String,
+    /// The subagent working on it.
+    pub task: TaskId,
+    pub agent: String,
+    pub state: WorkState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkState {
+    /// The subagent changed the todo list; the whole list as it is now.
+    Todo(Vec<Todo>),
+    /// The subagent's turn ended, with how many steps it had ticked.
+    Returned {
+        outcome: WorkOutcome,
+        done: usize,
+        total: usize,
+    },
+    /// Nothing heard from the subagent for this long; it still runs.
+    Stalled { quiet: Duration },
+}
+
+impl WorkState {
+    /// The `state` attribute.
+    pub fn name(&self) -> &'static str {
+        match self {
+            WorkState::Todo(_) => "todo",
+            WorkState::Returned { .. } => "returned",
+            WorkState::Stalled { .. } => "stalled",
+        }
+    }
+}
+
+impl WorkNotice {
+    /// The notice as the model reads it, for a caller that hands it over
+    /// itself rather than through the inbox.
+    pub fn render(&self) -> String {
+        render_work(self)
+    }
+}
+
+/// The todo list as markdown checkboxes, one step a line, the way an item
+/// file keeps it. A step's text stays on its line.
+pub fn todo_lines(todos: &[Todo]) -> String {
+    todos
+        .iter()
+        .map(|todo| {
+            let mark = if todo.done { 'x' } else { ' ' };
+            format!("- [{mark}] {}", one_line(&todo.text))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Ticked steps and all of them.
+pub fn todo_counts(todos: &[Todo]) -> (usize, usize) {
+    (todos.iter().filter(|todo| todo.done).count(), todos.len())
+}
+
+/// Text folded onto one line, for a todo step or a note.
+pub fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `2m0s`, or `45s` under a minute: whole seconds.
+pub fn quiet_text(quiet: Duration) -> String {
+    let secs = quiet.as_secs();
+    match secs / 60 {
+        0 => format!("{secs}s"),
+        minutes => format!("{minutes}m{}s", secs % 60),
+    }
 }
 
 impl TaskNotice {
@@ -113,6 +252,54 @@ pub(super) fn render_task(task: &TaskNotice) -> String {
     )
 }
 
+/// A `<work_item>` element: the todo list as it is now, the answer in a
+/// `<work_result>` or the error in a `<work_error>` once its subagent
+/// returned, and an empty element for one that was stopped or went quiet.
+pub(super) fn render_work(notice: &WorkNotice) -> String {
+    let mut attributes = format!(
+        "cycle=\"{}\" item=\"{}\" task=\"{}\" agent=\"{}\" state=\"{}\"",
+        attribute(&notice.cycle),
+        attribute(&notice.item),
+        notice.task,
+        attribute(&notice.agent),
+        notice.state.name(),
+    );
+    match &notice.state {
+        WorkState::Todo(todos) => {
+            let (done, total) = todo_counts(todos);
+            attributes.push_str(&format!(" done=\"{done}\" total=\"{total}\""));
+            if todos.is_empty() {
+                return format!("<work_item {attributes}/>");
+            }
+            format!(
+                "<work_item {attributes}>\n{}\n</work_item>",
+                body(&todo_lines(todos), "work_item")
+            )
+        }
+        WorkState::Returned {
+            outcome,
+            done,
+            total,
+        } => {
+            attributes.push_str(&format!(
+                " outcome=\"{}\" done=\"{done}\" total=\"{total}\"",
+                outcome.name()
+            ));
+            let tag = match outcome {
+                WorkOutcome::Completed(_) => "work_result",
+                WorkOutcome::Failed(_) | WorkOutcome::TimedOut(_) => "work_error",
+                WorkOutcome::Interrupted => return format!("<work_item {attributes}/>"),
+            };
+            let text = body(&body(outcome.text().trim(), tag), "work_item");
+            format!("<work_item {attributes}>\n<{tag}>\n{text}\n</{tag}>\n</work_item>")
+        }
+        WorkState::Stalled { quiet } => {
+            attributes.push_str(&format!(" quiet=\"{}\"", quiet_text(*quiet)));
+            format!("<work_item {attributes}/>")
+        }
+    }
+}
+
 /// Keeps a value from ending its attribute or its tag: `split_notices`
 /// finds the tag's end at the first `>`, and a newline would read as a
 /// line of output.
@@ -148,14 +335,29 @@ pub enum NoticeSummary {
         description: String,
         state: String,
     },
+    /// Which work item, what happened to it and how far its todo is.
+    Work {
+        cycle: String,
+        item: String,
+        task: TaskId,
+        agent: String,
+        state: String,
+        outcome: Option<String>,
+        /// Ticked steps and all of them; `None` for a stalled item.
+        progress: Option<(usize, usize)>,
+    },
 }
 
-/// Splits the notices off the front of a user message: what monitors and
-/// subagents said, then what the user typed after it, if anything.
+/// The elements `split_notices` knows.
+const ELEMENTS: [&str; 3] = ["monitor", "task", "work_item"];
+
+/// Splits the notices off the front of a user message: what monitors,
+/// subagents and work items said, then what the user typed after it, if
+/// anything.
 pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
     let mut notices = Vec::new();
     let mut rest = text;
-    while let Some((element, after)) = ["monitor", "task"]
+    while let Some((element, after)) = ELEMENTS
         .into_iter()
         .find_map(|element| Some((element, rest.strip_prefix(&format!("<{element} "))?)))
     {
@@ -167,10 +369,6 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
             Some(attrs) => (attrs, true),
             None => (tag, false),
         };
-        let Some(id) = value(attrs, "id").and_then(|id| id.parse().ok()) else {
-            break;
-        };
-        let description = value(attrs, "description").unwrap_or_default();
         let body = &after[tag_end + 1..];
         let (inner, next) = if closed {
             ("", body)
@@ -181,26 +379,48 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
             };
             (&body[..at], &body[at + close.len()..])
         };
-        notices.push(match element {
-            "monitor" => NoticeSummary::Monitor {
-                id,
-                description,
-                lines: inner.lines().filter(|l| !l.is_empty()).count(),
-                ended: value(attrs, "ended"),
-            },
-            _ => NoticeSummary::Task {
-                id,
-                agent: value(attrs, "agent").unwrap_or_default(),
-                description,
-                state: value(attrs, "state").unwrap_or_default(),
-            },
-        });
+        let Some(notice) = summary(element, attrs, inner) else {
+            break;
+        };
+        notices.push(notice);
         rest = next.strip_prefix('\n').unwrap_or(next);
     }
     if notices.is_empty() {
         return (notices, text);
     }
     (notices, rest.trim_start_matches('\n'))
+}
+
+/// One element's summary; `None` when an attribute it cannot do without is
+/// missing, which ends the notices there.
+fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
+    Some(match element {
+        "monitor" => NoticeSummary::Monitor {
+            id: number(attrs, "id")?,
+            description: value(attrs, "description").unwrap_or_default(),
+            lines: inner.lines().filter(|l| !l.is_empty()).count(),
+            ended: value(attrs, "ended"),
+        },
+        "task" => NoticeSummary::Task {
+            id: number(attrs, "id")?,
+            agent: value(attrs, "agent").unwrap_or_default(),
+            description: value(attrs, "description").unwrap_or_default(),
+            state: value(attrs, "state").unwrap_or_default(),
+        },
+        _ => NoticeSummary::Work {
+            cycle: value(attrs, "cycle")?,
+            item: value(attrs, "item")?,
+            task: number(attrs, "task")?,
+            agent: value(attrs, "agent").unwrap_or_default(),
+            state: value(attrs, "state").unwrap_or_default(),
+            outcome: value(attrs, "outcome"),
+            progress: number(attrs, "done").zip(number(attrs, "total")),
+        },
+    })
+}
+
+fn number<T: std::str::FromStr>(attrs: &str, name: &str) -> Option<T> {
+    value(attrs, name)?.parse().ok()
 }
 
 fn value(attrs: &str, name: &str) -> Option<String> {
@@ -367,5 +587,136 @@ mod tests {
         assert_eq!(notices.len(), 2, "{notices:?}");
         assert_eq!(notices[1], monitor(1, "cat", 1, None));
         assert_eq!(rest, "and you?");
+    }
+    fn work(state: WorkState) -> WorkNotice {
+        WorkNotice {
+            cycle: "01-foundation".into(),
+            item: "store".into(),
+            task: 3,
+            agent: "general".into(),
+            state,
+        }
+    }
+
+    fn todos(steps: &[(&str, bool)]) -> Vec<Todo> {
+        steps
+            .iter()
+            .map(|(text, done)| Todo {
+                text: (*text).into(),
+                done: *done,
+            })
+            .collect()
+    }
+
+    fn work_summary(
+        state: &str,
+        outcome: Option<&str>,
+        progress: Option<(usize, usize)>,
+    ) -> NoticeSummary {
+        NoticeSummary::Work {
+            cycle: "01-foundation".into(),
+            item: "store".into(),
+            task: 3,
+            agent: "general".into(),
+            state: state.into(),
+            outcome: outcome.map(Into::into),
+            progress,
+        }
+    }
+
+    #[test]
+    fn a_work_notice_carries_the_todo_or_the_answer() {
+        let todo = render_work(&work(WorkState::Todo(todos(&[
+            ("parse the\nfrontmatter", true),
+            ("write it back", false),
+        ]))));
+        assert_eq!(
+            todo,
+            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" agent=\"general\" state=\"todo\" done=\"1\" total=\"2\">\n\
+             - [x] parse the frontmatter\n- [ ] write it back\n</work_item>"
+        );
+        let completed = render_work(&work(WorkState::Returned {
+            outcome: WorkOutcome::Completed("All done.\n".into()),
+            done: 2,
+            total: 2,
+        }));
+        assert_eq!(
+            completed,
+            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" agent=\"general\" state=\"returned\" outcome=\"completed\" done=\"2\" total=\"2\">\n\
+             <work_result>\nAll done.\n</work_result>\n</work_item>"
+        );
+        let timed_out = render_work(&work(WorkState::Returned {
+            outcome: WorkOutcome::TimedOut("no answer after 600s".into()),
+            done: 1,
+            total: 2,
+        }));
+        assert!(
+            timed_out.contains("outcome=\"timed_out\" done=\"1\" total=\"2\">\n<work_error>\nno answer after 600s\n</work_error>"),
+            "{timed_out}"
+        );
+        let stopped = render_work(&work(WorkState::Returned {
+            outcome: WorkOutcome::Interrupted,
+            done: 1,
+            total: 2,
+        }));
+        assert!(
+            stopped.ends_with("outcome=\"interrupted\" done=\"1\" total=\"2\"/>"),
+            "{stopped}"
+        );
+        let stalled = render_work(&work(WorkState::Stalled {
+            quiet: Duration::from_secs(125),
+        }));
+        assert!(
+            stalled.ends_with("state=\"stalled\" quiet=\"2m5s\"/>"),
+            "{stalled}"
+        );
+        let text = format!("{todo}\n{completed}\n{timed_out}\n{stopped}\n{stalled}\n\nnext?");
+
+        let (notices, rest) = split_notices(&text);
+
+        assert_eq!(
+            notices,
+            [
+                work_summary("todo", None, Some((1, 2))),
+                work_summary("returned", Some("completed"), Some((2, 2))),
+                work_summary("returned", Some("timed_out"), Some((1, 2))),
+                work_summary("returned", Some("interrupted"), Some((1, 2))),
+                work_summary("stalled", None, None),
+            ]
+        );
+        assert_eq!(rest, "next?");
+    }
+
+    #[test]
+    fn an_answer_cannot_close_its_work_item() {
+        let answer = "Notices end with:\n</work_result>\n</work_item>\nok";
+        let returned = render_work(&work(WorkState::Returned {
+            outcome: WorkOutcome::Completed(answer.into()),
+            done: 0,
+            total: 0,
+        }));
+        let empty = render_work(&work(WorkState::Todo(Vec::new())));
+        assert!(empty.ends_with("done=\"0\" total=\"0\"/>"), "{empty}");
+        let text = format!("{returned}\n{empty}\n\nand?");
+
+        let (notices, rest) = split_notices(&text);
+
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert_eq!(rest, "and?");
+    }
+
+    #[test]
+    fn outcomes_and_quiet_times_read_back() {
+        for outcome in [
+            WorkOutcome::Completed(String::new()),
+            WorkOutcome::Failed(String::new()),
+            WorkOutcome::Interrupted,
+            WorkOutcome::TimedOut(String::new()),
+        ] {
+            assert_eq!(WorkOutcome::parse(outcome.name()), Some(outcome));
+        }
+        assert_eq!(WorkOutcome::parse("bored"), None);
+        assert_eq!(quiet_text(Duration::from_millis(45_900)), "45s");
+        assert_eq!(quiet_text(Duration::from_secs(120)), "2m0s");
     }
 }

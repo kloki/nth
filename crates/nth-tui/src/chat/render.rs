@@ -147,6 +147,32 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             ),
             Span::styled(format!("subagent {id} · {agent} · {state}"), dim),
         ])],
+        Entry::Notice(NoticeSummary::Work {
+            cycle,
+            item,
+            task,
+            agent,
+            state,
+            outcome,
+            progress,
+        }) => {
+            let mut said = format!("work {cycle}/{item} · {state}");
+            if let Some(outcome) = outcome {
+                said.push_str(&format!(" {outcome}"));
+            }
+            if let Some((done, total)) = progress {
+                said.push_str(&format!(" {done}/{total}"));
+            }
+            said.push_str(&format!(" · @{agent} #{task}"));
+            vec![Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(
+                    format!("{} ", icons().tab.work),
+                    Style::new().fg(Color::Magenta),
+                ),
+                Span::styled(said, dim),
+            ])]
+        }
         Entry::Answer(text) => {
             return barred_markdown(text, width, Style::new().fg(Color::Blue));
         }
@@ -459,6 +485,30 @@ mod tests {
             text(&t.visible(3, 3)),
             ["▎ ≡ read   src/a.rs", "", "▎ ≡ read   src/a.rs"]
         );
+    }
+
+    #[test]
+    fn a_work_notice_is_one_dim_row() {
+        let notices = "<work_item cycle=\"01-a\" item=\"store\" task=\"3\" agent=\"general\" state=\"todo\" done=\"1\" total=\"2\">\n\
+                    - [x] one\n- [ ] two\n</work_item>\n\
+                    <work_item cycle=\"01-a\" item=\"store\" task=\"3\" agent=\"general\" state=\"stalled\" quiet=\"2m0s\"/>";
+        let mut t = crate::chat::transcript::Transcript::replay(
+            "/repo".into(),
+            &[nth_protocol::Message::User(notices.into())],
+        );
+
+        let total = t.layout(60, ChatSettings::default());
+
+        let lines = t.visible(0, total);
+        assert_eq!(
+            text(&lines),
+            [
+                "  ⊞ work 01-a/store · todo 1/2 · @general #3",
+                "",
+                "  ⊞ work 01-a/store · stalled · @general #3",
+            ]
+        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Magenta));
     }
 
     #[test]
