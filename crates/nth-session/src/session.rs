@@ -19,7 +19,7 @@ use crate::{
     DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
-    subagent, system_prompt,
+    subagent, system_prompt, work,
 };
 
 fn first_line(text: &str) -> &str {
@@ -191,6 +191,13 @@ impl Session {
         plan::plan_path(&self.cwd, &self.id)
     }
 
+    /// Where this session's orchestration keeps its work items: under the
+    /// main checkout, wherever a worktree tool moved the session.
+    pub fn work_dir(&self) -> PathBuf {
+        let root = self.origin.as_ref().unwrap_or(&self.cwd);
+        work::work_dir(root, &self.id.to_string())
+    }
+
     /// Later turns go to `model`. The history is kept; only the system
     /// prompt changes, since it names the model.
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -294,6 +301,7 @@ impl Session {
                 effort: self.effort,
             },
             workdir: Workdir::new(self.origin.clone()),
+            session: self.id.to_string(),
             ..ToolContext::new(self.cwd.clone())
         };
         let mut spend = Spend::new(&self.model, None);
@@ -736,6 +744,17 @@ mod tests {
         assert_eq!(send(&mut session, "next").await, "next");
     }
 
+    #[test]
+    fn the_work_plan_stays_in_the_main_checkout() {
+        let mut session = Session::new("glm", "/repo".into());
+        let before = session.work_dir();
+
+        session.set_cwd("/repo/.nth/worktrees/feat".into(), Some("/repo".into()));
+
+        assert_eq!(session.work_dir(), before);
+        assert!(before.starts_with("/repo/.nth/work/"));
+    }
+
     #[tokio::test]
     async fn plan_mode_keeps_a_gitignore_in_the_project_nth() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -746,6 +765,7 @@ mod tests {
 
         let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
         assert!(gitignore.contains("plans/"), "{gitignore}");
+        assert!(gitignore.contains("work/"), "{gitignore}");
         assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 

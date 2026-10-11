@@ -22,8 +22,11 @@ use std::{
 
 pub use mention::resolve;
 use nth_context::Agent;
-use nth_protocol::{Event, Inbox, Provider, TaskId, TaskOutcome, Tool};
+use nth_protocol::{
+    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable,
+};
 pub use stop::TaskStop;
+pub(crate) use task::TaskIdArg;
 pub use task::{Limits, Task};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -52,6 +55,9 @@ pub enum SubagentEvent {
     Prompted { id: SubagentId, text: String },
     /// What its session reports while the turn runs.
     Session { id: SubagentId, event: Event },
+    /// Nothing heard from its turn for `quiet`, though it still runs; the
+    /// work item it is on was told, and a front-end wakes the model for it.
+    Stalled { id: SubagentId, quiet: Duration },
     TurnEnded {
         id: SubagentId,
         outcome: TaskOutcome,
@@ -81,6 +87,9 @@ pub enum Done {
     Reply(oneshot::Sender<Turn>),
     /// The model, through its inbox, as a `<task>` notice.
     Notify(Inbox),
+    /// The work item it was assigned: its file returns with the outcome,
+    /// and the model hears through its inbox as a `<work_item>` notice.
+    Work(crate::work::Assigned),
     /// Nobody but the tab: you typed the prompt and are looking at it.
     Nothing,
 }
@@ -95,6 +104,46 @@ pub struct Job {
     /// [`Error::TimedOut`]: the task tool's budget. A prompt you type on
     /// the tab has none, since you are watching.
     pub timeout: Option<Duration>,
+}
+
+/// Goes with every prompt from a planning parent: its child has no tool
+/// that writes, but bash could still change files.
+pub(crate) const PLANNING: &str = "<system-reminder>\nThe agent that sent you this task is planning and may not change the project. Do not change any file, with bash or otherwise: research, then report what you found.\n</system-reminder>";
+
+/// The tools `agent` gets out of `all`: never the withheld ones, no
+/// writers while the parent may only write its plan, and only the agent's
+/// own list when it has one.
+pub(crate) fn tools_for(
+    all: &[Arc<dyn Tool>],
+    agent: &Agent,
+    writable: &Writable,
+) -> Vec<Box<dyn Tool>> {
+    let planning = matches!(writable, Writable::Only(_));
+    all.iter()
+        .filter(|tool| {
+            let name = tool.spec().name;
+            !task::WITHHELD.contains(&name)
+                && !(planning && WRITERS.contains(&name))
+                && agent.allows(name)
+        })
+        .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
+        .collect()
+}
+
+/// A new subagent session of `agent` in the parent's directory, on the
+/// agent's model or the parent's, in act mode: a planning parent's child
+/// is kept from writing by its tools instead, so it gets no plan file and
+/// no plan-mode reminder.
+pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) -> Session {
+    let model = agent.model.clone().unwrap_or_else(|| ctx.llm.model.clone());
+    let mut session = Session::new(model, ctx.cwd.clone())
+        .with_extra_dirs(ctx.extra_dirs.clone())
+        .with_context(ctx.context.clone())
+        .as_subagent(agent.prompt.clone());
+    session.effort = ctx.llm.effort;
+    session.mode = Mode::Act;
+    session.max_steps = max_steps;
+    session
 }
 
 /// What the registry and a subagent's actor share about it. The actor
@@ -282,6 +331,12 @@ impl Subagents {
         id <= self.0.lock().forgotten
     }
 
+    /// Cancelled once subagent `id` is forgotten with its session, for
+    /// what it posts outside its own turn's settling.
+    pub(crate) fn closed(&self, id: SubagentId) -> Option<CancellationToken> {
+        Some(self.0.lock().children.get(&id)?.closed.clone())
+    }
+
     /// Whether subagent `id` has tools that change files.
     pub fn writes(&self, id: SubagentId) -> bool {
         self.0.lock().children.get(&id).is_some_and(|c| c.writes)
@@ -353,7 +408,7 @@ impl Drop for Inner {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_context::{Context, Paths};
     use nth_protocol::{BoxError, Listing, Request, StreamEvent};
@@ -362,7 +417,7 @@ mod tests {
     use crate::agent_loop::tests::Scripted;
 
     /// A model whose reply never arrives.
-    pub(super) struct Stalled;
+    pub(crate) struct Stalled;
 
     impl Provider for Stalled {
         fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
@@ -390,7 +445,7 @@ mod tests {
         Session::new("glm-5.3", "/repo".into()).as_subagent(None)
     }
 
-    pub(super) fn says(text: &str) -> Vec<StreamEvent> {
+    pub(crate) fn says(text: &str) -> Vec<StreamEvent> {
         vec![StreamEvent::TextDelta(text.into())]
     }
 

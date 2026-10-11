@@ -59,10 +59,18 @@ impl App {
                 if let Event::Usage(usage) = event {
                     self.spent.subagent_usage(id, usage);
                 }
+                // A subagent on a work item ticked its todo.
+                if let Event::ToolFinished { call, .. } = &event
+                    && call.name == "work_todo"
+                {
+                    self.read_work();
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
                 }
             }
+            // Its notice is in the inbox; waking the model for it is below.
+            SubagentEvent::Stalled { .. } => {}
             SubagentEvent::TurnEnded {
                 id,
                 outcome,
@@ -70,6 +78,10 @@ impl App {
                 model,
             } => {
                 self.spent.subagent_ended(id);
+                // A work item's subagent returned it.
+                if self.work.exists() {
+                    self.read_work();
+                }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.ended(&outcome, elapsed, &model);
                     if view.closing {
@@ -81,7 +93,7 @@ impl App {
             }
         }
         // A task's answer waits in the inbox with the monitors' notices.
-        if self.notices_due.is_none() && self.inbox.has_notices() {
+        if self.notices_due.is_none() && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
     }

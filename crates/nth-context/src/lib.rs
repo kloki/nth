@@ -4,7 +4,7 @@
 //! agents the model can delegate to.
 
 pub mod agents;
-mod frontmatter;
+pub mod frontmatter;
 pub mod instructions;
 pub mod skills;
 
