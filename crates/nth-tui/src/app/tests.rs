@@ -10,7 +10,7 @@ use crossterm::event::Event as TermEvent;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_context::{Context as ProjectContext, Paths};
 use nth_protocol::{
-    BoxError, Effort, Event, Listing, Message, Panel, Provider, Request, Screen, Show, StreamEvent,
+    BoxError, Effort, Event, Listing, Message, Panel, Provider, Request, Screen, StreamEvent,
     ToolCall, Usage,
 };
 use nth_session::Session;
@@ -492,11 +492,20 @@ async fn the_agent_switches_the_tab() {
     let screen = Screen::new(app.screen_tx.clone());
     assert!(screen.show(Panel::Diagnostics).await);
 
-    let Some(Show::Panel(panel)) = app.screen_rx.recv().await else {
+    let Some(show) = app.screen_rx.recv().await else {
         panic!("sent a panel");
     };
-    app.open_content(panel.into());
+    app.show(show);
     assert_eq!(app.content.active(), Tab::Diagnostics);
+    assert!(app.flash.is_some(), "the tab flashes");
+}
+
+#[tokio::test]
+async fn a_tab_you_switch_to_does_not_flash() {
+    let mut app = app();
+    app.open_content(Tab::Diagnostics);
+    app.apply(Action::Content(0));
+    assert!(app.flash.is_none());
 }
 
 #[test]

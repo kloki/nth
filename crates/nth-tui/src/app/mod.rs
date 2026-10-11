@@ -9,6 +9,7 @@ mod content;
 mod dirs;
 mod editor;
 mod files;
+mod flash;
 mod git;
 mod history;
 mod input;
@@ -178,6 +179,8 @@ pub struct App {
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
+    /// The blank before a tab the model just showed.
+    flash: Option<flash::Flash>,
     pointer: Option<Position>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
     completion: Option<Completion>,
@@ -425,6 +428,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             hero_since: Instant::now(),
+            flash: None,
             pointer: None,
             completion: None,
             files: Vec::new(),
@@ -568,7 +572,8 @@ impl App {
             let ticking = self.is_busy()
                 || self.running_monitors() > 0
                 || self.running_subagents() > 0
-                || self.showing_hero();
+                || self.showing_hero()
+                || self.flash.as_ref().is_some_and(flash::Flash::running);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -610,8 +615,7 @@ impl App {
                     self.on_ask(ask)
                 }
                 Step::NotifyFailed => self.notify_failed(),
-                Step::Show(Show::Panel(panel)) => self.open_content(panel.into()),
-                Step::Show(Show::File(path)) => self.show_file(path),
+                Step::Show(show) => self.show(show),
                 Step::FileRead((id, text)) => self.file_read(id, text),
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::Subagent(event) => self.on_subagent(event),
@@ -665,6 +669,19 @@ impl App {
         }
         self.stop_background_for_exit().await;
         Ok(())
+    }
+
+    /// The model shows you a tab; one it switches to comes in after a blank, so the
+    /// switch does not go unnoticed.
+    fn show(&mut self, show: Show) {
+        let before = self.content.active();
+        match show {
+            Show::Panel(panel) => self.open_content(panel.into()),
+            Show::File(path) => self.show_file(path),
+        }
+        if self.content.active() != before {
+            self.flash = Some(flash::Flash::new());
+        }
     }
 
     /// Whether the empty chat's field shows, which moves on every tick.
@@ -771,6 +788,9 @@ impl App {
                     draw_scrollbar(frame, content, state);
                 }
             }
+        }
+        if let Some(flash) = self.flash.as_ref().filter(|r| r.running()) {
+            flash.draw(frame.buffer_mut(), content);
         }
         // The link's place is kept for a click to land on.
         self.areas.pr_link = status::draw(frame, status, self);
