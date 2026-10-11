@@ -46,7 +46,7 @@ impl Tool for Panel {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Screen;
+    use nth_protocol::{Screen, Show};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -62,7 +62,7 @@ mod tests {
         let out = Panel.call(json!({ "panel": "diagnostics" }), &ctx).await;
 
         assert_eq!(out, Ok("The user now sees the diagnostics panel.".into()));
-        assert_eq!(rx.recv().await, Some(Shown::Diagnostics));
+        assert_eq!(rx.recv().await, Some(Show::Panel(Shown::Diagnostics)));
     }
 
     #[tokio::test]

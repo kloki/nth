@@ -20,11 +20,12 @@ use crate::{Error, Session};
 /// Tools a subagent never gets: another task would nest without end, the
 /// worktree tools would take it out of its parent's directory, and the rest
 /// need the front-end, which belongs to the parent.
-const WITHHELD: [&str; 8] = [
+const WITHHELD: [&str; 9] = [
     "task",
     "task_stop",
     "question",
     "panel",
+    "show_user",
     "monitor",
     "monitor_stop",
     "enter_worktree",

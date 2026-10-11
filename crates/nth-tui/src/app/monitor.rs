@@ -114,6 +114,7 @@ impl App {
         // A monitor's tab is only here while it runs, and a subagent's view
         // stays: continued, it opens again with its turns.
         self.content.close();
+        self.forget_closed_files();
     }
 
     /// Quits, but with monitors or subagents running only on the second

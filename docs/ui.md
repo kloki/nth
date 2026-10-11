@@ -36,7 +36,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
 - **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
@@ -66,6 +66,12 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
 - **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics` or `plan`); in `nth run` there is nothing to switch, and the tool tells the model so.
+
+## Files
+
+The `show_user` tool puts a file in front of you: it opens a tab for it and shows it, or shows the tab it already has, so several files can be open at once. The label is `◫` and the file's name, `◫ notes.md`. The tab starts with the file's path relative to the working directory, dimmed, then the file: markdown rendered with its syntax hidden, as the plan is, and any other file highlighted by its extension and wrapped, behind dim line numbers.
+
+The tab follows the file on disk. It looks every half second, so it picks up a write by the model, by a command or by your editor, and it keeps its scroll position when the file reloads. A file that goes away leaves the tab open with `· gone` after its path, and the tab shows the file again if it comes back. Only you close the tab, with ctrl+q or `/close`. In `nth run` there is nothing to show the file on, and the tool tells the model so. Subagents don't get the tool.
 
 ## Monitors
 
