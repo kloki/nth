@@ -38,7 +38,7 @@ impl App {
                 self.content.remove(Tab::Monitor(id));
             }
         }
-        if self.notices_due.is_none() && self.inbox.has_notices() {
+        if self.notices_due.is_none() && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
     }
@@ -47,7 +47,7 @@ impl App {
     /// running, which hands them over itself, or you stopped the last one.
     pub(super) fn notices_due(&mut self) {
         self.notices_due = None;
-        if !self.is_busy() && !self.hold_notices && self.inbox.has_notices() {
+        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.start_turn(String::new());
         }
     }

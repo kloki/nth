@@ -62,7 +62,7 @@ pub async fn run(session: Option<String>, all: bool, json: bool, config: Config)
 }
 
 /// The saved session whose id starts with `id`, or the latest one.
-async fn pick(store: &Store, id: Option<&str>) -> Result<Session> {
+pub(crate) async fn pick(store: &Store, id: Option<&str>) -> Result<Session> {
     let sessions = store.list().await?;
     let summary = match id {
         None => sessions.first().context("no saved sessions")?,

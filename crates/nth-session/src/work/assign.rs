@@ -21,10 +21,13 @@ use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, child_session, tools
 
 const ASSIGNED: &str = include_str!("assigned.md");
 
-/// What the actor tells about a job on a work item.
+/// What the actor tells about a job on a work item. The actor settles
+/// it however the job ends, so the item never stays running for nobody.
 pub struct Assigned {
     assignment: Assignment,
     stall: Option<Duration>,
+    /// The headless call waiting for the notice, as it has no inbox.
+    reply: Option<oneshot::Sender<WorkNotice>>,
 }
 
 impl Assigned {
@@ -54,7 +57,11 @@ impl Assigned {
     /// The subagent's turn ended: the item returns and the model hears.
     pub(crate) async fn settle(self, turn: Turn) {
         let notice = returned(&self.assignment, outcome(&turn)).await;
-        self.assignment.inbox.post_work(notice);
+        self.assignment.inbox.post_work(notice.clone());
+        // A dropped receiver is a call that stopped waiting, which is fine.
+        if let Some(reply) = self.reply {
+            let _ = reply.send(notice);
+        }
     }
 }
 
@@ -89,7 +96,7 @@ impl Tool for WorkAssign {
                     "item": { "type": "string", "description": "The item's slug." },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to put on it" },
                     "task_id": { "type": "integer", "description": "Only to continue the subagent that last worked on this item, with what it remembers; leave it out for a fresh one." },
-                    "timeout_secs": { "type": "integer", "description": "Seconds this attempt may run before it returns as timed out; the configured limit by default." }
+                    "timeout_secs": { "type": "integer", "minimum": 0, "description": "Seconds this attempt may run before it returns as timed out, 0 for no limit; the configured limit by default." }
                 },
                 "required": ["cycle", "item", "subagent_type"]
             }),
@@ -182,7 +189,7 @@ impl Tool for WorkAssign {
                         }
                         Some(_) => {}
                     }
-                    if shared.subagents.is_running(id) {
+                    if shared.subagents.is_running(id) || shared.subagents.queued(id) > 0 {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
                     if planning && shared.subagents.writes(id) {
@@ -213,13 +220,28 @@ impl Tool for WorkAssign {
                         task: id,
                         agent: agent.name.clone(),
                         inbox: ctx.inbox.clone(),
+                        closed: shared.subagents.closed(id).unwrap_or_default(),
                     });
                     id
                 }
             };
             let before = item.clone();
+            // `0` is no limit, as in the config.
+            let timeout = match args.timeout_secs {
+                Some(0) => None,
+                Some(secs) => Some(Duration::from_secs(secs)),
+                None => shared.limits.timeout,
+            };
+            let limit = match timeout {
+                Some(timeout) => format!(
+                    "You have {} minutes. Past that your turn is stopped and the item returns as timed out, with the steps you ticked.",
+                    timeout.as_secs().div_ceil(60)
+                ),
+                None => String::new(),
+            };
             let mut text = ASSIGNED
                 .replace("{item}", &at.to_string())
+                .replace("{limit}", &limit)
                 .replace("{body}", &before.body());
             if planning {
                 text = format!("{text}\n\n{PLANNING}");
@@ -234,74 +256,72 @@ impl Tool for WorkAssign {
                 note: None,
                 ..before.clone()
             };
-            store
-                .write(&running)
-                .await
-                .map_err(|e| format!("writing {at} failed: {e}"))?;
+            // With an inbox every change to the item wakes the model.
+            // Headless there is none, so the call waits for the notice.
+            let headless = !ctx.inbox.reaches_model();
+            let (reply, waiting) = match headless {
+                true => {
+                    let (reply, waiting) = oneshot::channel();
+                    (Some(reply), Some(waiting))
+                }
+                false => (None, None),
+            };
+            let assigned = Assigned {
+                assignment: Assignment {
+                    files: shared.files.clone(),
+                    store: store.clone(),
+                    at: at.clone(),
+                    task: id,
+                    agent: agent.name.clone(),
+                    inbox: ctx.inbox.clone(),
+                    closed: shared.subagents.closed(id).unwrap_or_default(),
+                },
+                // Headless nobody wakes for a stall.
+                stall: shared.limits.stall.filter(|_| !headless),
+                reply,
+            };
+            let cancel = CancellationToken::new();
+            let job = Job {
+                text,
+                cancel: cancel.clone(),
+                done: Done::Work(assigned),
+                timeout,
+            };
+            // The job goes out before the file says running, all under the
+            // lock the job's settling takes: a call dropped before this
+            // leaves the item pending, and one dropped after is settled by
+            // the actor, which sees the file only once it is written.
             live.running.insert(path.clone(), id);
             live.worked.insert(path.clone(), id);
-            let assignment = Assignment {
-                files: shared.files.clone(),
-                store: store.clone(),
-                at: at.clone(),
-                task: id,
-                agent: agent.name.clone(),
-                inbox: ctx.inbox.clone(),
-            };
-            let timeout = args
-                .timeout_secs
-                .map(Duration::from_secs)
-                .or(shared.limits.timeout);
-            let cancel = CancellationToken::new();
-            // With an inbox every change to the item wakes the model.
-            // Headless there is none, so the call waits for the answer.
-            if ctx.inbox.reaches_model() {
-                let job = Job {
-                    text,
-                    cancel,
-                    done: Done::Work(Assigned {
-                        assignment,
-                        stall: shared.limits.stall,
-                    }),
-                    timeout,
-                };
-                if !shared.subagents.prompt(id, job) {
-                    live.running.remove(&path);
-                    let _ = store.write(&before).await;
-                    return Err(format!(
-                        "subagent {id} has ended; leave task_id out to start a fresh one"
-                    ));
-                }
+            if !shared.subagents.prompt(id, job) {
+                live.running.remove(&path);
+                return Err(format!(
+                    "subagent {id} has ended; leave task_id out to start a fresh one"
+                ));
+            }
+            if let Err(e) = store.write(&running).await {
+                live.running.remove(&path);
+                shared.subagents.cancel(id);
+                return Err(format!("writing {at} failed: {e}"));
+            }
+            let Some(waiting) = waiting else {
                 let verb = match continued {
                     Some(_) => format!("Sent {at} back to subagent {id} (@{})", agent.name),
                     None => format!("Assigned {at} to subagent {id} (@{})", agent.name),
                 };
                 return Ok(format!(
-                    "{verb}. Its todo updates, its answer and any stall reach you as <work_item> notices; carry on, or end your turn to wait. task_id {id} continues the same subagent on this item later."
+                    "{verb}. Its answer and any stall reach you as <work_item> notices, its todo updates along with them; carry on, or end your turn to wait. task_id {id} continues the same subagent on this item later."
                 ));
-            }
-            // The subagent's work_todo takes the lock: let go before waiting.
-            drop(live);
-            let (reply, waiting) = oneshot::channel();
-            // Dropped with this future when the parent's turn is cancelled,
-            // which stops the subagent too.
-            let _guard = cancel.clone().drop_guard();
-            let job = Job {
-                text,
-                cancel,
-                done: Done::Reply(reply),
-                timeout,
             };
-            if !shared.subagents.prompt(id, job) {
-                let _ = returned(&assignment, nth_protocol::WorkOutcome::Interrupted).await;
-                return Err(format!(
-                    "subagent {id} has ended; leave task_id out to start a fresh one"
-                ));
+            // The subagent's work_todo and its settling take the lock.
+            drop(live);
+            // Dropped with this future when the parent's turn is cancelled,
+            // which stops the subagent; the actor still settles the item.
+            let _guard = cancel.drop_guard();
+            match waiting.await {
+                Ok(notice) => Ok(notice.render()),
+                Err(_) => Err(format!("subagent {id} ended without settling {at}")),
             }
-            let turn = waiting
-                .await
-                .unwrap_or_else(|_| Err(crate::Error::Interrupted));
-            Ok(returned(&assignment, outcome(&turn)).await.render())
         }
         .boxed()
     }

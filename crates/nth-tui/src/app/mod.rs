@@ -280,7 +280,8 @@ pub struct App {
     /// The session's work plan and what the work tab shows of it.
     work: WorkView,
     work_dir: PathBuf,
-    work_reading: Job<Option<nth_session::work::Plan>>,
+    /// Reads of the work plan, with the directory each read.
+    work_reading: Job<(PathBuf, Option<nth_session::work::Plan>)>,
     /// The next read is of a session just opened, so a plan it finds
     /// opens its tab without showing it.
     work_settle: bool,
@@ -367,7 +368,7 @@ enum Step {
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
-    WorkRead(Result<Option<nth_session::work::Plan>, JoinError>),
+    WorkRead(Result<(PathBuf, Option<nth_session::work::Plan>), JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     RtkFound(Result<Option<PathBuf>, JoinError>),

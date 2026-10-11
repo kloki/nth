@@ -36,8 +36,8 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
-- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, Work, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
+- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  ⊞ work 3/7  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
   | Colour  | State                              | Chat                    | Plan         | Monitor | Subagent            |
@@ -48,7 +48,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
   | red     | failed, until it is something else | turn failed             |              |         | stopped or failed   |
   | magenta | needs you                          | a question waits        |              |         |                     |
 
-  Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays.
+  Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays. The work tab is blue while an item runs, magenta while an item is lost (see [Work](#work)), red while an item failed, and green once every item is done.
 
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys and the mouse wheel move the showing tab.
 - **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
@@ -65,7 +65,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 Ctrl with a digit only arrives as its own key in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
-- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics` or `plan`); in `nth run` there is nothing to switch, and the tool tells the model so.
+- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
 
 ## Files
 
@@ -146,6 +146,46 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 - **While the editor runs.** nth keeps running but draws nothing: a turn goes on, monitors keep reporting, and their output shows when you come back. Edits made during a turn wait for it to end.
 
 **`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits for it to end. Without a plan file it only says `no plan to approve` on the status bar.
+
+## Work
+
+The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles of items worked on in parallel, one subagent an item. The model writes items with `work_item`, puts subagents on them with `work_assign`, and closes them with `work_close`; nothing moves on by itself. The tab opens without being shown once there is a plan, and stays while there is one.
+
+```
+.nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+
+Retry for the fetch client
+Add retries with jitter to every client call.
+
+✓ 1 scaffold  2/2
+├─ ✓ client-trait  3/3
+└─ ✓ retry-config  2/2
+▸ 2 implement  1/3
+├─ ✓ backoff  4/4
+├─ ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
+│    ☒ wrap idempotent requests
+│    ☐ cap at 5 tries
+└─ ∎ docs  3/3  @explore #4 · returned completed
+     ☒ write the section
+◇ 3 verify  0/2
+├─ ○ integration-test  0/4
+└─ ○ changelog  0/1
+```
+
+- **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
+- **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
+- **Overview.** `plan.md`'s first heading in bold and the rest dim, when the model wrote one.
+- **Cycles.** `✓` green once every item is closed, `▸` blue for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim for the ones after it. Closed items over all follow.
+- **Items.** Behind tree guides: `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
+- **Todos.** Under the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
+- **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
+- **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
+- **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
+- **Opening and closing.** `/work` shows it, and so does the model with the `panel` tool. ctrl+q and `/close` leave it open while there is a plan, as with the plan tab.
+- **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
+- **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.
+- **The subagents.** Each has its usual tab, named `work <cycle>/<item>`. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (600) before the item returns failed or timed out.
+- **Outside the TUI.** `nth work [<session>]` prints the same tree for a saved session, `--json` for the plan as data.
 
 ## Diagnostics
 
