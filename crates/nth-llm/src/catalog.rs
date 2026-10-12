@@ -39,6 +39,9 @@ pub(crate) struct Model {
     /// Set when this model needs a different SDK, and so a different wire
     /// protocol, than its provider's default.
     pub(crate) provider: Option<Override>,
+    /// `provider/model` of the entry for the maker's own, as
+    /// `zhipuai/glm-5.3` for openrouter's `z-ai/glm-5.3`.
+    pub(crate) canonical_model_id: Option<String>,
 }
 
 /// One way a model's reasoning can be steered.
@@ -229,12 +232,46 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<Catalog, reqwest::Er
         .await
 }
 
-/// The catalogue's entry for the provider serving `base_url`, if it has one.
-pub(crate) fn provider_for<'a>(catalog: &'a Catalog, base_url: &str) -> Option<&'a Provider> {
+/// The catalogue's entry for the provider serving `base_url`, else the one
+/// named `id`: some entries, as OpenAI's, give no `api` to match.
+pub(crate) fn provider_for<'a>(
+    catalog: &'a Catalog,
+    id: &str,
+    base_url: &str,
+) -> Option<&'a Provider> {
     let base_url = base_url.trim_end_matches('/');
     catalog
         .values()
         .find(|p| p.api.as_deref().map(|a| a.trim_end_matches('/')) == Some(base_url))
+        .or_else(|| catalog.get(id))
+}
+
+/// What another provider's entry says about `model`, for an endpoint the
+/// catalogue has none for: the model of that id, else of the part after its
+/// last `/`. Of several, the canonical entry one of them names, else the
+/// first by provider id.
+pub(crate) fn borrowed<'a>(catalog: &'a Catalog, model: &str) -> Option<&'a Model> {
+    let mut providers: Vec<_> = catalog.iter().collect();
+    providers.sort_by_key(|(id, _)| *id);
+    let named = |name: &str| -> Vec<&'a Model> {
+        providers
+            .iter()
+            .filter_map(|(_, p)| p.models.get(name))
+            .collect()
+    };
+    let mut found = named(model);
+    if found.is_empty()
+        && let Some((_, bare)) = model.rsplit_once('/')
+    {
+        found = named(bare);
+    }
+    found
+        .iter()
+        .find_map(|m| {
+            let (provider, id) = m.canonical_model_id.as_deref()?.split_once('/')?;
+            catalog.get(provider)?.models.get(id)
+        })
+        .or(found.first().copied())
 }
 
 #[cfg(test)]
@@ -246,7 +283,8 @@ mod tests {
     #[test]
     fn the_sdk_picks_the_wire() {
         let catalog: Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let go = provider_for(&catalog, "https://opencode.ai/zen/go/v1").expect("go entry");
+        let go =
+            provider_for(&catalog, "opencode", "https://opencode.ai/zen/go/v1").expect("go entry");
         assert_eq!(go.wire("glm-5.3"), Some(Wire::ChatCompletions));
         assert_eq!(go.wire("minimax-m3"), Some(Wire::Messages));
         assert_eq!(go.wire("grok-4.7"), Some(Wire::Responses));
@@ -260,6 +298,43 @@ mod tests {
             "the provider's SDK"
         );
         assert_eq!(other.wire("unlisted"), Some(Wire::ChatCompletions));
+    }
+
+    #[test]
+    fn a_provider_is_found_by_its_url_else_by_its_id() {
+        let catalog: Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
+        let name = |p: Option<&Provider>| p.and_then(|p| p.models.keys().min().cloned());
+
+        let openai = provider_for(&catalog, "openai", "https://api.openai.com/v1");
+        assert_eq!(name(openai).as_deref(), Some("gpt-x"), "no api, so by id");
+        assert_eq!(openai.and_then(|p| p.wire("gpt-x")), Some(Wire::Responses));
+        let go = provider_for(&catalog, "openai", "https://opencode.ai/zen/go/v1/");
+        assert_eq!(
+            name(go).as_deref(),
+            Some("gemini-3.5-flash"),
+            "the url wins"
+        );
+        assert!(provider_for(&catalog, "lyceum", "https://api.lyceum.technology").is_none());
+    }
+
+    #[test]
+    fn a_model_is_borrowed_by_id_else_by_bare_name_preferring_the_canonical() {
+        let catalog: Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
+        let name = |model| borrowed(&catalog, model).and_then(|m| m.name.as_deref());
+
+        assert_eq!(
+            name("z-ai/glm-5.3"),
+            Some("GLM-5.3"),
+            "openrouter's names zhipuai's"
+        );
+        assert_eq!(
+            borrowed(&catalog, "z-ai/glm-5.3").and_then(|m| m.limit.as_ref()?.context),
+            Some(204_800)
+        );
+        assert_eq!(name("acme/kimi-k3"), Some("Kimi K3"), "by the bare name");
+        assert_eq!(name("acme/orphan"), Some("Orphan"), "its canonical is gone");
+        assert_eq!(name("claude-x"), Some("Claude X"));
+        assert_eq!(name("acme/unknown"), None);
     }
 
     #[test]

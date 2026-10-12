@@ -141,5 +141,83 @@
         }
       }
     }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "npm": "@ai-sdk/openai",
+    "models": {
+      "gpt-x": {
+        "id": "gpt-x",
+        "name": "GPT X",
+        "reasoning": true,
+        "cost": { "input": 1.25, "output": 10 },
+        "limit": {
+          "context": 400000,
+          "output": 128000
+        },
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://openrouter.ai/api/v1",
+    "models": {
+      "z-ai/glm-5.3": {
+        "id": "z-ai/glm-5.3",
+        "name": "GLM-5.3 (OpenRouter)",
+        "canonical_model_id": "zhipuai/glm-5.3",
+        "reasoning": true,
+        "cost": { "input": 1.5, "output": 5 },
+        "limit": {
+          "context": 202752,
+          "output": 65536
+        }
+      },
+      "acme/orphan": {
+        "id": "acme/orphan",
+        "name": "Orphan",
+        "canonical_model_id": "acme/orphan",
+        "limit": {
+          "context": 32768,
+          "output": 4096
+        }
+      }
+    }
+  },
+  "zhipuai": {
+    "id": "zhipuai",
+    "name": "Zhipu AI",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://open.bigmodel.cn/api/paas/v4",
+    "models": {
+      "glm-5.3": {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "reasoning": true,
+        "cost": { "input": 1, "output": 3.2 },
+        "limit": {
+          "context": 204800,
+          "output": 131072
+        },
+        "reasoning_options": [
+          {
+            "type": "toggle"
+          }
+        ]
+      }
+    }
   }
 }

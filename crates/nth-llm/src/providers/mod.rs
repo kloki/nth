@@ -307,9 +307,10 @@ mod tests {
         );
         assert_eq!(
             wire("lyceum/minimax-m3").await,
-            (Wire::ChatCompletions, None),
-            "an endpoint the catalogue does not know"
+            (Wire::ChatCompletions, Some(131_072)),
+            "an endpoint the catalogue does not know borrows the model, not its wire"
         );
+        assert_eq!(wire("lyceum/unlisted").await, (Wire::ChatCompletions, None));
     }
 
     #[tokio::test]
