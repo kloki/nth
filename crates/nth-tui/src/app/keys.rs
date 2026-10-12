@@ -177,6 +177,19 @@ impl App {
             }
             return;
         }
+        if let Input::Connect(panel) = &mut self.input {
+            let waiting = panel.waiting().is_some();
+            match action {
+                Action::SelectNext if !waiting => panel.next(),
+                Action::SelectPrev if !waiting => panel.prev(),
+                Action::Submit if !waiting => self.start_login(),
+                Action::Insert('c') if waiting => self.copy_login_url(),
+                // Stops the login too, never a running turn.
+                Action::Interrupt | Action::ClearOrQuit => self.close_connect(),
+                _ => {}
+            }
+            return;
+        }
         if let Input::Question(panel) = &mut self.input {
             let editing = panel.editing();
             let answers = match action {
@@ -468,7 +481,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Approve);
-        for _ in 0..10 {
+        for _ in 0..11 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -507,6 +520,7 @@ mod tests {
                 "approve",
                 "clear",
                 "close",
+                "connect",
                 "diagnostics",
                 "exit",
                 "models",

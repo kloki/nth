@@ -9,7 +9,7 @@ use std::process::Stdio;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use super::{App, Tab};
+use super::{App, Tab, input::Input};
 use crate::{chat::Chat, header, terminal};
 
 const WHEEL_LINES: usize = 3;
@@ -22,6 +22,8 @@ pub(super) struct Areas {
     /// Each tab drawn, one or two.
     pub panes: Vec<(Tab, Rect)>,
     pub pr_link: Option<Rect>,
+    /// The `/connect` panel's login URL, while it shows.
+    pub login_url: Option<Rect>,
 }
 
 impl Areas {
@@ -65,6 +67,11 @@ impl App {
             {
                 self.open_pr();
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if self.areas.login_url.is_some_and(|area| area.contains(at)) =>
+            {
+                self.open_login_url();
+            }
             MouseEventKind::Down(MouseButton::Left) => self.click_content(at),
             MouseEventKind::Down(MouseButton::Right) => self.copy_entry(at),
             _ => {}
@@ -107,6 +114,16 @@ impl App {
             return;
         };
         self.open_url(&url);
+    }
+
+    /// The `/connect` panel's URL, in case the browser did not open.
+    fn open_login_url(&mut self) {
+        let Input::Connect(panel) = &self.input else {
+            return;
+        };
+        if let Some(url) = panel.url().map(str::to_string) {
+            self.open_url(&url);
+        }
     }
 
     fn click_content(&mut self, at: Position) {

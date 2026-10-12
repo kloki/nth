@@ -38,8 +38,10 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         effort,
     };
     // One per `[[profiles]]`, with why it cannot run when its provider
-    // has no key set: the chat skips those when cycling. The first is
-    // what the chat starts on; with none, `mode_llms` are the config's.
+    // has no key set: the chat skips those when cycling. Whether ChatGPT
+    // is connected is left to the chat, which asks on every cycle, since
+    // `/connect` changes it mid-run. The first is what the chat starts
+    // on; with none, `mode_llms` are the config's.
     let profiles: Vec<Profile> = config
         .profiles
         .iter()
@@ -48,11 +50,21 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 plan: llm(config.profile_llm(profile, Mode::Plan)),
                 act: llm(config.profile_llm(profile, Mode::Act)),
             };
-            let unavailable = [&llms.plan, &llms.act]
+            let runs = [&llms.plan, &llms.act];
+            let unavailable = runs
                 .into_iter()
-                .find_map(|llm| provider.check(&llm.model).err().map(why_unavailable));
+                .find_map(|llm| match provider.check(&llm.model) {
+                    Err(Error::Auth(nth_auth::Error::NotConnected)) | Ok(()) => None,
+                    Err(error) => Some(why_unavailable(error)),
+                });
+            let on_chatgpt = |llm: &&Llm| {
+                llm.model
+                    .split_once('/')
+                    .is_some_and(|(id, _)| id == nth_auth::ChatGpt::ID)
+            };
             Profile {
                 name: profile.name.clone(),
+                needs_chatgpt: runs.iter().any(on_chatgpt),
                 llms,
                 unavailable,
             }
@@ -114,6 +126,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 tool_output: config.chat.tool_output,
             },
             split_width: config.layout.split_width,
+            chatgpt: crate::chatgpt()?,
         },
     )
     .await;
@@ -128,7 +141,6 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
 fn why_unavailable(error: Error) -> String {
     match error {
         Error::Unavailable { api_key_env, .. } => format!("{api_key_env} is not set"),
-        Error::Auth(nth_auth::Error::NotConnected) => "ChatGPT is not connected".into(),
         error => error.to_string(),
     }
 }
@@ -144,7 +156,5 @@ mod tests {
             api_key_env: "ZEN_API_KEY".into(),
         };
         assert_eq!(why_unavailable(error), "ZEN_API_KEY is not set");
-        let error = Error::Auth(nth_auth::Error::NotConnected);
-        assert_eq!(why_unavailable(error), "ChatGPT is not connected");
     }
 }

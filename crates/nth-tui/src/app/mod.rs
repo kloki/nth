@@ -5,6 +5,7 @@
 
 mod checks;
 mod completion;
+mod connect;
 mod content;
 mod dirs;
 mod editor;
@@ -73,7 +74,7 @@ use ratatui::{
 };
 use spent::Spent;
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinError,
     time::MissedTickBehavior,
 };
@@ -227,6 +228,12 @@ pub struct App {
     /// next open asks again.
     llms: Option<Listing>,
     llm_listing: Job<Result<Listing, BoxError>>,
+    /// The ChatGPT login `/connect` signs in through; `None` leaves
+    /// nothing to connect.
+    chatgpt: Option<nth_auth::ChatGpt>,
+    /// The login `/connect` started, and where its URL comes first.
+    login: connect::Login,
+    connect_url: Option<oneshot::Receiver<String>>,
     /// Where sessions are saved after every turn; `None` keeps them in
     /// memory only.
     store: Option<Arc<Store>>,
@@ -352,6 +359,17 @@ fn draw_scrollbar(frame: &mut Frame, content: Rect, mut state: ScrollbarState) {
     frame.render_stateful_widget(bar, column, &mut state);
 }
 
+/// The login's URL once it has one, or never while there is no login.
+async fn login_url(rx: &mut Option<oneshot::Receiver<String>>) -> Option<String> {
+    let Some(url) = rx else {
+        return std::future::pending().await;
+    };
+    let url = url.await.ok();
+    // A finished receiver must not be polled again.
+    *rx = None;
+    url
+}
+
 /// The next terminal event, or never while there is no stream.
 async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<TermEvent>> {
     match input {
@@ -374,6 +392,8 @@ enum Step {
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
     PrLoaded(Result<Option<Pr>, JoinError>),
     LlmsListed(Result<Result<Listing, BoxError>, JoinError>),
+    LoginUrl(String),
+    Connected(Result<Result<nth_auth::Account, nth_auth::Error>, JoinError>),
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
     SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
@@ -472,6 +492,9 @@ impl App {
             pr_loading: Job::default(),
             llms: None,
             llm_listing: Job::default(),
+            chatgpt: None,
+            login: Job::default(),
+            connect_url: None,
             store: None,
             paths: Paths::default(),
             context: session.context().clone(),
@@ -633,6 +656,8 @@ impl App {
                 status = self.git_loading.join() => Step::GitLoaded(status),
                 pr = self.pr_loading.join() => Step::PrLoaded(pr),
                 llms = self.llm_listing.join() => Step::LlmsListed(llms),
+                Some(url) = login_url(&mut self.connect_url) => Step::LoginUrl(url),
+                account = self.login.join() => Step::Connected(account),
                 sessions = self.session_listing.join() => Step::SessionsListed(sessions),
                 session = self.session_loading.join() => Step::SessionLoaded(session),
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
@@ -672,6 +697,8 @@ impl App {
                     self.pr_loaded(pr.context("reading the pull request failed")?)
                 }
                 Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
+                Step::LoginUrl(url) => self.login_url(url),
+                Step::Connected(account) => self.connected(account.context("signing in failed")?),
                 Step::SessionsListed(sessions) => {
                     self.sessions_listed(sessions.context("listing sessions failed")?)
                 }
@@ -819,6 +846,9 @@ impl App {
             Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
             Input::Question(panel) => question::draw(frame, input, panel),
             Input::Settings(panel) => settings::draw(frame, input, panel, self.settings),
+            Input::Connect(panel) => {
+                self.areas.login_url = crate::connect::draw(frame, input, panel)
+            }
         }
     }
 
@@ -991,6 +1021,7 @@ impl App {
                 self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),
+            Command::Connect => self.open_connect(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Usage => self.open_content(Tab::Usage),
