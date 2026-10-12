@@ -38,10 +38,13 @@ const BY_MODEL: &[(&str, &str)] = &[
     ("trinity", include_str!("prompts/system/trinity.md")),
     ("kimi", include_str!("prompts/system/kimi.md")),
     ("moonshot", include_str!("prompts/system/kimi.md")),
+    ("deepseek", include_str!("prompts/system/deepseek.md")),
 ];
 
 /// The persona for `model`: the first matching variant, else the default.
+/// Matched lowercased, since some providers capitalise ids (`DeepSeek-R1`).
 fn template(model: &str) -> &'static str {
+    let model = model.to_lowercase();
     BY_MODEL
         .iter()
         .find(|(needle, _)| model.contains(needle))
@@ -357,7 +360,6 @@ mod tests {
     fn a_model_picks_its_family_prompt_else_the_default() {
         // No match falls through to nth's own default.
         assert_eq!(template("glm-5.3"), TEMPLATE);
-        assert_eq!(template("deepseek-v4.1-flash"), TEMPLATE);
 
         // The family starts, and opencode's order: beast before gpt/astra,
         // astra and codex before the plain gpt prompt.
@@ -372,6 +374,14 @@ mod tests {
         assert!(template("claude-sonnet-4").starts_with("You are nth, the best coding agent"));
         assert!(template("trinity-large").starts_with("You are nth, an interactive CLI tool"));
         assert!(template("muse-glimmer").starts_with("You are nth, a coding agent"));
+        for deepseek in [
+            "deepseek-v4.1-flash",
+            "deepseek-reasoner",
+            "deepseek/deepseek-chat",
+            "deepseek-ai/DeepSeek-R1",
+        ] {
+            assert!(template(deepseek).contains("# Reading files"), "{deepseek}");
+        }
     }
 
     #[test]
