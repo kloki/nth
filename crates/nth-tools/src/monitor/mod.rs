@@ -104,7 +104,7 @@ impl Tool for Monitor {
                 timeout,
             ));
             Ok(format!(
-                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. {log_note} Stop it with monitor_stop.",
+                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it; read the log if you need output before a notice arrives. {log_note} Stop it with monitor_stop.",
                 args.description,
                 timeout.as_secs()
             ))

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
 use nth_context::{Context, project_root};
+use uuid::Uuid;
 
 /// The default system prompt, opencode's `default.txt`.
 const TEMPLATE: &str = include_str!("prompts/system/default.md");
@@ -53,9 +54,16 @@ fn template(model: &str) -> &'static str {
 
 /// The system prompt of a session run for you: the model's persona, the
 /// environment, the working directories added with `/add-dir`, the
-/// instruction files and the skills.
-pub fn system_prompt(model: &str, cwd: &Path, dirs: &[PathBuf], context: &Context) -> String {
-    render(None, model, cwd, dirs, context)
+/// instruction files and the skills. `session` is named in the environment,
+/// so the model can tell its tools which session it is.
+pub fn system_prompt(
+    session: Uuid,
+    model: &str,
+    cwd: &Path,
+    dirs: &[PathBuf],
+    context: &Context,
+) -> String {
+    render(None, session, model, cwd, dirs, context)
 }
 
 /// The system prompt of a subagent's session: `persona` in place of the
@@ -65,18 +73,20 @@ pub fn system_prompt(model: &str, cwd: &Path, dirs: &[PathBuf], context: &Contex
 /// `/add-dir`.
 pub fn subagent_system_prompt(
     persona: Option<&str>,
+    session: Uuid,
     model: &str,
     cwd: &Path,
     dirs: &[PathBuf],
     context: &Context,
 ) -> String {
-    render(Some(persona), model, cwd, dirs, context)
+    render(Some(persona), session, model, cwd, dirs, context)
 }
 
 /// `role` is `None` for your own session and `Some(persona)` for a
 /// subagent's.
 fn render(
     role: Option<Option<&str>>,
+    session: Uuid,
     model: &str,
     cwd: &Path,
     dirs: &[PathBuf],
@@ -88,6 +98,7 @@ fn render(
     // opencode, where the project defaults to the directory.
     let root = root.unwrap_or_else(|| cwd.to_path_buf());
     let env = ENV
+        .replace("{session}", &session.to_string())
         .replace("{model}", model)
         .replace("{cwd}", &cwd.display().to_string())
         .replace("{root}", &root.display().to_string())
@@ -211,7 +222,7 @@ mod tests {
             ..Context::default()
         };
 
-        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &context);
+        let prompt = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         assert_eq!(
@@ -235,7 +246,7 @@ mod tests {
         }
         let context = Context::discover(dir.path(), &nth_context::Paths::default());
 
-        let prompt = system_prompt("glm", dir.path(), &[], &context);
+        let prompt = system_prompt(Uuid::nil(), "glm", dir.path(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         let (skills, agents) = tail
@@ -280,8 +291,9 @@ mod tests {
             &nth_context::Paths::default(),
         );
 
-        let own = system_prompt("glm", "/repo".as_ref(), &[], &context);
-        let child = subagent_system_prompt(None, "glm", "/repo".as_ref(), &[], &context);
+        let own = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+        let child =
+            subagent_system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
 
         assert!(own.contains("<available_agents>"), "{own}");
         assert!(!child.contains("<available_agents>"), "{child}");
@@ -289,7 +301,13 @@ mod tests {
 
     #[test]
     fn without_instructions_the_prompt_ends_at_the_environment() {
-        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &Context::default());
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(prompt.ends_with("</env>\n"), "{prompt}");
     }
@@ -298,12 +316,24 @@ mod tests {
     fn added_directories_follow_the_environment() {
         let dirs = ["/elsewhere".to_string(), "/home/k/reference".to_string()];
         let dirs: Vec<_> = dirs.iter().map(PathBuf::from).collect();
-        let prompt = system_prompt("glm", "/repo".as_ref(), &dirs, &Context::default());
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &dirs,
+            &Context::default(),
+        );
 
         // The block is left out entirely when there is nothing added.
         assert!(
-            !system_prompt("glm", "/repo".as_ref(), &[], &Context::default())
-                .contains("<additional_directories>")
+            !system_prompt(
+                Uuid::nil(),
+                "glm",
+                "/repo".as_ref(),
+                &[],
+                &Context::default()
+            )
+            .contains("<additional_directories>")
         );
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         assert_eq!(
@@ -323,12 +353,19 @@ mod tests {
     }
 
     #[test]
-    fn the_env_block_names_the_workspace_root_and_today() {
+    fn the_env_block_names_the_session_workspace_root_and_today() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(".git")).expect("git dir");
         std::fs::create_dir_all(dir.path().join("sub")).expect("subdir");
 
-        let prompt = system_prompt("glm", &dir.path().join("sub"), &[], &Context::default());
+        let session = Uuid::new_v4();
+        let prompt = system_prompt(
+            session,
+            "glm",
+            &dir.path().join("sub"),
+            &[],
+            &Context::default(),
+        );
 
         // The root above the working directory, not the working directory.
         let env = prompt
@@ -345,12 +382,22 @@ mod tests {
             )),
             "{env}"
         );
+        assert!(
+            env.starts_with(&format!("  Session ID: {session}\n")),
+            "{env}"
+        );
         assert!(env.contains("  Today's date: "), "{env}");
     }
 
     #[test]
     fn a_prompt_names_today_until_the_day_changes() {
-        let prompt = system_prompt("glm", "/repo".as_ref(), &[], &Context::default());
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(names_today(&prompt));
         assert!(!names_today(&prompt.replace(&today(), "Mon Jan 01 2001")));
@@ -386,7 +433,13 @@ mod tests {
 
     #[test]
     fn the_meta_prompt_is_named_for_the_model() {
-        let prompt = system_prompt("muse-glimmer", "/repo".as_ref(), &[], &Context::default());
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "muse-glimmer",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(prompt.contains("powered by muse-glimmer,"), "{prompt}");
         assert!(!prompt.contains("{{MODEL_NAME}}"), "{prompt}");
@@ -396,13 +449,20 @@ mod tests {
     fn a_subagent_gets_its_persona_or_the_models() {
         let own = subagent_system_prompt(
             Some("You search.\n"),
+            Uuid::nil(),
             "kimi-k3",
             "/repo".as_ref(),
             &[],
             &Context::default(),
         );
-        let models =
-            subagent_system_prompt(None, "kimi-k3", "/repo".as_ref(), &[], &Context::default());
+        let models = subagent_system_prompt(
+            None,
+            Uuid::nil(),
+            "kimi-k3",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(
             own.starts_with("You search.\n\nYou are powered by the model named kimi-k3."),
@@ -411,13 +471,50 @@ mod tests {
         assert!(!own.contains("interactive general AI agent"), "{own}");
         assert_eq!(
             models,
-            system_prompt("kimi-k3", "/repo".as_ref(), &[], &Context::default())
+            system_prompt(
+                Uuid::nil(),
+                "kimi-k3",
+                "/repo".as_ref(),
+                &[],
+                &Context::default()
+            )
         );
     }
 
     #[test]
+    fn only_claude_is_told_how_to_comment() {
+        let prompt = |model| {
+            system_prompt(
+                Uuid::nil(),
+                model,
+                "/repo".as_ref(),
+                &[],
+                &Context::default(),
+            )
+        };
+        let persona = subagent_system_prompt(
+            Some("You search."),
+            Uuid::nil(),
+            "claude-sonnet-4",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
+
+        assert!(prompt("claude-sonnet-4").contains("\n# Code comments\nBy default, match"));
+        assert!(!prompt("glm-5.3").contains("# Code comments"));
+        assert!(!persona.contains("# Code comments"), "{persona}");
+    }
+
+    #[test]
     fn a_family_prompt_still_carries_the_environment_block() {
-        let prompt = system_prompt("kimi-k3", "/repo".as_ref(), &[], &Context::default());
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "kimi-k3",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
 
         assert!(
             prompt.contains("an interactive general AI agent"),

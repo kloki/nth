@@ -13,7 +13,7 @@ use serde_norway::Value;
 
 use crate::{Paths, frontmatter, project_root};
 
-/// opencode's explore prompt, `agent/prompt/explore.txt`.
+/// opencode's explore prompt, `PROMPT_EXPLORE` in `plugin/agent.ts`.
 const EXPLORE: &str = include_str!("explore.md");
 /// opencode's descriptions, `agent/agent.ts`.
 const GENERAL_DESCRIPTION: &str = "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.";
@@ -407,7 +407,14 @@ mod tests {
                 .as_deref()
                 .is_some_and(|p| p.starts_with("You are a file search specialist"))
         );
+        assert!(
+            explore
+                .prompt
+                .as_deref()
+                .is_some_and(|p| p.contains("- Shell commands MUST be read-only."))
+        );
         assert!(explore.allows("grep"));
+        assert!(explore.allows("bash"));
         assert!(!explore.allows("write"));
         let general = agents.get("general").expect("general");
         assert_eq!(general.prompt, None);
