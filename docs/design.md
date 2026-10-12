@@ -39,7 +39,7 @@ CLAUDE.md holds the crate map and the internals; this is the design-level shape.
 
 **Formatting and LSP.** Formatters from opencode's table plus `[format]`, run after every write: each matching formatter whose program is installed runs, and the model gets a one-line note, never the formatted file. Language servers from opencode's table plus `[lsp]`, one lazily started client per server and project root; after a write the model gets the errors, warnings left out.
 
-**Worktrees.** nth-worktree keeps git worktrees under `.nth/worktrees` in the main checkout, one per name and on the branch of that name. `enter_worktree` opens one and moves the session there; `exit_worktree` moves it back. Both refuse in plan mode, since the plan file lives under the working directory.
+**Worktrees.** nth-worktree keeps git worktrees under `.nth/worktrees` in the main checkout, one per name and on the branch of that name. `enter_worktree` opens one and moves the session there; `exit_worktree` moves it back. A new worktree is a bare checkout, so when `enter_worktree` creates one it runs the project's committed `.nth/worktree-setup`, if there is one, with bash in it (`NTH_WORKTREE_BASE` and `NTH_WORKTREE_PATH` set, ten minutes at most), and reports how that went; a project script rather than a config key, since what a checkout needs belongs to the project. Both refuse in plan mode, since the plan file lives under the working directory.
 
 **TUI.** Three fixed bands — content panel, input panel, status bar — with a tab per thing you watch: Chat, Diagnostics, Usage, Plan, Work, one per monitor and one per subagent. The full layout spec is [ui.md](ui.md). Desktop notifications go through nth-notify while the terminal is not focused.
 
