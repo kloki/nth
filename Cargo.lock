@@ -1522,6 +1522,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nth-auth"
+version = "1.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "getrandom 0.3.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "nth-context"
 version = "1.1.0"
 dependencies = [
