@@ -70,7 +70,25 @@ impl ToolCall {
         if lines.next().is_some() {
             return format!("{first} …");
         }
-        relative(text, cwd)
+        let path = relative(text, cwd);
+        match self.name.as_str() {
+            "read" => format!("{path}{}", read_range(&args)),
+            _ => path,
+        }
+    }
+}
+
+/// The lines a read call asked for, as `:start-end`, or `:start-` with no
+/// limit; nothing when it reads from the top with the default limit.
+fn read_range(args: &serde_json::Value) -> String {
+    let offset = args["offset"].as_u64().filter(|&n| n > 0);
+    // The read tool takes a limit of 0 as its default.
+    let limit = args["limit"].as_u64().filter(|&n| n > 0);
+    let start = offset.unwrap_or(1);
+    match (offset, limit) {
+        (None, None) => String::new(),
+        (_, Some(limit)) => format!(":{start}-{}", start.saturating_add(limit - 1)),
+        (Some(_), None) => format!(":{start}-"),
     }
 }
 
@@ -110,6 +128,31 @@ mod tests {
             name: "read".into(),
             arguments: arguments.into(),
         }
+    }
+
+    #[test]
+    fn summary_shows_read_ranges() {
+        let cwd = Path::new("/repo");
+        let read = |args: &str| call(args).summary(cwd);
+
+        assert_eq!(read(r#"{"filePath":"/repo/a.rs"}"#), "a.rs");
+        assert_eq!(
+            read(r#"{"filePath":"/repo/a.rs","offset":10,"limit":5}"#),
+            "a.rs:10-14"
+        );
+        assert_eq!(read(r#"{"filePath":"/repo/a.rs","offset":10}"#), "a.rs:10-");
+        assert_eq!(read(r#"{"filePath":"/repo/a.rs","limit":20}"#), "a.rs:1-20");
+        assert_eq!(read(r#"{"filePath":"/repo/a.rs","limit":0}"#), "a.rs");
+        let huge = format!(
+            r#"{{"filePath":"/repo/a.rs","offset":2,"limit":{}}}"#,
+            u64::MAX
+        );
+        assert_eq!(read(&huge), format!("a.rs:2-{}", u64::MAX));
+        let write = ToolCall {
+            name: "write".into(),
+            ..call(r#"{"filePath":"/repo/a.rs","offset":10}"#)
+        };
+        assert_eq!(write.summary(cwd), "a.rs");
     }
 
     #[test]

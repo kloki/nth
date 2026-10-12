@@ -192,6 +192,9 @@ pub struct App {
     /// from the session, so it carries across /resume and starts over with
     /// /clear.
     pub session_since: SystemTime,
+    /// The current session's id, kept here because the session itself is
+    /// in the turn task while a turn runs.
+    session_id: uuid::Uuid,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
@@ -476,6 +479,7 @@ impl App {
             extra_dirs: session.extra_dirs.clone(),
             busy_since: None,
             session_since: session.created_at,
+            session_id: session.id,
             hero_since: Instant::now(),
             flash: None,
             pointer: None,
@@ -1028,11 +1032,21 @@ impl App {
             Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(),
             Command::Close => self.close_content(),
+            Command::CopyId => self.copy_session_id(),
             Command::Settings => {
                 self.completion = None;
                 self.input = Input::Settings(SettingsPanel::default());
             }
         }
+    }
+
+    /// `/copy-id`: the session's id on the clipboard, for the commands that
+    /// take one (`nth usage`, `nth work`, `nth session delete`).
+    fn copy_session_id(&mut self) {
+        self.hint = Some(match (self.clipboard)(&self.session_id.to_string()) {
+            Ok(()) => format!("copied {}", self.session_id),
+            Err(e) => format!("could not copy: {e}"),
+        });
     }
 
     /// Moves on to a new, empty session in the same directory, so it has
@@ -1049,6 +1063,7 @@ impl App {
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
         self.session_since = session.created_at;
+        self.session_id = session.id;
         self.session = Some(session);
         self.usage = None;
         self.spent = Spent::default();

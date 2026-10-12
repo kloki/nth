@@ -10,6 +10,7 @@ mod lsp;
 mod models;
 mod notify;
 mod run;
+mod session;
 mod skills;
 mod usage;
 mod work;
@@ -105,6 +106,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List or delete saved sessions
+    Session {
+        #[command(subcommand)]
+        command: session::SessionCommand,
+    },
     /// Show a saved session's work plan: its cycles, items and todo lists
     Work {
         /// The session, by its id or the start of it; the latest by default
@@ -187,6 +193,7 @@ async fn dispatch(
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
         Command::Work { session, json } => work::run(session, json).await,
+        Command::Session { command } => session::run(command).await,
         Command::Connect {
             status,
             logout,

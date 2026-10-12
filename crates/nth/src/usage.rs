@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use nth_icons::icons;
 use nth_protocol::{Cost, Listing, Provider};
@@ -53,29 +53,12 @@ pub async fn run(session: Option<String>, all: bool, json: bool, config: Config)
             false => days_text(&mut out, &days, &cost),
         };
     }
-    let session = pick(&store, session.as_deref()).await?;
+    let session = crate::session::pick(&store, session.as_deref()).await?;
     match json {
         true => writeln!(out, "{}", session_json(&session, &cost))?,
         false => session_text(&mut out, &session, &cost)?,
     }
     Ok(())
-}
-
-/// The saved session whose id starts with `id`, or the latest one.
-pub(crate) async fn pick(store: &Store, id: Option<&str>) -> Result<Session> {
-    let sessions = store.list().await?;
-    let summary = match id {
-        None => sessions.first().context("no saved sessions")?,
-        Some(id) => {
-            let mut found = sessions.iter().filter(|s| s.id.to_string().starts_with(id));
-            match (found.next(), found.next()) {
-                (Some(summary), None) => summary,
-                (None, _) => bail!("no saved session starts with {id}"),
-                (Some(_), Some(_)) => bail!("more than one saved session starts with {id}"),
-            }
-        }
-    };
-    Ok(store.load(summary.id).await?)
 }
 
 fn session_text(

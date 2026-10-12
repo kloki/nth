@@ -34,6 +34,8 @@ pub struct Summary {
     /// First line of the first prompt.
     pub title: String,
     pub cwd: PathBuf,
+    /// Where it started, when it moved into a worktree.
+    pub origin: Option<PathBuf>,
     pub model: String,
     pub updated_at: SystemTime,
 }
@@ -45,6 +47,8 @@ pub struct Summary {
 struct Head {
     id: Uuid,
     cwd: PathBuf,
+    #[serde(default)]
+    origin: Option<PathBuf>,
     model: String,
     updated_at: SystemTime,
     title: Option<String>,
@@ -126,6 +130,12 @@ impl Store {
         serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })
     }
 
+    /// Removes `id`'s save; one that was never saved is an error.
+    pub async fn delete(&self, id: Uuid) -> Result<(), Error> {
+        let path = self.path(id);
+        tokio::fs::remove_file(&path).await.map_err(io_at(&path))
+    }
+
     /// The session used last, if any was saved.
     pub async fn latest(&self) -> Result<Option<Session>, Error> {
         match self.list().await?.first() {
@@ -195,6 +205,7 @@ fn summary(json: &[u8]) -> Option<Summary> {
         id: head.id,
         title,
         cwd: head.cwd,
+        origin: head.origin,
         model: head.model,
         updated_at: head.updated_at,
     })
@@ -263,6 +274,25 @@ mod tests {
         assert_eq!(titles, ["add resume", "fix the build"]);
         assert_eq!(store.latest().await.expect("loads"), Some(new));
         assert_eq!(store.load(old.id).await.expect("loads"), old);
+    }
+
+    #[tokio::test]
+    async fn deletes_a_saved_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path());
+        let kept = session("keep", 1);
+        let gone = session("drop", 2);
+        store.save(&kept).await.expect("saves");
+        store.save(&gone).await.expect("saves");
+
+        store.delete(gone.id).await.expect("deletes");
+
+        let listed = store.list().await.expect("lists");
+        assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), [kept.id]);
+        assert!(matches!(
+            store.delete(gone.id).await,
+            Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound
+        ));
     }
 
     #[tokio::test]
