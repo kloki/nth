@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 pub async fn run(session: Option<String>, json: bool) -> Result<()> {
     let store = Store::open()?;
-    let session = crate::usage::pick(&store, session.as_deref()).await?;
+    let session = crate::session::pick(&store, session.as_deref()).await?;
     let Some(plan) = work::Store::new(session.work_dir()).load().await? else {
         bail!(
             "session {} has no work plan in {}",

@@ -11,8 +11,8 @@ use crate::popup::Popup;
 
 /// Longest skill description shown in the popup, so it stays narrow.
 const ABOUT_CHARS: usize = 48;
-/// Rows of the command popup; enough for every command and a skill or two.
-const LIMIT: usize = 12;
+/// Rows of the command popup: every command, so a bare `/` lists them all.
+const LIMIT: usize = Command::ALL.len();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
@@ -21,6 +21,7 @@ pub enum Command {
     Clear,
     Close,
     Connect,
+    CopyId,
     Diagnostics,
     Exit,
     Models,
@@ -31,12 +32,13 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 12] = [
+    const ALL: [Command; 13] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
         Command::Close,
         Command::Connect,
+        Command::CopyId,
         Command::Diagnostics,
         Command::Exit,
         Command::Models,
@@ -53,6 +55,7 @@ impl Command {
             Command::Clear => "clear",
             Command::Close => "close",
             Command::Connect => "connect",
+            Command::CopyId => "copy-id",
             Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
             Command::Models => "models",
@@ -70,6 +73,7 @@ impl Command {
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
             Command::Connect => "sign in to a provider",
+            Command::CopyId => "copy the session id",
             Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
@@ -231,7 +235,12 @@ mod tests {
         assert_eq!(Entry::matching("/add", &none), builtins(&[Command::AddDir]));
         assert_eq!(
             Entry::matching("/c", &none),
-            builtins(&[Command::Clear, Command::Close, Command::Connect])
+            builtins(&[
+                Command::Clear,
+                Command::Close,
+                Command::Connect,
+                Command::CopyId
+            ])
         );
         assert_eq!(
             Entry::matching("/d", &none),
@@ -262,6 +271,7 @@ mod tests {
                 "clear",
                 "close",
                 "connect",
+                "copy-id",
                 "diagnostics",
                 "exit",
                 "models",
@@ -275,7 +285,7 @@ mod tests {
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
             names("/c"),
-            ["clear", "close", "connect"],
+            ["clear", "close", "connect", "copy-id"],
             "the clear skill is hidden by the command"
         );
         assert_eq!(

@@ -661,3 +661,33 @@ fn chat_settings_start_from_the_config() {
         shown[12]
     );
 }
+
+#[tokio::test]
+async fn copy_id_copies_the_session_id_even_mid_turn() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let copied = || COPIED.with(|c| c.borrow().clone());
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+        Ok(())
+    };
+    let first = app.session.as_ref().expect("idle").id;
+
+    app.run_command(crate::command::Command::CopyId);
+    assert_eq!(copied(), [first.to_string()]);
+    assert_eq!(app.hint, Some(format!("copied {first}")));
+
+    // Mid-turn the session is in the turn task.
+    let session = app.session.take();
+    app.run_command(crate::command::Command::CopyId);
+    assert_eq!(copied()[1], first.to_string());
+    app.session = session;
+
+    app.run_command(crate::command::Command::Clear);
+    app.run_command(crate::command::Command::CopyId);
+    let fresh = app.session.as_ref().expect("idle").id;
+    assert_ne!(fresh, first);
+    assert_eq!(copied()[2], fresh.to_string());
+}

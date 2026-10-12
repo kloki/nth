@@ -178,12 +178,12 @@ mod tests {
         assert!(rows[2].starts_with("  /clear "));
         assert!(rows[3].starts_with("  /close "));
         assert!(rows[4].starts_with("  /connect "));
-        assert!(rows[5].starts_with("  /diagnostics "));
-        assert!(rows[6].starts_with("  /exit "));
-        assert!(rows[7].starts_with("  /models "));
-        assert!(rows[8].starts_with("  /resume "));
+        assert!(rows[5].starts_with("  /copy-id "));
+        assert!(rows[6].starts_with("  /diagnostics "));
+        assert!(rows[7].starts_with("  /exit "));
+        assert!(rows[8].starts_with("  /models "));
         assert!(
-            rows[9].starts_with("  /settings "),
+            rows[9].starts_with("  /resume "),
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));

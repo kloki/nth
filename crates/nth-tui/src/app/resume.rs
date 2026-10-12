@@ -14,8 +14,7 @@ impl App {
     /// turn may have saved one.
     pub(super) fn open_session_picker(&mut self) {
         self.completion = None;
-        let current = self.session_id();
-        let mut picker = SessionPicker::new(current.unwrap_or_default());
+        let mut picker = SessionPicker::new(self.session_id);
         match &self.store {
             Some(store) if !self.session_listing.is_running() => {
                 let store = store.clone();
@@ -50,7 +49,7 @@ impl App {
             return;
         }
         self.input = Input::Prompt;
-        if Some(id) == self.session_id() {
+        if id == self.session_id {
             return;
         }
         if let Some(store) = self.store.clone() {
@@ -87,6 +86,7 @@ impl App {
         session.max_steps = self.max_steps;
         self.context = session.context().clone();
         self.session_since = session.created_at;
+        self.session_id = session.id;
         // The session's model and effort are its mode's now; the other mode
         // keeps what it had.
         self.mode = session.mode;
@@ -110,10 +110,6 @@ impl App {
         self.index_files();
         self.load_git();
         self.load_pr();
-    }
-
-    fn session_id(&self) -> Option<uuid::Uuid> {
-        self.session.as_ref().map(|s| s.id)
     }
 }
 
@@ -151,7 +147,7 @@ mod tests {
         app.session_loaded(session);
 
         assert!(matches!(app.input, Input::Prompt));
-        assert_eq!(app.session_id(), Some(saved.id));
+        assert_eq!(app.session_id, saved.id);
         assert_eq!(app.model, "kimi");
         assert_eq!(app.cwd, std::path::Path::new("/elsewhere"));
         assert_eq!(app.place, "/elsewhere");
@@ -197,13 +193,13 @@ mod tests {
     #[test]
     fn without_a_store_the_picker_says_so() {
         let mut app = app();
-        let id = app.session_id();
+        let id = app.session_id;
 
         app.open_session_picker();
         app.apply(Action::Submit);
 
         assert!(matches!(app.input, Input::SessionPicker(_)));
-        assert_eq!(app.session_id(), id);
+        assert_eq!(app.session_id, id);
         assert!(!app.session_listing.is_running());
     }
 }
