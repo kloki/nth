@@ -1,10 +1,12 @@
 //! The agent loop: one user turn, step by step, run by [`Turn`]. Streaming
-//! a reply with its retries is `stream`, running its tool calls `call`,
-//! the guard against a model repeating one call `doom_loop`, and handing
+//! a reply with its retries is `stream`, running its tool calls `call`
+//! (their arguments mended against the tool's schema by `repair`), the
+//! guard against a model repeating one call `doom_loop`, and handing
 //! the model what was sent while it worked `steer`.
 
 mod call;
 mod doom_loop;
+mod repair;
 mod steer;
 mod stream;
 #[cfg(test)]

@@ -7,6 +7,7 @@ mod grep;
 mod monitor;
 mod output;
 mod panel;
+mod path;
 mod post_write;
 mod process;
 mod question;

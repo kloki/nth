@@ -52,7 +52,7 @@ impl Tool for Write {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = crate::parse_args(args)?;
-            let path = ctx.cwd.join(&args.file_path);
+            let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             ctx.writable.check(&path)?;
             // Under the same lock as edit and apply_patch: a write that lands
             // while an edit's formatter rewrites the file would be undone.
