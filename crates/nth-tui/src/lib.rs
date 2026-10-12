@@ -4,6 +4,7 @@
 mod app;
 mod chat;
 mod command;
+mod connect;
 mod diagnostics;
 mod file;
 mod fuzzy;
@@ -69,7 +70,8 @@ pub struct Tools {
 
 /// What the config decided: where nth looks for project files, the model
 /// and effort each mode runs on, the profiles ctrl+p cycles, where
-/// notifications go, and how the chat shows what the model did.
+/// notifications go, how the chat shows what the model did, and the
+/// accounts `/connect` signs in to.
 pub struct Settings {
     pub paths: Paths,
     pub mode_llms: ModeLlms,
@@ -81,6 +83,8 @@ pub struct Settings {
     /// The terminal width from which the chat and another tab show side by
     /// side; 0 never splits.
     pub split_width: u16,
+    /// What `/connect` signs in to ChatGPT through.
+    pub chatgpt: nth_auth::ChatGpt,
 }
 
 /// Runs the chat until the user quits, saving `session` and any other it
@@ -100,6 +104,7 @@ pub async fn run(
         notifier,
         chat,
         split_width,
+        chatgpt,
     }: Settings,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
@@ -130,6 +135,7 @@ pub async fn run(
         .with_notifier(notifier)
         .with_chat_settings(chat)
         .with_split_width(split_width)
+        .with_chatgpt(chatgpt)
         .run(&mut terminal)
         .await;
     terminal::restore();

@@ -2,6 +2,7 @@
 //! through them; a model picked by hand in the model picker leaves the
 //! profile, and the next ctrl+p puts it back.
 
+use nth_auth::ChatGpt;
 use nth_protocol::Mode;
 
 use super::{App, Llm, ModeLlms};
@@ -16,6 +17,9 @@ pub struct Profile {
     /// Why it cannot run, when its provider has no key set: cycling skips
     /// it and says this. `None` means it runs.
     pub unavailable: Option<String>,
+    /// Runs a `chatgpt/` model, so it runs only while ChatGPT is
+    /// connected; asked on every cycle, so a `/connect` mid-run counts.
+    pub needs_chatgpt: bool,
 }
 
 /// What `profile` runs with in `mode`.
@@ -77,7 +81,7 @@ impl App {
                 Some(i) => (i + 1 + step) % len,
                 None => step,
             };
-            match &self.profiles[i].unavailable {
+            match self.why_unavailable(&self.profiles[i]) {
                 None => {
                     self.apply_profile(i);
                     if !skipped.is_empty() {
@@ -95,6 +99,15 @@ impl App {
         } else {
             format!("no other profile can run: {}", skipped.join(", "))
         });
+    }
+
+    /// Why `profile` cannot run now; `None` when it can.
+    fn why_unavailable(&self, profile: &Profile) -> Option<String> {
+        if let Some(reason) = &profile.unavailable {
+            return Some(reason.clone());
+        }
+        let connected = self.chatgpt.as_ref().is_some_and(ChatGpt::connected);
+        (profile.needs_chatgpt && !connected).then(|| "ChatGPT is not connected".into())
     }
 
     /// Both modes on `profile`'s llms, the current mode's model and
@@ -130,6 +143,7 @@ mod tests {
                 act: llm(&format!("{model}-act")),
             },
             unavailable: None,
+            needs_chatgpt: false,
         }
     }
 
@@ -214,6 +228,34 @@ mod tests {
             app.hint.as_deref(),
             Some("no other profile can run: zen (ZEN_API_KEY is not set)")
         );
+    }
+
+    #[tokio::test]
+    async fn a_chatgpt_profile_runs_once_connected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = nth_auth::Store::at(dir.path().join("auth.json"));
+        let mut codex = profile("codex", "chatgpt/gpt-5.5");
+        codex.needs_chatgpt = true;
+        let mut app = profiled_with(vec![profile("go", "go"), codex])
+            .with_chatgpt(ChatGpt::new(store.clone()).expect("client"));
+
+        app.apply(Action::NextProfile);
+        assert_eq!(app.model, "go-act");
+        assert_eq!(
+            app.hint.as_deref(),
+            Some("no other profile can run: codex (ChatGPT is not connected)")
+        );
+
+        // As `/connect` leaves it.
+        let oauth = nth_auth::OAuth {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            expires: u64::MAX,
+            account_id: None,
+        };
+        store.save(ChatGpt::ID, &oauth).await.expect("saves");
+        app.apply(Action::NextProfile);
+        assert_eq!(app.model, "chatgpt/gpt-5.5-act");
     }
 
     #[test]

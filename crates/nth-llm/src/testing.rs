@@ -26,3 +26,55 @@ pub(crate) fn runs_no_tools<E>(events: &[Result<StreamEvent, E>]) -> bool {
         .iter()
         .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
 }
+
+/// A server on a free local port that answers one request with `body` as
+/// an event stream, and hands back the request's head: its request line
+/// and headers.
+pub(crate) async fn serve_once(
+    body: &'static [u8],
+) -> (String, tokio::sync::oneshot::Receiver<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let url = format!("http://{}", listener.local_addr().expect("bound"));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("a request");
+        // The whole request, body included: closing on unread bytes would
+        // reset the connection under the reply.
+        let mut request = Vec::new();
+        let mut buf = [0; 4096];
+        let head = loop {
+            let n = stream.read(&mut buf).await.expect("readable");
+            request.extend_from_slice(&buf[..n]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                break String::from_utf8_lossy(&request[..end]).into_owned();
+            }
+            assert!(n > 0, "the request ended inside its head");
+        };
+        let length = head
+            .lines()
+            .find_map(|l| {
+                l.to_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().to_string())
+            })
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        while request.len() < head.len() + 4 + length {
+            let n = stream.read(&mut buf).await.expect("readable");
+            assert!(n > 0, "the request ended inside its body");
+            request.extend_from_slice(&buf[..n]);
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).await.expect("writable");
+        stream.write_all(body).await.expect("writable");
+        let _ = tx.send(head);
+    });
+    (url, rx)
+}

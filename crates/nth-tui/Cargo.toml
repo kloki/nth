@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+nth-auth.workspace = true
 nth-context.workspace = true
 nth-format.workspace = true
 nth-icons.workspace = true

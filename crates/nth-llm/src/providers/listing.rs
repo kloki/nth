@@ -9,7 +9,7 @@ use std::time::Duration;
 use nth_protocol::{Failed, Listing, ModelInfo, Origin};
 use serde::Deserialize;
 
-use crate::{catalog, http::USER_AGENT};
+use crate::{auth::Auth, catalog, http::USER_AGENT};
 
 /// The list is one small JSON body, so unlike a reply it can have a deadline.
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -18,6 +18,8 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum Error {
     #[error("request failed: {0}")]
     Http(#[from] reqwest::Error),
+    #[error(transparent)]
+    Auth(#[from] nth_auth::Error),
     #[error("{status}: {body}")]
     Status {
         status: reqwest::StatusCode,
@@ -39,12 +41,11 @@ struct ListedModel {
 pub(crate) async fn listed(
     http: &reqwest::Client,
     base_url: &str,
-    api_key: &str,
+    auth: &Auth,
 ) -> Result<Vec<String>, Error> {
-    let response = http
-        .get(format!("{base_url}/models"))
+    let response = auth
+        .bearer(http.get(format!("{base_url}/models")), None)
         .timeout(LIST_TIMEOUT)
-        .bearer_auth(api_key)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await?;

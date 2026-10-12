@@ -1503,6 +1503,7 @@ dependencies = [
  "clap",
  "fastrand",
  "jiff",
+ "nth-auth",
  "nth-context",
  "nth-format",
  "nth-icons",
@@ -1573,10 +1574,12 @@ version = "1.1.0"
 dependencies = [
  "bytes",
  "futures",
+ "nth-auth",
  "nth-protocol",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -1667,6 +1670,7 @@ dependencies = [
  "futures",
  "hoodrich",
  "ignore",
+ "nth-auth",
  "nth-context",
  "nth-format",
  "nth-icons",

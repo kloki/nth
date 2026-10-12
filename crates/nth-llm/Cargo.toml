@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+nth-auth.workspace = true
 nth-protocol.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -14,4 +15,5 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "test-util"] }
