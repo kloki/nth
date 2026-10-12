@@ -4,7 +4,8 @@
 # change. `nth config` prints the config nth actually uses. --config or
 # NTH_CONFIG point nth at another file.
 #
-# Nothing is configured to talk to yet. To start a chat:
+# Nothing is configured to talk to yet. To start a chat, either run
+# `nth connect` to use your ChatGPT subscription, or:
 #   1. uncomment a provider below (or add your own),
 #   2. export the environment variable its api_key_env names,
 #   3. set model to one of its models (`nth models` lists them), or leave it
@@ -19,7 +20,9 @@
 model = ""
 # model = "opencode/deepseek-v4.1-flash"
 
-# Providers: one [provider.<id>] block per endpoint, and none are built in.
+# Providers: one [provider.<id>] block per endpoint. ChatGPT is built in and
+# needs no block: `nth connect` (or /connect in the chat) signs in to your
+# subscription, and its models are chatgpt/<model>. The id chatgpt is taken.
 # The id prefixes its models, as in opencode/kimi-k3. Each is an
 # OpenAI-compatible chat completions endpoint; models.dev says which models it
 # serves over Anthropic messages or OpenAI responses instead, found by the
@@ -35,7 +38,7 @@ model = ""
 #                means ask.
 #
 # A provider whose variable is not set is left out; nth needs at least one
-# that is set. Go and Zen share OPENCODE_API_KEY.
+# that is set, or ChatGPT connected. Go and Zen share OPENCODE_API_KEY.
 #
 # OpenCode Go (https://opencode.ai):
 # [provider.opencode]

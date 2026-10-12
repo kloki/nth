@@ -3,8 +3,10 @@
 //! a known prefix goes whole to the default provider, so sessions saved
 //! before there were several keep working. The catalogue then says which
 //! protocol the model speaks there, and the endpoint's client for it takes
-//! the request.
+//! the request. ChatGPT is always among the endpoints, but runs only while
+//! you are connected.
 
+mod chatgpt;
 mod endpoint;
 mod listing;
 
@@ -21,10 +23,14 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no provider has its API key set")]
+    #[error("no provider has its API key set or is connected")]
     NoProviders,
     #[error("{id} is configured but {api_key_env} is not set")]
     Unavailable { id: String, api_key_env: String },
+    /// An endpoint that signs in rather than with a key, as ChatGPT,
+    /// while it is not connected.
+    #[error(transparent)]
+    Auth(#[from] nth_auth::Error),
     #[error("request failed: {0}")]
     Http(#[from] reqwest::Error),
 }
@@ -64,15 +70,17 @@ impl Providers {
         http: reqwest::Client,
         catalog: Snapshot,
     ) -> Result<Self, Error> {
-        if endpoints.is_empty() {
-            return Err(Error::NoProviders);
-        }
-        let endpoints = endpoints
+        let endpoints: Vec<_> = endpoints
             .into_iter()
             .map(|config| Endpoint::new(config, http.clone()))
             .collect();
+        // A bare id goes to the first that can run now.
+        let default = endpoints
+            .iter()
+            .position(|e| e.available().is_ok())
+            .ok_or(Error::NoProviders)?;
         let mut providers = Self {
-            default: 0,
+            default,
             endpoints,
             unavailable,
             catalog,
@@ -102,7 +110,8 @@ impl Providers {
         }
     }
 
-    /// Whether `model` can run: an id of an unavailable provider cannot.
+    /// Whether `model` can run: an id of an unavailable provider cannot,
+    /// nor one of ChatGPT's while it is not connected.
     pub fn check(&self, model: &str) -> Result<(), Error> {
         self.route(model).map(|_| ())
     }
@@ -111,6 +120,7 @@ impl Providers {
     fn route<'a>(&self, model: &'a str) -> Result<(usize, &'a str), Error> {
         if let Some((prefix, wire)) = model.split_once('/') {
             if let Some(i) = self.endpoints.iter().position(|e| e.origin.id == prefix) {
+                self.endpoints[i].available()?;
                 return Ok((i, wire));
             }
             if let Some(unavailable) = self.unavailable.iter().find(|u| u.id == prefix) {
@@ -135,20 +145,15 @@ impl Drop for Providers {
 impl Provider for Providers {
     fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
         async move {
-            // Everything at once: the catalogue's deadline must not delay the
-            // lists, and one slow endpoint must not delay the others' start.
-            let ids = self.endpoints.iter().map(|e| e.ids());
-            let (catalog, ids) = futures::join!(self.catalog.get(), futures::future::join_all(ids));
+            // Every endpoint at once, so one slow one does not delay the
+            // others' start. One that cannot run now is left out, not
+            // reported: ChatGPT not being connected is no failure.
             let listed = self
                 .endpoints
                 .iter()
-                .zip(ids)
-                .map(|(endpoint, ids)| {
-                    let models = ids.map(|ids| endpoint.describe(ids, catalog));
-                    (endpoint.origin.clone(), models)
-                })
-                .collect();
-            listing::merge(listed).map_err(BoxError::from)
+                .filter(|e| e.available().is_ok())
+                .map(|e| async { (e.origin.clone(), e.list(&self.catalog).await) });
+            listing::merge(futures::future::join_all(listed).await).map_err(BoxError::from)
         }
         .boxed()
     }
@@ -161,6 +166,8 @@ impl Provider for Providers {
             let (i, model) = self.route(request.model)?;
             let request = Request { model, ..request };
             let endpoint = &self.endpoints[i];
+            // A ChatGPT login that cannot refresh fails here, for good.
+            let auth = endpoint.auth().await?;
             let (wire, known) = endpoint.wire(self.catalog.get().await, model);
             // Whatever picked the effort (the config, a resumed session, a
             // model switch), a known model is sent only a level it takes.
@@ -172,9 +179,9 @@ impl Provider for Providers {
                 None => request,
             };
             Ok(match wire {
-                Wire::ChatCompletions => endpoint.chat.stream(request).await?,
-                Wire::Messages => endpoint.messages.stream(request, known).await?,
-                Wire::Responses => endpoint.responses.stream(request, known).await?,
+                Wire::ChatCompletions => endpoint.chat.stream(request, &auth).await?,
+                Wire::Messages => endpoint.messages.stream(request, known, &auth).await?,
+                Wire::Responses => endpoint.responses.stream(request, known, &auth).await?,
             })
         }
         .boxed()
@@ -190,14 +197,17 @@ impl Provider for Providers {
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
+
     use super::*;
+    use crate::Credentials;
 
     fn endpoint(id: &str) -> EndpointConfig {
         EndpointConfig {
             id: id.into(),
             name: id.to_uppercase(),
             base_url: format!("https://{id}.test/v1"),
-            api_key: "key".into(),
+            credentials: Credentials::Key("key".into()),
             models: Vec::new(),
         }
     }
@@ -311,6 +321,156 @@ mod tests {
             "an endpoint the catalogue does not know borrows the model, not its wire"
         );
         assert_eq!(wire("lyceum/unlisted").await, (Wire::ChatCompletions, None));
+    }
+
+    /// A ChatGPT login kept in `dir`, and its store to connect it with.
+    fn chatgpt(dir: &tempfile::TempDir) -> (nth_auth::Store, nth_auth::ChatGpt) {
+        let store = nth_auth::Store::at(dir.path().join("auth.json"));
+        let chatgpt = nth_auth::ChatGpt::new(store.clone()).expect("a client");
+        (store, chatgpt)
+    }
+
+    async fn connect(store: &nth_auth::Store) {
+        let auth = nth_auth::OAuth {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            expires: u64::MAX,
+            account_id: Some("account".into()),
+        };
+        store
+            .save(nth_auth::ChatGpt::ID, &auth)
+            .await
+            .expect("saved");
+    }
+
+    /// OpenAI's entry with one model the subscription serves.
+    fn openai() -> Snapshot {
+        let catalog = serde_json::json!({
+            "openai": {"npm": "@ai-sdk/openai", "models": {"gpt-5.5": {"reasoning": true}}},
+        });
+        Snapshot::of(serde_json::from_value(catalog).expect("a valid catalogue"))
+    }
+
+    #[tokio::test]
+    async fn chatgpt_runs_only_while_connected() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (store, chatgpt) = chatgpt(&dir);
+        let lyceum = EndpointConfig {
+            models: vec!["glm".into()],
+            ..endpoint("lyceum")
+        };
+        let providers = Providers::build(
+            vec![lyceum, EndpointConfig::chatgpt(chatgpt)],
+            Vec::new(),
+            "glm",
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("lyceum runs");
+        let ids = async || -> Vec<String> {
+            let listing = providers.models().await.expect("listed");
+            assert_eq!(listing.failed, [], "not connected is no failure");
+            listing.models.into_iter().map(|m| m.id).collect()
+        };
+
+        let error = providers
+            .check("chatgpt/gpt-5.5")
+            .expect_err("not connected");
+        assert_eq!(
+            error.to_string(),
+            "ChatGPT is not connected: run /connect or `nth connect`"
+        );
+        assert_eq!(ids().await, ["lyceum/glm"]);
+        let request = Request {
+            model: "chatgpt/gpt-5.5",
+            session_id: "session",
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        };
+        let error = providers.stream(request).await.err().expect("refused");
+        assert_eq!(providers.retry(&error), None, "connecting takes you");
+
+        connect(&store).await;
+        assert_eq!(
+            providers.route("chatgpt/gpt-5.5").ok(),
+            Some((1, "gpt-5.5"))
+        );
+        assert_eq!(ids().await, ["lyceum/glm", "chatgpt/gpt-5.5"]);
+        assert_eq!(
+            providers.route("glm").ok(),
+            Some((0, "glm")),
+            "still lyceum"
+        );
+    }
+
+    #[tokio::test]
+    async fn chatgpt_alone_runs_once_connected() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (store, chatgpt) = chatgpt(&dir);
+        let build = || {
+            Providers::build(
+                vec![EndpointConfig::chatgpt(chatgpt.clone())],
+                Vec::new(),
+                "",
+                reqwest::Client::new(),
+                openai(),
+            )
+        };
+        assert!(matches!(build().err(), Some(Error::NoProviders)));
+
+        connect(&store).await;
+        let providers = build().expect("connected");
+        assert_eq!(providers.qualify("gpt-5.5"), "chatgpt/gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn chatgpt_requests_carry_the_account_and_the_session() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (store, chatgpt) = chatgpt(&dir);
+        connect(&store).await;
+        let (url, head) =
+            crate::testing::serve_once(include_bytes!("../../tests/fixtures/zen_responses.sse"))
+                .await;
+        let codex = EndpointConfig {
+            base_url: url,
+            ..EndpointConfig::chatgpt(chatgpt)
+        };
+        let providers = Providers::build(
+            vec![codex],
+            Vec::new(),
+            "chatgpt/gpt-5.5",
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("connected");
+
+        let request = Request {
+            model: "chatgpt/gpt-5.5",
+            session_id: "ses_1",
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        };
+        let events: Vec<_> = providers
+            .stream(request)
+            .await
+            .expect("streams")
+            .collect()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+
+        let head = head.await.expect("a request").to_lowercase();
+        let lines: Vec<_> = head.lines().collect();
+        assert_eq!(lines[0], "post /responses http/1.1", "over responses");
+        for header in [
+            "authorization: bearer access",
+            "chatgpt-account-id: account",
+            "originator: nth",
+            "session-id: ses_1",
+        ] {
+            assert!(lines.contains(&header), "{header} in {head}");
+        }
     }
 
     #[tokio::test]

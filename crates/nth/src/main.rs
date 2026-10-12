@@ -4,6 +4,7 @@
 mod agents;
 mod chat;
 mod config;
+mod connect;
 mod formatters;
 mod lsp;
 mod models;
@@ -20,7 +21,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use nth_context::Paths;
 use nth_icons::icons;
-use nth_llm::{EndpointConfig, Providers, Unavailable};
+use nth_llm::{Credentials, EndpointConfig, Providers, Unavailable};
 use nth_protocol::{Listing, Mode, Provider};
 use nth_session::Session;
 use owo_colors::OwoColorize;
@@ -112,6 +113,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Sign in to ChatGPT, so its models run on your subscription
+    Connect {
+        /// Only say whether ChatGPT is connected
+        #[arg(long, conflicts_with = "logout")]
+        status: bool,
+        /// Sign out of ChatGPT instead
+        #[arg(long)]
+        logout: bool,
+        /// With --status, print JSON, the default when stdout is not a terminal
+        #[arg(long, requires = "status")]
+        json: bool,
+    },
     /// Send a sample notification through the configured backend
     Notify {
         /// Which notification to show
@@ -174,6 +187,11 @@ async fn dispatch(
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
         Command::Work { session, json } => work::run(session, json).await,
+        Command::Connect {
+            status,
+            logout,
+            json,
+        } => connect::run(status, logout, json).await,
     }
 }
 
@@ -232,17 +250,12 @@ fn pick(mut listing: Listing) -> Result<String> {
     Ok(listing.models.swap_remove(picked).id)
 }
 
-/// The configured providers whose keys are set. None configured is an
-/// error. None set is an error naming
-/// every variable; so is a model, the config's or a mode's, on a provider
-/// whose key is not.
+/// The configured providers whose keys are set, and ChatGPT, which runs
+/// once you connect, even mid-run. Neither a key set nor ChatGPT connected
+/// is an error naming every variable; so is a model, the config's or a
+/// mode's, on a provider whose key is not set or that is not connected.
 fn providers(config: &Config) -> Result<Providers> {
-    if config.provider.is_empty() {
-        bail!(
-            "no provider configured: add a [provider.<id>] to the config \
-             (`nth init` writes one with OpenCode Go and Zen ready to uncomment)"
-        );
-    }
+    let chatgpt = chatgpt()?;
     let mut endpoints = Vec::new();
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
@@ -251,7 +264,7 @@ fn providers(config: &Config) -> Result<Providers> {
                 id: id.clone(),
                 name: provider.name.clone(),
                 base_url: provider.base_url.clone(),
-                api_key,
+                credentials: Credentials::Key(api_key),
                 models: provider.models.clone(),
             }),
             _ => unavailable.push(Unavailable {
@@ -260,13 +273,25 @@ fn providers(config: &Config) -> Result<Providers> {
             }),
         }
     }
-    if endpoints.is_empty() {
+    if endpoints.is_empty() && !chatgpt.connected() {
+        if config.provider.is_empty() {
+            bail!(
+                "no provider configured: run `nth connect` to use ChatGPT, or add a \
+                 [provider.<id>] to the config (`nth init` writes one with OpenCode Go \
+                 and Zen ready to uncomment)"
+            );
+        }
         // Providers may share a variable.
         let mut variables: Vec<_> = unavailable.iter().map(|u| u.api_key_env.as_str()).collect();
         variables.sort();
         variables.dedup();
-        bail!("no provider has its API key set: {}", variables.join(", "));
+        bail!(
+            "no provider has its API key set: {}, or run `nth connect`",
+            variables.join(", ")
+        );
     }
+    // Last, so a bare model goes to a configured provider first.
+    endpoints.push(EndpointConfig::chatgpt(chatgpt));
     let providers = Providers::new(endpoints, unavailable, &config.model)
         .with_context(|| format!("model {} cannot run", config.model))?;
     for mode in [Mode::Plan, Mode::Act] {
@@ -280,6 +305,11 @@ fn providers(config: &Config) -> Result<Providers> {
             .with_context(|| format!("model {model} for {what} cannot run"))?;
     }
     Ok(providers)
+}
+
+/// The ChatGPT login, kept in nth's `auth.json`.
+fn chatgpt() -> Result<nth_auth::ChatGpt> {
+    Ok(nth_auth::ChatGpt::new(nth_auth::Store::new()?)?)
 }
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands

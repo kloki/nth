@@ -13,7 +13,10 @@ use std::{
 use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
-use crate::http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient};
+use crate::{
+    auth::Auth,
+    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -50,26 +53,27 @@ pub enum Error {
 pub(crate) struct Client {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
 }
 
 impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String, api_key: String) -> Self {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
         }
     }
 
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
+        auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
+        let response = auth
+            .bearer(
+                self.http
+                    .post(format!("{}/chat/completions", self.base_url)),
+                Some(request.session_id),
+            )
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header("x-opencode-session", request.session_id)
             .json(&wire::body(

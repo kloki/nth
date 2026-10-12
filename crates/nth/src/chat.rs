@@ -128,6 +128,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
 fn why_unavailable(error: Error) -> String {
     match error {
         Error::Unavailable { api_key_env, .. } => format!("{api_key_env} is not set"),
+        Error::Auth(nth_auth::Error::NotConnected) => "ChatGPT is not connected".into(),
         error => error.to_string(),
     }
 }
@@ -137,11 +138,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unavailable_profile_says_which_key_is_missing() {
+    fn an_unavailable_profile_says_what_is_missing() {
         let error = Error::Unavailable {
             id: "zen".into(),
             api_key_env: "ZEN_API_KEY".into(),
         };
         assert_eq!(why_unavailable(error), "ZEN_API_KEY is not set");
+        let error = Error::Auth(nth_auth::Error::NotConnected);
+        assert_eq!(why_unavailable(error), "ChatGPT is not connected");
     }
 }
