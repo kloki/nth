@@ -81,6 +81,12 @@ fn project(cwd: &Path, home: Option<&Path>) -> (Vec<PathBuf>, Option<&'static st
         None => 1,
     };
     let (inside, above) = dirs.split_at(inside);
+    // A worktree under its main checkout (`.nth/worktrees`) would read the
+    // same files again from there.
+    let main = root.as_deref().and_then(main_checkout);
+    let above = above
+        .iter()
+        .filter(|dir| main.as_ref().is_none_or(|main| !dir.starts_with(main)));
     let (mut files, name) = NAMES
         .iter()
         .find_map(|name| {
@@ -92,9 +98,20 @@ fn project(cwd: &Path, home: Option<&Path>) -> (Vec<PathBuf>, Option<&'static st
             (!files.is_empty()).then_some((files, Some(*name)))
         })
         .unwrap_or_default();
-    files.extend(above.iter().filter_map(|dir| first(dir, &NAMES)));
+    files.extend(above.filter_map(|dir| first(dir, &NAMES)));
     files.reverse();
     (files, name)
+}
+
+/// The main checkout of the linked worktree at `root`, whose `.git` is a
+/// file naming `<main>/.git/worktrees/<name>`.
+fn main_checkout(root: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(root.join(".git")).ok()?;
+    let gitdir = normalize(&root.join(link.strip_prefix("gitdir:")?.trim()));
+    let worktrees = gitdir.parent()?;
+    let git = worktrees.parent()?;
+    let linked = worktrees.file_name()? == "worktrees" && git.file_name()? == ".git";
+    linked.then(|| git.parent().map(Path::to_path_buf))?
 }
 
 /// The first of `names` that is a file in `dir`.
@@ -354,6 +371,28 @@ mod tests {
         assert_eq!(
             tree.discover("srv/repo", &home(&tree)),
             pairs(&[("srv/repo/AGENTS.md", "root")])
+        );
+    }
+
+    #[test]
+    fn a_worktree_skips_its_main_checkout() {
+        let tree = Tree::new();
+        let gitdir = tree.path("home/repo/.git/worktrees/x");
+        tree.file("home/AGENTS.md", "home")
+            .file("home/repo/.git/HEAD", "")
+            .file("home/repo/CLAUDE.md", "main")
+            .file(
+                "home/repo/.nth/worktrees/x/.git",
+                &format!("gitdir: {}\n", gitdir.display()),
+            )
+            .file("home/repo/.nth/worktrees/x/CLAUDE.md", "worktree");
+
+        assert_eq!(
+            tree.discover("home/repo/.nth/worktrees/x", &home(&tree)),
+            pairs(&[
+                ("home/AGENTS.md", "home"),
+                ("home/repo/.nth/worktrees/x/CLAUDE.md", "worktree"),
+            ])
         );
     }
 
