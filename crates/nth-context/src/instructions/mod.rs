@@ -1,8 +1,8 @@
 //! Instruction files: `AGENTS.md`, the open standard, and `CLAUDE.md`, read
 //! where a project has no `AGENTS.md`. As in opencode, one global file and
-//! the project's files from its root down to the working directory go into
-//! the system prompt; files deeper in the tree are attached when the model
-//! reads something next to them.
+//! the files from the working directory up to the home directory (or the
+//! project root, outside home) go into the system prompt; files deeper in
+//! the tree are attached when the model reads something next to them.
 
 use std::{
     collections::BTreeSet,
@@ -12,8 +12,7 @@ use std::{
 
 use crate::{Paths, project_root};
 
-/// Tried in order in every directory; the first name found anywhere wins,
-/// so a project that keeps both files in sync is not read twice.
+/// Tried in order in every directory.
 const NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,13 +28,13 @@ pub(crate) fn discover(
     paths: &Paths,
     warnings: &mut Vec<String>,
 ) -> (Vec<Instruction>, Option<&'static str>) {
-    let mut found = Vec::new();
-    if let Some(global) = global(paths).into_iter().find(|path| path.is_file()) {
-        found.push(global);
-    }
-    let (project, name) = project(cwd);
-    found.extend(project);
-    found.dedup();
+    let global = global(paths).into_iter().find(|path| path.is_file());
+    let (project, name) = project(cwd, paths.home.as_deref());
+    // The walk reaches the global file too when `cwd` is in its folder.
+    let project = project
+        .into_iter()
+        .filter(|path| Some(path) != global.as_ref());
+    let found: Vec<PathBuf> = global.iter().cloned().chain(project).collect();
     let instructions = found
         .into_iter()
         .filter_map(|path| read(path, warnings))
@@ -57,56 +56,97 @@ fn global(paths: &Paths) -> Vec<PathBuf> {
     candidates
 }
 
-/// Every copy of the winning name from the project root down to `cwd`, and
-/// that name. Outside a repository only `cwd` itself is looked at.
-fn project(cwd: &Path) -> (Vec<PathBuf>, Option<&'static str>) {
-    let dirs: Vec<&Path> = match project_root(cwd) {
-        Some(root) => cwd
+/// The files from the walk's top down to `cwd`, and the name the project's
+/// go by. The walk stops at `home` when `cwd` is under it, even inside a
+/// repository, else at the project root, else looks at `cwd` alone. In the
+/// project (`cwd` alone outside a repository) the first name found anywhere
+/// wins, so a project that keeps both files in sync is not read twice;
+/// above it each directory gives its own first, so a `CLAUDE.md` project
+/// under a home with an `AGENTS.md` keeps its files.
+fn project(cwd: &Path, home: Option<&Path>) -> (Vec<PathBuf>, Option<&'static str>) {
+    let root = project_root(cwd);
+    let stop = match home {
+        Some(home) if cwd.starts_with(home) => Some(home),
+        _ => root.as_deref(),
+    };
+    let dirs: Vec<&Path> = match stop {
+        Some(stop) => cwd
             .ancestors()
-            .take_while(|dir| dir.starts_with(&root))
+            .take_while(|dir| dir.starts_with(stop))
             .collect(),
         None => vec![cwd],
     };
-    for name in NAMES {
-        let mut files: Vec<PathBuf> = dirs
-            .iter()
-            .map(|dir| dir.join(name))
-            .filter(|path| path.is_file())
-            .collect();
-        if !files.is_empty() {
-            files.reverse();
-            return (files, Some(name));
-        }
-    }
-    (Vec::new(), None)
+    let inside = match &root {
+        Some(root) => dirs.iter().take_while(|dir| dir.starts_with(root)).count(),
+        None => 1,
+    };
+    let (inside, above) = dirs.split_at(inside);
+    // A worktree under its main checkout (`.nth/worktrees`) would read the
+    // same files again from there.
+    let main = root.as_deref().and_then(main_checkout);
+    let above = above
+        .iter()
+        .filter(|dir| main.as_ref().is_none_or(|main| !dir.starts_with(main)));
+    let (mut files, name) = NAMES
+        .iter()
+        .find_map(|name| {
+            let files: Vec<PathBuf> = inside
+                .iter()
+                .map(|dir| dir.join(name))
+                .filter(|path| path.is_file())
+                .collect();
+            (!files.is_empty()).then_some((files, Some(*name)))
+        })
+        .unwrap_or_default();
+    files.extend(above.filter_map(|dir| first(dir, &NAMES)));
+    files.reverse();
+    (files, name)
 }
 
-/// The instruction files between `file` and the project root that are not
-/// in `loaded` yet, root first, claiming each in `loaded`. Only files called
-/// `name` count when the project has one (the name `discover` settled on);
-/// without one the first name found in each directory does. The root's own
-/// files are already in the system prompt, so the walk stops below it.
+/// The main checkout of the linked worktree at `root`, whose `.git` is a
+/// file naming `<main>/.git/worktrees/<name>`.
+fn main_checkout(root: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(root.join(".git")).ok()?;
+    let gitdir = normalize(&root.join(link.strip_prefix("gitdir:")?.trim()));
+    let worktrees = gitdir.parent()?;
+    let git = worktrees.parent()?;
+    let linked = worktrees.file_name()? == "worktrees" && git.file_name()? == ".git";
+    linked.then(|| git.parent().map(Path::to_path_buf))?
+}
+
+/// The first of `names` that is a file in `dir`.
+fn first(dir: &Path, names: &[&str]) -> Option<PathBuf> {
+    names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// The instruction files from `dir` up to the project root that are not in
+/// `loaded` yet, root first, claiming each in `loaded`. `dir` is the folder
+/// of a file read, or a directory listed, whose own file then counts. Only
+/// files called `name` count when the project has one (the name `discover`
+/// settled on); without one the first name found in each directory does.
+/// The root's own files are already in the system prompt, so the walk stops
+/// below it.
 pub async fn nested(
-    file: PathBuf,
+    dir: PathBuf,
     cwd: PathBuf,
     name: Option<&'static str>,
     loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
 ) -> Vec<Instruction> {
-    crate::blocking(move || nested_blocking(&file, &cwd, name, &loaded)).await
+    crate::blocking(move || nested_blocking(&dir, &cwd, name, &loaded)).await
 }
 
 fn nested_blocking(
-    file: &Path,
+    dir: &Path,
     cwd: &Path,
     name: Option<&'static str>,
     loaded: &Mutex<BTreeSet<PathBuf>>,
 ) -> Vec<Instruction> {
     let cwd = normalize(cwd);
-    let file = normalize(&cwd.join(file));
+    let dir = normalize(&cwd.join(dir));
     let root = project_root(&cwd).unwrap_or(cwd);
-    let Some(dir) = file.parent() else {
-        return Vec::new();
-    };
     let names: &[&str] = match &name {
         Some(name) => std::slice::from_ref(name),
         None => &NAMES,
@@ -114,12 +154,7 @@ fn nested_blocking(
     let mut found: Vec<PathBuf> = dir
         .ancestors()
         .take_while(|dir| *dir != root && dir.starts_with(&root))
-        .filter_map(|dir| {
-            names
-                .iter()
-                .map(|name| dir.join(name))
-                .find(|p| p.is_file())
-        })
+        .filter_map(|dir| first(dir, names))
         .filter(|path| {
             // Claimed before reading, so a parallel read never takes it too.
             loaded
@@ -281,6 +316,101 @@ mod tests {
         );
     }
 
+    fn home(tree: &Tree) -> Paths {
+        Paths {
+            home: Some(tree.path("home")),
+            ..Paths::default()
+        }
+    }
+
+    #[test]
+    fn outside_a_repository_the_walk_reaches_home() {
+        let tree = Tree::new();
+        tree.file("AGENTS.md", "above home")
+            .file("home/AGENTS.md", "home")
+            .file("home/notes/CLAUDE.md", "notes")
+            .file("home/notes/day/AGENTS.md", "day");
+
+        assert_eq!(
+            tree.discover("home/notes/day", &home(&tree)),
+            pairs(&[
+                ("home/AGENTS.md", "home"),
+                ("home/notes/CLAUDE.md", "notes"),
+                ("home/notes/day/AGENTS.md", "day"),
+            ])
+        );
+    }
+
+    #[test]
+    fn under_home_the_walk_passes_the_project_root() {
+        let tree = Tree::new();
+        tree.file("home/AGENTS.md", "home")
+            .file("home/repos/AGENTS.md", "repos")
+            .file("home/repos/repo/.git/HEAD", "")
+            .file("home/repos/repo/CLAUDE.md", "root")
+            .file("home/repos/repo/sub/CLAUDE.md", "sub");
+
+        assert_eq!(
+            tree.discover("home/repos/repo/sub", &home(&tree)),
+            pairs(&[
+                ("home/AGENTS.md", "home"),
+                ("home/repos/AGENTS.md", "repos"),
+                ("home/repos/repo/CLAUDE.md", "root"),
+                ("home/repos/repo/sub/CLAUDE.md", "sub"),
+            ])
+        );
+    }
+
+    #[test]
+    fn outside_home_the_walk_stops_at_the_project_root() {
+        let tree = Tree::new();
+        tree.file("srv/AGENTS.md", "above the repo")
+            .file("srv/repo/.git/HEAD", "")
+            .file("srv/repo/AGENTS.md", "root");
+
+        assert_eq!(
+            tree.discover("srv/repo", &home(&tree)),
+            pairs(&[("srv/repo/AGENTS.md", "root")])
+        );
+    }
+
+    #[test]
+    fn a_worktree_skips_its_main_checkout() {
+        let tree = Tree::new();
+        let gitdir = tree.path("home/repo/.git/worktrees/x");
+        tree.file("home/AGENTS.md", "home")
+            .file("home/repo/.git/HEAD", "")
+            .file("home/repo/CLAUDE.md", "main")
+            .file(
+                "home/repo/.nth/worktrees/x/.git",
+                &format!("gitdir: {}\n", gitdir.display()),
+            )
+            .file("home/repo/.nth/worktrees/x/CLAUDE.md", "worktree");
+
+        assert_eq!(
+            tree.discover("home/repo/.nth/worktrees/x", &home(&tree)),
+            pairs(&[
+                ("home/AGENTS.md", "home"),
+                ("home/repo/.nth/worktrees/x/CLAUDE.md", "worktree"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_global_file_the_walk_reaches_is_read_once() {
+        let tree = Tree::new();
+        tree.file("home/.config/nth/AGENTS.md", "nth");
+        let paths = Paths {
+            config_home: Some(tree.path("home/.config")),
+            ..home(&tree)
+        };
+
+        assert_eq!(
+            tree.discover("home/.config/nth", &paths),
+            pairs(&[("home/.config/nth/AGENTS.md", "nth")])
+        );
+    }
+
     #[test]
     fn empty_files_are_left_out() {
         let tree = Tree::new();
@@ -324,19 +454,19 @@ mod tests {
 
     async fn nested_in(
         tree: &Tree,
-        file: &str,
+        dir: &str,
         loaded: &Arc<Mutex<BTreeSet<PathBuf>>>,
     ) -> Vec<(String, String)> {
-        nested_as(tree, file, None, loaded).await
+        nested_as(tree, dir, None, loaded).await
     }
 
     async fn nested_as(
         tree: &Tree,
-        file: &str,
+        dir: &str,
         name: Option<&'static str>,
         loaded: &Arc<Mutex<BTreeSet<PathBuf>>>,
     ) -> Vec<(String, String)> {
-        nested(file.into(), tree.path("repo"), name, loaded.clone())
+        nested(dir.into(), tree.path("repo"), name, loaded.clone())
             .await
             .into_iter()
             .map(|i| {
@@ -353,18 +483,14 @@ mod tests {
             .file("repo/AGENTS.md", "root")
             .file("repo/a/AGENTS.md", "a")
             .file("repo/a/b/CLAUDE.md", "b")
-            .file("repo/a/b/x.rs", "")
-            .file("repo/a/b/y.rs", "");
+            .file("repo/a/b/x.rs", "");
         let loaded = loaded(&[tree.path("repo/AGENTS.md")]);
 
         assert_eq!(
-            nested_in(&tree, "a/b/x.rs", &loaded).await,
+            nested_in(&tree, "a/b", &loaded).await,
             pairs(&[("repo/a/AGENTS.md", "a"), ("repo/a/b/CLAUDE.md", "b")])
         );
-        assert_eq!(
-            nested_in(&tree, "./a/b/../b/y.rs", &loaded).await,
-            pairs(&[])
-        );
+        assert_eq!(nested_in(&tree, "./a/b/../b", &loaded).await, pairs(&[]));
     }
 
     #[tokio::test]
@@ -381,7 +507,7 @@ mod tests {
         assert_eq!(name, Some("AGENTS.md"));
 
         assert_eq!(
-            nested_as(&tree, "crates/a/b/x.rs", name, &loaded).await,
+            nested_as(&tree, "crates/a/b", name, &loaded).await,
             pairs(&[("repo/crates/a/b/AGENTS.md", "b")])
         );
     }
@@ -396,8 +522,8 @@ mod tests {
             .file("elsewhere/x.rs", "");
         let loaded = loaded(&[]);
 
-        assert_eq!(nested_in(&tree, "x.rs", &loaded).await, pairs(&[]));
-        let outside = tree.path("elsewhere/x.rs").display().to_string();
+        assert_eq!(nested_in(&tree, ".", &loaded).await, pairs(&[]));
+        let outside = tree.path("elsewhere").display().to_string();
         assert_eq!(nested_in(&tree, &outside, &loaded).await, pairs(&[]));
     }
 
@@ -406,13 +532,12 @@ mod tests {
         let tree = Tree::new();
         tree.file("repo/.git/HEAD", "")
             .file("repo/a/AGENTS.md", "a")
-            .file("repo/a/x.rs", "")
-            .file("repo/a/y.rs", "");
+            .file("repo/a/x.rs", "");
         let loaded = loaded(&[]);
 
         let (x, y) = tokio::join!(
-            nested_in(&tree, "a/x.rs", &loaded),
-            nested_in(&tree, "a/y.rs", &loaded)
+            nested_in(&tree, "a", &loaded),
+            nested_in(&tree, "a", &loaded)
         );
 
         assert_eq!(x.len() + y.len(), 1, "{x:?} {y:?}");

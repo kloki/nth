@@ -87,22 +87,26 @@ impl Tool for Read {
             let meta = tokio::fs::metadata(&path)
                 .await
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            if meta.is_dir() {
-                let content = list_dir(&path, offset, limit).await?;
-                ctx.output.send(content.clone()).await;
-                return Ok(content);
-            }
-            let mut content = read_file(&path, offset, limit, &self.config).await?;
+            // A listing's own instruction file counts, a file's is its
+            // folder's.
+            let (mut content, dir) = if meta.is_dir() {
+                (list_dir(&path, offset, limit).await?, path)
+            } else {
+                let content = read_file(&path, offset, limit, &self.config).await?;
+                // Detached so the read never waits on a server starting,
+                // which can take seconds. Not cancelled with the turn: the
+                // touch only opens the file, and a server it starts is
+                // meant to outlive it.
+                let lsp = self.lsp.clone();
+                let file = path.clone();
+                tokio::spawn(async move { lsp.touch(&file, false).await });
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or(path);
+                (content, dir)
+            };
             ctx.output.send(content.clone()).await;
-            // Detached so the read never waits on a server starting, which
-            // can take seconds. Not cancelled with the turn: the touch only
-            // opens the file, and a server it starts is meant to outlive it.
-            let lsp = self.lsp.clone();
-            let file = path.clone();
-            tokio::spawn(async move { lsp.touch(&file, false).await });
             // Only the model sees these; they are not part of the file.
             let nested = nth_context::instructions::nested(
-                path,
+                dir,
                 ctx.cwd.clone(),
                 ctx.context.instruction_name,
                 ctx.instructions.clone(),
@@ -319,6 +323,29 @@ mod tests {
             ))
         );
         assert_eq!(again, Ok("1: foo\n".to_string()));
+    }
+
+    #[tokio::test]
+    async fn listing_a_directory_attaches_its_agents_md() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("git dir");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("mkdir");
+        std::fs::write(dir.path().join("AGENTS.md"), "Root.\n").expect("write");
+        std::fs::write(dir.path().join("sub/AGENTS.md"), "Be brief.\n").expect("write");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let root = Read::off().call(json!({ "filePath": "." }), &ctx).await;
+        let sub = Read::off().call(json!({ "filePath": "sub" }), &ctx).await;
+
+        assert_eq!(root, Ok(".git/\nAGENTS.md\nsub/".to_string()));
+        let agents = dir.path().join("sub/AGENTS.md");
+        assert_eq!(
+            sub,
+            Ok(format!(
+                "AGENTS.md\n<system-reminder>\nInstructions from: {}\nBe brief.\n</system-reminder>\n",
+                agents.display()
+            ))
+        );
     }
 
     #[tokio::test]
