@@ -42,7 +42,8 @@ fn integer(value: Value) -> Value {
         return value;
     };
     match text.trim().parse::<i64>() {
-        Ok(n) if n.abs() <= MAX_SAFE_INTEGER => Value::from(n),
+        // `unsigned_abs`, since `abs` overflows on `i64::MIN`.
+        Ok(n) if n.unsigned_abs() <= MAX_SAFE_INTEGER.unsigned_abs() => Value::from(n),
         _ => value,
     }
 }
@@ -243,6 +244,7 @@ mod tests {
             "inf": "inf",
             "fractional": "1.5",
             "unsafe": "9007199254740992",
+            "smallest": "-9223372036854775808",
             "uppercase": "TRUE",
         });
         let schema = object(json!({
@@ -258,6 +260,7 @@ mod tests {
             "inf": { "type": "number" },
             "fractional": { "type": "integer" },
             "unsafe": { "type": "integer" },
+            "smallest": { "type": "integer" },
             "uppercase": { "type": "boolean" },
         }));
         let mut expected = input.clone();
