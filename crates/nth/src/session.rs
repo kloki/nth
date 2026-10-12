@@ -12,7 +12,7 @@ use clap::Subcommand;
 use jiff::Timestamp;
 use nth_icons::icons;
 use nth_protocol::monitor_log_dir;
-use nth_session::{Session, Store, Summary, store};
+use nth_session::{Session, Store, Summary, plan, store};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -87,6 +87,11 @@ pub(crate) async fn pick(store: &Store, id: Option<&str>) -> Result<Session> {
 
 /// The one session whose id starts with `id`.
 fn find<'a>(sessions: &'a [Summary], id: &str) -> Result<&'a Summary> {
+    // Every id starts with nothing, so an empty one (an unset variable)
+    // would pick the only session there is.
+    if id.is_empty() {
+        bail!("no session id given");
+    }
     let mut found = sessions.iter().filter(|s| s.id.to_string().starts_with(id));
     match (found.next(), found.next()) {
         (Some(summary), None) => Ok(summary),
@@ -95,11 +100,12 @@ fn find<'a>(sessions: &'a [Summary], id: &str) -> Result<&'a Summary> {
     }
 }
 
-/// The sessions that ran in `cwd`, or all of them, the first `max` of them.
+/// The sessions that ran in `cwd`, also those that moved from it into a
+/// worktree, or all of them, the first `max` of them.
 fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -> Vec<&'a Summary> {
     sessions
         .iter()
-        .filter(|s| cwd.is_none_or(|cwd| s.cwd == cwd))
+        .filter(|s| cwd.is_none_or(|cwd| s.cwd == cwd || s.origin.as_deref() == Some(cwd)))
         .take(max.unwrap_or(usize::MAX))
         .collect()
 }
@@ -111,9 +117,19 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
 async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec<PathBuf>> {
     store.delete(session.id).await?;
     let mut removed = Vec::new();
-    let plan = session.plan_path();
-    if gone(tokio::fs::remove_file(&plan).await, &plan)? {
-        removed.push(plan);
+    // The plan sits under the working directory, so one written before
+    // the session moved into a worktree is under where it came from.
+    let mut plans = vec![session.plan_path()];
+    plans.extend(
+        session
+            .origin
+            .as_ref()
+            .map(|o| plan::plan_path(o, &session.id)),
+    );
+    for plan in plans {
+        if gone(tokio::fs::remove_file(&plan).await, &plan)? {
+            removed.push(plan);
+        }
     }
     let dirs = [
         session.work_dir(),
@@ -206,6 +222,7 @@ mod tests {
             id: id.parse().expect("a uuid"),
             title: format!("in {cwd}"),
             cwd: cwd.into(),
+            origin: None,
             model: "glm".into(),
             updated_at: SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs),
         }
@@ -242,6 +259,7 @@ mod tests {
         let both = find(&sessions, "1").expect_err("two").to_string();
         assert!(both.contains("more than one"), "{both}");
         assert!(find(&sessions, "3").is_err());
+        assert!(find(&sessions[..1], "").is_err(), "not the only one");
     }
 
     #[test]
@@ -256,6 +274,26 @@ mod tests {
         assert_eq!(at(select(&sessions, Some(Path::new("/a")), None)), [3, 1]);
         assert_eq!(at(select(&sessions, None, None)), [3, 2, 1]);
         assert_eq!(at(select(&sessions, None, Some(2))), [3, 2]);
+
+        let mut moved = summary(
+            "31111111-0000-4000-8000-000000000000",
+            "/a/.nth/worktrees/x",
+            4,
+        );
+        moved.origin = Some("/a".into());
+        let sessions = [vec![moved], sessions].concat();
+        assert_eq!(
+            at(select(&sessions, Some(Path::new("/a")), None)),
+            [4, 3, 1]
+        );
+        assert_eq!(
+            at(select(
+                &sessions,
+                Some(Path::new("/a/.nth/worktrees/x")),
+                None
+            )),
+            [4]
+        );
     }
 
     #[test]
@@ -331,5 +369,27 @@ mod tests {
         let removed = delete(&store, &session, dir.path()).await.expect("deletes");
 
         assert!(removed.is_empty(), "{removed:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_plan_from_before_a_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        let mut session = Session::new("glm", repo.clone());
+        session.messages.push(Message::User("fix it".into()));
+        let before = session.plan_path();
+        session.set_cwd(repo.join(".nth/worktrees/x"), Some(repo));
+        let after = session.plan_path();
+        store.save(&session).await.expect("saves");
+        for file in [&before, &after] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+        }
+
+        let removed = delete(&store, &session, dir.path()).await.expect("deletes");
+
+        assert_eq!(removed, [after.clone(), before.clone()]);
+        assert!(!before.exists() && !after.exists());
     }
 }

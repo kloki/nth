@@ -34,6 +34,8 @@ pub struct Summary {
     /// First line of the first prompt.
     pub title: String,
     pub cwd: PathBuf,
+    /// Where it started, when it moved into a worktree.
+    pub origin: Option<PathBuf>,
     pub model: String,
     pub updated_at: SystemTime,
 }
@@ -45,6 +47,8 @@ pub struct Summary {
 struct Head {
     id: Uuid,
     cwd: PathBuf,
+    #[serde(default)]
+    origin: Option<PathBuf>,
     model: String,
     updated_at: SystemTime,
     title: Option<String>,
@@ -201,6 +205,7 @@ fn summary(json: &[u8]) -> Option<Summary> {
         id: head.id,
         title,
         cwd: head.cwd,
+        origin: head.origin,
         model: head.model,
         updated_at: head.updated_at,
     })

@@ -159,6 +159,7 @@ pub(crate) mod tests {
             id: Uuid::new_v4(),
             title: title.into(),
             cwd: "/repo".into(),
+            origin: None,
             model: "glm".into(),
             updated_at: SystemTime::now() - Duration::from_secs(secs_ago),
         }

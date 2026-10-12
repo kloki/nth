@@ -87,7 +87,7 @@ fn read_range(args: &serde_json::Value) -> String {
     let start = offset.unwrap_or(1);
     match (offset, limit) {
         (None, None) => String::new(),
-        (_, Some(limit)) => format!(":{start}-{}", start + limit - 1),
+        (_, Some(limit)) => format!(":{start}-{}", start.saturating_add(limit - 1)),
         (Some(_), None) => format!(":{start}-"),
     }
 }
@@ -143,6 +143,11 @@ mod tests {
         assert_eq!(read(r#"{"filePath":"/repo/a.rs","offset":10}"#), "a.rs:10-");
         assert_eq!(read(r#"{"filePath":"/repo/a.rs","limit":20}"#), "a.rs:1-20");
         assert_eq!(read(r#"{"filePath":"/repo/a.rs","limit":0}"#), "a.rs");
+        let huge = format!(
+            r#"{{"filePath":"/repo/a.rs","offset":2,"limit":{}}}"#,
+            u64::MAX
+        );
+        assert_eq!(read(&huge), format!("a.rs:2-{}", u64::MAX));
         let write = ToolCall {
             name: "write".into(),
             ..call(r#"{"filePath":"/repo/a.rs","offset":10}"#)
