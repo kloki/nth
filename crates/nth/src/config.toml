@@ -22,7 +22,9 @@ model = ""
 # Providers: one [provider.<id>] block per endpoint, and none are built in.
 # The id prefixes its models, as in opencode/kimi-k3. Each is an
 # OpenAI-compatible chat completions endpoint; models.dev says which models it
-# serves over Anthropic messages or OpenAI responses instead.
+# serves over Anthropic messages or OpenAI responses instead, found by the
+# base_url or else by the id. An endpoint models.dev does not know borrows
+# what it knows about a model of the same id elsewhere, but not its price.
 #
 #   name         What listings call it. Empty means the id.
 #   base_url     The endpoint, up to and including the version (/v1). Required.
@@ -48,6 +50,12 @@ model = ""
 # base_url = "https://opencode.ai/zen/v1"
 # api_key_env = "OPENCODE_API_KEY"
 # models = []
+#
+# OpenAI's API (https://platform.openai.com), by its models.dev id:
+# [provider.openai]
+# name = "OpenAI"
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
 #
 # Any other OpenAI-compatible endpoint, say:
 # [provider.openrouter]

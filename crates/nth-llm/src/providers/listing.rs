@@ -59,17 +59,29 @@ pub(crate) async fn listed(
 
 /// Only the models whose protocol nth speaks. Without a catalogue entry for
 /// the endpoint, everything it lists is assumed to speak chat completions,
-/// since that is what the endpoint is for. An unknown model may reason, so
-/// it is offered the usual efforts; a known one those the catalogue says it
-/// takes.
+/// since that is what the endpoint is for, and what the catalogue knows of
+/// a model under another provider is borrowed, all but its price. An
+/// unknown model may reason, so it is offered the usual efforts; a known
+/// one those the catalogue says it takes.
 pub(crate) fn select(
     endpoint: Vec<String>,
+    catalog: Option<&catalog::Catalog>,
     provider: Option<&catalog::Provider>,
 ) -> Vec<ModelInfo> {
     let mut models: Vec<_> = endpoint
         .into_iter()
         .filter_map(|id| {
-            let Some(model) = provider.and_then(|p| p.models.get(&id)) else {
+            let (model, cost) = match provider {
+                Some(provider) => {
+                    // A model nth cannot talk to is not offered.
+                    provider.wire(&id)?;
+                    let model = provider.models.get(&id);
+                    (model, model.and_then(|m| m.cost))
+                }
+                // Another provider's price is not this endpoint's.
+                None => (catalog.and_then(|c| catalog::borrowed(c, &id)), None),
+            };
+            let Some(model) = model else {
                 return Some(ModelInfo {
                     id,
                     name: None,
@@ -80,8 +92,6 @@ pub(crate) fn select(
                     cost: None,
                 });
             };
-            // A model nth cannot talk to is not offered.
-            provider?.wire(&id)?;
             Some(ModelInfo {
                 id,
                 name: model.name.clone(),
@@ -89,7 +99,7 @@ pub(crate) fn select(
                 output: model.limit.as_ref().and_then(|l| l.output),
                 efforts: model.efforts(),
                 origin: None,
-                cost: model.cost,
+                cost,
             })
         })
         .collect();
@@ -181,9 +191,9 @@ mod tests {
     #[test]
     fn keeps_only_models_nth_speaks_with_their_limits() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let provider = catalog::provider_for(&catalog, &format!("{GO}/"));
+        let provider = catalog::provider_for(&catalog, "opencode", &format!("{GO}/"));
 
-        let models = select(endpoint(), provider);
+        let models = select(endpoint(), Some(&catalog), provider);
 
         assert_eq!(
             ids(&models),
@@ -229,11 +239,41 @@ mod tests {
     #[test]
     fn unknown_endpoint_keeps_everything() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let provider = catalog::provider_for(&catalog, "http://localhost:8080/v1");
+        let provider = catalog::provider_for(&catalog, "local", "http://localhost:8080/v1");
 
-        let models = select(endpoint(), provider);
+        let models = select(endpoint(), Some(&catalog), provider);
 
         assert_eq!(models.len(), endpoint().len());
+    }
+
+    #[test]
+    fn an_unknown_endpoint_borrows_all_but_the_price() {
+        let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
+        let lyceum = ["z-ai/glm-5.3", "acme/grok-4.7", "unlisted"].map(String::from);
+
+        let models = select(lyceum.into(), Some(&catalog), None);
+
+        assert_eq!(ids(&models), ["acme/grok-4.7", "unlisted", "z-ai/glm-5.3"]);
+        assert_eq!(
+            models[0].efforts,
+            [Effort::Low, Effort::Medium, Effort::High, Effort::XHigh],
+            "by the bare name"
+        );
+        assert_eq!(models[0].cost, None, "go's price is go's");
+        assert_eq!(models[1].efforts, catalog::BUDGET_EFFORTS);
+        assert_eq!(
+            models[2],
+            ModelInfo {
+                id: "z-ai/glm-5.3".into(),
+                name: Some("GLM-5.3".into()),
+                context: Some(204_800),
+                output: Some(131_072),
+                efforts: Vec::new(),
+                origin: None,
+                cost: None,
+            },
+            "the canonical entry, zhipuai's"
+        );
     }
 
     #[test]

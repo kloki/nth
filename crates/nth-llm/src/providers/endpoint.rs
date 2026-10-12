@@ -75,25 +75,31 @@ impl Endpoint {
 
     /// What the catalogue knows about `ids`, which this endpoint serves.
     pub(crate) fn describe(&self, ids: Vec<String>, catalog: Option<&Catalog>) -> Vec<ModelInfo> {
-        listing::select(ids, self.provider_in(catalog))
+        listing::select(ids, catalog, catalog.and_then(|c| self.provider_in(c)))
     }
 
     /// The protocol `model` speaks here, and what the catalogue knows
-    /// about it. Chat completions when it says nothing.
+    /// about it. Chat completions when it says nothing, and for an
+    /// endpoint it has no entry for, whose model it may still know from
+    /// another provider.
     pub(crate) fn wire<'c>(
         &self,
         catalog: Option<&'c Catalog>,
         model: &str,
     ) -> (Wire, Option<&'c catalog::Model>) {
-        let provider = self.provider_in(catalog);
-        let wire = provider.and_then(|p| p.wire(model));
-        (
-            wire.unwrap_or(Wire::ChatCompletions),
-            provider.and_then(|p| p.models.get(model)),
-        )
+        let Some(catalog) = catalog else {
+            return (Wire::ChatCompletions, None);
+        };
+        match self.provider_in(catalog) {
+            Some(provider) => (
+                provider.wire(model).unwrap_or(Wire::ChatCompletions),
+                provider.models.get(model),
+            ),
+            None => (Wire::ChatCompletions, catalog::borrowed(catalog, model)),
+        }
     }
 
-    fn provider_in<'c>(&self, catalog: Option<&'c Catalog>) -> Option<&'c catalog::Provider> {
-        catalog.and_then(|c| catalog::provider_for(c, &self.base_url))
+    fn provider_in<'c>(&self, catalog: &'c Catalog) -> Option<&'c catalog::Provider> {
+        catalog::provider_for(catalog, &self.origin.id, &self.base_url)
     }
 }
