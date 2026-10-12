@@ -4,8 +4,8 @@ Reference: https://github.com/anomalyco/opencode
 
 |                   |                                                        |
 | ----------------- | ------------------------------------------------------ |
-| **Pinned commit** | `03e67171ab2dc1e7f16e8cebfbc7f778f61b89f0`             |
-| **Pinned on**     | 2026-10-05                                             |
+| **Pinned commit** | `80fb31ebb7e8dfa5c26fc51ca81da8e06b618a52`             |
+| **Pinned on**     | 2026-10-12                                             |
 | **Local clone**   | `refs/opencode` (gitignored, created by `sync-ref.sh`) |
 
 All notes are written against the pinned commit. After a re-pin, notes
@@ -18,6 +18,15 @@ pinned to an older SHA keep their own SHA in their header.
 | 01  | [Paste summary](01-paste-summary.md)  | `03e6717` |
 | 02  | [Providers and models](02-providers.md) | `03e6717` |
 | 03  | [Context management & token use](03-context-management.md) | `03e6717` |
+
+## Change reviews
+
+What opencode changed between two pins, written by the `opencode-changes`
+skill, which also moves the pin.
+
+| Date | Range | Report |
+| ---- | ----- | ------ |
+| 2026-10-12 | `03e6717..80fb31e` (v2 promotion) | [2026-10-12](changes/2026-10-12.md) |
 
 ## Coverage checklist
 

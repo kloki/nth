@@ -22,8 +22,9 @@ study. Every note must be **citable** (tied to a commit) and **comparable**
 ## Workflow
 
 1. **Sync the reference.** Run `scripts/sync-ref.sh`. It clones on first run
-   and otherwise keeps the current pin. Only pass `--repin` when the user asks
-   to move to a newer opencode. The last output line is the pinned SHA.
+   and otherwise keeps the current pin. Moving to a newer opencode is the
+   `opencode-changes` skill's job: it reviews what changed, then re-pins.
+   The last output line is the pinned SHA.
 2. **Ensure the index.** If `docs/research/opencode/README.md` is missing,
    create it from `templates/index.md` and fill in the SHA and date. After a
    re-pin, update the SHA there.
