@@ -67,7 +67,7 @@ impl Tool for Edit {
             if args.old_string == args.new_string {
                 return Err("no changes to apply: oldString and newString are identical".into());
             }
-            let path = ctx.cwd.join(&args.file_path);
+            let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             ctx.writable.check(&path)?;
             let edits = EDITS.lock().await;
             let done = edit(&path, &args).await?;

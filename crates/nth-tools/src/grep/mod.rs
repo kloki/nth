@@ -55,9 +55,7 @@ impl Tool for Grep {
             let regex = Regex::new(&args.pattern).map_err(|e| format!("invalid pattern: {e}"))?;
             // Collecting the components drops `.`s, which would otherwise
             // show up in every path printed.
-            let root: PathBuf = ctx
-                .cwd
-                .join(args.path.as_deref().unwrap_or("."))
+            let root: PathBuf = crate::path::resolve(&ctx.cwd, args.path.as_deref().unwrap_or("."))
                 .components()
                 .collect();
             if !root.exists() {

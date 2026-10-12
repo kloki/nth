@@ -35,7 +35,7 @@ impl Tool for ShowUser {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let Args { file_path } = crate::parse_args(args)?;
-            let path = ctx.cwd.join(&file_path);
+            let path = crate::path::resolve(&ctx.cwd, &file_path);
             match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_file() => {}
                 Ok(_) => return Err(format!("{} is not a file", path.display())),

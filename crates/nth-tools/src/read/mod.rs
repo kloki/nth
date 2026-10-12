@@ -76,7 +76,7 @@ impl Tool for Read {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = crate::parse_args(args)?;
-            let path = ctx.cwd.join(&args.file_path);
+            let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             let offset = args.offset.unwrap_or(1).max(1);
             // A `limit` of 0 asks for nothing, which the model never means;
             // an empty read would only tell it to continue from where it is.

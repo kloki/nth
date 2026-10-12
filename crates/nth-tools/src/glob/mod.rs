@@ -46,7 +46,7 @@ impl Tool for Glob {
         async move {
             let args: Args = crate::parse_args(args)?;
             let dir = match &args.path {
-                Some(path) => ctx.cwd.join(path),
+                Some(path) => crate::path::resolve(&ctx.cwd, path),
                 None => ctx.cwd.clone(),
             };
             match tokio::fs::metadata(&dir).await {

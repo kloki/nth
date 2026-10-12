@@ -139,7 +139,7 @@ impl Plan<'_> {
     async fn add(&mut self, section: &Section) -> Result<String, String> {
         match section {
             Section::Add { path, content } => {
-                let full = self.cwd.join(path);
+                let full = crate::path::resolve(self.cwd, path);
                 if self.read(&full).await?.is_some() {
                     return Err(format!(
                         "cannot add {}: it already exists. Use `*** Update File:` to change it.",
@@ -150,7 +150,7 @@ impl Plan<'_> {
                 Ok(format!("A {path}"))
             }
             Section::Delete { path } => {
-                let full = self.cwd.join(path);
+                let full = crate::path::resolve(self.cwd, path);
                 if self.read(&full).await?.is_none() {
                     return Err(format!("cannot delete {}: no such file", full.display()));
                 }
@@ -162,7 +162,7 @@ impl Plan<'_> {
                 move_to,
                 hunks,
             } => {
-                let full = self.cwd.join(path);
+                let full = crate::path::resolve(self.cwd, path);
                 let source = self
                     .read(&full)
                     .await?
@@ -173,7 +173,7 @@ impl Plan<'_> {
                     self.files.insert(full, Some(updated));
                     return Ok(format!("M {path}"));
                 };
-                let dest = self.cwd.join(move_to);
+                let dest = crate::path::resolve(self.cwd, move_to);
                 if dest != full {
                     if self.read(&dest).await?.is_some() {
                         return Err(format!(

@@ -1,11 +1,11 @@
-//! Running one tool call: its arguments parsed, its output streamed, and
-//! its result or why it failed.
+//! Running one tool call: its arguments parsed and repaired, its output
+//! streamed, and its result or why it failed.
 
 use nth_protocol::{Event, OutputSink, Tool, ToolCall, ToolContext, ToolResult};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::emit;
+use super::{emit, repair::repair};
 
 /// Why a tool the user cut short failed; the model reads it after `Error: `.
 pub(crate) const INTERRUPTED: &str = "interrupted by the user";
@@ -60,7 +60,7 @@ pub(crate) async fn run_call(
         match tool {
             None => Err(format!("unknown tool: {}", call.name)),
             Some(tool) => match parse_arguments(&call.arguments) {
-                Ok(args) => tool.call(args, &ctx).await,
+                Ok(args) => tool.call(repair(args, &tool.spec().parameters), &ctx).await,
                 Err(e) => Err(e),
             },
         }
@@ -165,6 +165,55 @@ mod tests {
                 }
             }
             .boxed()
+        }
+    }
+
+    /// Takes an integer `limit`, as read does, and returns it.
+    struct Limit;
+
+    impl Tool for Limit {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "limit",
+                description: String::new(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "limit": { "type": "integer" } },
+                    "required": ["limit"],
+                }),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            args: serde_json::Value,
+            _: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            async move {
+                #[derive(serde::Deserialize)]
+                struct Args {
+                    limit: u64,
+                }
+                let Args { limit } = parse_args(args)?;
+                Ok(limit.to_string())
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_get_their_arguments_repaired() {
+        let raw = call("1", "limit", r#"{"limit":"20"}"#);
+        let (tx, mut rx) = mpsc::channel(16);
+        let ctx = ToolContext::new(".".into());
+
+        let result = run_call(Some(&Limit), &ctx, &raw, &tx, &CancellationToken::new()).await;
+
+        assert_eq!(result, Ok("20".to_string()));
+        // What the model sent is what the front-ends show.
+        match rx.recv().await {
+            Some(Event::ToolStarted(started)) => assert_eq!(started, raw),
+            other => panic!("expected the call to start, got {other:?}"),
         }
     }
 
