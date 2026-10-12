@@ -15,7 +15,7 @@ use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -63,22 +63,26 @@ impl Client {
         }
     }
 
+    /// `cache_key` goes out as `prompt_cache_key`: only to a provider known
+    /// to take it ([`takes_cache_key`]), since strict ones refuse a field
+    /// they do not know.
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
+        cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
-        let response = auth
-            .bearer(
-                self.http
-                    .post(format!("{}/chat/completions", self.base_url)),
-                Some(request.session_id),
-            )
+        let signed = auth.bearer(
+            self.http
+                .post(format!("{}/chat/completions", self.base_url)),
+            Some(request.session_id),
+        );
+        let response = http::session(signed, &request)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .header("x-opencode-session", request.session_id)
             .json(&wire::body(
                 request.model,
                 request.effort,
+                cache_key,
                 request.messages,
                 request.tools,
             ))
@@ -92,6 +96,39 @@ impl Client {
             .boxed();
         Ok(events(bytes).map(|e| e.map_err(BoxError::from)).boxed())
     }
+}
+
+/// The models.dev ids of the providers whose chat completions take
+/// `prompt_cache_key`, as opencode lists them.
+const CACHE_KEY_PROVIDERS: &[&str] = &[
+    "abliteration-ai",
+    "aihubmix",
+    "anyapi",
+    "auriko",
+    "azure",
+    "cerebras",
+    "deepinfra",
+    "digitalocean",
+    "edenai",
+    "fireworks-ai",
+    "jalapeno",
+    "llama",
+    "meta",
+    "moonshotai",
+    "moonshotai-cn",
+    "morph",
+    "openai",
+    "openrouter",
+    "snowflake-cortex",
+    "tencent-tokenhub",
+    "upstage",
+    "venice",
+];
+
+/// Whether the provider of models.dev id `provider` takes a
+/// `prompt_cache_key`.
+pub(crate) fn takes_cache_key(provider: &str) -> bool {
+    CACHE_KEY_PROVIDERS.contains(&provider)
 }
 
 /// Turns a non-2xx response into an error that carries the server's body

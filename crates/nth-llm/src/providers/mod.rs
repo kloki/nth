@@ -168,7 +168,8 @@ impl Provider for Providers {
             let endpoint = &self.endpoints[i];
             // A ChatGPT login that cannot refresh fails here, for good.
             let auth = endpoint.auth().await?;
-            let (wire, known) = endpoint.wire(self.catalog.get().await, model);
+            let catalog = self.catalog.get().await;
+            let (wire, known) = endpoint.wire(catalog, model);
             // Whatever picked the effort (the config, a resumed session, a
             // model switch), a known model is sent only a level it takes.
             let request = match known {
@@ -179,7 +180,12 @@ impl Provider for Providers {
                 None => request,
             };
             Ok(match wire {
-                Wire::ChatCompletions => endpoint.chat.stream(request, &auth).await?,
+                Wire::ChatCompletions => {
+                    let cache_key = endpoint
+                        .takes_cache_key(catalog)
+                        .then_some(request.session_id);
+                    endpoint.chat.stream(request, cache_key, &auth).await?
+                }
                 Wire::Messages => endpoint.messages.stream(request, known, &auth).await?,
                 Wire::Responses => endpoint.responses.stream(request, known, &auth).await?,
             })
@@ -384,6 +390,7 @@ mod tests {
         let request = Request {
             model: "chatgpt/gpt-5.5",
             session_id: "session",
+            parent_session_id: None,
             effort: Default::default(),
             messages: &[],
             tools: &[],
@@ -448,6 +455,7 @@ mod tests {
         let request = Request {
             model: "chatgpt/gpt-5.5",
             session_id: "ses_1",
+            parent_session_id: None,
             effort: Default::default(),
             messages: &[],
             tools: &[],
@@ -460,7 +468,8 @@ mod tests {
             .await;
         assert!(events.iter().all(Result::is_ok), "{events:?}");
 
-        let head = head.await.expect("a request").to_lowercase();
+        let (head, _) = head.await.expect("a request");
+        let head = head.to_lowercase();
         let lines: Vec<_> = head.lines().collect();
         assert_eq!(lines[0], "post /responses http/1.1", "over responses");
         for header in [
@@ -471,6 +480,92 @@ mod tests {
         ] {
             assert!(lines.contains(&header), "{header} in {head}");
         }
+    }
+
+    /// The head, lowercased, and the body of the one request `providers`
+    /// sends for `model` on behalf of a subagent session of `parent`.
+    async fn sent(
+        id: &str,
+        catalog: Snapshot,
+        model: &str,
+        parent: Option<&str>,
+    ) -> (String, serde_json::Value) {
+        let (url, sent) =
+            crate::testing::serve_once(include_bytes!("../../tests/fixtures/go_stream.sse")).await;
+        let providers = Providers::build(
+            vec![EndpointConfig {
+                base_url: url,
+                ..endpoint(id)
+            }],
+            Vec::new(),
+            model,
+            reqwest::Client::new(),
+            catalog,
+        )
+        .expect("one provider");
+        let request = Request {
+            model,
+            session_id: "ses_1",
+            parent_session_id: parent,
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        };
+        let events: Vec<_> = providers
+            .stream(request)
+            .await
+            .expect("streams")
+            .collect()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        let (head, body) = sent.await.expect("a request");
+        let body = serde_json::from_str(&body).expect("a json body");
+        (head.to_lowercase(), body)
+    }
+
+    /// A catalogue of one provider, `id`, speaking chat completions.
+    fn compatible(id: &str) -> Snapshot {
+        let catalog = serde_json::json!({
+            id: {"npm": "@ai-sdk/openai-compatible", "models": {"kimi-k3": {}}},
+        });
+        Snapshot::of(serde_json::from_value(catalog).expect("a valid catalogue"))
+    }
+
+    #[tokio::test]
+    async fn requests_carry_the_session_and_its_parent() {
+        let (head, _) = sent(
+            "lyceum",
+            compatible("other"),
+            "lyceum/kimi-k3",
+            Some("ses_0"),
+        )
+        .await;
+        let lines: Vec<_> = head.lines().collect();
+        for header in [
+            "x-opencode-session: ses_1",
+            "x-opencode-session-id: ses_1",
+            "x-opencode-parent-session-id: ses_0",
+        ] {
+            assert!(lines.contains(&header), "{header} in {head}");
+        }
+
+        let (head, _) = sent("lyceum", compatible("other"), "lyceum/kimi-k3", None).await;
+        assert!(head.contains("x-opencode-session-id: ses_1"), "{head}");
+        assert!(!head.contains("x-opencode-parent-session-id"), "{head}");
+    }
+
+    #[tokio::test]
+    async fn only_a_provider_known_to_take_it_gets_a_cache_key() {
+        let (_, body) = sent("moonshotai", compatible("moonshotai"), "kimi-k3", None).await;
+        assert_eq!(body["prompt_cache_key"], "ses_1");
+
+        let (_, body) = sent("lyceum", compatible("lyceum"), "kimi-k3", None).await;
+        assert!(body.get("prompt_cache_key").is_none(), "{body}");
+        let (_, body) = sent("moonshotai", compatible("other"), "kimi-k3", None).await;
+        assert!(
+            body.get("prompt_cache_key").is_none(),
+            "an endpoint the catalogue does not know gets none"
+        );
     }
 
     #[tokio::test]

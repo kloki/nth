@@ -11,7 +11,11 @@ use crate::sse::{self, data, excerpt};
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 pub enum Event {
-    #[serde(rename = "response.output_text.delta")]
+    /// A refusal streams as text too, so it shows rather than vanishing.
+    #[serde(
+        rename = "response.output_text.delta",
+        alias = "response.refusal.delta"
+    )]
     TextDelta { delta: String },
     /// OpenAI's models stream a summary of their reasoning, open models
     /// the reasoning itself.
@@ -183,6 +187,19 @@ mod tests {
                 },
                 Event::ReasoningDelta { delta: "hm".into() },
             ]
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_text() {
+        let events = parser()
+            .push(b"data: {\"type\":\"response.refusal.delta\",\"delta\":\"I can't.\"}\n")
+            .expect("valid");
+        assert_eq!(
+            events,
+            vec![Event::TextDelta {
+                delta: "I can't.".into()
+            }]
         );
     }
 

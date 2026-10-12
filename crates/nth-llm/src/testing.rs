@@ -28,11 +28,11 @@ pub(crate) fn runs_no_tools<E>(events: &[Result<StreamEvent, E>]) -> bool {
 }
 
 /// A server on a free local port that answers one request with `body` as
-/// an event stream, and hands back the request's head: its request line
-/// and headers.
+/// an event stream, and hands back the request's head (its request line
+/// and headers) and its body.
 pub(crate) async fn serve_once(
     body: &'static [u8],
-) -> (String, tokio::sync::oneshot::Receiver<String>) {
+) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -74,7 +74,8 @@ pub(crate) async fn serve_once(
         );
         stream.write_all(reply.as_bytes()).await.expect("writable");
         stream.write_all(body).await.expect("writable");
-        let _ = tx.send(head);
+        let sent = String::from_utf8_lossy(&request[head.len() + 4..]).into_owned();
+        let _ = tx.send((head, sent));
     });
     (url, rx)
 }

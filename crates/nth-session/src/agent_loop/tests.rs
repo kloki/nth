@@ -20,6 +20,7 @@ pub(super) const ROUTE: Route = Route {
     model: "glm-5.3",
     effort: Effort::Default,
     session_id: "s1",
+    parent_session_id: None,
     max_steps: DEFAULT_MAX_STEPS,
 };
 

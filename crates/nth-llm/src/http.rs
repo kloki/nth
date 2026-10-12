@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use nth_protocol::Request;
+
 pub(crate) const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 /// A server that does not answer the handshake this fast is down or
 /// unreachable; waiting longer only delays the retry.
@@ -19,6 +21,22 @@ pub(crate) fn client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
+}
+
+/// Which session `request` is for, as opencode names it: Go routes and
+/// caches on `x-opencode-session`, and the parent ties a subagent's
+/// requests to the session that started it.
+pub(crate) fn session(
+    builder: reqwest::RequestBuilder,
+    request: &Request<'_>,
+) -> reqwest::RequestBuilder {
+    let builder = builder
+        .header("x-opencode-session", request.session_id)
+        .header("x-opencode-session-id", request.session_id);
+    match request.parent_session_id {
+        Some(parent) => builder.header("x-opencode-parent-session-id", parent),
+        None => builder,
+    }
 }
 
 /// How long the server asked to wait, from `Retry-After-Ms` or the usual

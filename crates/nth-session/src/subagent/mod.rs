@@ -143,6 +143,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.effort = ctx.llm.effort;
     session.mode = Mode::Act;
     session.max_steps = max_steps;
+    session.parent = ctx.session.parse().ok();
     session
 }
 
@@ -470,6 +471,18 @@ pub(crate) mod tests {
             }
         }
         events
+    }
+
+    #[test]
+    fn a_child_session_records_its_parent() {
+        let parent = uuid::Uuid::new_v4();
+        let ctx = ToolContext {
+            session: parent.to_string(),
+            ..ToolContext::new("/repo".into())
+        };
+        let child = child_session(&explore(), &ctx, 5);
+        assert!(child.subagent);
+        assert_eq!(child.parent, Some(parent));
     }
 
     #[tokio::test]

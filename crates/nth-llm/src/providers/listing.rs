@@ -192,7 +192,8 @@ mod tests {
     #[test]
     fn keeps_only_models_nth_speaks_with_their_limits() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let provider = catalog::provider_for(&catalog, "opencode", &format!("{GO}/"));
+        let provider =
+            catalog::provider_for(&catalog, "opencode", &format!("{GO}/")).map(|(_, p)| p);
 
         let models = select(endpoint(), Some(&catalog), provider);
 
@@ -240,7 +241,8 @@ mod tests {
     #[test]
     fn unknown_endpoint_keeps_everything() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let provider = catalog::provider_for(&catalog, "local", "http://localhost:8080/v1");
+        let provider =
+            catalog::provider_for(&catalog, "local", "http://localhost:8080/v1").map(|(_, p)| p);
 
         let models = select(endpoint(), Some(&catalog), provider);
 

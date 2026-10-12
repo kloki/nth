@@ -85,6 +85,7 @@ impl Turn<'_> {
         let request = Request {
             model: self.route.model,
             session_id: self.route.session_id,
+            parent_session_id: self.route.parent_session_id,
             effort: self.route.effort,
             messages: &sent,
             tools: specs,

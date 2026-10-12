@@ -15,7 +15,7 @@ use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 use crate::{
     auth::Auth,
     catalog,
-    http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
 };
 
 /// The API version the request and the stream are shaped for.
@@ -99,14 +99,13 @@ impl Client {
         known: Option<&catalog::Model>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
-        let response = auth
-            .api_key(
-                self.http.post(format!("{}/messages", self.base_url)),
-                Some(request.session_id),
-            )
+        let signed = auth.api_key(
+            self.http.post(format!("{}/messages", self.base_url)),
+            Some(request.session_id),
+        );
+        let response = http::session(signed, &request)
             .header("anthropic-version", VERSION)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .header("x-opencode-session", request.session_id)
             .json(&wire::body(
                 request.model,
                 request.effort,

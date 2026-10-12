@@ -23,6 +23,8 @@ pub struct Request<'a> {
     /// Per request too, so one client serves successive sessions. It must
     /// stay stable within a conversation: Go routes and caches prompts on it.
     pub session_id: &'a str,
+    /// The session that started this one, for a subagent's requests.
+    pub parent_session_id: Option<&'a str>,
     pub effort: Effort,
     pub messages: &'a [Message],
     pub tools: &'a [ToolSpec],

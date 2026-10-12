@@ -77,6 +77,10 @@ pub struct Session {
     /// task tool, so it is told of no agents and `@name` means nothing.
     #[serde(default)]
     pub subagent: bool,
+    /// The session whose model started this one, for a subagent; its
+    /// requests name it, so they can be told apart from the parent's.
+    #[serde(default)]
+    pub parent: Option<Uuid>,
     /// A subagent's own system prompt, in place of the model's persona;
     /// `None` keeps the persona.
     #[serde(default)]
@@ -116,6 +120,7 @@ impl Session {
             usage: Ledger::default(),
             max_steps: DEFAULT_MAX_STEPS,
             subagent: false,
+            parent: None,
             persona: None,
             context,
         }
@@ -325,6 +330,7 @@ impl Session {
                 model: &self.model,
                 effort: self.effort,
                 session_id: &self.id.to_string(),
+                parent_session_id: self.parent.map(|p| p.to_string()).as_deref(),
                 max_steps: self.max_steps,
             },
             tools,

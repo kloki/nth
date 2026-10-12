@@ -154,7 +154,7 @@ Where nth stands at `8c93f35`:
 | Prune old tool results     | opt-in, after every turn                          | none: every result is re-sent on every step                                   |
 | Compaction                 | automatic at the usable window, `/compact`, agent | none (`docs/design.md` lists it under M2)                                     |
 | Overflow error recovery    | compact and replay the prompt                     | the turn fails                                                                |
-| Cache breakpoints          | system ×2, last two messages                      | system and the last block (`nth-llm/src/messages/wire.rs:51`); `prompt_cache_key` on responses |
+| Cache breakpoints          | system ×2, last two messages                      | system and the last block (`nth-llm/src/messages/wire.rs:51`); `prompt_cache_key` on responses, and on chat completions for an allowlist of providers |
 | Reasoning replay           | with signature                                    | dropped on messages (no signature kept), sent on chat completions             |
 | Context shown              | % of window in a subagent's footer                | context bar in the status bar                                                 |
 

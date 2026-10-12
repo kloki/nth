@@ -233,17 +233,19 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Result<Catalog, reqwest::Er
 }
 
 /// The catalogue's entry for the provider serving `base_url`, else the one
-/// named `id`: some entries, as OpenAI's, give no `api` to match.
+/// named `id`: some entries, as OpenAI's, give no `api` to match. With the
+/// id the catalogue knows it by.
 pub(crate) fn provider_for<'a>(
     catalog: &'a Catalog,
     id: &str,
     base_url: &str,
-) -> Option<&'a Provider> {
+) -> Option<(&'a str, &'a Provider)> {
     let base_url = base_url.trim_end_matches('/');
     catalog
-        .values()
-        .find(|p| p.api.as_deref().map(|a| a.trim_end_matches('/')) == Some(base_url))
-        .or_else(|| catalog.get(id))
+        .iter()
+        .find(|(_, p)| p.api.as_deref().map(|a| a.trim_end_matches('/')) == Some(base_url))
+        .or_else(|| catalog.get_key_value(id))
+        .map(|(id, p)| (id.as_str(), p))
 }
 
 /// What another provider's entry says about `model`, for an endpoint the
@@ -283,7 +285,7 @@ mod tests {
     #[test]
     fn the_sdk_picks_the_wire() {
         let catalog: Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let go =
+        let (_, go) =
             provider_for(&catalog, "opencode", "https://opencode.ai/zen/go/v1").expect("go entry");
         assert_eq!(go.wire("glm-5.3"), Some(Wire::ChatCompletions));
         assert_eq!(go.wire("minimax-m3"), Some(Wire::Messages));
@@ -303,15 +305,19 @@ mod tests {
     #[test]
     fn a_provider_is_found_by_its_url_else_by_its_id() {
         let catalog: Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
-        let name = |p: Option<&Provider>| p.and_then(|p| p.models.keys().min().cloned());
+        let id = |base_url| provider_for(&catalog, "openai", base_url).map(|(id, _)| id);
 
-        let openai = provider_for(&catalog, "openai", "https://api.openai.com/v1");
-        assert_eq!(name(openai).as_deref(), Some("gpt-x"), "no api, so by id");
-        assert_eq!(openai.and_then(|p| p.wire("gpt-x")), Some(Wire::Responses));
-        let go = provider_for(&catalog, "openai", "https://opencode.ai/zen/go/v1/");
         assert_eq!(
-            name(go).as_deref(),
-            Some("gemini-3.5-flash"),
+            id("https://api.openai.com/v1"),
+            Some("openai"),
+            "no api, so by id"
+        );
+        let (_, openai) =
+            provider_for(&catalog, "openai", "https://api.openai.com/v1").expect("openai");
+        assert_eq!(openai.wire("gpt-x"), Some(Wire::Responses));
+        assert_eq!(
+            id("https://opencode.ai/zen/go/v1/"),
+            Some("opencode-go"),
             "the url wins"
         );
         assert!(provider_for(&catalog, "lyceum", "https://api.lyceum.technology").is_none());
