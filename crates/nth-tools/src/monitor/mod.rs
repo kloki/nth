@@ -92,7 +92,7 @@ impl Tool for Monitor {
                 .ok_or("the front-end is gone")?;
             let id = registered.id;
             let (log, log_note) = match open_log(&registered.log).await {
-                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}.", registered.log.display())),
+                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}; read it if you need output before a notice arrives.", registered.log.display())),
                 Err(e) => (None, format!("Its output is not logged: {e}.")),
             };
             tokio::spawn(watch(
@@ -104,7 +104,7 @@ impl Tool for Monitor {
                 timeout,
             ));
             Ok(format!(
-                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it; read the log if you need output before a notice arrives. {log_note} Stop it with monitor_stop.",
+                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it. {log_note} Stop it with monitor_stop.",
                 args.description,
                 timeout.as_secs()
             ))
