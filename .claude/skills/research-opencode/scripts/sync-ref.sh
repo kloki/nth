@@ -8,7 +8,8 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/anomalyco/opencode"
-ROOT="$(git rev-parse --show-toplevel)"
+# The clone lives in the main checkout, also when this runs in a worktree.
+ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 REF="$ROOT/refs/opencode"
 
 if [[ ! -d "$REF/.git" ]]; then

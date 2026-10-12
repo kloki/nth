@@ -16,6 +16,14 @@ pinned to an older SHA keep their own SHA in their header.
 | #   | Topic | Commit |
 | --- | ----- | ------ |
 
+## Change reviews
+
+What opencode changed between two pins, written by the `opencode-changes`
+skill, which also moves the pin.
+
+| Date | Range | Report |
+| ---- | ----- | ------ |
+
 ## Coverage checklist
 
 - [ ] Architecture overview
