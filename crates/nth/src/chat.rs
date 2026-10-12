@@ -114,6 +114,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 tool_output: config.chat.tool_output,
             },
             split_width: config.layout.split_width,
+            chatgpt: nth_auth::ChatGpt::new(nth_auth::Store::new()?)?,
         },
     )
     .await;

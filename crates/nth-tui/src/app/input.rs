@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 
 use super::App;
 use crate::{
+    connect::ConnectPanel,
     llm_picker::LlmPicker,
     prompt,
     question::{self, QuestionPanel},
@@ -21,6 +22,7 @@ pub(super) enum Input {
     SessionPicker(SessionPicker),
     Question(QuestionPanel),
     Settings(SettingsPanel),
+    Connect(ConnectPanel),
 }
 
 impl Input {
@@ -34,6 +36,7 @@ impl Input {
             Input::LlmPicker(_) | Input::SessionPicker(_) => picker_rows(screen),
             Input::Question(panel) => question::rows(panel, screen),
             Input::Settings(_) => settings::ROWS,
+            Input::Connect(panel) => panel.rows(),
         }
     }
 }

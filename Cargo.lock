@@ -1670,6 +1670,7 @@ dependencies = [
  "futures",
  "hoodrich",
  "ignore",
+ "nth-auth",
  "nth-context",
  "nth-format",
  "nth-icons",
