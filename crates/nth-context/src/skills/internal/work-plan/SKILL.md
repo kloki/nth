@@ -49,6 +49,8 @@ Seed the todo with the steps you expect; the subagent ticks them and adds its ow
 
 To put an item in its own checkout, call enter_worktree with a name for it, assign the item, and move on to the next item's worktree; exit_worktree takes you back to the main checkout. Each enter_worktree goes in a step of its own, before that item's work_assign, since the subagent starts wherever you are when you assign it. The assignments still return at once, so the items run in parallel. Say in the brief that the item works on its worktree's branch and should commit there.
 
+A new worktree runs the project's `.nth/worktree-setup` if it has one; check its result says it worked before assigning the item, since a subagent in a checkout that does not build wastes its turn.
+
 The plan stays in the main checkout wherever you are. Worktrees are refused in plan mode.
 
 ## Manage branches, merges and pull requests

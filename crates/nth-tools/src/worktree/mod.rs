@@ -1,5 +1,7 @@
 //! Moving the session into a git worktree under `.nth/worktrees` and back.
 
+mod setup;
+
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, Writable};
 use nth_worktree::Created;
@@ -51,16 +53,27 @@ impl Tool for EnterWorktree {
                 Some(Created::ExistingBranch) => "Created it on the existing branch. ",
             };
             let path = worktree.path;
+            // Only a new worktree is set up; the session enters it whatever
+            // the script did, since the worktree is there either way.
+            let setup = match worktree.created {
+                Some(_) => setup::run(&root, &path).await,
+                None => None,
+            };
             ctx.workdir.enter(&ctx.cwd, path.clone());
             let back = ctx.workdir.origin().unwrap_or(origin);
-            Ok(format!(
+            let mut out = format!(
                 "Entered the worktree at {} on branch {name}. {created}\
                  The working directory is now that worktree: relative paths, \
                  glob, grep and bash run there from your next step on. Call \
                  exit_worktree to go back to {}.",
                 path.display(),
                 back.display(),
-            ))
+            );
+            if let Some(setup) = setup {
+                out.push_str("\n\n");
+                out.push_str(&setup);
+            }
+            Ok(out)
         }
         .boxed()
     }
@@ -228,6 +241,65 @@ mod tests {
             .await;
 
         assert!(out.expect_err("refused").contains("not in a worktree"));
+    }
+
+    fn setup_script(root: &Path, script: &str) {
+        std::fs::create_dir_all(root.join(".nth")).expect("mkdir");
+        std::fs::write(root.join(setup::SCRIPT), script).expect("write");
+    }
+
+    #[tokio::test]
+    async fn runs_the_setup_script_once_in_a_new_worktree() {
+        let (_dir, root) = repo();
+        setup_script(
+            &root,
+            "echo \"$NTH_WORKTREE_BASE $NTH_WORKTREE_PATH\" >> \"$PWD/ran\"\necho set up\n",
+        );
+        let path = root.join(".nth/worktrees/x");
+
+        let out = enter(&ToolContext::new(root.clone()), "x")
+            .await
+            .expect("first");
+        let again = enter(&ToolContext::new(root.clone()), "x")
+            .await
+            .expect("second");
+
+        assert!(
+            out.ends_with("Ran .nth/worktree-setup (exit 0):\nset up"),
+            "{out}"
+        );
+        assert!(!again.contains("worktree-setup"), "{again}");
+        let ran = std::fs::read_to_string(path.join("ran")).expect("ran");
+        assert_eq!(ran, format!("{} {}\n", root.display(), path.display()));
+    }
+
+    #[tokio::test]
+    async fn a_failing_setup_script_is_reported_and_the_session_still_moves() {
+        let (_dir, root) = repo();
+        setup_script(&root, "echo broken >&2\nexit 3\n");
+        let ctx = ToolContext::new(root.clone());
+
+        let out = enter(&ctx, "x").await.expect("entered");
+
+        assert!(
+            out.ends_with("Ran .nth/worktree-setup (exit 3):\nbroken"),
+            "{out}"
+        );
+        assert_eq!(ctx.workdir.moved_to(), Some(root.join(".nth/worktrees/x")));
+    }
+
+    #[tokio::test]
+    async fn without_a_setup_script_nothing_runs() {
+        let (_dir, root) = repo();
+
+        let out = enter(&ToolContext::new(root.clone()), "x")
+            .await
+            .expect("entered");
+
+        assert!(
+            out.ends_with(&format!("go back to {}.", root.display())),
+            "{out}"
+        );
     }
 
     #[tokio::test]

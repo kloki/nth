@@ -4,5 +4,6 @@ Usage notes:
 - From your next step on, the working directory is the worktree: relative paths, glob, grep and bash run there. Tools called in the same step as this one still run in the old directory, so call it on its own.
 - Call exit_worktree to go back. Entering another worktree from inside one works too; exit_worktree then still goes back to where you started.
 - The worktree is a fresh checkout of committed files: uncommitted changes in the main checkout are not in it, and build artefacts such as target/ or node_modules/ start empty.
+- When it creates the worktree, the project's `.nth/worktree-setup` (in the main checkout), if there is one, runs with bash in the new worktree, with `NTH_WORKTREE_BASE` set to the main checkout and `NTH_WORKTREE_PATH` to the worktree. The result ends with its exit status and the tail of its output; the session enters the worktree even when it fails. It runs only on creation, not when entering an existing worktree.
 - Use it when the user asks for a worktree, or to work on something in isolation; do not use it for a quick change the user expects in their own checkout.
 - Not available in plan mode.
