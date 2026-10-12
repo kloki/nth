@@ -3,7 +3,15 @@
 use nth_protocol::{Effort, Message, ToolSpec};
 use serde_json::{Value, json};
 
-pub(super) fn body(model: &str, effort: Effort, messages: &[Message], tools: &[ToolSpec]) -> Value {
+/// `cache_key`, the session id where the provider takes one, keeps a
+/// conversation's requests on the server that has its prompt cached.
+pub(super) fn body(
+    model: &str,
+    effort: Effort,
+    cache_key: Option<&str>,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> Value {
     let mistral = is_mistral(model);
     let mut body = json!({
         "model": model,
@@ -14,6 +22,9 @@ pub(super) fn body(model: &str, effort: Effort, messages: &[Message], tools: &[T
     });
     if let Some(effort) = effort.wire() {
         body["reasoning_effort"] = json!(effort);
+    }
+    if let Some(key) = cache_key {
+        body["prompt_cache_key"] = json!(key);
     }
     if !tools.is_empty() {
         body["tools"] = tools.iter().map(tool).collect();
@@ -95,11 +106,20 @@ mod tests {
 
     #[test]
     fn sends_an_effort_only_when_one_is_chosen() {
-        let chosen = body("glm", Effort::High, &[], &[]);
+        let chosen = body("glm", Effort::High, None, &[], &[]);
         assert_eq!(chosen["reasoning_effort"], "high");
 
-        let default = body("glm", Effort::Default, &[], &[]);
+        let default = body("glm", Effort::Default, None, &[], &[]);
         assert!(default.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn sends_a_cache_key_only_when_given_one() {
+        let keyed = body("gpt-5.5", Effort::Default, Some("ses_1"), &[], &[]);
+        assert_eq!(keyed["prompt_cache_key"], "ses_1");
+
+        let plain = body("glm", Effort::Default, None, &[], &[]);
+        assert!(plain.get("prompt_cache_key").is_none());
     }
 
     fn assistant(model: &str) -> Value {
@@ -108,7 +128,7 @@ mod tests {
             reasoning: "hmm".into(),
             ..Default::default()
         });
-        body(model, Effort::Default, &[reply], &[])["messages"][0].clone()
+        body(model, Effort::Default, None, &[reply], &[])["messages"][0].clone()
     }
 
     #[test]

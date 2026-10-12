@@ -70,6 +70,8 @@ pub struct Route<'a> {
     pub model: &'a str,
     pub effort: Effort,
     pub session_id: &'a str,
+    /// The session that started this one, for a subagent.
+    pub parent_session_id: Option<&'a str>,
     pub max_steps: usize,
 }
 

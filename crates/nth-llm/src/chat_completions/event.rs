@@ -64,6 +64,8 @@ struct RawDelta {
     reasoning_content: Option<String>,
     /// Some servers send `"tool_calls": null` on plain text deltas.
     tool_calls: Option<Vec<ToolCallDelta>>,
+    /// OpenAI streams a refusal here rather than in `content`.
+    refusal: Option<String>,
 }
 
 /// Mistral sends content as a list of typed chunks rather than a string,
@@ -122,6 +124,11 @@ impl From<RawDelta> for Delta {
                 }
                 (!text.is_empty()).then_some(text)
             }
+        };
+        // Shown as text, so a refusal does not end the turn in silence.
+        let content = match (content, raw.refusal) {
+            (Some(text), Some(refusal)) => Some(text + &refusal),
+            (content, refusal) => content.or(refusal),
         };
         Delta {
             content,
@@ -382,6 +389,22 @@ mod tests {
                 content: Some("ab".into()),
                 ..Delta::default()
             }
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_content() {
+        let events = parser()
+            .push(
+                b"data: {\"choices\":[{\"delta\":{\"content\":null,\"refusal\":\"I can't.\"}}]}\n",
+            )
+            .expect("valid");
+        assert_eq!(
+            events,
+            vec![Event::Delta(Delta {
+                content: Some("I can't.".into()),
+                ..Delta::default()
+            })]
         );
     }
 

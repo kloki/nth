@@ -95,7 +95,7 @@ impl Endpoint {
         Ok(listing::select(
             ids?,
             catalog,
-            catalog.and_then(|c| self.provider_in(c)),
+            catalog.and_then(|c| self.provider_in(c)).map(|(_, p)| p),
         ))
     }
 
@@ -124,7 +124,7 @@ impl Endpoint {
             return (Wire::ChatCompletions, None);
         };
         match self.provider_in(catalog) {
-            Some(provider) => (
+            Some((_, provider)) => (
                 provider.wire(model).unwrap_or(Wire::ChatCompletions),
                 provider.models.get(model),
             ),
@@ -132,7 +132,15 @@ impl Endpoint {
         }
     }
 
-    fn provider_in<'c>(&self, catalog: &'c Catalog) -> Option<&'c catalog::Provider> {
+    /// Whether its chat completions take a `prompt_cache_key`: only an
+    /// endpoint the catalogue knows, of a provider known to accept it.
+    pub(crate) fn takes_cache_key(&self, catalog: Option<&Catalog>) -> bool {
+        catalog
+            .and_then(|c| self.provider_in(c))
+            .is_some_and(|(id, _)| chat_completions::takes_cache_key(id))
+    }
+
+    fn provider_in<'c>(&self, catalog: &'c Catalog) -> Option<(&'c str, &'c catalog::Provider)> {
         catalog::provider_for(catalog, &self.origin.id, &self.base_url)
     }
 }
