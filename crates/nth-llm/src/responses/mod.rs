@@ -13,6 +13,7 @@ use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, Retry, StreamEvent, ToolCall, Usage};
 
 use crate::{
+    auth::Auth,
     catalog,
     http::{STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
 };
@@ -51,15 +52,13 @@ pub enum Error {
 pub(crate) struct Client {
     http: reqwest::Client,
     base_url: String,
-    api_key: String,
 }
 
 impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String, api_key: String) -> Self {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
         }
     }
 
@@ -69,12 +68,14 @@ impl Client {
         &self,
         request: Request<'_>,
         known: Option<&catalog::Model>,
+        auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Error> {
         let reasons = known.and_then(|m| m.reasoning).unwrap_or(false);
-        let response = self
-            .http
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(&self.api_key)
+        let response = auth
+            .bearer(
+                self.http.post(format!("{}/responses", self.base_url)),
+                Some(request.session_id),
+            )
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header("x-opencode-session", request.session_id)
             .json(&wire::body(

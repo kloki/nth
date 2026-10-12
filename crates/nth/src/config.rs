@@ -63,8 +63,11 @@ const TEMPLATE: &str = include_str!("config.toml");
 
 impl ProviderConfig {
     /// Names it by `id` when its block has no name, and rejects a block
-    /// without an endpoint or a key variable.
+    /// without an endpoint or a key variable, or one taking a built-in id.
     fn complete(&mut self, id: &str) -> Result<()> {
+        if id == nth_auth::ChatGpt::ID {
+            bail!("provider {id} is built in: run `nth connect` instead of configuring it");
+        }
         if self.name.is_empty() {
             self.name = id.to_string();
         }
@@ -833,6 +836,14 @@ mod tests {
             err.to_string().contains("lyceum has no api_key_env"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn chatgpt_is_reserved() {
+        let err =
+            Config::parse("[provider.chatgpt]\nbase_url = \"https://x\"\napi_key_env = \"K\"")
+                .expect_err("built in");
+        assert!(err.to_string().contains("chatgpt is built in"), "{err}");
     }
 
     #[test]
