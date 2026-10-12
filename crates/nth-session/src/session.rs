@@ -91,10 +91,17 @@ impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let context = Arc::<Context>::default();
-        let messages = vec![Message::System(system_prompt(&model, &cwd, &[], &context))];
+        let id = Uuid::new_v4();
+        let messages = vec![Message::System(system_prompt(
+            id,
+            &model,
+            &cwd,
+            &[],
+            &context,
+        ))];
         let now = SystemTime::now();
         Self {
-            id: Uuid::new_v4(),
+            id,
             cwd,
             origin: None,
             extra_dirs: Vec::new(),
@@ -216,12 +223,19 @@ impl Session {
         match self.subagent {
             true => system_prompt::subagent_system_prompt(
                 self.persona.as_deref(),
+                self.id,
                 &self.model,
                 &self.cwd,
                 &self.extra_dirs,
                 &self.context,
             ),
-            false => system_prompt(&self.model, &self.cwd, &self.extra_dirs, &self.context),
+            false => system_prompt(
+                self.id,
+                &self.model,
+                &self.cwd,
+                &self.extra_dirs,
+                &self.context,
+            ),
         }
     }
 
@@ -444,6 +458,7 @@ mod tests {
             session.messages,
             [
                 Message::System(system_prompt(
+                    session.id,
                     "kimi-k3",
                     ".".as_ref(),
                     &[],
@@ -502,7 +517,13 @@ mod tests {
         session.set_model("kimi-k3");
         assert_eq!(
             session.messages[0],
-            Message::System(system_prompt("kimi-k3", "/repo".as_ref(), &[], &context)),
+            Message::System(system_prompt(
+                session.id,
+                "kimi-k3",
+                "/repo".as_ref(),
+                &[],
+                &context
+            )),
             "a new model keeps the instructions"
         );
 
@@ -818,8 +839,14 @@ mod tests {
     async fn a_prompt_rewrites_a_system_prompt_from_another_day() {
         let mut session = Session::new("glm-5.3", "/repo".into());
         let current = session.messages[0].clone();
-        let stale = system_prompt("glm-5.3", "/repo".as_ref(), &[], &Context::default())
-            .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
+        let stale = system_prompt(
+            session.id,
+            "glm-5.3",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        )
+        .replace("Today's date: ", "Today's date: Mon Jan 01 2001, not ");
         session.messages[0] = Message::System(stale);
 
         send(&mut session, "go").await;
