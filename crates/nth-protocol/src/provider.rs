@@ -268,26 +268,39 @@ impl ModelInfo {
         }
     }
 
+    /// The context window, formatted (`1M`), when known.
+    pub fn context_limit(&self) -> Option<String> {
+        self.context.map(tokens)
+    }
+
+    /// The output limit, formatted (`128k`), when known.
+    pub fn output_limit(&self) -> Option<String> {
+        self.output.map(tokens)
+    }
+
     /// The known limits, such as `1M ctx · 128k out`; empty when none are.
     pub fn limits(&self) -> String {
-        // Rounded to the nearest, with a decimal only where a window like
-        // 1.5M would otherwise read as 1M.
-        let tokens = |n: u64| match n {
-            1_000_000.. => match (n + 50_000) / 100_000 {
-                tenths if tenths % 10 == 0 => format!("{}M", tenths / 10),
-                tenths => format!("{}.{}M", tenths / 10, tenths % 10),
-            },
-            1_000.. => format!("{}k", (n + 500) / 1_000),
-            _ => n.to_string(),
-        };
         [
-            self.context.map(|n| format!("{} ctx", tokens(n))),
-            self.output.map(|n| format!("{} out", tokens(n))),
+            self.context_limit().map(|n| format!("{n} ctx")),
+            self.output_limit().map(|n| format!("{n} out")),
         ]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ")
+    }
+}
+
+/// A token count, rounded to the nearest, with a decimal only where a
+/// window like 1.5M would otherwise read as 1M.
+fn tokens(n: u64) -> String {
+    match n {
+        1_000_000.. => match (n + 50_000) / 100_000 {
+            tenths if tenths % 10 == 0 => format!("{}M", tenths / 10),
+            tenths => format!("{}.{}M", tenths / 10, tenths % 10),
+        },
+        1_000.. => format!("{}k", (n + 500) / 1_000),
+        _ => n.to_string(),
     }
 }
 

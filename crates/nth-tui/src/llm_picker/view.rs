@@ -2,7 +2,7 @@
 //! query, then the models matching it, scrolled to the highlighted one.
 
 use nth_icons::icons;
-use nth_protocol::{Failed, ModelInfo};
+use nth_protocol::{Effort, Failed, ModelInfo};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -94,11 +94,12 @@ struct Listed<'a> {
     shown: &'a [usize],
 }
 
-/// One row per model matching the query: id, a ✓ on the one in use, name
-/// and limits, and on the highlighted model that takes one the effort ←→
-/// changes, with the characters the query matched marked. The providers
-/// that could not be listed follow, each a row saying why. The window
-/// scrolls over all of them to keep the highlighted model in view.
+/// One row per model matching the query: id, a ✓ on the one in use, name,
+/// and the limits with their counts right-aligned in their columns, and on
+/// the highlighted model that takes one the effort ←→ changes, with the
+/// characters the query matched marked. The providers that could not be
+/// listed follow, each a row saying why. The window scrolls over all of
+/// them to keep the highlighted model in view.
 fn rows<'a>(
     picker: &'a LlmPicker,
     listed: Listed<'a>,
@@ -121,6 +122,21 @@ fn rows<'a>(
     let name_width = models
         .iter()
         .map(|m| m.name.as_deref().unwrap_or("").chars().count())
+        .max()
+        .unwrap_or(0);
+    let ctx_width = models
+        .iter()
+        .filter_map(|m| m.context_limit().map(|n| n.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let out_width = models
+        .iter()
+        .filter_map(|m| m.output_limit().map(|n| n.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let limits_width = models
+        .iter()
+        .map(|m| limits_text(m, ctx_width, out_width).chars().count())
         .max()
         .unwrap_or(0);
     let pick = pick();
@@ -151,21 +167,30 @@ fn rows<'a>(
             spans.push(Span::raw(" "));
             let offset = id.chars().count() + 1;
             spans.extend(fuzzy::highlight(name, &hits, offset, dim(), hit(dim())));
+            // The limits padded to their widest, so the effort toggle that
+            // follows sits in one column.
             spans.push(Span::styled(
                 format!(
-                    "{}  {}",
+                    "{}  {:<limits_width$}",
                     " ".repeat(name_width - name.chars().count()),
-                    model.limits()
+                    limits_text(model, ctx_width, out_width),
                 ),
                 dim(),
             ));
             if let Some(effort) = here.then(|| picker.shown_effort()).flatten() {
+                // The name padded to the widest level the model can be shown
+                // at, so the arrows stay put while the effort changes.
+                let width = std::iter::once(Effort::Default)
+                    .chain(model.efforts.iter().copied())
+                    .map(|e| e.name().chars().count())
+                    .max()
+                    .unwrap_or(0);
                 spans.push(Span::styled(
                     format!(
-                        "  {} {} {}",
+                        "  {} {:<width$} {}",
                         icons().effort_less,
                         effort.name(),
-                        icons().effort_more
+                        icons().effort_more,
                     ),
                     pick,
                 ));
@@ -199,9 +224,21 @@ fn hit(style: Style) -> Style {
     style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
+/// The context and output counts, each right-aligned in its column
+/// (`ctx_width`/`out_width` wide), so the units line up across rows; empty
+/// when neither is known.
+fn limits_text(model: &ModelInfo, ctx_width: usize, out_width: usize) -> String {
+    match (model.context_limit(), model.output_limit()) {
+        (Some(ctx), Some(out)) => format!("{ctx:>ctx_width$} ctx · {out:>out_width$} out"),
+        (Some(ctx), None) => format!("{ctx:>ctx_width$} ctx"),
+        (None, Some(out)) => format!("{out:>out_width$} out"),
+        (None, None) => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Effort, Listing, Origin};
+    use nth_protocol::{Listing, Origin};
 
     use super::*;
 
@@ -312,5 +349,56 @@ mod tests {
 
         picker.insert('z');
         assert_eq!(drawn(&picker, 0, 8), ["▎   no matches"]);
+    }
+
+    /// A model with limits and efforts, as `model` above but filled in.
+    fn listed(
+        origin: &str,
+        id: &str,
+        name: &str,
+        context: u64,
+        output: u64,
+        efforts: &[Effort],
+    ) -> ModelInfo {
+        ModelInfo {
+            name: Some(name.into()),
+            context: Some(context),
+            output: Some(output),
+            efforts: efforts.to_vec(),
+            ..model(origin, id)
+        }
+    }
+
+    #[test]
+    fn counts_line_up_and_the_effort_toggle_stays_put() {
+        let models = vec![
+            listed(
+                "lyceum",
+                "gpt-5",
+                "GPT-5",
+                1_000_000,
+                128_000,
+                &[Effort::High],
+            ),
+            listed("lyceum", "glm", "GLM", 200_000, 64_000, &[Effort::High]),
+        ];
+        let mut picker = picker(models, "lyceum/glm");
+
+        // The counts are right-aligned in their columns, so ctx and out sit
+        // on one column in every row; the toggle follows the fixed-width
+        // limits, and its name is padded, so the arrows stay put.
+        assert_eq!(
+            drawn(&picker, 1, 8),
+            [
+                "▎   gpt-5   GPT-5    1M ctx · 128k out",
+                "▎ → glm   ✓ GLM    200k ctx ·  64k out  ◂ default ▸",
+            ]
+        );
+        picker.more();
+        assert_eq!(
+            drawn(&picker, 1, 8)[1],
+            "▎ → glm   ✓ GLM    200k ctx ·  64k out  ◂ high    ▸",
+            "the arrows do not move with the effort"
+        );
     }
 }
