@@ -137,8 +137,8 @@ impl App {
     /// status bar.
     fn open_url(&mut self, url: &str) {
         self.hint = Some(match (self.opener)(url) {
-            Ok(()) => format!("opened {url}"),
-            Err(e) => format!("could not open: {e}"),
+            Ok(()) => format!("opened {url}").into(),
+            Err(e) => format!("could not open: {e}").into(),
         });
     }
 
@@ -156,7 +156,7 @@ impl App {
         }
         self.hint = Some(match (self.clipboard)(&text) {
             Ok(()) => "copied".into(),
-            Err(e) => format!("could not copy: {e}"),
+            Err(e) => format!("could not copy: {e}").into(),
         });
     }
 }

@@ -12,6 +12,7 @@ mod editor;
 mod files;
 mod flash;
 mod git;
+mod hint;
 mod history;
 mod input;
 mod job;
@@ -315,9 +316,9 @@ pub struct App {
     /// Notices wait for your next prompt rather than start a turn, after
     /// you stopped one.
     hold_notices: bool,
-    /// A word on what the last key did not do, on the status bar until the
-    /// next key.
-    pub hint: Option<String>,
+    /// A word on what the last key did or did not do, on the status bar
+    /// until the next key or for a few seconds.
+    pub hint: Option<hint::Hint>,
     /// Where the last draw put the header, so a click knows it landed there.
     areas: mouse::Areas,
     /// How a right click's text reaches the clipboard; tests put it nowhere.
@@ -390,6 +391,7 @@ enum Step {
     Monitor(MonitorEvent),
     Subagent(SubagentEvent),
     NoticesDue,
+    HintExpired,
     TurnEnded(Result<Ended, JoinError>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
@@ -641,7 +643,8 @@ impl App {
                 || self.running_monitors() > 0
                 || self.running_subagents() > 0
                 || self.showing_hero()
-                || self.flash.as_ref().is_some_and(flash::Flash::running);
+                || self.flash.as_ref().is_some_and(flash::Flash::running)
+                || self.hint.as_ref().is_some_and(hint::Hint::flashing);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),
@@ -653,6 +656,7 @@ impl App {
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
+                _ = due(self.hint.as_ref().map(hint::Hint::expires)) => Step::HintExpired,
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(ended),
@@ -691,6 +695,7 @@ impl App {
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::Subagent(event) => self.on_subagent(event),
                 Step::NoticesDue => self.notices_due(),
+                Step::HintExpired => self.hint_expired(),
                 Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
                 Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
@@ -1044,8 +1049,8 @@ impl App {
     /// take one (`nth usage`, `nth work`, `nth session delete`).
     fn copy_session_id(&mut self) {
         self.hint = Some(match (self.clipboard)(&self.session_id.to_string()) {
-            Ok(()) => format!("copied {}", self.session_id),
-            Err(e) => format!("could not copy: {e}"),
+            Ok(()) => format!("copied {}", self.session_id).into(),
+            Err(e) => format!("could not copy: {e}").into(),
         });
     }
 

@@ -467,7 +467,7 @@ impl App {
         }
         dropped.dedup();
         if !dropped.is_empty() {
-            self.hint = Some(dropped.join(" · "));
+            self.hint = Some(dropped.join(" · ").into());
         }
         if parts.is_empty() {
             return;

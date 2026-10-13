@@ -542,17 +542,19 @@ The status comes from one `git status --porcelain=v2 --branch` plus a stash chec
 
 **The branch's pull request**
 
-After the branch, when the branch has one, the pull request's `#N` in yellow, the one clickable thing in the bar: a left click opens the PR in the browser, with `opened <url>` on line 2 until the next key. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
+After the branch, when the branch has one, the pull request's `#N` in yellow, the one clickable thing in the bar: a left click opens the PR in the browser, with `opened <url>` on line 2 as a hint. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
 
 Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs at start-up, at the end of each turn and when the session moves, not after every write, since it goes over the network; no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
 
-**Line 2, left: queued prompts**
+**Line 2, left: hints and queued prompts**
 
-While prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
+A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in reversed, black on yellow, for 300ms so it catches the eye, and goes at the next key or after 5 seconds, whichever is first.
+
+Otherwise, while prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
 
 **Line 2, right: the language servers**
 
-Against the right edge. A dot and the id of every language server the tools have started, in the order they started. Nothing shows until a server starts.
+Against the right edge. A dot and the id of every language server the tools have started, in the order they started. Nothing shows until a server starts. A server runs once per project root, so the same one can run several times: in a worktree and the main checkout, or in a dependency's source the model read. It shows once, as `● rust ×2`, its dot the colour of its worst client: red over yellow over green.
 
 | Part       | Shows                                                 | Colour             |
 | ---------- | ----------------------------------------------------- | ------------------ |

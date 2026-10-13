@@ -85,7 +85,7 @@ impl App {
                 None => {
                     self.apply_profile(i);
                     if !skipped.is_empty() {
-                        self.hint = Some(format!("skipped {}", skipped.join(", ")));
+                        self.hint = Some(format!("skipped {}", skipped.join(", ")).into());
                     }
                     return;
                 }
@@ -97,7 +97,7 @@ impl App {
         self.hint = Some(if skipped.is_empty() {
             "only one profile".into()
         } else {
-            format!("no other profile can run: {}", skipped.join(", "))
+            format!("no other profile can run: {}", skipped.join(", ")).into()
         });
     }
 

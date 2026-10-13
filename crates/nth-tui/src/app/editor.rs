@@ -82,7 +82,7 @@ impl App {
         };
         let copy = std::env::temp_dir().join("nth").join(name);
         if let Err(e) = write_copy(&copy, &original).await {
-            self.hint = Some(format!("cannot open the editor: {e}"));
+            self.hint = Some(format!("cannot open the editor: {e}").into());
             return;
         }
         *input = None;
@@ -145,7 +145,7 @@ impl App {
             }
             Ok(edited) => edited,
             Err(why) => {
-                self.hint = Some(why);
+                self.hint = Some(why.into());
                 return;
             }
         };
@@ -161,7 +161,7 @@ impl App {
     fn prompt_edited(&mut self, edited: Result<String, String>) {
         match edited {
             Ok(text) => self.prompt.set(&text),
-            Err(why) => self.hint = Some(why),
+            Err(why) => self.hint = Some(why.into()),
         }
     }
 }
