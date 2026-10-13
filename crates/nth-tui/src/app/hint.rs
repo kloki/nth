@@ -12,7 +12,7 @@ use super::App;
 /// How long a new hint shows reversed.
 const FLASH: Duration = Duration::from_millis(300);
 /// How long a hint stays when no key clears it first.
-const LIFE: Duration = Duration::from_secs(3);
+const LIFE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
