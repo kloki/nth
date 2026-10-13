@@ -3,10 +3,11 @@
 //! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
 //! and what the session spent on the left, git branch and status on the
 //! right, with the branch's pull request as a clickable `#N`. Line 2 shows
-//! a hint about the last key or the queued prompts on the left, and the
-//! running monitors and the language servers that check a write on the
-//! right: a dot per server, coloured by its state. The right side is cut
-//! first when a line is too narrow.
+//! a hint about the last key (flashing as it comes in, gone after a few
+//! seconds) or the queued prompts on the left, and the language servers
+//! that check a write on the right: a dot per server, coloured by the
+//! worst of its clients, with how many roots it runs in when more than
+//! one. The right side is cut first when a line is too narrow.
 
 use std::{path::Path, time::SystemTime};
 
@@ -88,7 +89,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let right = split_line(frame, state, place, summary);
     let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
     let left = match &app.hint {
-        Some(hint) => vec![Span::styled(hint.clone(), Style::new().fg(Color::Yellow))],
+        Some(hint) => {
+            let style = match hint.flashing() {
+                true => Style::new().fg(Color::Black).bg(Color::Yellow),
+                false => Style::new().fg(Color::Yellow),
+            };
+            vec![Span::styled(hint.to_string(), style)]
+        }
         None => queued(app),
     };
     split_line(frame, checks, left, servers(app));
@@ -179,24 +186,48 @@ fn queued(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }
 
-/// Line 2, right: `● rust  ● typescript`.
+/// Line 2, right: `● rust ×2  ● typescript`. The pool runs a client per
+/// (server, root), so one server can run in several roots (a worktree, a
+/// dependency's source); it shows once, with the worst client's colour.
 fn servers(app: &App) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
+    let mut grouped: Vec<(&str, &ServerState, usize)> = Vec::new();
     for server in &app.servers {
-        let colour = state_colour(&server.state);
+        match grouped.iter_mut().find(|(id, ..)| *id == server.id) {
+            Some((_, state, count)) => {
+                *count += 1;
+                if rank(&server.state) > rank(state) {
+                    *state = &server.state;
+                }
+            }
+            None => grouped.push((&server.id, &server.state, 1)),
+        }
+    }
+    let mut spans = Vec::new();
+    for (id, state, count) in grouped {
         if !spans.is_empty() {
             spans.push(Span::raw("  "));
         }
         spans.push(Span::styled(
             format!("{} ", icons().dot),
-            Style::new().fg(colour),
+            Style::new().fg(state_colour(state)),
         ));
-        spans.push(Span::styled(
-            server.id.clone(),
-            Style::new().fg(Color::Gray),
-        ));
+        let name = match count {
+            1 => id.to_string(),
+            _ => format!("{id} ×{count}"),
+        };
+        spans.push(Span::styled(name, Style::new().fg(Color::Gray)));
     }
     spans
+}
+
+/// Which of a server's clients speaks for it: a broken one over a
+/// starting one over a connected one.
+fn rank(state: &ServerState) -> u8 {
+    match state {
+        ServerState::Connected => 0,
+        ServerState::Starting => 1,
+        ServerState::Broken(_) => 2,
+    }
 }
 
 /// A server's dot: green when connected, yellow while starting, red when

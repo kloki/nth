@@ -82,7 +82,7 @@ impl App {
         }
         self.hint = Some(match (self.clipboard)(url) {
             Ok(()) => "copied".into(),
-            Err(e) => format!("could not copy: {e}"),
+            Err(e) => format!("could not copy: {e}").into(),
         });
     }
 
@@ -102,8 +102,8 @@ impl App {
             Ok(account) => {
                 let to = Connectable::ChatGpt.name();
                 self.hint = Some(match account.email {
-                    Some(email) => format!("connected to {to} as {email}"),
-                    None => format!("connected to {to}"),
+                    Some(email) => format!("connected to {to} as {email}").into(),
+                    None => format!("connected to {to}").into(),
                 });
                 // A listing from before the login would land without the
                 // new provider's models.

@@ -677,7 +677,10 @@ async fn copy_id_copies_the_session_id_even_mid_turn() {
 
     app.run_command(crate::command::Command::CopyId);
     assert_eq!(copied(), [first.to_string()]);
-    assert_eq!(app.hint, Some(format!("copied {first}")));
+    assert_eq!(
+        app.hint.as_deref(),
+        Some(format!("copied {first}").as_str())
+    );
 
     // Mid-turn the session is in the turn task.
     let session = app.session.take();

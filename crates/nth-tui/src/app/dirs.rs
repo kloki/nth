@@ -26,11 +26,11 @@ impl App {
         let dir: PathBuf = match std::fs::canonicalize(&spelled) {
             Ok(dir) if dir.is_dir() => dir,
             Ok(_) => {
-                self.hint = Some(format!("not a directory: {}", spelled.display()));
+                self.hint = Some(format!("not a directory: {}", spelled.display()).into());
                 return;
             }
             Err(e) => {
-                self.hint = Some(format!("cannot add {}: {e}", spelled.display()));
+                self.hint = Some(format!("cannot add {}: {e}", spelled.display()).into());
                 return;
             }
         };
@@ -51,14 +51,11 @@ impl App {
             }
         });
         if refused.is_some() {
-            self.hint = refused;
+            self.hint = refused.map(Into::into);
             return;
         }
         // The status bar shows the same place the hint names.
-        self.hint = Some(format!(
-            "added {}",
-            status::place(&dir, self.home.as_deref())
-        ));
+        self.hint = Some(format!("added {}", status::place(&dir, self.home.as_deref())).into());
         self.extra_dirs.push(dir.clone());
         // Between turns no turn's end saves it, so it is saved here, or
         // quitting now would lose it.

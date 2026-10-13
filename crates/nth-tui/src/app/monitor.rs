@@ -144,10 +144,7 @@ impl App {
             };
             running.push(format!("{subagents} {noun}"));
         }
-        self.hint = Some(format!(
-            "{} running · ctrl+c again to quit",
-            running.join(" · ")
-        ));
+        self.hint = Some(format!("{} running · ctrl+c again to quit", running.join(" · ")).into());
     }
 
     /// Stops every monitor and subagent as nth quits, and saves how they

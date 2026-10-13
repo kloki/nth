@@ -85,9 +85,13 @@ mod tests {
     };
 
     fn server(id: &str, state: ServerState) -> ServerStatus {
+        server_in(id, "/repo", state)
+    }
+
+    fn server_in(id: &str, root: &str, state: ServerState) -> ServerStatus {
         ServerStatus {
             id: id.into(),
-            root: "/repo".into(),
+            root: root.into(),
             state,
         }
     }
@@ -126,6 +130,26 @@ mod tests {
         assert!(row.trim_end().ends_with("● rust  ● bash"), "{row:?}");
         assert_eq!(after[(dot(&row, 0), 15)].fg, Color::Green, "connected");
         assert_eq!(after[(dot(&row, 1), 15)].fg, Color::Red, "broken");
+
+        // A server in a second root, a worktree, shows once with a count,
+        // in the colour of its worst client.
+        tx.send_replace(vec![
+            server("rust", ServerState::Connected),
+            server_in("rust", "/repo/.nth/worktrees/x", ServerState::Starting),
+        ]);
+        let changed = lsp_changed(&mut app.lsp).await;
+        app.servers_changed(changed);
+        let twice = buffer(&mut app);
+        let row = rows(&mut app)[15].clone();
+        assert_eq!(row.trim(), "● rust ×2");
+        assert_eq!(twice[(dot(&row, 0), 15)].fg, Color::Yellow, "worst client");
+
+        tx.send_replace(vec![
+            server("rust", ServerState::Connected),
+            server("bash", ServerState::Broken("exited".into())),
+        ]);
+        let changed = lsp_changed(&mut app.lsp).await;
+        app.servers_changed(changed);
 
         app.queue = [Queued::Prompt("lint".into())].into();
         let row = rows(&mut app)[15].clone();
