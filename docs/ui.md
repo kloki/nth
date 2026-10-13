@@ -335,12 +335,12 @@ Every input panel has the same shape, so a new one reads as the same kind of thi
 ```
 ▎ switch model        type to filter · ↑↓ model · ←→ effort · enter · esc
 ▎ >                                                                    3/3
-▎   opencode/kimi      Kimi     256k
-▎ → openrouter/glm   ✓ GLM 5.3  128k
-▎   openrouter/plain   Plain    32k
+▎   opencode/kimi      Kimi     256k ctx ·   8k out
+▎ → openrouter/glm   ✓ GLM 5.3    1M ctx · 128k out  ◂ high    ▸
+▎   openrouter/plain   Plain     32k ctx ·  32k out
 ```
 
-With models from more than one provider, the picker shows ids with their `provider/` prefix in one list; with one, without it. A provider that could not be listed is one red `✗ OpenRouter: 401 …` row after the models.
+With models from more than one provider, the picker shows ids with their `provider/` prefix in one list; with one, without it. A provider that could not be listed is one red `✗ OpenRouter: 401 …` row after the models. The context and output counts are right-aligned in their own columns, so `ctx` and `out` sit on one column in every row, and the effort toggle follows the limits at a fixed column, its name padded, so the arrows stay put while the effort changes.
 
 - **No border, default background.** The panel stands out by its bar, not by a box or a fill.
 - **One accent colour.** The bar `▎` runs down every row in it, and the top row holds the panel's title or label in it too. The title is plain, not bold, so the content stays the loudest thing.
