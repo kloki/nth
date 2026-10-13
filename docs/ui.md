@@ -548,7 +548,7 @@ Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHu
 
 **Line 2, left: hints and queued prompts**
 
-A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in reversed, black on yellow, for 300ms so it catches the eye, and goes at the next key or after 5 seconds, whichever is first.
+A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in reversed, black on yellow, for 300ms so it catches the eye, and goes at the next key or after 3 seconds, whichever is first.
 
 Otherwise, while prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
 
