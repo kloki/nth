@@ -34,10 +34,14 @@ impl Provider for Idle {
     }
 }
 
-/// An idle app whose provider must never be asked for anything.
+/// An idle app whose provider must never be asked for anything. Its pointer
+/// sink goes nowhere, so tests that move the mouse never write to the
+/// terminal.
 pub(crate) fn app() -> App {
     let session = Session::new("glm", "/repo".into());
-    App::new(session, Arc::new(Idle), Arc::new(Vec::new()))
+    let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+    app.pointer_sink = |_| Ok(());
+    app
 }
 
 /// The context of a project in `dir` with one skill, `fix`, whose body

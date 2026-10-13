@@ -2,7 +2,8 @@
 //! header shows that tab, a click on a link in a chat or on the status
 //! bar's pull-request link opens it, and a right click on an entry copies
 //! what it says. Where it moves is kept for the empty chat's field to
-//! ripple under, and in a split it gives the pane under it the focus.
+//! ripple under, in a split it gives the pane under it the focus, and over
+//! a clickable thing it asks the terminal for a hand.
 
 use std::process::Stdio;
 
@@ -44,6 +45,8 @@ impl App {
                 if let Some(tab) = self.pane_at(at) {
                     self.content.select_tab(tab);
                 }
+                let shape = self.pointer_shape_at(at);
+                self.set_pointer(shape);
             }
             MouseEventKind::ScrollUp => {
                 if let Some(view) = self.view_at(at) {
@@ -91,6 +94,55 @@ impl App {
     fn view_at(&mut self, at: Position) -> Option<&mut dyn super::content::Scrollable> {
         let tab = self.pane_at(at).unwrap_or(self.content.active());
         self.view_mut(tab)
+    }
+
+    /// The mouse pointer shape `at` asks for: a hand over what a click
+    /// would do, the default pointer anywhere else.
+    fn pointer_shape_at(&mut self, at: Position) -> terminal::Pointer {
+        if self.clickable_at(at) {
+            terminal::Pointer::Pointer
+        } else {
+            terminal::Pointer::Default
+        }
+    }
+
+    /// Whether a click at `at` would do something: show a header tab, open a
+    /// chat link, the pull-request link or the login URL.
+    fn clickable_at(&mut self, at: Position) -> bool {
+        if self.areas.pr_link.is_some_and(|area| area.contains(at))
+            || self.areas.login_url.is_some_and(|area| area.contains(at))
+        {
+            return true;
+        }
+        let header = self.areas.header;
+        if header.contains(at) {
+            let tabs = self.tab_labels();
+            let split = self.areas.header_split();
+            if header::tab_at(&tabs, header, split, at.x).is_some() {
+                return true;
+            }
+        }
+        self.chat_at(at)
+            .and_then(|chat| chat.link_at(at.x, at.y))
+            .is_some()
+    }
+
+    /// Asks the terminal for the mouse pointer shape `shape`, once per
+    /// change; one it does not know it ignores.
+    pub(super) fn set_pointer(&mut self, shape: terminal::Pointer) {
+        if self.pointer_shape == shape {
+            return;
+        }
+        self.pointer_shape = shape;
+        let _ = (self.pointer_sink)(shape);
+    }
+
+    /// Re-aims the pointer at where the mouse last was, after a draw that
+    /// may have moved what is under it.
+    pub(super) fn refresh_pointer(&mut self) {
+        let Some(at) = self.pointer else { return };
+        let shape = self.pointer_shape_at(at);
+        self.set_pointer(shape);
     }
 
     /// The chat under `at`, if a chat is there: the session's or a
@@ -345,5 +397,83 @@ mod tests {
             link.y,
         );
         assert_eq!(app.hint, None);
+    }
+
+    #[tokio::test]
+    async fn the_pointer_is_a_hand_over_a_header_tab() {
+        let mut app = app();
+        app.open_content(Tab::Diagnostics);
+        rows(&mut app);
+
+        hover(&mut app, 3, 0);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Pointer);
+
+        // The margin before the tabs, and past them: the default pointer.
+        hover(&mut app, 0, 0);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
+        hover(&mut app, 30, 0);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
+    }
+
+    #[test]
+    fn the_pointer_is_a_hand_over_a_chat_link() {
+        let mut app = with_answer("see [docs](https://x.y)");
+        let rows = rows(&mut app);
+        let row = rows
+            .iter()
+            .position(|row| row.contains("see docs"))
+            .expect("the answer shows");
+        let line = &rows[row];
+        let docs = line.find("docs").expect("docs shows");
+        let see = line.find("see").expect("see shows");
+
+        hover(&mut app, docs as u16, row as u16);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Pointer);
+
+        // Plain text in the same row: the default pointer.
+        hover(&mut app, see as u16, row as u16);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
+    }
+
+    #[test]
+    fn the_pointer_is_a_hand_over_the_pull_request_link() {
+        let mut app = app();
+        app.git = Some(crate::git::GitStatus {
+            branch: Some("main".into()),
+            ..Default::default()
+        });
+        app.pr = Some(crate::git::Pr {
+            number: 123,
+            url: "https://x.y/repo/pull/123".into(),
+            state: crate::git::State::Merged,
+        });
+        rows(&mut app);
+        let link = app.areas.pr_link.expect("the link shows");
+
+        hover(&mut app, link.x + 1, link.y);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Pointer);
+
+        // Beside the link: the default pointer.
+        hover(&mut app, link.x.saturating_sub(2), link.y);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
+
+        // A draw re-aims the pointer at what is under the still mouse.
+        hover(&mut app, link.x + 1, link.y);
+        app.pr = None;
+        rows(&mut app);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
+    }
+
+    #[tokio::test]
+    async fn losing_focus_puts_the_pointer_back() {
+        let mut app = app();
+        app.open_content(Tab::Diagnostics);
+        rows(&mut app);
+        hover(&mut app, 3, 0);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Pointer);
+
+        // The mouse reports no move while the window is unfocused.
+        app.on_terminal(TermEvent::FocusLost);
+        assert_eq!(app.pointer_shape, terminal::Pointer::Default);
     }
 }

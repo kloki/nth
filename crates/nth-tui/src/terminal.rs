@@ -1,6 +1,6 @@
 //! Puts the terminal into the modes the chat needs, and back again on every
-//! exit path, including a panic. Also the clipboard, which is the terminal's
-//! too.
+//! exit path, including a panic. Also the clipboard and the mouse pointer's
+//! shape, which are the terminal's too.
 
 use std::io::{Write, stdout};
 
@@ -79,6 +79,7 @@ pub fn restore() {
 /// Undoes the modes set on top of what `ratatui::init` enables; popping
 /// keyboard flags that were never pushed is a no-op for the terminal.
 fn release() {
+    let _ = pointer(Pointer::Default);
     let _ = execute!(
         stdout(),
         PopKeyboardEnhancementFlags,
@@ -105,6 +106,32 @@ fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", STANDARD.encode(text))
 }
 
+/// A mouse pointer shape nth asks the terminal for; `Default` gives the
+/// pointer back to the terminal's own policy.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Pointer {
+    #[default]
+    Default,
+    Pointer,
+}
+
+/// Asks the terminal for a mouse pointer shape (OSC 22), so a clickable
+/// thing can show a hand. Terminals that do not know the sequence ignore
+/// it; there is no acknowledgement, so `Ok` means the terminal was told.
+pub fn pointer(shape: Pointer) -> std::io::Result<()> {
+    let mut out = stdout();
+    out.write_all(osc22(shape).as_bytes())?;
+    out.flush()
+}
+
+fn osc22(shape: Pointer) -> String {
+    let name = match shape {
+        Pointer::Default => "default",
+        Pointer::Pointer => "pointer",
+    };
+    format!("\x1b]22;{name}\x1b\\")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +139,11 @@ mod tests {
     #[test]
     fn the_clipboard_sequence_carries_the_text_in_base64() {
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
+    }
+
+    #[test]
+    fn the_pointer_sequence_names_the_shape() {
+        assert_eq!(osc22(Pointer::Default), "\x1b]22;default\x1b\\");
+        assert_eq!(osc22(Pointer::Pointer), "\x1b]22;pointer\x1b\\");
     }
 }

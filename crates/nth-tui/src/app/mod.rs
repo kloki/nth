@@ -97,6 +97,7 @@ use crate::{
     settings::{self, ChatSettings, SettingsPanel},
     spinner, status,
     subagent::SubagentView,
+    terminal,
     usage::UsageView,
     work::WorkView,
 };
@@ -201,6 +202,10 @@ pub struct App {
     /// The blank before a tab the model just showed.
     flash: Option<flash::Flash>,
     pointer: Option<Position>,
+    /// The mouse pointer shape asked of the terminal last.
+    pointer_shape: terminal::Pointer,
+    /// How a pointer shape reaches the terminal; tests put it nowhere.
+    pointer_sink: fn(terminal::Pointer) -> std::io::Result<()>,
     /// Open while the prompt starts a command; Esc closes it until the next edit.
     completion: Option<Completion>,
     /// What `@` mentions complete to, refreshed after every turn since the
@@ -542,7 +547,9 @@ impl App {
             hold_notices: false,
             hint: None,
             areas: mouse::Areas::default(),
-            clipboard: crate::terminal::copy,
+            clipboard: terminal::copy,
+            pointer_shape: terminal::Pointer::default(),
+            pointer_sink: terminal::pointer,
             opener: mouse::open,
             pending_editor: None,
             editing: None,
@@ -854,6 +861,9 @@ impl App {
                 self.areas.login_url = crate::connect::draw(frame, input, panel)
             }
         }
+        // The draw may have moved what is under the still mouse: a scroll,
+        // a panel opened by key, a tab closed. Re-aim the pointer at it.
+        self.refresh_pointer();
     }
 
     /// `tab`'s view into `area`, with its scrollbar.
@@ -976,7 +986,12 @@ impl App {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
             TermEvent::FocusGained => self.focused = true,
-            TermEvent::FocusLost => self.focused = false,
+            // The mouse reports no move while the window is unfocused, so a
+            // pointer left as a hand would stay one.
+            TermEvent::FocusLost => {
+                self.focused = false;
+                self.set_pointer(terminal::Pointer::Default);
+            }
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt.paste(&text);
                 self.refresh_completion();
