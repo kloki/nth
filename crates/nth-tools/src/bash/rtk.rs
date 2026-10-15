@@ -46,17 +46,23 @@ impl Rtk {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     /// An rtk that runs `script` (with the command as `$2`), written into
     /// `dir`.
+    ///
+    /// A child process writes it: a write fd held here would leak into
+    /// whatever another test thread forks meanwhile, and exec'ing the script
+    /// while that child still holds it fails with ETXTBSY.
     pub fn fake(dir: &Path, script: &str) -> Rtk {
         let program = dir.join("rtk");
-        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("write fake rtk");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("make fake rtk executable");
+        let status = std::process::Command::new("sh")
+            .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh"])
+            .arg(format!("#!/bin/sh\n{script}\n"))
+            .arg(&program)
+            .status()
+            .expect("run sh to write fake rtk");
+        assert!(status.success(), "write fake rtk");
         Rtk { program }
     }
 
