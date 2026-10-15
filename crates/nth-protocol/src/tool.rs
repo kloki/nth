@@ -47,6 +47,11 @@ pub struct ToolContext {
     /// The model and effort the session runs on, for a tool that starts
     /// another session on the same.
     pub llm: Llm,
+    /// The model's context window and output limit, when the front-end
+    /// knows them, for a tool that starts another session on the same
+    /// model: they size the child's compaction trigger.
+    pub context_window: Option<u64>,
+    pub max_output: Option<u64>,
     /// The id of the session the call runs for, for a tool that keeps
     /// something per session; empty outside one.
     pub session: String,
@@ -83,6 +88,8 @@ impl ToolContext {
             inbox: Inbox::default(),
             writable: Writable::Any,
             llm: Llm::default(),
+            context_window: None,
+            max_output: None,
             session: String::new(),
         }
     }

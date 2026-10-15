@@ -78,6 +78,15 @@ pub struct Session {
     /// saved before it load with the defaults.
     #[serde(default)]
     pub compaction: Compaction,
+    /// The model's context window, when the front-end knows it; without it
+    /// nothing compacts on its own. Saved, so a resumed session keeps the
+    /// window its model was listed with.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// The model's maximum output tokens, for the reserved buffer's
+    /// default; `None` falls back to 20k.
+    #[serde(default)]
+    pub max_output: Option<u64>,
     /// Model requests a turn may make before it gives up. Comes from the
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
@@ -129,6 +138,8 @@ impl Session {
             usage: Ledger::default(),
             last_usage: None,
             compaction: Compaction::default(),
+            context_window: None,
+            max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
             subagent: false,
             parent: None,
@@ -228,6 +239,14 @@ impl Session {
         self.rewrite_system_prompt();
     }
 
+    /// The limits the model was listed with: its context window and output
+    /// limit, which size the compaction trigger. The front-end sets them
+    /// whenever it knows them, so they follow a model switch.
+    pub fn set_limits(&mut self, context_window: Option<u64>, max_output: Option<u64>) {
+        self.context_window = context_window;
+        self.max_output = max_output;
+    }
+
     fn rewrite_system_prompt(&mut self) {
         let prompt = self.system_prompt();
         if let Some(first @ Message::System(_)) = self.messages.first_mut() {
@@ -325,8 +344,8 @@ impl Session {
                 max_steps: self.max_steps,
                 // The window and the output limit are the front-end's to
                 // fill; without them nothing compacts on its own.
-                context_window: None,
-                max_output: None,
+                context_window: self.context_window,
+                max_output: self.max_output,
                 compaction: self.compaction,
             },
             tools,
@@ -376,6 +395,8 @@ impl Session {
                 model: self.model.clone(),
                 effort: self.effort,
             },
+            context_window: self.context_window,
+            max_output: self.max_output,
             workdir: Workdir::new(self.origin.clone()),
             session: self.id.to_string(),
             ..ToolContext::new(self.cwd.clone())
@@ -406,8 +427,8 @@ impl Session {
                 session_id: &session_id,
                 parent_session_id: parent_session_id.as_deref(),
                 max_steps: self.max_steps,
-                context_window: None,
-                max_output: None,
+                context_window: self.context_window,
+                max_output: self.max_output,
                 compaction: self.compaction,
             },
             tools,
@@ -1045,11 +1066,27 @@ mod tests {
         let fields = json.as_object_mut().expect("an object");
         fields.remove("last_usage");
         fields.remove("compaction");
+        fields.remove("context_window");
+        fields.remove("max_output");
 
         let old: Session = serde_json::from_value(json).expect("deserializes");
 
         assert_eq!(old.last_usage, None);
         assert_eq!(old.compaction, Compaction::default());
+        assert_eq!(old.context_window, None);
+        assert_eq!(old.max_output, None);
+    }
+
+    #[test]
+    fn limits_are_set_and_saved() {
+        let mut session = Session::new("glm-5.3", ".".into());
+
+        session.set_limits(Some(200_000), Some(64_000));
+
+        let json = serde_json::to_string(&session).expect("serializes");
+        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.context_window, Some(200_000));
+        assert_eq!(back.max_output, Some(64_000));
     }
 
     #[tokio::test]

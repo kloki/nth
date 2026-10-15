@@ -143,6 +143,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.effort = ctx.llm.effort;
     session.mode = Mode::Act;
     session.max_steps = max_steps;
+    session.set_limits(ctx.context_window, ctx.max_output);
     session.parent = ctx.session.parse().ok();
     session
 }
@@ -478,11 +479,15 @@ pub(crate) mod tests {
         let parent = uuid::Uuid::new_v4();
         let ctx = ToolContext {
             session: parent.to_string(),
+            context_window: Some(200_000),
+            max_output: Some(64_000),
             ..ToolContext::new("/repo".into())
         };
         let child = child_session(&explore(), &ctx, 5);
         assert!(child.subagent);
         assert_eq!(child.parent, Some(parent));
+        assert_eq!(child.context_window, Some(200_000));
+        assert_eq!(child.max_output, Some(64_000));
     }
 
     #[tokio::test]
