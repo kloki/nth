@@ -20,6 +20,7 @@ pub enum Command {
     Approve,
     Clear,
     Close,
+    Compact,
     Connect,
     CopyId,
     Diagnostics,
@@ -32,11 +33,12 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 13] = [
+    const ALL: [Command; 14] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
         Command::Close,
+        Command::Compact,
         Command::Connect,
         Command::CopyId,
         Command::Diagnostics,
@@ -54,6 +56,7 @@ impl Command {
             Command::Approve => "approve",
             Command::Clear => "clear",
             Command::Close => "close",
+            Command::Compact => "compact",
             Command::Connect => "connect",
             Command::CopyId => "copy-id",
             Command::Diagnostics => "diagnostics",
@@ -72,6 +75,7 @@ impl Command {
             Command::Approve => "act on the plan",
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
+            Command::Compact => "summarize the session",
             Command::Connect => "sign in to a provider",
             Command::CopyId => "copy the session id",
             Command::Diagnostics => "show what nth found and runs",
@@ -217,8 +221,10 @@ mod tests {
             "trimmed, with its `!`-less whitespace"
         );
         assert_eq!(add("/clear"), Some((Command::Clear, String::new())));
+        assert_eq!(add("/compact"), Some((Command::Compact, String::new())));
         // Only `/add-dir` takes an argument; anything else is for the model.
         assert_eq!(add("/clear now"), None);
+        assert_eq!(add("/compact now"), None);
         assert_eq!(add("/add-dirx"), None);
         assert_eq!(add("/nope"), None);
         assert_eq!(add("clear"), None);
@@ -238,6 +244,7 @@ mod tests {
             builtins(&[
                 Command::Clear,
                 Command::Close,
+                Command::Compact,
                 Command::Connect,
                 Command::CopyId
             ])
@@ -270,6 +277,7 @@ mod tests {
                 "approve",
                 "clear",
                 "close",
+                "compact",
                 "connect",
                 "copy-id",
                 "diagnostics",
@@ -285,7 +293,7 @@ mod tests {
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
             names("/c"),
-            ["clear", "close", "connect", "copy-id"],
+            ["clear", "close", "compact", "connect", "copy-id"],
             "the clear skill is hidden by the command"
         );
         assert_eq!(

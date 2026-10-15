@@ -1036,6 +1036,7 @@ impl App {
             Command::Usage => self.open_content(Tab::Usage),
             Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(),
+            Command::Compact => self.compact(),
             Command::Close => self.close_content(),
             Command::CopyId => self.copy_session_id(),
             Command::Settings => {

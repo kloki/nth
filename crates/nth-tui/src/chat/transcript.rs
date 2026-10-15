@@ -890,6 +890,34 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn replay_shows_a_compaction_as_a_divider() {
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            }),
+            Message::Compaction {
+                summary: "Objective: ship".into(),
+            },
+            Message::User("next".into()),
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        assert_eq!(
+            t.entries().collect::<Vec<_>>(),
+            [
+                &Entry::User("go".into()),
+                &Entry::Answer("done".into()),
+                &Entry::Compacted("Objective: ship".into()),
+                &Entry::User("next".into()),
+            ],
+            "the divider stays between what it covers and the tail"
+        );
+    }
+
+    #[test]
     fn replays_a_saved_session() {
         let bash = tool("1", "bash", r#"{"command":"ls"}"#);
         let messages = [
