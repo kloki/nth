@@ -107,7 +107,13 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
     let lines = match entry {
         Entry::User(text) => return barred_markdown(text, width, Style::new().fg(Color::Green)),
         Entry::Compacted(summary) => {
-            let first = summary.lines().next().unwrap_or_default().trim();
+            // The first line with something on it: a model may open with a
+            // blank, and a summary that says nothing is not shown as empty.
+            let first = summary
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or_default();
             let said = match first.is_empty() {
                 true => "compacted".to_string(),
                 false => format!("compacted · {first}"),
@@ -466,6 +472,7 @@ mod tests {
     #[test]
     fn a_compaction_is_a_one_line_divider() {
         let mut t = transcript();
+        t.push_user("go".into());
         t.apply(&Event::Compacted {
             summary: "Objective: ship\n\n## Details".into(),
         });
@@ -473,7 +480,50 @@ mod tests {
         let total = t.layout(60, ChatSettings::default());
         let lines = t.visible(0, total);
 
-        assert_eq!(text(&lines), ["  ◘ compacted · Objective: ship"]);
+        assert_eq!(
+            text(&lines),
+            ["▎ go", "", "  ◘ compacted · Objective: ship"],
+            "one line, the summary's first"
+        );
+        let divider = &lines[2];
+        assert_eq!(divider.spans[1].style.fg, Some(Color::Magenta), "the icon");
+        assert!(
+            divider.spans[2].style.add_modifier.contains(Modifier::DIM),
+            "the words stay dim, like the other dividers"
+        );
+    }
+
+    #[test]
+    fn a_compaction_with_nothing_to_say_says_just_compacted() {
+        // A model may lead with a blank; the first real line shows instead.
+        let mut blank = transcript();
+        blank.apply(&Event::Compacted {
+            summary: "\n\n# Objective\nrest".into(),
+        });
+        let total = blank.layout(60, ChatSettings::default());
+        assert_eq!(
+            text(&blank.visible(0, total)),
+            ["  ◘ compacted · # Objective"]
+        );
+
+        let mut empty = transcript();
+        empty.apply(&Event::Compacted {
+            summary: " \n".into(),
+        });
+        let total = empty.layout(60, ChatSettings::default());
+        assert_eq!(text(&empty.visible(0, total)), ["  ◘ compacted"]);
+    }
+
+    #[test]
+    fn a_long_compaction_summary_stays_one_row() {
+        let mut t = transcript();
+        t.apply(&Event::Compacted {
+            summary: "Objective: ship everything and more\nsecond line".into(),
+        });
+
+        // The first line is clipped by the pane, not wrapped: a divider.
+        let total = t.layout(20, ChatSettings::default());
+        assert_eq!(total, 1, "one row whatever the summary says");
     }
 
     #[test]

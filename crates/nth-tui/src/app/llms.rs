@@ -43,6 +43,13 @@ impl App {
         llms.models.iter().find(|llm| llm.id == model)?.context
     }
 
+    /// The output limit of `model`, when the provider says; with it the
+    /// session sizes the buffer the compaction trigger reserves.
+    pub fn output_limit_of(&self, model: &str) -> Option<u64> {
+        let llms = self.llms.as_ref()?;
+        llms.models.iter().find(|llm| llm.id == model)?.output
+    }
+
     /// What `model` costs, when the catalogue says.
     pub fn cost_of(&self, model: &str) -> Option<Cost> {
         self.llms.as_ref()?.cost_of(model)
@@ -239,6 +246,40 @@ mod tests {
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.model, "glm");
         assert!(!app.quit);
+    }
+
+    #[tokio::test]
+    async fn a_turn_puts_the_listed_limits_on_the_session() {
+        let mut app = app();
+        let mut glm = model("glm", true);
+        glm.context = Some(200_000);
+        glm.output = Some(64_000);
+        app.llms = Some(vec![glm].into());
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.context_window, Some(200_000));
+        assert_eq!(session.max_output, Some(64_000));
+        assert_eq!(app.output_limit_of("glm"), Some(64_000));
+        assert_eq!(app.output_limit_of("unlisted"), None);
+    }
+
+    #[tokio::test]
+    async fn a_turn_without_a_listing_leaves_the_limits_unknown() {
+        let mut app = app();
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.context_window, None);
+        assert_eq!(session.max_output, None, "nothing auto-compacts");
     }
 
     #[tokio::test]

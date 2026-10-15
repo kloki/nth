@@ -22,6 +22,9 @@ pub(super) struct Ended {
     saved: Result<(), store::Error>,
     /// Ran a command you typed after `!`, not a model turn.
     shell: bool,
+    /// Ran `/compact`: a summary request, not a model turn; the divider
+    /// the event pushed says how it went.
+    compact: bool,
 }
 
 /// What is sent while a turn runs. A plain prompt is not held: it steers
@@ -36,6 +39,8 @@ pub enum Queued {
     Shell(String),
     /// `/approve`: the plan's approval.
     Approve,
+    /// `/compact`: one compaction of the session.
+    Compact,
     /// The plan as ctrl+g found it and as you left it.
     PlanEdits {
         original: String,
@@ -51,6 +56,7 @@ impl Queued {
             Queued::Prompt(text) => text.clone(),
             Queued::Shell(command) => format!("!{command}"),
             Queued::Approve => "/approve".into(),
+            Queued::Compact => "/compact".into(),
             Queued::PlanEdits { .. } => "plan edits".into(),
         }
     }
@@ -141,6 +147,7 @@ impl App {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
             Queued::Approve => self.start_turn(self.approval()),
+            Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
                 self.start_turn(plan::edits::render(&self.plan_path, &original, &edited))
             }
@@ -182,6 +189,62 @@ impl App {
                     result,
                     saved,
                     shell: true,
+                    compact: false,
+                }
+            })
+        });
+    }
+
+    /// `/compact`: summarizes the session now, or waits behind the running
+    /// turn like a queued command, since the session is in the turn task.
+    /// A compaction is always the main session's, even from a subagent's
+    /// tab, which is where a command typed there goes.
+    pub(super) fn compact(&mut self) {
+        match self.is_busy() {
+            true => self.queue.push_back(Queued::Compact),
+            false => self.start_compact(),
+        }
+    }
+
+    /// Runs one compaction as a turn does, so Esc stops it and what you
+    /// send meanwhile waits for it. The transcript shows the divider when
+    /// the summary lands; nothing answers.
+    pub(super) fn start_compact(&mut self) {
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        self.chat.jump_bottom();
+        self.busy_since = Some(Instant::now());
+        // A compaction never picks a prompt up, so nothing steers into it.
+        self.steerable = None;
+        let provider = self.provider.clone();
+        let tools = self.tools.clone();
+        let events = self.events_tx.clone();
+        let store = self.store.clone();
+        let subagents = self.subagents.clone();
+        let front_end = FrontEnd {
+            asker: Asker::new(self.asks_tx.clone()),
+            screen: Screen::new(self.screen_tx.clone()),
+            monitors: self.monitors.clone(),
+            inbox: self.inbox.clone(),
+        };
+        self.turn.start(|token| {
+            tokio::spawn(async move {
+                let result = session
+                    .compact(provider.as_ref(), &tools, &front_end, &events, &token)
+                    .await;
+                // Subagents that finished while it ran spent on its behalf.
+                session.usage.extend(subagents.take_spent());
+                let saved = match &store {
+                    Some(store) => store.save(&session).await,
+                    None => Ok(()),
+                };
+                Ended {
+                    session,
+                    result,
+                    saved,
+                    shell: false,
+                    compact: true,
                 }
             })
         });
@@ -228,6 +291,12 @@ impl App {
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
+        // The limits follow the model in use, so the compaction trigger
+        // does too; without a listing yet nothing auto-compacts.
+        session.set_limits(
+            self.context_window_of(&self.model),
+            self.output_limit_of(&self.model),
+        );
         self.llm_usage.count(&self.model);
         self.save_llm_usage();
         self.spent.turn_started(&self.model);
@@ -290,6 +359,7 @@ impl App {
                     result,
                     saved,
                     shell: false,
+                    compact: false,
                 }
             })
         });
@@ -311,6 +381,7 @@ impl App {
             result,
             saved,
             shell,
+            compact,
         }: Ended,
     ) {
         self.drain_events();
@@ -336,8 +407,9 @@ impl App {
         };
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
-            // The bash row says how a command went; no model answered.
-            Ok(()) if shell => {}
+            // The bash row says how a command went, and the divider the
+            // compaction pushed does for it; neither had the model answer.
+            Ok(()) if shell || compact => {}
             result => {
                 // The session's model ran the turn; `self.model` may have
                 // been switched since.
@@ -393,7 +465,8 @@ impl App {
         if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
-        self.notify_turn_ended(shell, error, elapsed);
+        // A command of yours is not the model answering: nothing to say.
+        self.notify_turn_ended(shell || compact, error, elapsed);
     }
 
     /// A worktree tool moved the session: the place, git state and files
@@ -449,8 +522,8 @@ impl App {
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again. An
-    /// approval or plan edits have no text of yours to give back, so they
-    /// are dropped, and the status bar says so.
+    /// approval, a compaction or plan edits have no text of yours to give
+    /// back, so they are dropped, and the status bar says so.
     fn unqueue(&mut self) {
         let mut parts = Vec::new();
         let mut dropped = Vec::new();
@@ -462,6 +535,7 @@ impl App {
             match next {
                 Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
                 Queued::Approve => dropped.push("plan approval discarded"),
+                Queued::Compact => dropped.push("compaction discarded"),
                 Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
             }
         }
@@ -1270,6 +1344,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_compaction_summarizes_the_session_and_shows_a_divider() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+
+        send(&mut app, "/compact");
+        assert!(app.is_busy(), "the compaction runs as a turn");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::Compaction { .. })),
+            "{:?}",
+            session.messages.last()
+        );
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted("ok".into())),
+            "the divider, with no footer under it"
+        );
+        let icon = nth_icons::icons().context;
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains(&format!("{icon} compacted · ok"))),
+            "drawn where the divider landed: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compaction_sent_while_busy_runs_after_the_turn() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        send(&mut app, "/compact");
+
+        assert_eq!(app.queue, [Queued::Compact], "it waits for the turn");
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the compaction runs next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Compacted(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn esc_interrupts_a_compaction_and_keeps_the_session() {
+        let hang = Arc::new(Hang::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, hang, Arc::new(Vec::new()));
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(Message::User("old".into()));
+
+        send(&mut app, "/compact");
+        tokio::task::yield_now().await;
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::User(text)) if text == "old"),
+            "nothing was summarized"
+        );
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_turn_discards_a_queued_compaction() {
+        let (mut app, _) = busy_app().await;
+        send(&mut app, "/compact");
+        assert_eq!(app.queue, [Queued::Compact]);
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.queue.is_empty());
+        assert!(app.prompt.is_empty(), "no text of yours to give back");
+        assert_eq!(app.hint.as_deref(), Some("compaction discarded"));
+    }
+
+    #[tokio::test]
     async fn a_turn_that_moved_the_session_moves_the_app() {
         let mut app = crate::app::tests::app();
         let mut session = app.session.take().expect("idle");
@@ -1281,6 +1450,7 @@ mod tests {
             result: Ok(()),
             saved: Ok(()),
             shell: false,
+            compact: false,
         });
 
         assert_eq!(app.cwd, worktree);
