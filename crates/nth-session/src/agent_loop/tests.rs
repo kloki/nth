@@ -16,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+mod compaction_e2e;
+
 pub(super) const ROUTE: Route = Route {
     model: "glm-5.3",
     effort: Effort::Default,
