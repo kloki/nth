@@ -799,12 +799,10 @@ async fn an_overflow_with_nothing_but_the_prompt_to_summarize_gives_up_too() {
     );
 }
 
-/// A turn whose last allowed step falls to the automatic compaction: the
-/// compaction spends the step, the loop ends, and the model never gets the
-/// compacted history. Expected: the compaction does not cost the step it
-/// was preparing.
+/// A turn whose last allowed step needs a compaction first: the compaction
+/// does not cost the step, so the model still gets the compacted history
+/// and answers.
 #[tokio::test]
-#[ignore = "bug: auto-compaction on the last allowed step spends it, so the turn fails with TooManySteps without the model seeing the summary"]
 async fn the_last_allowed_step_still_asks_the_model_after_compacting() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
@@ -875,11 +873,10 @@ impl Provider for ReplayStaysTooBig {
     }
 }
 
-/// Refuses the exchange it just kept, so every replay overflows again. The
-/// replay is identical every time: compacting once more cannot shrink it,
-/// so the turn must stop instead of compacting every step.
+/// Refuses the exchange it just kept, so the replay overflows again. It is
+/// the same conversation every time: compacting more cannot shrink it, so
+/// the turn stops after one replay instead of compacting every step.
 #[tokio::test]
-#[ignore = "bug: a replay that overflows again compacts every step until TooManySteps instead of stopping"]
 async fn a_replay_that_overflows_again_does_not_compact_forever() {
     struct EchoHuge;
 

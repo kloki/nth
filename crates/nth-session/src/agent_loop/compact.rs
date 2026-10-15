@@ -28,8 +28,10 @@ impl Turn<'_> {
     /// the marker in before the tail. The messages before the marker stay
     /// in the history; only later requests start at it. `overflow` keeps
     /// the last user prompt and its exchange in the tail, so a prompt the
-    /// provider refused runs again under the summary.
-    pub async fn compact(&mut self, overflow: bool) -> Result<(), Error> {
+    /// provider refused runs again under the summary. `Ok(false)` when
+    /// there was nothing to summarize: a caller that must shrink the
+    /// conversation cannot, and one that only tried to keeps going.
+    pub async fn compact(&mut self, overflow: bool) -> Result<bool, Error> {
         let compaction = self.route.compaction;
         let usable = compaction.usable(self.route.context_window, self.route.max_output);
         let mut tail = compaction::tail_start(self.messages, compaction.preserve(usable));
@@ -70,7 +72,7 @@ impl Turn<'_> {
             .iter()
             .any(|message| !matches!(message, Message::System(_)))
         {
-            return Ok(());
+            return Ok(false);
         }
         let head = compaction::serialize_head(&self.messages[..tail]);
         let summary = self
@@ -83,7 +85,7 @@ impl Turn<'_> {
             },
         );
         emit(self.events, Event::Compacted { summary }).await;
-        Ok(())
+        Ok(true)
     }
 
     /// The summary request: one user message, no tools, streamed to the

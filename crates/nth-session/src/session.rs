@@ -439,7 +439,8 @@ impl Session {
             cancel,
         }
         .compact(false)
-        .await;
+        .await
+        .map(|_| ());
         if spend.steps > 0 {
             self.last_usage = Some(spend.tokens);
         }

@@ -63,8 +63,9 @@ pub enum Error {
     /// started.
     #[error("could not run the skill: {0}")]
     Skill(String),
-    /// The summary request itself was refused as too long: the conversation
-    /// cannot be shrunk, so a turn that overflowed it cannot go on.
+    /// The conversation cannot be shrunk below the window: the summary
+    /// request itself was refused as too long, a replay overflowed again,
+    /// or compacting changed nothing while the session was still over.
     #[error("cannot compact: the summary request itself exceeds the context window")]
     TooBigToCompact,
 }
@@ -131,11 +132,20 @@ impl Turn<'_> {
         // The usage the last finished reply reported; what the automatic
         // compaction reads, and nothing until a step reports some.
         let mut last_usage = None;
-        for step in 0..max_steps {
+        // A step is one request the model answers; compaction is
+        // maintenance for the next one, so it does not use a step and the
+        // last allowed step still gets its request.
+        let mut step = 0;
+        // One overflow is worth replaying under a summary; the same
+        // conversation overflowing again will not shrink.
+        let mut replayed = false;
+        while step < max_steps {
             // A conversation that reached the usable window is compacted
-            // before another request is sent, which uses this step.
+            // before another request is sent.
             if step > 0 && self.compaction_due(last_usage) {
-                self.compact(false).await?;
+                if !self.compact(false).await? {
+                    return Err(Error::TooBigToCompact);
+                }
                 last_usage = None;
                 continue;
             }
@@ -151,14 +161,18 @@ impl Turn<'_> {
                 Err(Stop::Failed(error)) => {
                     // The provider refused the conversation as too long:
                     // summarize it and replay the prompt under the summary.
-                    if error.downcast_ref::<ContextOverflow>().is_some() {
-                        self.compact(true).await?;
+                    if error.downcast_ref::<ContextOverflow>().is_some() && !replayed {
+                        if !self.compact(true).await? {
+                            return Err(Error::TooBigToCompact);
+                        }
+                        replayed = true;
                         last_usage = None;
                         continue;
                     }
                     return Err(Error::Provider(error));
                 }
             };
+            step += 1;
 
             if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
                 // Reasoning alone is kept, as an interrupted reply's is; an
