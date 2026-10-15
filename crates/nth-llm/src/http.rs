@@ -70,7 +70,9 @@ pub(crate) fn retryable(error: &reqwest::Error) -> bool {
 
 /// How providers phrase a refusal as the input being too long, lowercased:
 /// OpenAI's `context_length_exceeded`, Anthropic's `prompt is too long`,
-/// Gemini's `exceeds the maximum`, and the rest of the family.
+/// Gemini's `exceeds the maximum`, and the rest of the family. Every phrase
+/// is about the request itself; a bare `token limit` is not, since an
+/// account's billing refusal says it too.
 const TOO_LONG: &[&str] = &[
     "context length",
     "context_length_exceeded",
@@ -78,7 +80,7 @@ const TOO_LONG: &[&str] = &[
     "prompt is too long",
     "input is too long",
     "exceeds the maximum",
-    "token limit",
+    "exceeds the token limit",
     "too many tokens",
 ];
 
@@ -242,7 +244,6 @@ mod tests {
     /// A billing refusal that happens to say "token limit" is about the
     /// account, not the input, so it must not be compacted for.
     #[test]
-    #[ignore = "bug: too_long matches the bare phrase `token limit` anywhere, so a 400 quota refusal becomes ContextOverflow"]
     fn a_billing_error_naming_a_token_limit_is_not_an_overflow() {
         let billing = r#"{"error":{"message":"You have reached your token limit for this month. Update your billing details to continue.","type":"insufficient_quota","code":"billing_hard_limit_reached"}}"#;
 
