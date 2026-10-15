@@ -59,9 +59,32 @@ type Slot = Shared<BoxFuture<'static, Option<Arc<Client>>>>;
 
 struct Entry {
     slot: Slot,
-    /// The last touch of a file this client serves, which its idle time
-    /// counts from.
+    /// When the last touch of a file this client serves ended, which its
+    /// idle time counts from.
     touched: Instant,
+    /// Touches using it right now: never idle while there are any.
+    busy: usize,
+}
+
+/// One touch's use of an entry, from asking for its client until the touch
+/// ends, however it ends: a cancelled turn drops it too.
+struct Busy {
+    inner: Arc<Inner>,
+    key: Key,
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        let mut clients = self
+            .inner
+            .clients
+            .lock()
+            .expect("lsp client map lock poisoned");
+        if let Some(entry) = clients.get_mut(&self.key) {
+            entry.busy -= 1;
+            entry.touched = Instant::now();
+        }
+    }
 }
 
 /// Cheap to clone; every clone shares the same clients. Dropping the last
@@ -134,7 +157,7 @@ impl Lsp {
             Ok(path) => path,
             Err(_) => return BTreeMap::new(),
         };
-        let clients = self.clients_for(&path).await;
+        let (_busy, clients) = self.clients_for(&path).await;
         let alive = join_all(clients.iter().map(|client| async {
             let after = Instant::now();
             match client.open_or_change(&path).await {
@@ -159,10 +182,6 @@ impl Lsp {
                 all.entry(file).or_default().extend(diagnostics);
             }
         }
-        // Waiting for a report is not idling.
-        for client in &clients {
-            self.stamp(client.id(), client.root());
-        }
         all
     }
 
@@ -185,7 +204,7 @@ impl Lsp {
         self.inner.cancel.cancel();
     }
 
-    async fn clients_for(&self, path: &Path) -> Vec<Arc<Client>> {
+    async fn clients_for(&self, path: &Path) -> (Vec<Busy>, Vec<Arc<Client>>) {
         let servers = Arc::clone(&self.inner.servers);
         let file = path.to_path_buf();
         let matches = tokio::task::spawn_blocking(move || {
@@ -208,10 +227,12 @@ impl Lsp {
                 .map(|(server, root)| self.client(server, root)),
         )
         .await;
-        started.into_iter().flatten().collect()
+        let (busy, clients): (Vec<_>, Vec<_>) = started.into_iter().unzip();
+        (busy, clients.into_iter().flatten().collect())
     }
 
-    async fn client(&self, server: Server, root: PathBuf) -> Option<Arc<Client>> {
+    async fn client(&self, server: Server, root: PathBuf) -> (Busy, Option<Arc<Client>>) {
+        let key = (server.id.clone(), root.clone());
         let slot = {
             let mut clients = self
                 .inner
@@ -229,23 +250,17 @@ impl Lsp {
                             .boxed()
                             .shared(),
                         touched: Instant::now(),
+                        busy: 0,
                     }
                 });
-            entry.touched = Instant::now();
+            entry.busy += 1;
             entry.slot.clone()
         };
-        slot.await
-    }
-
-    fn stamp(&self, id: &str, root: &Path) {
-        let mut clients = self
-            .inner
-            .clients
-            .lock()
-            .expect("lsp client map lock poisoned");
-        if let Some(entry) = clients.get_mut(&(id.to_string(), root.to_path_buf())) {
-            entry.touched = Instant::now();
-        }
+        let busy = Busy {
+            inner: Arc::clone(&self.inner),
+            key,
+        };
+        (busy, slot.await)
     }
 
     async fn start(&self, server: Server, root: PathBuf) -> Option<Arc<Client>> {
@@ -321,7 +336,10 @@ async fn stop_when_idle(
         let Some(entry) = clients.get(&key) else {
             return;
         };
-        deadline = entry.touched + idle;
+        deadline = match entry.busy {
+            0 => entry.touched + idle,
+            _ => Instant::now() + idle,
+        };
         if deadline > Instant::now() {
             continue;
         }
@@ -512,6 +530,28 @@ done
 
         assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
         assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));
+    }
+
+    #[tokio::test]
+    async fn a_touch_outlasting_the_idle_time_keeps_its_server() {
+        let (tmp, _file, lsp) = scripted_idling(&[], Some(Duration::from_millis(100)));
+        let status = lsp.status();
+        let server = lsp.inner.servers.iter().find(|s| s.id == "fake").unwrap();
+
+        // A touch that is still waiting on its client long after the idle
+        // time is up, as a slow start or a long wait for diagnostics is.
+        let (busy, client) = lsp.client(server.clone(), tmp.path().to_path_buf()).await;
+        assert!(client.is_some());
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));
+
+        // Once it ends, the idle time counts from then.
+        drop(busy);
+        let mut status = lsp.status();
+        tokio::time::timeout(Duration::from_secs(5), status.wait_for(|s| s.is_empty()))
+            .await
+            .expect("the idle server was stopped")
+            .unwrap();
     }
 
     #[tokio::test]
