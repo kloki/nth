@@ -476,9 +476,9 @@ fn an_overflowed_run_compacts_replays_and_prints_the_compaction() {
         requests[1]
     );
     assert!(
-        requests[2].contains(r#""What did we do so far?""#)
+        requests[2].contains("<conversation-checkpoint>")
             && requests[2].contains("The conversation so far"),
-        "the replay starts at the summary exchange: {}",
+        "the step again starts at the checkpoint: {}",
         requests[2]
     );
 

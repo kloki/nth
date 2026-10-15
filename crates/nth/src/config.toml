@@ -72,13 +72,14 @@ max_steps = 100
 
 [context]
 # Compact the session on its own when the last reply fills the model's
-# window: the history is summarized and the recent tail kept verbatim. The
-# window comes from the model's catalogue entry. false turns it off.
+# window: the history is summarized and the newest messages kept beside the
+# summary as text, long tool results cut. The window comes from the model's
+# catalogue entry. false turns it off.
 auto = true
 # The buffer kept below the window for the reply being written, in tokens.
 # 0 sizes it to the model: its output limit, at most 20000.
 reserved = 0
-# Recent tokens a compaction keeps verbatim under its summary. 0 sizes it
+# Recent tokens a compaction keeps as text beside its summary. 0 sizes it
 # to the window: a quarter of it, between 2000 and 15000.
 preserve = 0
 

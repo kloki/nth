@@ -19,9 +19,9 @@ use crate::{rich::Link, settings::ChatSettings};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
-    /// Where a compaction landed: the divider between what it covers and
-    /// the verbatim tail. The whole summary is kept; the chat draws its
-    /// first line, and the model and the clipboard take it whole.
+    /// Where a compaction landed: the divider after what it covers. The
+    /// whole summary is kept; the chat draws its first line, and the model
+    /// and the clipboard take it whole.
     Compacted(String),
     /// What a background monitor said, as the model got it.
     Notice(NoticeSummary),
@@ -168,7 +168,7 @@ impl Transcript {
                     Some((command, _)) => t.push_user(command.to_string()),
                     None => t.push_user(text.clone()),
                 },
-                Message::Compaction { summary } => {
+                Message::Compaction { summary, .. } => {
                     t.push(Entry::Compacted(summary.clone()));
                 }
                 Message::Assistant(reply) => {
@@ -900,6 +900,7 @@ pub(super) mod tests {
             }),
             Message::Compaction {
                 summary: "Objective: ship".into(),
+                recent: "[Assistant]: done".into(),
             },
             Message::User("next".into()),
         ];
@@ -914,7 +915,7 @@ pub(super) mod tests {
                 &Entry::Compacted("Objective: ship".into()),
                 &Entry::User("next".into()),
             ],
-            "the divider stays between what it covers and the tail"
+            "the divider follows what it covers"
         );
     }
 
@@ -933,6 +934,7 @@ pub(super) mod tests {
         session.messages.push(Message::Compaction {
             // The model may open with blanks and answer in markdown.
             summary: "\n\n## Findings\n\n- one\n- two".into(),
+            recent: String::new(),
         });
         session.messages.push(Message::User("next".into()));
         store.save(&session).await.expect("saves");

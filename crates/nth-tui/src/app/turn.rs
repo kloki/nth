@@ -1637,7 +1637,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_after_a_compaction_starts_at_the_summary_exchange() {
+    async fn a_request_after_a_compaction_starts_at_the_checkpoint() {
         let provider = Arc::new(Scripted::new([
             vec![StreamEvent::TextDelta("first answer".into())],
             vec![StreamEvent::TextDelta("the summary".into())],
@@ -1663,14 +1663,17 @@ mod tests {
 
         let after = &sent[2];
         assert!(matches!(after.first(), Some(Message::System(_))));
-        assert_eq!(after[1], Message::User("What did we do so far?".into()));
+        let Message::User(checkpoint) = &after[1] else {
+            panic!("the checkpoint: {:?}", after[1]);
+        };
         assert!(
-            matches!(&after[2], Message::Assistant(reply) if reply.text == "the summary"),
-            "the marker is read as its exchange: {:?}",
-            after[2]
+            checkpoint.starts_with("<conversation-checkpoint>")
+                && checkpoint.contains("<summary>\nthe summary\n</summary>")
+                && checkpoint.contains("[Assistant]: first answer"),
+            "the marker is read as one user message, the latest reply kept: {checkpoint}"
         );
-        assert_eq!(after[3], Message::User("next".into()));
-        assert_eq!(after.len(), 4, "the summarized head is not sent again");
+        assert_eq!(after[2], Message::User("next".into()));
+        assert_eq!(after.len(), 3, "the summarized messages are not sent again");
         assert!(matches!(
             app.chat.transcript.entries().last(),
             Some(Entry::TurnDone { .. })

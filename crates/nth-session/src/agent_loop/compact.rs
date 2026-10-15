@@ -1,6 +1,7 @@
-//! One compaction: summarizing everything a request would not keep verbatim
-//! into a [`Message::Compaction`] marker, spliced in before the verbatim
-//! tail. Later requests start at the marker (see `stream::effective`).
+//! One compaction: summarizing the conversation since the last
+//! [`Message::Compaction`] into a new one appended at the end, which keeps
+//! the newest messages beside the summary as text. Later requests start at
+//! it (see `stream::effective`).
 
 use futures::StreamExt;
 use nth_protocol::{
@@ -8,7 +9,7 @@ use nth_protocol::{
 };
 
 use super::{Error, Stop, Turn, emit};
-use crate::compaction::{self, SUMMARY_PROMPT};
+use crate::compaction::{self, SHRINK_STEPS};
 
 impl Turn<'_> {
     /// Whether the next step should summarize instead of asking the model:
@@ -33,8 +34,8 @@ impl Turn<'_> {
     /// Whether the conversation the next request would carry still fills
     /// the usable window right after a compaction. Compacting again would
     /// summarize a view that no longer shrinks — a floor like a huge system
-    /// prompt, or a tail nothing can cut — so the turn gives up instead of
-    /// asking for a summary before every step.
+    /// prompt — so the turn gives up instead of asking for a summary before
+    /// every step.
     pub(super) fn still_over_the_window(&self) -> bool {
         let Some(usable) = self
             .route
@@ -46,68 +47,79 @@ impl Turn<'_> {
         usable > 0 && compaction::estimate(&super::stream::effective(self.messages)) >= usable
     }
 
-    /// Summarizes everything a request would not keep verbatim and splices
-    /// the marker in before the tail. The messages before the marker stay
-    /// in the history; only later requests start at it. `overflow` keeps
-    /// the last user prompt and its exchange in the tail, so a prompt the
-    /// provider refused runs again under the summary. `Ok(false)` when
-    /// there was nothing to summarize: a caller that must shrink the
-    /// conversation cannot, and one that only tried to keeps going.
-    pub async fn compact(&mut self, overflow: bool) -> Result<bool, Error> {
+    /// Summarizes what came since the last compaction — its summary and
+    /// kept text, then the messages after it — and appends a new one
+    /// holding the summary and the newest messages as text, tool results
+    /// cut. Nothing before the last compaction is read again, and the
+    /// request after it starts on a user message. `Ok(false)` when there was
+    /// nothing to summarize: a caller that must shrink the conversation
+    /// cannot, and one that only tried to keeps going.
+    pub async fn compact(&mut self) -> Result<bool, Error> {
         let compaction = self.route.compaction;
         let usable = compaction.usable(self.route.context_window, self.route.max_output);
-        let mut tail = compaction::tail_start(self.messages, compaction.preserve(usable));
-        // On an overflow the last real prompt and its exchange stay verbatim
-        // so the turn can replay the prompt under the summary — but only
-        // when there is anything else to summarize.
-        if overflow
-            && let Some(prompt) = self
-                .messages
-                .iter()
-                .rposition(|message| matches!(message, Message::User(_)))
-            && self.messages[..prompt]
-                .iter()
-                .any(|message| !matches!(message, Message::System(_)))
-        {
-            tail = tail.min(prompt);
-        }
-        // The head holds no conversation: everything fits the tail budget,
-        // or only the prompt to replay is left. Summarize all of it, as
-        // opencode does, and keep no tail.
-        if !self.messages[..tail]
-            .iter()
-            .any(|message| !matches!(message, Message::System(_)))
-        {
-            tail = self.messages.len();
-        }
-        // The new marker goes after the last one, so requests start at this
-        // summary rather than an older one.
-        if let Some(last) = self
+        let last = self
             .messages
             .iter()
-            .rposition(|message| matches!(message, Message::Compaction { .. }))
-        {
-            tail = tail.max(last + 1);
-        }
-        // Only the system prompt: nothing to compact.
-        if !self.messages[..tail]
-            .iter()
-            .any(|message| !matches!(message, Message::System(_)))
-        {
+            .enumerate()
+            .rev()
+            .find_map(|(at, message)| match message {
+                Message::Compaction { summary, recent } => {
+                    Some((at, summary.clone(), recent.clone()))
+                }
+                _ => None,
+            });
+        let (since, previous, previous_recent) = match last {
+            Some((at, summary, recent)) => (at + 1, Some(summary), recent),
+            None => (0, None, String::new()),
+        };
+        let since = &self.messages[since..];
+        let Some(split) = compaction::split(
+            since,
+            compaction.preserve(usable),
+            !previous_recent.is_empty(),
+        ) else {
+            return Ok(false);
+        };
+        let exchanges = compaction::exchanges(&previous_recent, &since[..split.older]);
+        if exchanges.is_empty() && previous.is_none() {
             return Ok(false);
         }
-        let head = compaction::serialize_head(&self.messages[..tail]);
-        let summary = self
-            .summarize(format!("{SUMMARY_PROMPT}\n\n{head}"))
-            .await?;
-        self.messages.insert(
-            tail,
-            Message::Compaction {
-                summary: summary.clone(),
-            },
-        );
+        let summary = self.summarize(previous.as_deref(), &exchanges).await?;
+        self.messages.push(Message::Compaction {
+            summary: summary.clone(),
+            recent: split.recent,
+        });
         emit(self.events, Event::Compacted { summary }).await;
         Ok(true)
+    }
+
+    /// The summary of `exchanges` folded into the `previous` summary. A
+    /// request the provider refuses as too long is sent again without its
+    /// oldest exchanges, aiming at a shrinking share of the refused size,
+    /// as opencode does; [`Error::TooBigToCompact`] once that runs out or
+    /// only the newest exchange is left.
+    async fn summarize(
+        &mut self,
+        previous: Option<&str>,
+        exchanges: &[String],
+    ) -> Result<String, Error> {
+        let mut first = 0;
+        let mut refused = None;
+        let mut steps = SHRINK_STEPS.iter();
+        loop {
+            let prompt = compaction::summary_request(previous, &exchanges[first..], first);
+            match self.request_summary(prompt.as_str()).await {
+                Err(Error::TooBigToCompact) => {}
+                other => return other,
+            }
+            let Some(step) = steps.next() else {
+                return Err(Error::TooBigToCompact);
+            };
+            let refused = *refused.get_or_insert(compaction::text_tokens(&prompt));
+            let target = (refused as f64 * step) as u64;
+            first = compaction::shrink(previous, exchanges, first, target)
+                .ok_or(Error::TooBigToCompact)?;
+        }
     }
 
     /// The summary request: one user message, no tools, streamed to the
@@ -116,8 +128,8 @@ impl Turn<'_> {
     /// discarded and only a complete one becomes the summary. Its usage is
     /// counted like a step's, but its text is not streamed as an answer —
     /// the front-end hears of it as [`Event::Compacted`].
-    async fn summarize(&mut self, prompt: String) -> Result<String, Error> {
-        let messages = [Message::User(prompt)];
+    async fn request_summary(&mut self, prompt: &str) -> Result<String, Error> {
+        let messages = [Message::User(prompt.to_string())];
         let request = Request {
             model: self.route.model,
             session_id: self.route.session_id,
@@ -135,8 +147,8 @@ impl Turn<'_> {
                 Ok(summary) if summary.trim().is_empty() => return Err(Error::EmptyReply),
                 Ok(summary) => return Ok(summary),
             };
-            // The provider refused the conversation as too long: another
-            // attempt cannot shrink it.
+            // The provider refused the request as too long: the same one
+            // again cannot fit; the caller shrinks it.
             if error.downcast_ref::<ContextOverflow>().is_some() {
                 return Err(Error::TooBigToCompact);
             }
@@ -207,7 +219,7 @@ mod tests {
     use crate::{
         Compaction, Route,
         agent_loop::tests::{Echo, ROUTE, Scripted, call, spend},
-        compaction::WHAT_DID_WE_DO,
+        compaction::{self, SUMMARY_PROMPT},
     };
 
     fn assistant(text: &str) -> Message {
@@ -245,8 +257,16 @@ mod tests {
         }
     }
 
+    /// The summary of the newest compaction in `messages`.
+    fn last_summary(messages: &[Message]) -> Option<&str> {
+        messages.iter().rev().find_map(|message| match message {
+            Message::Compaction { summary, .. } => Some(summary.as_str()),
+            _ => None,
+        })
+    }
+
     #[tokio::test]
-    async fn a_compaction_splices_the_marker_before_the_tail() {
+    async fn a_compaction_appends_a_checkpoint_keeping_the_newest_as_text() {
         let provider = Scripted::new(vec![vec![
             StreamEvent::TextDelta("# Objective\nship it".into()),
             StreamEvent::Usage(usage(100, 10)),
@@ -254,7 +274,7 @@ mod tests {
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel(16);
-        // An old turn too big for the budget, then a recent one kept whole.
+        // An old turn too big for the budget, then a recent one kept.
         let mut messages = vec![
             Message::System("sys".into()),
             Message::User("first question".into()),
@@ -262,6 +282,7 @@ mod tests {
             Message::User("second question".into()),
             assistant("second answer"),
         ];
+        let before = messages.clone();
         let mut spent = spend();
 
         let mut last_usage = None;
@@ -276,23 +297,18 @@ mod tests {
             events: &tx,
             cancel: &cancel,
         }
-        .compact(false)
+        .compact()
         .await
         .expect("compacts");
 
+        assert_eq!(messages[..5], before[..], "the history is kept as it was");
         assert_eq!(
-            messages[3],
+            messages[5],
             Message::Compaction {
-                summary: "# Objective\nship it".into()
+                summary: "# Objective\nship it".into(),
+                recent: "[User]: second question\n\n[Assistant]: second answer".into(),
             },
-            "the marker sits between the head and the tail"
-        );
-        assert_eq!(
-            messages[4..],
-            [
-                Message::User("second question".into()),
-                assistant("second answer")
-            ]
+            "the checkpoint is appended, keeping the newest turn as text"
         );
         assert_eq!(spent.steps, 1, "the summary request is counted");
         drop(tx);
@@ -315,7 +331,10 @@ mod tests {
         let [Message::User(prompt)] = &sent[0][..] else {
             panic!("one user message: {:?}", sent[0]);
         };
-        assert!(prompt.starts_with(SUMMARY_PROMPT), "the template opens it");
+        assert!(
+            prompt.starts_with(SUMMARY_PROMPT.trim_end()),
+            "the template opens it"
+        );
         assert!(prompt.contains("[User]: first question"), "{prompt}");
         assert!(
             prompt.contains(&format!("[Assistant]: {}", "x".repeat(400))),
@@ -323,7 +342,7 @@ mod tests {
         );
         assert!(
             !prompt.contains("second question"),
-            "the verbatim tail is not serialized"
+            "the kept part is not summarized"
         );
     }
 
@@ -366,13 +385,16 @@ mod tests {
         .await
         .expect("turn completes");
 
+        let recent = "[User]: go\n\n[Assistant]: first\n[Assistant tool call]: echo \
+                      {\"say\":\"hi\"}\n\n[Tool result]: hi";
         assert_eq!(
-            messages[3],
+            messages[6],
             Message::Compaction {
-                summary: "the summary".into()
-            }
+                summary: "the summary".into(),
+                recent: recent.into(),
+            },
+            "after the step's tool results"
         );
-        assert!(matches!(messages[4], Message::User(_)), "the tail stays");
         assert_eq!(
             messages.last(),
             Some(&assistant("done")),
@@ -384,24 +406,19 @@ mod tests {
         assert_eq!(
             sent[1],
             [Message::User(format!(
-                "{SUMMARY_PROMPT}\n\n[User]: old question\n[Assistant]: {}",
+                "{}\n\n[User]: old question\n[Assistant]: {}",
+                SUMMARY_PROMPT.trim_end(),
                 "x".repeat(400)
             ))],
-            "the summary request carries the template and the serialized head"
+            "the summary request carries the template and the older part"
         );
         assert_eq!(
-            sent[2][..3],
+            sent[2],
             [
                 Message::System("sys".into()),
-                Message::User(WHAT_DID_WE_DO.into()),
-                assistant("the summary"),
+                Message::User(compaction::checkpoint("the summary", recent)),
             ],
-            "the step after starts at the summary"
-        );
-        assert_eq!(
-            sent[2][3],
-            Message::User("go".into()),
-            "then the verbatim tail"
+            "the step after starts at the checkpoint, a user message"
         );
         drop(tx);
         let mut compacted = 0;
@@ -411,14 +428,26 @@ mod tests {
         assert_eq!(compacted, 1);
     }
 
-    /// Fails its first request with a context overflow, as a wire will once
-    /// it recognizes its provider's overflow error; answers the rest.
-    struct OverflowThen {
+    /// Fails the requests numbered in `overflow` (1-based) with a context
+    /// overflow, as a wire does once it recognizes its provider's overflow
+    /// error, and answers the rest with `replies` in order.
+    struct Overflows {
+        overflow: Vec<usize>,
         replies: Mutex<Vec<Vec<StreamEvent>>>,
         sent: Mutex<Vec<Vec<Message>>>,
     }
 
-    impl Provider for OverflowThen {
+    impl Overflows {
+        fn new(overflow: Vec<usize>, replies: Vec<Vec<StreamEvent>>) -> Self {
+            Self {
+                overflow,
+                replies: Mutex::new(replies),
+                sent: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Provider for Overflows {
         fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
             async { Ok(Listing::default()) }.boxed()
         }
@@ -430,7 +459,7 @@ mod tests {
         {
             let mut sent = self.sent.lock().expect("not poisoned");
             sent.push(request.messages.to_vec());
-            if sent.len() == 1 {
+            if self.overflow.contains(&sent.len()) {
                 return async { Err(Box::new(ContextOverflow) as BoxError) }.boxed();
             }
             let reply = self.replies.lock().expect("not poisoned").remove(0);
@@ -438,24 +467,28 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn an_overflowing_step_compacts_and_replays_the_prompt() {
-        let provider = OverflowThen {
-            replies: Mutex::new(vec![
-                vec![StreamEvent::TextDelta("the summary".into())],
-                vec![StreamEvent::TextDelta("done".into())],
-            ]),
-            sent: Mutex::new(Vec::new()),
-        };
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, _rx) = mpsc::channel(64);
-        let mut messages = vec![
+    fn overflowing_conversation() -> Vec<Message> {
+        vec![
             Message::System("sys".into()),
             Message::User("old question".into()),
             assistant(&"x".repeat(400)),
             Message::User("the failed prompt".into()),
-        ];
+        ]
+    }
+
+    #[tokio::test]
+    async fn an_overflowing_step_compacts_and_goes_on_from_the_checkpoint() {
+        let provider = Overflows::new(
+            vec![1],
+            vec![
+                vec![StreamEvent::TextDelta("the summary".into())],
+                vec![StreamEvent::TextDelta("done".into())],
+            ],
+        );
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = overflowing_conversation();
         let mut spent = spend();
 
         let mut last_usage = None;
@@ -474,36 +507,170 @@ mod tests {
         .await
         .expect("the turn recovers");
 
-        assert!(matches!(messages[3], Message::Compaction { .. }));
         assert_eq!(
             messages[4..],
-            [Message::User("the failed prompt".into()), assistant("done")],
-            "the prompt is replayed under the summary"
+            [
+                Message::Compaction {
+                    summary: "the summary".into(),
+                    recent: "[User]: the failed prompt".into(),
+                },
+                assistant("done")
+            ],
         );
 
         let sent = provider.sent.lock().expect("not poisoned").clone();
-        assert_eq!(sent.len(), 3, "the overflow, the summary, the replay");
+        assert_eq!(sent.len(), 3, "the overflow, the summary, the step again");
         let [Message::User(prompt)] = &sent[1][..] else {
             panic!("one user message: {:?}", sent[1]);
         };
         assert!(prompt.contains("old question"), "{prompt}");
         assert!(
             !prompt.contains("the failed prompt"),
-            "the replayed prompt is not summarized"
+            "the prompt rides in the checkpoint, not the summary"
         );
         assert_eq!(
             sent[2],
             [
                 Message::System("sys".into()),
-                Message::User(WHAT_DID_WE_DO.into()),
-                assistant("the summary"),
-                Message::User("the failed prompt".into()),
+                Message::User(compaction::checkpoint(
+                    "the summary",
+                    "[User]: the failed prompt"
+                )),
             ]
         );
     }
 
+    /// The overflow that shows the fix for a turn whose own tool results
+    /// overflowed: they ride in the checkpoint cut, not verbatim.
     #[tokio::test]
-    async fn a_second_compaction_lands_after_the_first_and_requests_start_there() {
+    async fn an_overflow_from_the_turns_own_tool_results_keeps_them_cut() {
+        let huge = "y".repeat(40_000);
+        let provider = Overflows::new(
+            vec![1],
+            vec![
+                vec![StreamEvent::TextDelta("the summary".into())],
+                vec![StreamEvent::TextDelta("done".into())],
+            ],
+        );
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("read it".into()),
+            Message::Assistant(AssistantMessage {
+                tool_calls: vec![call("1", "read", "{}")],
+                ..AssistantMessage::default()
+            }),
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: huge.clone(),
+            },
+        ];
+        let mut spent = spend();
+
+        let mut last_usage = None;
+        Turn {
+            provider: &provider,
+            route: route(2_000),
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await
+        .expect("the turn recovers");
+
+        let sent = provider.sent.lock().expect("not poisoned").clone();
+        let retried = compaction::estimate(&sent[2]);
+        assert!(
+            retried < 1_000,
+            "the step after is a fraction of the 10k it overflowed with: {retried}"
+        );
+        let Message::User(checkpoint) = &sent[2][1] else {
+            panic!("a checkpoint: {:?}", sent[2]);
+        };
+        assert!(checkpoint.contains("[truncated]"), "{checkpoint}");
+        assert!(!checkpoint.contains(&huge));
+    }
+
+    #[tokio::test]
+    async fn a_second_overflow_in_the_same_step_gives_up() {
+        let provider = Overflows::new(
+            vec![1, 3],
+            vec![vec![StreamEvent::TextDelta("the summary".into())]],
+        );
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = overflowing_conversation();
+        let mut spent = spend();
+
+        let mut last_usage = None;
+        let result = Turn {
+            provider: &provider,
+            route: route(40),
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await;
+
+        assert!(matches!(result, Err(Error::TooBigToCompact)), "{result:?}");
+        assert_eq!(provider.sent.lock().expect("not poisoned").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_overflow_in_a_later_step_compacts_again() {
+        let provider = Overflows::new(
+            vec![1, 4],
+            vec![
+                vec![StreamEvent::TextDelta("first summary".into())],
+                vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
+                vec![StreamEvent::TextDelta("second summary".into())],
+                vec![StreamEvent::TextDelta("done".into())],
+            ],
+        );
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = overflowing_conversation();
+        let mut spent = spend();
+
+        let mut last_usage = None;
+        Turn {
+            provider: &provider,
+            route: route(40),
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await
+        .expect("each step's overflow is recovered");
+
+        assert_eq!(last_summary(&messages), Some("second summary"));
+        assert_eq!(messages.last(), Some(&assistant("done")));
+        let sent = provider.sent.lock().expect("not poisoned").clone();
+        assert_eq!(sent.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn a_second_compaction_reads_nothing_before_the_first() {
         let provider = Scripted::new(vec![
             vec![StreamEvent::TextDelta("second summary".into())],
             vec![StreamEvent::TextDelta("done".into())],
@@ -513,8 +680,10 @@ mod tests {
         let (tx, _rx) = mpsc::channel(64);
         let mut messages = vec![
             Message::System("sys".into()),
+            Message::User("ancient history".into()),
             Message::Compaction {
                 summary: "first summary".into(),
+                recent: "[User]: kept before".into(),
             },
             Message::User("old question".into()),
             assistant(&"x".repeat(400)),
@@ -534,33 +703,95 @@ mod tests {
             cancel: &cancel,
         };
 
-        turn.compact(false).await.expect("compacts");
+        turn.compact().await.expect("compacts");
         assert!(turn.stream_step(false, &[], &mut None).await.is_ok());
 
         assert_eq!(
-            messages[4],
+            messages[6],
             Message::Compaction {
-                summary: "second summary".into()
+                summary: "second summary".into(),
+                recent: "[User]: go".into(),
             },
-            "the new marker follows the old one"
+            "the new checkpoint is appended"
         );
         let sent = provider.sent.lock().expect("not poisoned").clone();
-        assert_eq!(
-            sent[1][..3],
-            [
-                Message::System("sys".into()),
-                Message::User(WHAT_DID_WE_DO.into()),
-                assistant("second summary"),
-            ],
-            "the request starts at the newest summary"
-        );
         let [Message::User(prompt)] = &sent[0][..] else {
             panic!("one user message: {:?}", sent[0]);
         };
         assert!(
-            prompt.contains("[Summary]: first summary"),
-            "the earlier summary is a line of the head: {prompt}"
+            prompt.contains("<summary>\nfirst summary\n</summary>"),
+            "the earlier summary is folded in: {prompt}"
         );
+        assert!(prompt.contains(compaction::UPDATE_PROMPT.trim_end()));
+        assert!(
+            prompt.contains("[User]: kept before"),
+            "its kept text is the oldest of the transcript"
+        );
+        assert!(prompt.contains("[User]: old question"));
+        assert!(
+            !prompt.contains("ancient history"),
+            "nothing before the earlier checkpoint is read again"
+        );
+        assert_eq!(
+            sent[1],
+            [
+                Message::System("sys".into()),
+                Message::User(compaction::checkpoint("second summary", "[User]: go")),
+            ],
+            "the request starts at the newest checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_summary_request_is_sent_again_without_its_oldest_exchanges() {
+        // The summary request is refused once, then answered.
+        let provider = Overflows::new(
+            vec![1],
+            vec![vec![StreamEvent::TextDelta("the summary".into())]],
+        );
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User(format!("one {}", "o".repeat(4_000))),
+            assistant("a"),
+            Message::User(format!("two {}", "t".repeat(4_000))),
+            assistant("b"),
+            Message::User(format!("three {}", "h".repeat(4_000))),
+            assistant("c"),
+            Message::User("last".into()),
+        ];
+        let mut spent = spend();
+        let mut last_usage = None;
+
+        Turn {
+            provider: &provider,
+            route: route(40),
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .compact()
+        .await
+        .expect("the smaller request lands the compaction");
+
+        assert_eq!(last_summary(&messages), Some("the summary"));
+        let sent = provider.sent.lock().expect("not poisoned").clone();
+        let [Message::User(refused)] = &sent[0][..] else {
+            panic!("one user message: {:?}", sent[0]);
+        };
+        let [Message::User(retried)] = &sent[1][..] else {
+            panic!("one user message: {:?}", sent[1]);
+        };
+        assert!(refused.contains("[User]: one"));
+        assert!(!retried.contains("[User]: one"), "the oldest exchange went");
+        assert!(retried.contains("older exchange"), "and says so");
+        assert!(retried.contains("[User]: three"), "the newest stays");
     }
 
     #[tokio::test]
@@ -826,10 +1057,8 @@ mod tests {
         .expect("the retried summary lands the compaction");
 
         assert_eq!(
-            messages[3],
-            Message::Compaction {
-                summary: "the summary".into()
-            },
+            last_summary(&messages),
+            Some("the summary"),
             "the second summary attempt's text is the marker"
         );
         assert_eq!(
@@ -937,10 +1166,8 @@ mod tests {
         .expect("the retried summary lands the compaction");
 
         assert_eq!(
-            messages[3],
-            Message::Compaction {
-                summary: "the summary".into()
-            },
+            last_summary(&messages),
+            Some("the summary"),
             "the complete second attempt's text, never the partial first"
         );
         assert_eq!(

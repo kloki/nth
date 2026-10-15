@@ -64,8 +64,9 @@ pub enum Error {
     #[error("could not run the skill: {0}")]
     Skill(String),
     /// The conversation cannot be shrunk below the window: the summary
-    /// request itself was refused as too long, a replay overflowed again,
-    /// or compacting changed nothing while the session was still over.
+    /// request was refused as too long even with its oldest exchanges
+    /// dropped, a step overflowed again right after a compaction, or
+    /// compacting changed nothing while the session was still over.
     #[error("cannot compact: the conversation cannot be shrunk below the context window")]
     TooBigToCompact,
 }
@@ -150,8 +151,9 @@ impl Turn<'_> {
         // maintenance for the next one, so it does not use a step and the
         // last allowed step still gets its request.
         let mut step = 0;
-        // One overflow is worth replaying under a summary; the same
-        // conversation overflowing again will not shrink.
+        // One overflow per step is worth retrying under a summary; the
+        // same step overflowing again will not shrink. A later step may
+        // overflow afresh, as opencode's per-step recovery allows.
         let mut replayed = false;
         while step < max_steps {
             // A conversation that reached the usable window is compacted
@@ -159,7 +161,7 @@ impl Turn<'_> {
             // session left over it — and one compacting cannot get under
             // the window stops the turn rather than summarizing every step.
             if self.compaction_due(*last_usage) {
-                if !self.compact(false).await? {
+                if !self.compact().await? {
                     return Err(Error::TooBigToCompact);
                 }
                 *last_usage = None;
@@ -179,9 +181,10 @@ impl Turn<'_> {
                 }
                 Err(Stop::Failed(error)) => {
                     // The provider refused the conversation as too long:
-                    // summarize it and replay the prompt under the summary.
-                    if error.downcast_ref::<ContextOverflow>().is_some() && !replayed {
-                        if !self.compact(true).await? {
+                    // summarize it and send the step again from the
+                    // checkpoint, which carries the latest exchange.
+                    if error.downcast_ref::<ContextOverflow>().is_some() {
+                        if replayed || !self.compact().await? {
                             return Err(Error::TooBigToCompact);
                         }
                         replayed = true;
@@ -192,6 +195,7 @@ impl Turn<'_> {
                 }
             };
             step += 1;
+            replayed = false;
 
             if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
                 // Reasoning alone is kept, as an interrupted reply's is; an

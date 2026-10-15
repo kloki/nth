@@ -9,7 +9,7 @@ use nth_protocol::{
 };
 
 use super::{Turn, emit, max_steps_messages};
-use crate::compaction::WHAT_DID_WE_DO;
+use crate::compaction::checkpoint;
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -161,12 +161,12 @@ impl Turn<'_> {
 }
 
 /// The messages a request carries. Without a compaction marker, the history
-/// is the request. With one, the request starts at the marker, read the way
-/// opencode reads its compaction part: the system prompts, then the user
-/// asking [`WHAT_DID_WE_DO`] and the model answering with the summary, then
-/// everything after the marker verbatim. Only this filter, the summary
-/// request and the check on what a compaction left do ever see the marker;
-/// the protocols never do.
+/// is the request. With one, the request starts at the last marker, read
+/// the way opencode reads its checkpoint: the system prompts, then one user
+/// message holding the summary and the text kept beside it, then everything
+/// after the marker verbatim. The request so never ends on the summary.
+/// Only this filter and the check on what a compaction left ever see the
+/// marker; the protocols never do.
 pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
     let Some(at) = messages
         .iter()
@@ -179,12 +179,8 @@ pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
         .filter(|message| matches!(message, Message::System(_)))
         .cloned()
         .collect();
-    if let Message::Compaction { summary } = &messages[at] {
-        sent.push(Message::User(WHAT_DID_WE_DO.into()));
-        sent.push(Message::Assistant(AssistantMessage {
-            text: summary.clone(),
-            ..AssistantMessage::default()
-        }));
+    if let Message::Compaction { summary, recent } = &messages[at] {
+        sent.push(Message::User(checkpoint(summary, recent)));
     }
     sent.extend(messages[at + 1..].iter().cloned());
     Cow::Owned(sent)

@@ -72,8 +72,8 @@ pub struct Session {
     /// The tokens the last reply reported it used, so a resumed session
     /// still says how full the window was and compacts before its first
     /// request when it is over; sessions saved before it load with none.
-    /// Cleared by a compaction, whose summary exchange is smaller than what
-    /// it replaced.
+    /// Cleared by a compaction, whose checkpoint is smaller than what it
+    /// replaced.
     #[serde(default)]
     pub last_usage: Option<Usage>,
     /// How the session keeps itself inside the model's window; sessions
@@ -443,7 +443,7 @@ impl Session {
             events,
             cancel,
         }
-        .compact(false)
+        .compact()
         .await;
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
@@ -1049,6 +1049,7 @@ mod tests {
             },
             Message::Compaction {
                 summary: "so far".into(),
+                recent: "[User]: go".into(),
             },
         ]);
         session.compaction.auto = false;
@@ -1167,7 +1168,8 @@ mod tests {
         assert_eq!(
             session.messages.last(),
             Some(&Message::Compaction {
-                summary: "the summary".into()
+                summary: "the summary".into(),
+                recent: "[Assistant]: done".into(),
             })
         );
         assert_eq!(

@@ -19,8 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
-    Compaction, DEFAULT_MAX_STEPS, Error, Session, Store, compaction::WHAT_DID_WE_DO,
-    subagent::child_session,
+    Compaction, DEFAULT_MAX_STEPS, Error, Session, Store, compaction, subagent::child_session,
 };
 
 fn usage(input: u64, output: u64) -> Usage {
@@ -77,14 +76,31 @@ fn requests(provider: &Scripted) -> Vec<Vec<Message>> {
     provider.sent.lock().expect("not poisoned").clone()
 }
 
-/// The policy's own estimate, serialized chars over four, used here only to
-/// pick a budget that forces a split, never to assert one.
-fn estimate(message: &Message) -> u64 {
-    serde_json::to_string(message).map_or(0, |json| json.len() as u64) / 4
+/// The user message a request starts with after the newest compaction in
+/// `messages`: its checkpoint.
+fn opening(messages: &[Message]) -> Message {
+    messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::Compaction { summary, recent } => {
+                Some(Message::User(compaction::checkpoint(summary, recent)))
+            }
+            _ => None,
+        })
+        .expect("a compaction")
+}
+
+/// The summary of the newest compaction in `messages`.
+fn last_summary(messages: &[Message]) -> Option<&str> {
+    messages.iter().rev().find_map(|message| match message {
+        Message::Compaction { summary, .. } => Some(summary.as_str()),
+        _ => None,
+    })
 }
 
 #[tokio::test]
-async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_summary() {
+async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpoint() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     // A window of 10k less 2k reserved: exactly 8k fills its usable part,
     // which must fire.
@@ -125,31 +141,16 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_summary
     );
     assert!(
         !summary_prompt.contains("[User]: go"),
-        "the verbatim tail is not serialized: {summary_prompt}"
+        "the kept part is not summarized: {summary_prompt}"
     );
+    let recent = "[User]: go\n\n[Assistant tool call]: echo {\"say\":\"hi\"}\n\n[Tool result]: hi";
     assert_eq!(
-        sent[2][..3],
+        sent[2],
         [
             system.clone(),
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("the summary"),
+            Message::User(compaction::checkpoint("the summary", recent)),
         ],
-        "the request starts at the summary exchange"
-    );
-    assert_eq!(
-        sent[2][3..],
-        [
-            Message::User("go".into()),
-            Message::Assistant(AssistantMessage {
-                tool_calls: vec![call("1", "echo", r#"{"say":"hi"}"#)],
-                ..AssistantMessage::default()
-            }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into()
-            },
-        ],
-        "then the verbatim tail"
+        "the request starts at the checkpoint, which keeps the turn as text"
     );
     assert_eq!(
         session.messages,
@@ -157,9 +158,6 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_summary
             system,
             Message::User("old question".into()),
             assistant(&"x".repeat(400)),
-            Message::Compaction {
-                summary: "the summary".into()
-            },
             Message::User("go".into()),
             Message::Assistant(AssistantMessage {
                 tool_calls: vec![call("1", "echo", r#"{"say":"hi"}"#)],
@@ -169,9 +167,13 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_summary
                 call_id: "1".into(),
                 content: "hi".into()
             },
+            Message::Compaction {
+                summary: "the summary".into(),
+                recent: recent.into(),
+            },
             assistant("done"),
         ],
-        "the history keeps every original message, with the marker in order"
+        "the history keeps every original message, the marker after them"
     );
 }
 
@@ -202,7 +204,7 @@ impl Provider for OverflowThen {
 }
 
 #[tokio::test]
-async fn an_overflowing_request_compacts_and_replays_the_refused_prompt() {
+async fn an_overflowing_request_compacts_and_goes_on_from_the_checkpoint() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
     session.compaction.preserve = 40;
@@ -227,7 +229,7 @@ async fn an_overflowing_request_compacts_and_replays_the_refused_prompt() {
     assert_eq!(
         sent.len(),
         3,
-        "the refused request, the summary, the replay"
+        "the refused request, the summary, the step again"
     );
     assert_eq!(
         sent[0].last(),
@@ -243,17 +245,18 @@ async fn an_overflowing_request_compacts_and_replays_the_refused_prompt() {
     );
     assert!(
         !summary_prompt.contains("the failed prompt"),
-        "the prompt to replay is not summarized: {summary_prompt}"
+        "the refused prompt is kept, not summarized: {summary_prompt}"
     );
     assert_eq!(
         sent[2],
         [
             system.clone(),
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("the summary"),
-            Message::User("the failed prompt".into()),
+            Message::User(compaction::checkpoint(
+                "the summary",
+                "[User]: the failed prompt"
+            )),
         ],
-        "the prompt runs again under the summary"
+        "the prompt runs again inside the checkpoint"
     );
     assert_eq!(
         session.messages,
@@ -261,10 +264,11 @@ async fn an_overflowing_request_compacts_and_replays_the_refused_prompt() {
             system,
             Message::User("old question".into()),
             assistant(&"x".repeat(400)),
-            Message::Compaction {
-                summary: "the summary".into()
-            },
             Message::User("the failed prompt".into()),
+            Message::Compaction {
+                summary: "the summary".into(),
+                recent: "[User]: the failed prompt".into(),
+            },
             assistant("done"),
         ]
     );
@@ -300,15 +304,15 @@ async fn a_fresh_session_that_overflows_recovers_through_a_summary_of_the_prompt
         sent[2],
         [
             system,
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("the summary"),
+            Message::User(compaction::checkpoint("the summary", ""))
         ],
-        "nothing is left to replay verbatim"
+        "nothing is kept beside the summary, and the request ends on a user message"
     );
     assert_eq!(
         session.messages[2],
         Message::Compaction {
-            summary: "the summary".into()
+            summary: "the summary".into(),
+            recent: String::new(),
         },
         "the marker still lands"
     );
@@ -333,9 +337,10 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
 
     compact(&mut session, &summarizer).await.expect("compacts");
     assert_eq!(
-        session.messages[3],
+        session.messages[5],
         Message::Compaction {
-            summary: "a summary".into()
+            summary: "a summary".into(),
+            recent: "[User]: recent\n\n[Assistant]: recent answer".into(),
         }
     );
     assert_eq!(
@@ -370,22 +375,13 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
 
     let sent = requests(&provider);
     assert_eq!(
-        sent[0][..3],
+        sent[0],
         [
             session.messages[0].clone(),
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("a summary"),
-        ],
-        "a resumed session still starts its requests at the marker"
-    );
-    assert_eq!(
-        sent[0][3..],
-        [
-            Message::User("recent".into()),
-            assistant("recent answer"),
+            opening(&session.messages),
             Message::User("next".into()),
         ],
-        "the tail after the marker is verbatim"
+        "a resumed session still starts its requests at the checkpoint"
     );
 }
 
@@ -474,29 +470,43 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
         },
         assistant("done"),
     ]);
-    // A budget that fits the exchange but not the prompt that opened it, so
-    // the tail starts mid-turn at the calls.
-    let from_calls: u64 = session.messages[4..].iter().map(estimate).sum();
-    let whole: u64 = session.messages[3..].iter().map(estimate).sum();
-    session.compaction.preserve = from_calls + (whole - from_calls) / 2;
+    // A budget that fits the results and the answer but not the calls
+    // before them: the kept part moves back to the calls, never starting on
+    // a result.
+    let result = |content: String| compaction::text_tokens(&format!("[Tool result]: {content}"));
+    session.compaction.preserve = result("one".repeat(200))
+        + result("two".repeat(200))
+        + result("three".repeat(200))
+        + compaction::text_tokens("[Assistant]: done");
     let summarizer = Scripted::new(vec![vec![StreamEvent::TextDelta("split summary".into())]]);
 
     compact(&mut session, &summarizer).await.expect("compacts");
 
     assert_eq!(
-        session.messages[4],
-        Message::Compaction {
-            summary: "split summary".into()
-        }
-    );
-    assert_eq!(
-        session.messages[5], calls,
-        "the tail starts inside the turn, at the calls"
-    );
-    assert_eq!(
         session.messages.len(),
         10,
         "every original message plus the marker"
+    );
+    let Some(Message::Compaction { summary, recent }) = session.messages.last() else {
+        panic!("the marker is last: {:?}", session.messages);
+    };
+    assert_eq!(summary, "split summary");
+    assert!(
+        recent.starts_with("[Assistant tool call]: echo {\"say\":\"one\"}"),
+        "the kept part starts inside the turn, at the calls: {recent}"
+    );
+    for say in ["one", "two", "three"] {
+        assert!(
+            recent.contains(&format!("[Tool result]: {}", say.repeat(200))),
+            "each result stays with its call: {recent}"
+        );
+    }
+    let [Message::User(summary_prompt)] = &requests(&summarizer)[0][..] else {
+        panic!("one user message");
+    };
+    assert!(
+        summary_prompt.contains("[User]: work"),
+        "the prompt that opened the turn is summarized: {summary_prompt}"
     );
 
     let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
@@ -504,40 +514,14 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
         .await
         .expect("turn completes");
 
-    let sent = requests(&provider);
-    let request = &sent[0];
-    for (at, message) in request.iter().enumerate() {
-        match message {
-            Message::Assistant(reply) => {
-                for call in &reply.tool_calls {
-                    let answered = request[at + 1..].iter().any(
-                        |m| matches!(m, Message::ToolResult { call_id, .. } if call_id == &call.id),
-                    );
-                    assert!(answered, "call {} lost its result: {request:?}", call.id);
-                }
-            }
-            Message::ToolResult { call_id, .. } => {
-                let called = request[..at].iter().any(|m| {
-                    matches!(m, Message::Assistant(reply)
-                        if reply.tool_calls.iter().any(|c| &c.id == call_id))
-                });
-                assert!(called, "result {call_id} lost its call: {request:?}");
-            }
-            _ => {}
-        }
-    }
     assert_eq!(
-        request[..3],
+        requests(&provider)[0],
         [
             session.messages[0].clone(),
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("split summary"),
+            opening(&session.messages),
+            Message::User("after".into()),
         ],
-        "the request starts at the summary, then the split tail"
-    );
-    assert!(
-        matches!(&request[3], Message::Assistant(reply) if !reply.tool_calls.is_empty()),
-        "the tail starts at the calls: {request:?}"
+        "no call or result goes to the provider apart from the other"
     );
 }
 
@@ -585,24 +569,17 @@ async fn a_child_session_inherits_the_limits_and_compacts_on_its_own() {
         .expect("the child's turn completes");
 
     assert_eq!(
-        child.messages[3],
-        Message::Compaction {
-            summary: "child summary".into()
-        },
+        last_summary(&child.messages),
+        Some("child summary"),
         "the child compacts on its own"
     );
     let sent = requests(&provider);
     assert_eq!(sent.len(), 3, "the step, the child's summary, then after");
     assert_eq!(
-        sent[2][..3],
-        [
-            system,
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("child summary"),
-        ],
-        "the child's request starts at its own marker"
+        sent[2],
+        [system, opening(&child.messages)],
+        "the child's request starts at its own checkpoint"
     );
-    assert_eq!(sent[2][3], Message::User("go".into()));
 }
 
 #[tokio::test]
@@ -620,7 +597,7 @@ async fn a_manual_compaction_of_only_the_system_prompt_does_nothing() {
 }
 
 #[tokio::test]
-async fn two_compactions_in_a_row_leave_both_markers_and_start_at_the_newest() {
+async fn a_second_compaction_folds_in_the_first_and_reads_nothing_before_it() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.compaction.preserve = 40;
     session.messages.extend([
@@ -631,60 +608,75 @@ async fn two_compactions_in_a_row_leave_both_markers_and_start_at_the_newest() {
     ]);
     let provider = Scripted::new(vec![
         vec![StreamEvent::TextDelta("first summary".into())],
-        vec![StreamEvent::TextDelta("second summary".into())],
         vec![StreamEvent::TextDelta("ok".into())],
+        vec![StreamEvent::TextDelta("second summary".into())],
+        vec![StreamEvent::TextDelta("ok again".into())],
     ]);
 
     compact(&mut session, &provider)
         .await
         .expect("first compacts");
+    let before = session.messages.clone();
     compact(&mut session, &provider)
         .await
-        .expect("second compacts");
-
+        .expect("nothing new to compact");
     assert_eq!(
-        session.messages[3],
-        Message::Compaction {
-            summary: "first summary".into()
-        }
-    );
-    assert_eq!(
-        session.messages[4],
-        Message::Compaction {
-            summary: "second summary".into()
-        },
-        "the new marker follows the old one"
-    );
-    let sent = requests(&provider);
-    let [Message::User(second_prompt)] = &sent[1][..] else {
-        panic!("one user message: {:?}", sent[1]);
-    };
-    assert!(
-        second_prompt.contains("[Summary]: first summary"),
-        "the first summary is merged into the second: {second_prompt}"
+        session.messages, before,
+        "nothing came after the first checkpoint, so nothing is asked"
     );
 
     prompt(&mut session, "next", &provider, &[])
         .await
         .expect("turn completes");
+    compact(&mut session, &provider)
+        .await
+        .expect("second compacts");
+
+    let markers: Vec<_> = session
+        .messages
+        .iter()
+        .filter(|message| matches!(message, Message::Compaction { .. }))
+        .collect();
+    assert_eq!(markers.len(), 2, "both markers stay in the history");
+    assert_eq!(
+        session.messages.last(),
+        Some(&Message::Compaction {
+            summary: "second summary".into(),
+            recent: "[Assistant]: ok".into(),
+        }),
+        "the new marker is appended"
+    );
+    let sent = requests(&provider);
+    let [Message::User(second_prompt)] = &sent[2][..] else {
+        panic!("one user message: {:?}", sent[2]);
+    };
+    assert!(
+        second_prompt.contains("<summary>\nfirst summary\n</summary>"),
+        "the first summary is folded into the second: {second_prompt}"
+    );
+    assert!(
+        second_prompt.contains("[User]: recent\n\n[Assistant]: recent answer"),
+        "with the text it kept: {second_prompt}"
+    );
+    assert!(second_prompt.contains("[User]: next"), "{second_prompt}");
+    assert!(
+        !second_prompt.contains("old question"),
+        "what the first summarized is never read again: {second_prompt}"
+    );
+
+    prompt(&mut session, "again", &provider, &[])
+        .await
+        .expect("turn completes");
 
     let sent = requests(&provider);
     assert_eq!(
-        sent[2][..3],
+        sent[3],
         [
             session.messages[0].clone(),
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("second summary"),
+            opening(&session.messages),
+            Message::User("again".into()),
         ],
-        "requests start at the newest marker"
-    );
-    assert_eq!(
-        sent[2][3..],
-        [
-            Message::User("recent".into()),
-            assistant("recent answer"),
-            Message::User("next".into()),
-        ]
+        "requests start at the newest checkpoint"
     );
 }
 
@@ -836,19 +828,23 @@ async fn the_last_allowed_step_still_asks_the_model_after_compacting() {
     assert!(result.is_ok(), "{result:?}");
     let sent = requests(&provider);
     assert_eq!(sent.len(), 3, "the step, the summary, then the last step");
-    assert_eq!(sent[2][1], Message::User(WHAT_DID_WE_DO.into()));
+    assert!(
+        matches!(&sent[2][1], Message::User(text) if text.starts_with("<conversation-checkpoint>")),
+        "{:?}",
+        sent[2]
+    );
     assert_eq!(session.messages.last(), Some(&assistant("done")));
 }
 
 /// Answers the first request with the tool call whose result is over the
-/// window; refuses any request carrying it; answers summaries. Auto is off,
-/// so the only compactions are the overflow recoveries.
-struct ReplayStaysTooBig {
+/// window; refuses any request carrying it whole; answers summaries. Auto
+/// is off, so the only compactions are the overflow recoveries.
+struct RefusesHugeResults {
     requests: Mutex<usize>,
     summaries: Mutex<usize>,
 }
 
-impl Provider for ReplayStaysTooBig {
+impl Provider for RefusesHugeResults {
     fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
         async { Ok(Listing::default()) }.boxed()
     }
@@ -882,11 +878,10 @@ impl Provider for ReplayStaysTooBig {
     }
 }
 
-/// Refuses the exchange it just kept, so the replay overflows again. It is
-/// the same conversation every time: compacting more cannot shrink it, so
-/// the turn stops after one replay instead of compacting every step.
+/// The overflow came from the turn's own tool result: the checkpoint keeps
+/// the turn, but with the result cut, so the step sent again fits.
 #[tokio::test]
-async fn a_replay_that_overflows_again_does_not_compact_forever() {
+async fn a_turn_whose_own_tool_result_overflows_goes_on_with_it_cut() {
     struct EchoHuge;
 
     impl Tool for EchoHuge {
@@ -915,18 +910,24 @@ async fn a_replay_that_overflows_again_does_not_compact_forever() {
         Message::User("old question".into()),
         assistant(&"x".repeat(100_000)),
     ]);
-    let provider = ReplayStaysTooBig {
+    let provider = RefusesHugeResults {
         requests: Mutex::new(0),
         summaries: Mutex::new(0),
     };
     let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoHuge)];
 
-    let _ = prompt(&mut session, "go", &provider, &tools).await;
+    prompt(&mut session, "go", &provider, &tools)
+        .await
+        .expect("the turn recovers");
 
-    let summaries = *provider.summaries.lock().expect("not poisoned");
-    assert_eq!(
-        summaries, 1,
-        "exactly one replay: {summaries} summaries for one exchange that will not shrink"
+    assert_eq!(*provider.summaries.lock().expect("not poisoned"), 1);
+    assert_eq!(session.messages.last(), Some(&assistant("done")));
+    let Message::User(checkpoint) = opening(&session.messages) else {
+        unreachable!("a user message");
+    };
+    assert!(
+        checkpoint.contains("[Assistant tool call]: echo") && checkpoint.contains("[truncated]"),
+        "the call is kept with its result cut: {checkpoint}"
     );
 }
 
@@ -969,7 +970,7 @@ async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
         .messages
         .iter()
         .filter_map(|message| match message {
-            Message::Compaction { summary } => Some(summary.clone()),
+            Message::Compaction { summary, .. } => Some(summary.clone()),
             _ => None,
         })
         .collect();
@@ -985,22 +986,27 @@ async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
         panic!("one user message: {:?}", sent[3]);
     };
     assert!(
-        second_prompt.contains("[Summary]: first summary"),
-        "the second summary merges the first: {second_prompt}"
+        second_prompt.contains("<summary>\nfirst summary\n</summary>"),
+        "the second summary folds in the first: {second_prompt}"
+    );
+    assert!(
+        second_prompt.contains("[User]: go"),
+        "and the text the first kept: {second_prompt}"
+    );
+    assert!(
+        !second_prompt.contains("old question"),
+        "but nothing before it: {second_prompt}"
     );
     assert_eq!(
-        sent[4][..3],
+        sent[4],
         [
             system,
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("second summary"),
+            Message::User(compaction::checkpoint(
+                "second summary",
+                "[Assistant tool call]: echo {\"say\":\"two\"}\n\n[Tool result]: two"
+            )),
         ],
-        "the request after the second compaction starts at the newest summary"
-    );
-    assert_eq!(
-        sent[4][3],
-        Message::User("go".into()),
-        "then the verbatim tail"
+        "the request after the second compaction starts at the newest checkpoint"
     );
 }
 
@@ -1039,13 +1045,12 @@ async fn a_resumed_session_over_the_window_compacts_before_its_first_request() {
         "the head is serialized: {summary_prompt}"
     );
     assert_eq!(
-        sent[1][..3],
+        sent[1][..2],
         [
             system,
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("the summary"),
+            Message::User(compaction::checkpoint("the summary", "[User]: next")),
         ],
-        "the first request already starts at the summary exchange"
+        "the first request already starts at the checkpoint"
     );
     assert_eq!(session.messages.last(), Some(&assistant("done")));
 }
@@ -1100,7 +1105,7 @@ async fn a_manual_compaction_clears_the_last_usage() {
     compact(&mut session, &provider).await.expect("compacts");
 
     assert!(
-        matches!(session.messages[3], Message::Compaction { .. }),
+        matches!(session.messages.last(), Some(Message::Compaction { .. })),
         "the compaction landed"
     );
     assert_eq!(
@@ -1190,11 +1195,8 @@ async fn a_configured_reserved_buffer_sizes_the_trigger() {
     let sent = requests(&provider);
     assert_eq!(sent.len(), 4, "two steps, the summary, then the answer");
     assert_eq!(
-        sent[3][1..3],
-        [
-            Message::User(WHAT_DID_WE_DO.into()),
-            assistant("the summary")
-        ],
-        "the request after the compaction starts at the summary exchange"
+        sent[3][1..],
+        [opening(&session.messages)],
+        "the request after the compaction starts at the checkpoint"
     );
 }
