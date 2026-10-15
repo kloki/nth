@@ -176,7 +176,7 @@ Add retries with jitter to every client call.
 
 - **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
 - **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
-- **Overview.** `plan.md`'s first heading in bold and the rest dim, when the model wrote one.
+- **Overview.** `plan.md` rendered as markdown — its first heading, then the rest — when the model wrote one.
 - **Cycles.** `✓` green once every item is closed, `▸` blue for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim for the ones after it. Closed items over all follow.
 - **Items.** Behind tree guides: `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
 - **Todos.** Under the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
@@ -184,6 +184,7 @@ Add retries with jitter to every client call.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
 - **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
 - **Opening and closing.** `/work` shows it, and so does the model with the `panel` tool. ctrl+q and `/close` leave it open while there is a plan, as with the plan tab.
+- **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the tree is longer than the tab. The header and overview scroll with it.
 - **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
 - **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.
 - **The subagents.** Each has its usual tab, named `work <cycle>/<item>`. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (600) before the item returns failed or timed out.
