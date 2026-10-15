@@ -31,6 +31,7 @@ const TOOL_RESULT_MAX_CHARS: usize = 2_000;
 
 /// How a session keeps itself inside the model's window.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Compaction {
     /// Whether a reply that reaches the usable window is compacted before
     /// the turn's next step.

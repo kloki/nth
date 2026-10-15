@@ -762,8 +762,10 @@ mod tests {
         let round = Config::parse(&config.to_toml().expect("serializes")).expect("parses");
         assert_eq!(round, config);
         assert!(Config::parse("[context]\nauto = \"x\"").is_err());
-        // A typo inside [context] is not caught yet: `Compaction`, in
-        // nth-session, does not deny unknown fields like these tables do.
+        assert!(
+            Config::parse("[context]\naut = true").is_err(),
+            "a typo is caught, as in every other table"
+        );
     }
 
     #[test]
