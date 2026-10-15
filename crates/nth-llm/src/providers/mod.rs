@@ -264,6 +264,17 @@ mod tests {
     }
 
     #[test]
+    fn an_overflow_is_never_retried() {
+        let providers = providers("opencode/deepseek");
+        let overflow: BoxError = Box::new(nth_protocol::ContextOverflow);
+        assert_eq!(
+            providers.retry(&overflow),
+            None,
+            "compacting, not retrying, is the fix"
+        );
+    }
+
+    #[test]
     fn a_provider_without_its_key_refuses_its_models() {
         let providers = providers("opencode/deepseek");
         let error = providers.route("muted/glm").expect_err("no key");
