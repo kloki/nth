@@ -4,9 +4,12 @@
 use std::{borrow::Cow, time::Duration};
 
 use futures::StreamExt;
-use nth_protocol::{AssistantMessage, BoxError, Event, Request, StreamEvent, ToolSpec};
+use nth_protocol::{
+    AssistantMessage, BoxError, Event, Message, Request, StreamEvent, ToolSpec, Usage,
+};
 
 use super::{Turn, emit, max_steps_messages};
+use crate::compaction::WHAT_DID_WE_DO;
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -41,11 +44,12 @@ impl Turn<'_> {
         &mut self,
         last: bool,
         specs: &[ToolSpec],
+        last_usage: &mut Option<Usage>,
     ) -> Result<AssistantMessage, Stop> {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let error = match self.one_attempt(last, specs).await {
+            let error = match self.one_attempt(last, specs, last_usage).await {
                 Err(Stop::Failed(error)) => error,
                 done => return done,
             };
@@ -71,16 +75,23 @@ impl Turn<'_> {
     /// they arrive. On the `last` allowed step the model is told to answer
     /// in words, so the turn ends itself rather than being cut off; the
     /// prompt goes only into the request, never into the saved history.
+    ///
+    /// The request carries the effective messages: everything from the last
+    /// compaction on, opened by the summary exchange, so the protocols
+    /// never see a [`Message::Compaction`]. What the reply reports it used
+    /// is left in `last_usage`, which the automatic compaction reads.
     async fn one_attempt(
         &mut self,
         last: bool,
         specs: &[ToolSpec],
+        last_usage: &mut Option<Usage>,
     ) -> Result<AssistantMessage, Stop> {
         let (provider, events, cancel) = (self.provider, self.events, self.cancel);
+        let effective = effective(self.messages);
         let sent = if last {
-            Cow::Owned(max_steps_messages(self.messages))
+            Cow::Owned(max_steps_messages(&effective))
         } else {
-            Cow::Borrowed(self.messages.as_slice())
+            effective
         };
         let request = Request {
             model: self.route.model,
@@ -119,6 +130,7 @@ impl Turn<'_> {
                 }
                 StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
                 StreamEvent::Usage(usage) => {
+                    *last_usage = Some(usage);
                     self.spend.steps += 1;
                     self.spend.tokens += usage;
                     emit(events, Event::Usage(usage)).await;
@@ -127,6 +139,35 @@ impl Turn<'_> {
         }
         Ok(reply)
     }
+}
+
+/// The messages a request carries. Without a compaction marker, the history
+/// is the request. With one, the request starts at the marker, read the way
+/// opencode reads its compaction part: the system prompts, then the user
+/// asking [`WHAT_DID_WE_DO`] and the model answering with the summary, then
+/// everything after the marker verbatim. Only this filter and the summary
+/// request ever see the marker; the protocols never do.
+fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
+    let Some(at) = messages
+        .iter()
+        .rposition(|message| matches!(message, Message::Compaction { .. }))
+    else {
+        return Cow::Borrowed(messages);
+    };
+    let mut sent: Vec<Message> = messages[..at]
+        .iter()
+        .filter(|message| matches!(message, Message::System(_)))
+        .cloned()
+        .collect();
+    if let Message::Compaction { summary } = &messages[at] {
+        sent.push(Message::User(WHAT_DID_WE_DO.into()));
+        sent.push(Message::Assistant(AssistantMessage {
+            text: summary.clone(),
+            ..AssistantMessage::default()
+        }));
+    }
+    sent.extend(messages[at + 1..].iter().cloned());
+    Cow::Owned(sent)
 }
 
 /// The backoff before the `attempt`-th retry: `RETRY_INITIAL_DELAY` doubled

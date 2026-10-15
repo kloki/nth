@@ -106,6 +106,21 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
     let dim = dim();
     let lines = match entry {
         Entry::User(text) => return barred_markdown(text, width, Style::new().fg(Color::Green)),
+        Entry::Compacted(summary) => {
+            let first = summary.lines().next().unwrap_or_default().trim();
+            let said = match first.is_empty() {
+                true => "compacted".to_string(),
+                false => format!("compacted · {first}"),
+            };
+            vec![Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(
+                    format!("{} ", icons().context),
+                    Style::new().fg(Color::Magenta),
+                ),
+                Span::styled(said, dim),
+            ])]
+        }
         Entry::PlanEdits(edits) => vec![Line::from(vec![
             Span::raw(INDENT),
             Span::styled(
@@ -447,6 +462,19 @@ mod tests {
         chat::transcript::tests::{call, text, transcript},
         settings::ChatSettings,
     };
+
+    #[test]
+    fn a_compaction_is_a_one_line_divider() {
+        let mut t = transcript();
+        t.apply(&Event::Compacted {
+            summary: "Objective: ship\n\n## Details".into(),
+        });
+
+        let total = t.layout(60, ChatSettings::default());
+        let lines = t.visible(0, total);
+
+        assert_eq!(text(&lines), ["  ◘ compacted · Objective: ship"]);
+    }
 
     #[test]
     fn wraps_under_the_bar_and_separates_blocks() {

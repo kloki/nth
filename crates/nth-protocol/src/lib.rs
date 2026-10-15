@@ -25,8 +25,8 @@ pub use monitor::{
     log_dir as monitor_log_dir,
 };
 pub use provider::{
-    BoxError, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider, Request, Retry,
-    StreamEvent, Usage,
+    BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
+    Request, Retry, StreamEvent, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};

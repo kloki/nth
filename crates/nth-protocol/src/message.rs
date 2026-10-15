@@ -8,7 +8,17 @@ pub enum Message {
     System(String),
     User(String),
     Assistant(AssistantMessage),
-    ToolResult { call_id: String, content: String },
+    ToolResult {
+        call_id: String,
+        content: String,
+    },
+    /// Where a compaction landed: the summary of everything before it. The
+    /// history is marked, never rewritten, so the transcript keeps the
+    /// original messages; a request starts at the last marker as the
+    /// summary exchange (see `nth-session`'s effective messages).
+    Compaction {
+        summary: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -5,6 +5,7 @@
 //! the model what was sent while it worked `steer`.
 
 mod call;
+mod compact;
 mod doom_loop;
 mod repair;
 mod steer;
@@ -17,13 +18,14 @@ use std::{collections::HashMap, time::Duration};
 pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Message, Provider, Tool, ToolContext,
+    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
+    ToolContext,
 };
 use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::Spend;
+use crate::{Compaction, Spend};
 
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
@@ -61,10 +63,15 @@ pub enum Error {
     /// started.
     #[error("could not run the skill: {0}")]
     Skill(String),
+    /// The summary request itself was refused as too long: the conversation
+    /// cannot be shrunk, so a turn that overflowed it cannot go on.
+    #[error("cannot compact: the summary request itself exceeds the context window")]
+    TooBigToCompact,
 }
 
 /// Where a turn's requests go: which model at what effort, on behalf of
-/// which session, and how many of them the turn may make.
+/// which session, how many of them the turn may make, and how it keeps
+/// itself inside the model's window.
 #[derive(Debug, Clone, Copy)]
 pub struct Route<'a> {
     pub model: &'a str,
@@ -73,6 +80,13 @@ pub struct Route<'a> {
     /// The session that started this one, for a subagent.
     pub parent_session_id: Option<&'a str>,
     pub max_steps: usize,
+    /// The model's context window, when the front-end knows it; without it
+    /// nothing compacts on its own.
+    pub context_window: Option<u64>,
+    /// The model's output limit, for the reserved buffer's default.
+    pub max_output: Option<u64>,
+    /// How the session compacts, from its own config.
+    pub compaction: Compaction,
 }
 
 /// One user turn: where its requests go, what runs its tool calls, and
@@ -114,9 +128,19 @@ impl Turn<'_> {
         // only calls made since the user last spoke.
         let start = self.messages.len();
         let max_steps = self.route.max_steps;
+        // The usage the last finished reply reported; what the automatic
+        // compaction reads, and nothing until a step reports some.
+        let mut last_usage = None;
         for step in 0..max_steps {
+            // A conversation that reached the usable window is compacted
+            // before another request is sent, which uses this step.
+            if step > 0 && self.compaction_due(last_usage) {
+                self.compact(false).await?;
+                last_usage = None;
+                continue;
+            }
             let last = step + 1 == max_steps;
-            let reply = match self.stream_step(last, &specs).await {
+            let reply = match self.stream_step(last, &specs, &mut last_usage).await {
                 Ok(reply) => reply,
                 Err(Stop::Cancelled(partial)) => {
                     if !partial.text.is_empty() || !partial.reasoning.is_empty() {
@@ -124,7 +148,16 @@ impl Turn<'_> {
                     }
                     return Err(Error::Interrupted);
                 }
-                Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
+                Err(Stop::Failed(error)) => {
+                    // The provider refused the conversation as too long:
+                    // summarize it and replay the prompt under the summary.
+                    if error.downcast_ref::<ContextOverflow>().is_some() {
+                        self.compact(true).await?;
+                        last_usage = None;
+                        continue;
+                    }
+                    return Err(Error::Provider(error));
+                }
             };
 
             if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {

@@ -19,6 +19,9 @@ use crate::{rich::Link, settings::ChatSettings};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
+    /// Where a compaction landed, with the summary's first line: the
+    /// divider between what it covers and the verbatim tail.
+    Compacted(String),
     /// What a background monitor said, as the model got it.
     Notice(NoticeSummary),
     /// The plan as you edited it with ctrl+g.
@@ -130,6 +133,7 @@ impl Entry {
             Entry::Reasoning { text, .. } => Some(text.clone()),
             Entry::Tool { output, .. } => Some(output.join("\n")),
             Entry::Notice(_)
+            | Entry::Compacted(_)
             | Entry::PlanEdits(_)
             | Entry::Retry { .. }
             | Entry::TurnDone { .. }
@@ -163,6 +167,9 @@ impl Transcript {
                     Some((command, _)) => t.push_user(command.to_string()),
                     None => t.push_user(text.clone()),
                 },
+                Message::Compaction { summary } => {
+                    t.push(Entry::Compacted(summary.clone()));
+                }
                 Message::Assistant(reply) => {
                     if !reply.reasoning.is_empty() {
                         t.push(Entry::Reasoning {
@@ -405,6 +412,10 @@ impl Transcript {
             Event::Notice(text) => {
                 self.close_reasoning();
                 self.push_user(text.clone());
+            }
+            Event::Compacted { summary } => {
+                self.close_reasoning();
+                self.push(Entry::Compacted(summary.clone()));
             }
         }
     }

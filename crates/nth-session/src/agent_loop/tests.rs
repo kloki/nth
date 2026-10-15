@@ -22,6 +22,10 @@ pub(super) const ROUTE: Route = Route {
     session_id: "s1",
     parent_session_id: None,
     max_steps: DEFAULT_MAX_STEPS,
+    // The window is the front-ends' to fill; tests that compact set it.
+    context_window: None,
+    max_output: None,
+    compaction: crate::Compaction::DEFAULT,
 };
 
 /// Replays one scripted reply per request and records the model asked for.
@@ -31,6 +35,8 @@ pub(crate) struct Scripted {
     pub(super) routes: Mutex<Vec<(String, String)>>,
     /// The system prompt of every request, in order.
     pub(crate) systems: Mutex<Vec<String>>,
+    /// Every request's messages, in order.
+    pub(crate) sent: Mutex<Vec<Vec<Message>>>,
 }
 
 impl Scripted {
@@ -39,6 +45,7 @@ impl Scripted {
             replies: Mutex::new(replies),
             routes: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
+            sent: Mutex::new(Vec::new()),
         }
     }
 }
@@ -62,6 +69,10 @@ impl Provider for Scripted {
                 .expect("not poisoned")
                 .push(system.clone());
         }
+        self.sent
+            .lock()
+            .expect("not poisoned")
+            .push(request.messages.to_vec());
         let reply = self.replies.lock().expect("not poisoned").remove(0);
         async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
     }

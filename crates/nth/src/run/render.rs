@@ -70,6 +70,14 @@ impl Printer {
                 eprintln!("{}", format!("{} {}", icons().to, cwd.display()).dimmed());
                 self.cwd = cwd.clone();
             }
+            Event::Compacted { summary } => {
+                self.break_line();
+                let first = summary.lines().next().unwrap_or_default().trim();
+                eprintln!(
+                    "{}",
+                    format!("{} compacted · {first}", icons().context).dimmed()
+                );
+            }
             // The headless run prints the result's summary, not the stream.
             Event::ToolFinished { .. }
             | Event::ToolOutput { .. }

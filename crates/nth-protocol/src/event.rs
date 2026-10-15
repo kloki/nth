@@ -36,6 +36,12 @@ pub enum Event {
     /// worktree does; the turn's later steps run in it. Comes before that
     /// call's `ToolFinished`.
     Moved(PathBuf),
+    /// A compaction landed: everything before the marker was summarized
+    /// into `summary`, which later requests start from. The front-end
+    /// shows it so a long session's shrink is visible.
+    Compacted {
+        summary: String,
+    },
 }
 
 /// How a retry reads, the same in every front-end: whole seconds rounded

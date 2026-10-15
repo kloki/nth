@@ -78,6 +78,11 @@ fn items(message: &Message) -> Vec<Value> {
                 }))
                 .collect()
         }
+        // The session rewrites the history before it asks: requests start
+        // at the last marker's summary exchange, never at the marker.
+        Message::Compaction { .. } => {
+            unreachable!("the session filters compaction markers")
+        }
     }
 }
 
