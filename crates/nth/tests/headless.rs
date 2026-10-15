@@ -374,10 +374,9 @@ fn a_run_answers_and_saves_the_session_the_config_asked_for() {
 
     let session = dirs.session();
     assert_eq!(session["model"], "mock/mock-model");
-    assert_eq!(
-        session["compaction"],
-        serde_json::json!({ "auto": false, "reserved": 0, "preserve": 0 }),
-        "the config's [context] reached the saved session"
+    assert!(
+        session.get("compaction").is_none(),
+        "[context] is the config's, applied on every run, never saved: {session}"
     );
     let messages = session["messages"].as_array().expect("an array");
     assert!(

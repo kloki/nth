@@ -430,6 +430,27 @@ async fn clear_command_starts_a_fresh_session() {
 }
 
 #[tokio::test]
+async fn a_fresh_session_takes_the_configured_compaction() {
+    let configured = nth_protocol::Compaction {
+        auto: false,
+        reserved: 1_000,
+        preserve: 500,
+    };
+    let mut session = Session::new("glm", "/repo".into());
+    session.compaction = configured;
+    let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+
+    app.prompt.insert_str("/clear");
+    app.submit();
+
+    assert_eq!(
+        app.session.as_ref().expect("idle").compaction,
+        configured,
+        "the new session follows [context], not the defaults"
+    );
+}
+
+#[tokio::test]
 async fn usage_opens_a_tab_of_what_the_session_spent() {
     let mut app = app();
     app.on_session(Event::Usage(Usage {

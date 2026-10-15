@@ -8,7 +8,7 @@ use nth_protocol::{Effort, Mode, Provider};
 use nth_session::{Store, Subagents};
 use nth_tui::{Llm, ModeLlms, Profile};
 
-use crate::{apply_context, config::Config, context, post_write, setup};
+use crate::{config::Config, context, post_write, setup};
 
 /// A new chat starts in the config's default mode. With `resume`, the last
 /// session comes back as it was: its mode, model, effort and working
@@ -33,10 +33,10 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
             session.set_model(model);
         }
     }
-    // The session's model is final now: take the configured compaction
-    // policy and the limits its listing names, so a long chat compacts
-    // itself. The chat refreshes the limits when a turn starts.
-    apply_context(&mut session, &config, &provider).await;
+    // The configured compaction policy; the chat takes the limits from its
+    // own listing when a turn starts, so opening it waits on no endpoint.
+    // A resumed session keeps the limits it saved until then.
+    session.compaction = config.context;
     let llm = |(model, effort): (String, Effort)| Llm {
         model: provider.qualify(&model),
         effort,

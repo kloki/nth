@@ -363,17 +363,20 @@ impl App {
     /// may have changed them since the last turn, maybe mid-turn, and the
     /// session is in its task while one runs, so a turn and a compaction
     /// both take them from the app here. The limits follow the model in
-    /// use, so the compaction trigger sizes against it; without a listing
-    /// yet nothing auto-compacts.
+    /// use, so the compaction trigger sizes against it. Until the listing
+    /// names the model the session keeps the limits it has — a resumed
+    /// one's saved limits still fire its compaction — and a switch to a
+    /// model it does not name drops them rather than size against the old
+    /// one's window.
     fn adopt_llm(&self, session: &mut Session) {
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
+            session.set_limits(None, None);
         }
-        session.set_limits(
-            self.context_window_of(&self.model),
-            self.output_limit_of(&self.model),
-        );
+        if let Some((context_window, max_output)) = self.limits_of(&self.model) {
+            session.set_limits(context_window, max_output);
+        }
         session.effort = self.effort;
     }
 

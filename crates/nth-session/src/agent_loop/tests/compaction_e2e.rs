@@ -359,8 +359,9 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
         "the usage a later reply reported survives"
     );
     assert_eq!(
-        resumed.compaction, session.compaction,
-        "the policy survives"
+        resumed.compaction,
+        Compaction::default(),
+        "the policy is not saved: the front-end applies today's config"
     );
     assert_eq!(
         (resumed.context_window, resumed.max_output),

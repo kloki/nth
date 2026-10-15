@@ -76,9 +76,10 @@ pub struct Session {
     /// replaced.
     #[serde(default)]
     pub last_usage: Option<Usage>,
-    /// How the session keeps itself inside the model's window; sessions
-    /// saved before it load with the defaults.
-    #[serde(default)]
+    /// How the session keeps itself inside the model's window. Comes from
+    /// the config's `[context]`, not the save, so a resumed session follows
+    /// today's config, as `max_steps` does.
+    #[serde(skip)]
     pub compaction: Compaction,
     /// The model's context window, when the front-end knows it; without it
     /// nothing compacts on its own. Saved, so a resumed session keeps the
@@ -1062,8 +1063,14 @@ mod tests {
         });
 
         let json = serde_json::to_string(&session).expect("serializes");
-        let back: Session = serde_json::from_str(&json).expect("deserializes");
+        let mut back: Session = serde_json::from_str(&json).expect("deserializes");
 
+        assert_eq!(
+            back.compaction,
+            Compaction::default(),
+            "the policy is the config's, never the save's"
+        );
+        back.compaction = session.compaction;
         assert_eq!(back, session);
     }
 

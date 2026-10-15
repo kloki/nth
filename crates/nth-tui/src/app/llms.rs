@@ -37,17 +37,22 @@ impl App {
         self.context_window_of(&self.model)
     }
 
+    /// The context window and output limit of `model`; `None` until the
+    /// listing names it, so a caller keeps what it knew before.
+    pub fn limits_of(&self, model: &str) -> Option<(Option<u64>, Option<u64>)> {
+        let llm = self
+            .llms
+            .as_ref()?
+            .models
+            .iter()
+            .find(|llm| llm.id == model)?;
+        Some((llm.context, llm.output))
+    }
+
     /// The context window of `model`, when the provider says.
     pub fn context_window_of(&self, model: &str) -> Option<u64> {
         let llms = self.llms.as_ref()?;
         llms.models.iter().find(|llm| llm.id == model)?.context
-    }
-
-    /// The output limit of `model`, when the provider says; with it the
-    /// session sizes the buffer the compaction trigger reserves.
-    pub fn output_limit_of(&self, model: &str) -> Option<u64> {
-        let llms = self.llms.as_ref()?;
-        llms.models.iter().find(|llm| llm.id == model)?.output
     }
 
     /// What `model` costs, when the catalogue says.
@@ -248,6 +253,48 @@ mod tests {
         assert!(!app.quit);
     }
 
+    /// Before the listing arrives — a resumed session's first prompt — the
+    /// session keeps the limits it saved, so its compaction still fires.
+    #[tokio::test]
+    async fn a_turn_before_the_listing_keeps_the_sessions_limits() {
+        let mut app = app();
+        app.session
+            .as_mut()
+            .expect("idle")
+            .set_limits(Some(10_000), Some(2_000));
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(
+            (session.context_window, session.max_output),
+            (Some(10_000), Some(2_000))
+        );
+    }
+
+    /// Another model's window would size the trigger wrongly: a switch to a
+    /// model the listing does not name leaves the limits unknown.
+    #[tokio::test]
+    async fn switching_to_an_unlisted_model_drops_the_old_limits() {
+        let mut app = app();
+        app.session
+            .as_mut()
+            .expect("idle")
+            .set_limits(Some(10_000), Some(2_000));
+        app.model = "unlisted".into();
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!((session.context_window, session.max_output), (None, None));
+    }
+
     #[tokio::test]
     async fn a_turn_puts_the_listed_limits_on_the_session() {
         let mut app = app();
@@ -264,8 +311,8 @@ mod tests {
         let session = app.session.as_ref().expect("session came back");
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
-        assert_eq!(app.output_limit_of("glm"), Some(64_000));
-        assert_eq!(app.output_limit_of("unlisted"), None);
+        assert_eq!(app.limits_of("glm"), Some((Some(200_000), Some(64_000))));
+        assert_eq!(app.limits_of("unlisted"), None);
     }
 
     #[tokio::test]
