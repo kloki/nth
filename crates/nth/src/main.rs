@@ -227,10 +227,20 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     Ok((session, providers))
 }
 
+/// Sizes the session's compaction to its model: the `[context]` policy,
+/// then the context window and output limit the provider's listing names
+/// for the session's model. Both front-ends call it once the model is
+/// final. A listing that fails changes no limits, so a fresh session keeps
+/// both unknown and nothing compacts on its own.
+pub(crate) async fn apply_context(session: &mut Session, config: &Config, provider: &dyn Provider) {
+    session.compaction = config.context;
+    set_model_limits(session, provider).await;
+}
+
 /// Sizes the session's compaction to its model: the context window and
-/// output limit the providers' listing names for it. Call it once the
-/// session's model is final. A listing that fails changes nothing, so a
-/// fresh session keeps both limits unknown and nothing compacts on its own.
+/// output limit the providers' listing names for it. A listing that fails
+/// changes nothing, so a fresh session keeps both limits unknown and
+/// nothing compacts on its own.
 pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
     let Ok(listing) = provider.models().await else {
         return;
@@ -504,9 +514,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_context_config_reaches_a_session_with_the_listed_limits() {
-        // What `chat::run` and `run::run` do, in the same order: the
-        // configured policy, then the limits the listing names for the
-        // session's model.
+        // Through the helper both `chat::run` and `run::run` call, so the
+        // wiring they share is what this exercises.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -525,8 +534,7 @@ mod tests {
         let provider = Listed(vec![listed("zen/a", Some(200_000), Some(64_000))]);
         let mut session = Session::new("zen/a", "/repo".into());
 
-        session.compaction = config.context;
-        set_model_limits(&mut session, &provider).await;
+        apply_context(&mut session, &config, &provider).await;
 
         assert!(!session.compaction.auto);
         assert_eq!(session.compaction.reserved, 30_000);

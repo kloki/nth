@@ -19,8 +19,9 @@ use crate::{rich::Link, settings::ChatSettings};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
-    /// Where a compaction landed, with the summary's first line: the
-    /// divider between what it covers and the verbatim tail.
+    /// Where a compaction landed: the divider between what it covers and
+    /// the verbatim tail. The whole summary is kept; the chat draws its
+    /// first line, and the model and the clipboard take it whole.
     Compacted(String),
     /// What a background monitor said, as the model got it.
     Notice(NoticeSummary),
@@ -132,8 +133,8 @@ impl Entry {
             Entry::User(text) | Entry::Answer(text) | Entry::TurnError(text) => Some(text.clone()),
             Entry::Reasoning { text, .. } => Some(text.clone()),
             Entry::Tool { output, .. } => Some(output.join("\n")),
+            Entry::Compacted(summary) => Some(summary.clone()),
             Entry::Notice(_)
-            | Entry::Compacted(_)
             | Entry::PlanEdits(_)
             | Entry::Retry { .. }
             | Entry::TurnDone { .. }
@@ -977,6 +978,17 @@ pub(super) mod tests {
                 "the first line with something on it"
             );
         }
+    }
+
+    #[test]
+    fn a_compaction_copies_the_whole_summary() {
+        let entry = Entry::Compacted("\n\n## Findings\n\n- one\n- two".into());
+
+        assert_eq!(
+            entry.clipboard().as_deref(),
+            Some("\n\n## Findings\n\n- one\n- two"),
+            "the model's whole summary, not only the divider's line"
+        );
     }
 
     #[test]

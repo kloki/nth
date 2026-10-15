@@ -442,6 +442,23 @@ mod tests {
     }
 
     #[test]
+    fn a_subagents_own_compaction_reaches_its_tab() {
+        let mut app = app();
+        started(&mut app, 1, "explore");
+        app.on_subagent(SubagentEvent::Session {
+            id: 1,
+            event: Event::Compacted {
+                summary: "Objective: ship".into(),
+            },
+        });
+
+        assert_eq!(
+            app.subagent_views[&1].chat.transcript.entries().last(),
+            Some(&Entry::Compacted("Objective: ship".into()))
+        );
+    }
+
+    #[test]
     fn an_answered_tab_closes_by_itself() {
         let mut app = app();
         started(&mut app, 1, "explore");

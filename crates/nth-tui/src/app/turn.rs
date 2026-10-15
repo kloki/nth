@@ -213,6 +213,10 @@ impl App {
         let Some(mut session) = self.session.take() else {
             return;
         };
+        // As a turn does: the picker may have changed the model since the
+        // last turn, and the summary request must run the chosen one, its
+        // tail and reserved sized against the chosen model's window.
+        self.adopt_llm(&mut session);
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
         // A compaction never picks a prompt up, so nothing steers into it.
@@ -282,25 +286,15 @@ impl App {
             },
         };
         self.notices_due = None;
-        // Picked in the model picker since the last turn, maybe mid-turn.
-        if session.model != self.model {
-            session.set_model(self.model.clone());
-        }
+        self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
-        // The limits follow the model in use, so the compaction trigger
-        // does too; without a listing yet nothing auto-compacts.
-        session.set_limits(
-            self.context_window_of(&self.model),
-            self.output_limit_of(&self.model),
-        );
         self.llm_usage.count(&self.model);
         self.save_llm_usage();
         self.spent.turn_started(&self.model);
-        session.effort = self.effort;
         session.mode = self.mode;
         self.steerable = Some((self.mode, self.llm(self.mode)));
         if let Some(notices) = &notices {
@@ -363,6 +357,24 @@ impl App {
                 }
             })
         });
+    }
+
+    /// The model, effort and limits the next request runs with: the picker
+    /// may have changed them since the last turn, maybe mid-turn, and the
+    /// session is in its task while one runs, so a turn and a compaction
+    /// both take them from the app here. The limits follow the model in
+    /// use, so the compaction trigger sizes against it; without a listing
+    /// yet nothing auto-compacts.
+    fn adopt_llm(&self, session: &mut Session) {
+        // Picked in the model picker since the last turn, maybe mid-turn.
+        if session.model != self.model {
+            session.set_model(self.model.clone());
+        }
+        session.set_limits(
+            self.context_window_of(&self.model),
+            self.output_limit_of(&self.model),
+        );
+        session.effort = self.effort;
     }
 
     /// Esc cancels the turn cooperatively so the session comes back;
@@ -566,8 +578,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Event, Listing, Message, MonitorEvent, Provider, Request, Stream, StreamEvent,
-        ToolCall, Usage,
+        BoxError, Event, Listing, Message, ModelInfo, MonitorEvent, Provider, Request, Stream,
+        StreamEvent, ToolCall, Usage,
     };
     use tokio::sync::Notify;
 
@@ -575,11 +587,12 @@ mod tests {
     use crate::chat::Entry;
 
     /// Answers each request with the next scripted reply, recording the
-    /// messages every request carried. Later requests get "ok".
+    /// model and messages every request carried. Later requests get "ok".
     #[derive(Default)]
     struct Scripted {
         replies: Mutex<VecDeque<Vec<StreamEvent>>>,
         requests: Mutex<Vec<Vec<Message>>>,
+        models: Mutex<Vec<String>>,
     }
 
     impl Scripted {
@@ -587,12 +600,18 @@ mod tests {
             Self {
                 replies: Mutex::new(replies.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
+                models: Mutex::new(Vec::new()),
             }
         }
 
         /// The messages of every request, in the order they were asked.
         fn sent(&self) -> Vec<Vec<Message>> {
             self.requests.lock().expect("lock").clone()
+        }
+
+        /// The model of every request, in the order they were asked.
+        fn asked(&self) -> Vec<String> {
+            self.models.lock().expect("lock").clone()
         }
     }
 
@@ -610,6 +629,10 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .push(request.messages.to_vec());
+            self.models
+                .lock()
+                .expect("lock")
+                .push(request.model.to_string());
             let reply = self
                 .replies
                 .lock()
@@ -880,6 +903,19 @@ mod tests {
                 Entry::User(text) => Some(text.as_str()),
                 _ => None,
             })
+    }
+
+    /// A listing entry with the given context window and output limit.
+    fn listed(id: &str, context: u64, output: u64) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: None,
+            context: Some(context),
+            output: Some(output),
+            efforts: Vec::new(),
+            origin: None,
+            cost: None,
+        }
     }
 
     #[tokio::test]
@@ -1451,6 +1487,35 @@ mod tests {
             rows.iter()
                 .any(|row| row.contains(&format!("{icon} compacted · ok"))),
             "drawn where the divider landed: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compaction_after_a_model_pick_asks_the_picked_model_and_limits() {
+        let provider = Arc::new(Scripted::new([vec![StreamEvent::TextDelta(
+            "the summary".into(),
+        )]]));
+        let mut session = Session::new("old", "/repo".into());
+        session.set_limits(Some(10_000), Some(2_000));
+        session.messages.push(Message::User("old history".into()));
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+        app.llms = Some(Listing::from(vec![listed("new", 3_000, 1_000)]));
+        app.model = "new".into();
+
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        assert_eq!(
+            provider.asked(),
+            ["new"],
+            "the summary runs on the model picked since the last turn"
+        );
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.model, "new");
+        assert_eq!(
+            (session.context_window, session.max_output),
+            (Some(3_000), Some(1_000)),
+            "the session carries the picked model's limits"
         );
     }
 
