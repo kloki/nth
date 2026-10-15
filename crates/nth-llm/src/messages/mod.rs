@@ -523,6 +523,42 @@ mod tests {
         assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
     }
 
+    /// Anthropic's usual wording: the input plus the requested `max_tokens`
+    /// exceed the window — exactly what nth hits on a large model.
+    const CONTEXT_LIMIT: &[u8] = br#"{"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 198157 + 32000 > 200000, decrease input length or `max_tokens` and try again"}}"#;
+    /// A billing refusal that names a token limit without being about the
+    /// input; compacting for it would summarize a session that fits.
+    const BILLING: &[u8] = br#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your token limit for this month. Update your billing details to continue.","code":"billing_hard_limit_reached"}}"#;
+
+    #[tokio::test]
+    async fn a_context_limit_refusal_is_an_overflow_and_a_billing_error_is_not() {
+        let (url, _) = serve_status(400, CONTEXT_LIMIT).await;
+        let client = Client::new(reqwest::Client::new(), url);
+        let error = client
+            .stream(request(), None, &Auth::Key("key".into()))
+            .await
+            .err()
+            .expect("refused");
+        assert!(error.downcast_ref::<ContextOverflow>().is_some(), "{error}");
+        assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
+
+        let (url, _) = serve_status(400, BILLING).await;
+        let client = Client::new(reqwest::Client::new(), url);
+        let error = client
+            .stream(request(), None, &Auth::Key("key".into()))
+            .await
+            .err()
+            .expect("refused");
+        assert!(error.downcast_ref::<ContextOverflow>().is_none(), "{error}");
+        assert!(
+            matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::Status { status, .. }) if *status == reqwest::StatusCode::BAD_REQUEST
+            ),
+            "{error}"
+        );
+    }
+
     /// The refusal phrased in a nested field, and as plain text: the
     /// classification reads the whole body, not one field of it.
     const NESTED_OVERFLOW: &[u8] = br#"{"error":{"message":"Request failed","detail":{"reason":"maximum context length exceeded"}}}"#;

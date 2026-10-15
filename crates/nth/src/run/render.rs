@@ -72,11 +72,18 @@ impl Printer {
             }
             Event::Compacted { summary } => {
                 self.break_line();
-                let first = summary.lines().next().unwrap_or_default().trim();
-                eprintln!(
-                    "{}",
-                    format!("{} compacted · {first}", icons().context).dimmed()
-                );
+                // The first line with something on it, as the TUI's divider
+                // takes it: a model may open with blanks.
+                let first = summary
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or_default();
+                let said = match first.is_empty() {
+                    true => "compacted".to_string(),
+                    false => format!("compacted · {first}"),
+                };
+                eprintln!("{}", format!("{} {said}", icons().context).dimmed());
             }
             // The headless run prints the result's summary, not the stream.
             Event::ToolFinished { .. }
@@ -132,7 +139,8 @@ mod tests {
     const CHILD: &str = "NTH_PRINTER_TEST_CHILD";
 
     /// A compaction shows on stderr as one row holding the summary's first
-    /// line, on a line of its own when the answer was mid-line. Run in a
+    /// line with something on it, on a line of its own when the answer was
+    /// mid-line; a summary that says nothing shows the word alone. Run in a
     /// child process, since the printer writes to the real streams.
     #[test]
     fn a_compaction_prints_one_row_with_the_first_summary_line() {
@@ -142,6 +150,14 @@ mod tests {
             printer.event(&Event::TextDelta("partial ".into()));
             printer.event(&Event::Compacted {
                 summary: "Objective: ship\n\n## Details\nrest".into(),
+            });
+            // The model may open with blanks, as the TUI's divider knows.
+            printer.event(&Event::Compacted {
+                summary: "\n\n## Findings\n\n- one".into(),
+            });
+            // And a summary with nothing to show gets no dangling `·`.
+            printer.event(&Event::Compacted {
+                summary: "\n \n".into(),
             });
             printer.finish();
             return;
@@ -165,8 +181,24 @@ mod tests {
             "the divider's row on stderr: {stderr:?}"
         );
         assert!(
-            !stderr.contains("## Details") && !stderr.contains("rest"),
+            stderr.contains("compacted · ## Findings"),
+            "a blank-led summary shows its first non-blank line: {stderr:?}"
+        );
+        assert!(
+            !stderr.contains("## Details") && !stderr.contains("rest") && !stderr.contains("- one"),
             "only the summary's first line: {stderr:?}"
+        );
+        // One row per compaction, and a summary with nothing to show says
+        // only `compacted`, without a dangling `·`.
+        let rows: Vec<&str> = stderr
+            .lines()
+            .filter(|row| row.contains("compacted"))
+            .collect();
+        assert_eq!(rows.len(), 3, "{stderr:?}");
+        assert!(
+            !rows[2].contains('·'),
+            "an empty summary gets no dangling `·`: {:?}",
+            rows[2]
         );
         assert!(
             stdout.contains("partial \n"),

@@ -76,6 +76,9 @@ pub(crate) fn retryable(error: &reqwest::Error) -> bool {
 const TOO_LONG: &[&str] = &[
     "context length",
     "context_length_exceeded",
+    // Anthropic's usual wording: the input plus the requested `max_tokens`
+    // exceed the window.
+    "context limit",
     "maximum context",
     "prompt is too long",
     "input is too long",
@@ -165,6 +168,12 @@ mod tests {
         assert!(context_overflow(
             bad_request,
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213866 tokens > 200000 maximum"}}"#
+        ));
+        // Its usual wording when the input plus the requested `max_tokens`
+        // exceed the window: what nth hits when it asks for a large output.
+        assert!(context_overflow(
+            bad_request,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 198157 + 32000 > 200000, decrease input length or `max_tokens` and try again"}}"#
         ));
         // Gemini, and the bare sentence some gateways send.
         assert!(context_overflow(
