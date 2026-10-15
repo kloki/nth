@@ -924,9 +924,9 @@ async fn a_replay_that_overflows_again_does_not_compact_forever() {
     let _ = prompt(&mut session, "go", &provider, &tools).await;
 
     let summaries = *provider.summaries.lock().expect("not poisoned");
-    assert!(
-        summaries <= 2,
-        "compacted {summaries} times for one exchange that will not shrink"
+    assert_eq!(
+        summaries, 1,
+        "exactly one replay: {summaries} summaries for one exchange that will not shrink"
     );
 }
 
@@ -1106,5 +1106,95 @@ async fn a_manual_compaction_clears_the_last_usage() {
     assert_eq!(
         session.last_usage, None,
         "the old size describes the conversation that was summarized away"
+    );
+}
+
+/// The summary request is a request of its own, not a step: the model must
+/// not be offered tools there, or it could call one whose result the loop
+/// silently drops while the answer it should have written is lost.
+#[tokio::test]
+async fn the_summary_request_carries_no_tools() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    session.set_limits(Some(10_000), Some(2_000));
+    session.compaction.preserve = 40;
+    session.messages.extend([
+        Message::User("old question".into()),
+        assistant(&"x".repeat(400)),
+    ]);
+    let provider = Scripted::new(vec![
+        vec![
+            StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+            StreamEvent::Usage(usage(7_900, 100)),
+        ],
+        vec![StreamEvent::TextDelta("the summary".into())],
+        vec![StreamEvent::TextDelta("done".into())],
+    ]);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+
+    prompt(&mut session, "go", &provider, &tools)
+        .await
+        .expect("turn completes");
+
+    let offered = provider.tools.lock().expect("not poisoned").clone();
+    assert_eq!(
+        offered,
+        vec![
+            vec!["echo".to_string()],
+            Vec::<String>::new(),
+            vec!["echo".to_string()],
+        ],
+        "the step offers the tools, the summary request none, the next step again"
+    );
+}
+
+/// A configured reserved buffer sizes the trigger, not only the default:
+/// with 3k reserved under a 10k window the usable part is 7k, so a reply
+/// at 6,900 tokens must not fire and one at 7,000 must.
+#[tokio::test]
+async fn a_configured_reserved_buffer_sizes_the_trigger() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    session.set_limits(Some(10_000), Some(2_000));
+    session.compaction.reserved = 3_000;
+    session.compaction.preserve = 40;
+    session.messages.extend([
+        Message::User("old question".into()),
+        assistant(&"x".repeat(400)),
+    ]);
+    let provider = Scripted::new(vec![
+        vec![
+            StreamEvent::ToolCall(call("1", "echo", r#"{"say":"one"}"#)),
+            StreamEvent::Usage(usage(6_000, 900)),
+        ],
+        vec![
+            StreamEvent::ToolCall(call("2", "echo", r#"{"say":"two"}"#)),
+            StreamEvent::Usage(usage(6_900, 100)),
+        ],
+        vec![StreamEvent::TextDelta("the summary".into())],
+        vec![StreamEvent::TextDelta("done".into())],
+    ]);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+
+    prompt(&mut session, "go", &provider, &tools)
+        .await
+        .expect("turn completes");
+
+    let markers = session
+        .messages
+        .iter()
+        .filter(|message| matches!(message, Message::Compaction { .. }))
+        .count();
+    assert_eq!(
+        markers, 1,
+        "6,900 is under 7,000 and must not fire; 7,000 fires"
+    );
+    let sent = requests(&provider);
+    assert_eq!(sent.len(), 4, "two steps, the summary, then the answer");
+    assert_eq!(
+        sent[3][1..3],
+        [
+            Message::User(WHAT_DID_WE_DO.into()),
+            assistant("the summary")
+        ],
+        "the request after the compaction starts at the summary exchange"
     );
 }

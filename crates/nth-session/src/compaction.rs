@@ -242,4 +242,19 @@ mod tests {
         );
         assert_eq!(lines[4], "[Summary]: earlier");
     }
+    #[test]
+    fn the_summary_prompt_keeps_the_sections_the_plan_promises() {
+        for heading in [
+            "## Objective",
+            "## Important Details",
+            "## Work State",
+            "### Completed",
+            "### Active",
+            "### Blocked",
+            "## Next Move",
+            "## Relevant Files",
+        ] {
+            assert!(SUMMARY_PROMPT.contains(heading), "{heading} is missing");
+        }
+    }
 }

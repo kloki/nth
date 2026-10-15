@@ -39,6 +39,9 @@ pub(crate) struct Scripted {
     pub(crate) systems: Mutex<Vec<String>>,
     /// Every request's messages, in order.
     pub(crate) sent: Mutex<Vec<Vec<Message>>>,
+    /// The tools every request offered, in order, so a request that must
+    /// carry none (a summary) can prove it.
+    pub(crate) tools: Mutex<Vec<Vec<String>>>,
 }
 
 impl Scripted {
@@ -48,6 +51,7 @@ impl Scripted {
             routes: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
             sent: Mutex::new(Vec::new()),
+            tools: Mutex::new(Vec::new()),
         }
     }
 }
@@ -71,6 +75,13 @@ impl Provider for Scripted {
                 .expect("not poisoned")
                 .push(system.clone());
         }
+        self.tools.lock().expect("not poisoned").push(
+            request
+                .tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        );
         self.sent
             .lock()
             .expect("not poisoned")
