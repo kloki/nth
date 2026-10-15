@@ -56,6 +56,7 @@ pub(crate) async fn run_call(
         llm: ctx.llm.clone(),
         context_window: ctx.context_window,
         max_output: ctx.max_output,
+        compaction: ctx.compaction,
         session: ctx.session.clone(),
     };
     let run = async {
@@ -244,6 +245,7 @@ mod tests {
                 .expect("tool waits");
         });
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: ROUTE,
@@ -251,6 +253,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }
@@ -280,6 +283,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         let result = Turn {
             provider: &provider,
             route: ROUTE,
@@ -287,6 +291,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }

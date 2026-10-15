@@ -167,6 +167,7 @@ async fn runs_tools_until_the_model_answers() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     Turn {
         provider: &provider,
         route: ROUTE,
@@ -174,6 +175,7 @@ async fn runs_tools_until_the_model_answers() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -246,6 +248,7 @@ async fn the_last_step_tells_the_model_to_stop() {
     let (tx, _rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     Turn {
         provider: &provider,
         route: Route {
@@ -256,6 +259,7 @@ async fn the_last_step_tells_the_model_to_stop() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -294,6 +298,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     let result = Turn {
         provider: &provider,
         route: Route {
@@ -304,6 +309,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -337,6 +343,7 @@ pub(super) async fn turn(
     let (tx, mut rx) = mpsc::channel(16);
     let run = async move {
         let cancel = CancellationToken::new();
+        let mut last_usage = None;
         Turn {
             provider,
             route: ROUTE,
@@ -344,6 +351,7 @@ pub(super) async fn turn(
             ctx,
             messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }

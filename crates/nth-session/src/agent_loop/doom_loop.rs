@@ -246,6 +246,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         let result = Turn {
             provider: &provider,
             route: ROUTE,
@@ -253,6 +254,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }

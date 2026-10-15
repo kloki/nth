@@ -144,6 +144,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.mode = Mode::Act;
     session.max_steps = max_steps;
     session.set_limits(ctx.context_window, ctx.max_output);
+    session.compaction = ctx.compaction;
     session.parent = ctx.session.parse().ok();
     session
 }
@@ -488,6 +489,30 @@ pub(crate) mod tests {
         assert_eq!(child.parent, Some(parent));
         assert_eq!(child.context_window, Some(200_000));
         assert_eq!(child.max_output, Some(64_000));
+    }
+
+    /// The `[context]` policy rides where the limits do: a child of a
+    /// session with automatic compaction off must not compact on its own.
+    #[test]
+    fn a_child_session_inherits_the_compaction_policy() {
+        let ctx = ToolContext {
+            compaction: nth_protocol::Compaction {
+                auto: false,
+                reserved: 1_500,
+                preserve: 700,
+            },
+            ..ToolContext::new("/repo".into())
+        };
+        let child = child_session(&explore(), &ctx, 5);
+        assert_eq!(child.compaction, ctx.compaction);
+        assert!(
+            !child.compaction.auto,
+            "the parent turned it off and the child copies it"
+        );
+        assert_eq!(
+            (child.compaction.reserved, child.compaction.preserve),
+            (1_500, 700)
+        );
     }
 
     #[tokio::test]
