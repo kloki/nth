@@ -223,6 +223,12 @@ fn guides(row: &Row) -> (String, String) {
 }
 
 fn wrapped(row: &Row, width: usize, live: &Live) -> Vec<Line<'static>> {
+    match &row.kind {
+        // `plan.md` as written: its heading, then the rest, as markdown.
+        Kind::Title(title) => return rich::markdown(&format!("# {title}"), width).lines,
+        Kind::Goal(goal) => return rich::markdown(goal, width).lines,
+        _ => {}
+    }
     let (first, rest) = guides(row);
     let room = width.saturating_sub(first.width()).max(1);
     let content = Line::from(spans(&row.kind, live));
@@ -242,11 +248,8 @@ fn spans(kind: &Kind, live: &Live) -> Vec<Span<'static>> {
     let colour = |colour| Style::new().fg(colour);
     let icons = icons();
     match kind {
-        Kind::Title(title) => vec![Span::styled(
-            title.clone(),
-            Style::new().add_modifier(Modifier::BOLD),
-        )],
-        Kind::Goal(goal) => vec![Span::styled(goal.replace('\n', " "), dim)],
+        // The title and goal render as markdown in `wrapped`, not here.
+        Kind::Title(_) | Kind::Goal(_) => Vec::new(),
         Kind::Cycle {
             number,
             slug,
@@ -367,6 +370,7 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
 mod tests {
     use nth_protocol::{Todo, WorkOutcome};
     use nth_session::work::{Cycle, ItemRef};
+    use ratatui::style::Modifier;
 
     use super::*;
 
@@ -481,6 +485,29 @@ mod tests {
         );
         assert_eq!(view.label(), "work 1/4");
         assert_eq!(view.state(&live), TabState::Working);
+    }
+
+    #[test]
+    fn the_overview_renders_plan_md_as_markdown() {
+        let mut view = WorkView::default();
+        let mut plan = plan();
+        plan.goal = Some("- step one\n- **step two**".into());
+        view.update(Some(plan));
+
+        let lines = view.lines("w", 40, &Live::new());
+        let text = text(&lines);
+
+        assert_eq!(text[2], "Retry", "the title as a heading");
+        assert!(
+            lines[2]
+                .spans
+                .iter()
+                .filter(|s| !s.content.is_empty())
+                .all(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        );
+        assert_eq!(text[3], "• step one");
+        assert_eq!(text[4], "• step two", "a list, its bold rendered");
+        assert_eq!(text[5], "", "a blank before the first cycle");
     }
 
     #[test]
