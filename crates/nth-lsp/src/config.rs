@@ -1,8 +1,10 @@
-//! The `[lsp]` config section, shaped like opencode's `lsp` config:
+//! The `[lsp]` config section, shaped like opencode's `lsp` config, plus
+//! `idle_secs`:
 //!
 //! ```toml
 //! [lsp]
 //! enabled = true
+//! idle_secs = 600
 //!
 //! [lsp.pyright]
 //! disabled = true
@@ -14,7 +16,7 @@
 //! initialization = { someOption = true }
 //! ```
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +27,9 @@ use crate::server;
 pub struct LspConfig {
     /// `false` turns every language server off.
     pub enabled: bool,
+    /// How long a server may go untouched before it is stopped; the next
+    /// touch starts it again. 0 keeps every server until nth exits.
+    pub idle_secs: u64,
     /// Keyed by server id. A built-in id changes that server; any other id
     /// adds one, and then `command` and `extensions` are required.
     #[serde(flatten)]
@@ -35,10 +40,20 @@ impl Default for LspConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            idle_secs: IDLE_SECS,
             servers: BTreeMap::new(),
         }
     }
 }
+
+impl LspConfig {
+    /// `idle_secs` as a duration, `None` when servers never go idle.
+    pub fn idle(&self) -> Option<Duration> {
+        (self.idle_secs > 0).then(|| Duration::from_secs(self.idle_secs))
+    }
+}
+
+const IDLE_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -66,12 +81,18 @@ fn is_false(b: &bool) -> bool {
 struct RawLspConfig {
     #[serde(default = "enabled_by_default")]
     enabled: bool,
+    #[serde(default = "idle_by_default")]
+    idle_secs: u64,
     #[serde(flatten)]
     servers: BTreeMap<String, ServerConfig>,
 }
 
 fn enabled_by_default() -> bool {
     true
+}
+
+fn idle_by_default() -> u64 {
+    IDLE_SECS
 }
 
 impl TryFrom<RawLspConfig> for LspConfig {
@@ -90,6 +111,7 @@ impl TryFrom<RawLspConfig> for LspConfig {
         }
         Ok(Self {
             enabled: raw.enabled,
+            idle_secs: raw.idle_secs,
             servers: raw.servers,
         })
     }
@@ -173,5 +195,15 @@ mod tests {
     fn disabling_everything() {
         let file: File = toml::from_str("[lsp]\nenabled = false\n").unwrap();
         assert!(!file.lsp.enabled);
+    }
+
+    #[test]
+    fn idle_secs_beside_the_servers() {
+        let file: File = toml::from_str("[lsp]\nidle_secs = 30\n[lsp.rust]\n").unwrap();
+        assert_eq!(file.lsp.idle(), Some(Duration::from_secs(30)));
+        assert!(file.lsp.servers.contains_key("rust"));
+        let never: File = toml::from_str("[lsp]\nidle_secs = 0\n").unwrap();
+        assert_eq!(never.lsp.idle(), None);
+        assert_eq!(LspConfig::default().idle(), Some(Duration::from_secs(600)));
     }
 }
