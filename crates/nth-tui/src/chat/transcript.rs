@@ -917,6 +917,68 @@ pub(super) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn replaying_a_saved_compacted_session_shows_the_divider_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = nth_session::Store::at(dir.path());
+        let mut session = nth_session::Session::new("glm", "/repo".into());
+        session.messages.push(Message::User("go".into()));
+        session
+            .messages
+            .push(Message::Assistant(nth_protocol::AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            }));
+        session.messages.push(Message::Compaction {
+            // The model may open with blanks and answer in markdown.
+            summary: "\n\n## Findings\n\n- one\n- two".into(),
+        });
+        session.messages.push(Message::User("next".into()));
+        store.save(&session).await.expect("saves");
+        let saved = store.load(session.id).await.expect("loads");
+
+        let mut t = Transcript::replay("/repo".into(), &saved.messages);
+
+        assert_eq!(
+            t.entries().nth(2),
+            Some(&Entry::Compacted("\n\n## Findings\n\n- one\n- two".into())),
+            "the save round-trips the marker and the replay shows it"
+        );
+        let total = t.layout(60, ChatSettings::default());
+        assert_eq!(
+            text(&t.visible(0, total)),
+            [
+                "▎ go",
+                "",
+                "▎ done",
+                "",
+                "  ◘ compacted · ## Findings",
+                "",
+                "▎ next",
+            ]
+        );
+        assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn a_markdown_summary_with_leading_blanks_is_still_one_row() {
+        let mut t = transcript();
+        t.apply(&Event::Compacted {
+            summary: "\n\n## Findings\n\n- one\n- two".into(),
+        });
+
+        // Whatever the pane width, the divider never wraps.
+        for width in [10, 60] {
+            let total = t.layout(width, ChatSettings::default());
+            assert_eq!(total, 1, "one row at {width} columns");
+            assert_eq!(
+                text(&t.visible(0, total)),
+                ["  ◘ compacted · ## Findings"],
+                "the first line with something on it"
+            );
+        }
+    }
+
     #[test]
     fn replays_a_saved_session() {
         let bash = tool("1", "bash", r#"{"command":"ls"}"#);

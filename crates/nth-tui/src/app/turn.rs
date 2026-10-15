@@ -555,13 +555,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
     };
 
     use crossterm::event::{KeyCode, KeyEvent};
-    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
         BoxError, Event, Listing, Message, MonitorEvent, Provider, Request, Stream, StreamEvent,
         ToolCall, Usage,
@@ -570,6 +573,81 @@ mod tests {
 
     use super::*;
     use crate::chat::Entry;
+
+    /// Answers each request with the next scripted reply, recording the
+    /// messages every request carried. Later requests get "ok".
+    #[derive(Default)]
+    struct Scripted {
+        replies: Mutex<VecDeque<Vec<StreamEvent>>>,
+        requests: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl Scripted {
+        fn new(replies: impl IntoIterator<Item = Vec<StreamEvent>>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().collect()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The messages of every request, in the order they were asked.
+        fn sent(&self) -> Vec<Vec<Message>> {
+            self.requests.lock().expect("lock").clone()
+        }
+    }
+
+    impl Provider for Scripted {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            self.requests
+                .lock()
+                .expect("lock")
+                .push(request.messages.to_vec());
+            let reply = self
+                .replies
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .unwrap_or_else(|| vec![StreamEvent::TextDelta("ok".into())]);
+            let reply: Vec<Result<StreamEvent, BoxError>> = reply.into_iter().map(Ok).collect();
+            async move { Ok(futures::stream::iter(reply).boxed()) }.boxed()
+        }
+    }
+
+    /// Hangs on its first request until dropped, answers "ok" to later
+    /// ones: a compaction Esc cuts short, then a turn that still works.
+    #[derive(Default)]
+    struct HangFirst(AtomicUsize);
+
+    impl Provider for HangFirst {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+            async move {
+                if first {
+                    std::future::pending::<()>().await;
+                }
+                let reply: Vec<Result<StreamEvent, BoxError>> =
+                    vec![Ok(StreamEvent::TextDelta("ok".into()))];
+                Ok(futures::stream::iter(reply).boxed())
+            }
+            .boxed()
+        }
+    }
 
     /// A provider that never answers: it says when a request reaches it,
     /// and records when that request is dropped.
@@ -1436,6 +1514,170 @@ mod tests {
         assert!(app.queue.is_empty());
         assert!(app.prompt.is_empty(), "no text of yours to give back");
         assert_eq!(app.hint.as_deref(), Some("compaction discarded"));
+    }
+
+    #[tokio::test]
+    async fn compacting_nothing_asks_nothing_and_says_nothing() {
+        let provider = Arc::new(Scripted::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+
+        send(&mut app, "/compact");
+        assert!(app.is_busy(), "a compaction runs as a turn");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        assert!(
+            app.chat.transcript.entries().next().is_none(),
+            "no divider and no footer for a session with nothing to summarize"
+        );
+        assert!(provider.sent().is_empty(), "the model was never asked");
+        assert!(app.session.as_ref().expect("session came back").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_manual_compaction_shows_only_the_summarys_first_line() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("ok".into())],
+            vec![StreamEvent::TextDelta(
+                "Objective: ship\n\n## Details\nmore".into(),
+            )],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted(
+                "Objective: ship\n\n## Details\nmore".into()
+            )),
+            "the whole summary is kept for the clipboard and the model"
+        );
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("compacted · Objective: ship")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("## Details")),
+            "one row, whatever the summary holds: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_after_a_compaction_starts_at_the_summary_exchange() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("first answer".into())],
+            vec![StreamEvent::TextDelta("the summary".into())],
+            vec![StreamEvent::TextDelta("second answer".into())],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        send(&mut app, "next");
+        end(&mut app).await;
+
+        let sent = provider.sent();
+        assert_eq!(sent.len(), 3, "the turn, the summary, the turn after");
+        assert_eq!(sent[1].len(), 1, "the summary request is one user message");
+        let Message::User(head) = &sent[1][0] else {
+            panic!("the summary request: {:?}", sent[1]);
+        };
+        assert!(head.contains("[User]: go"), "{head}");
+
+        let after = &sent[2];
+        assert!(matches!(after.first(), Some(Message::System(_))));
+        assert_eq!(after[1], Message::User("What did we do so far?".into()));
+        assert!(
+            matches!(&after[2], Message::Assistant(reply) if reply.text == "the summary"),
+            "the marker is read as its exchange: {:?}",
+            after[2]
+        );
+        assert_eq!(after[3], Message::User("next".into()));
+        assert_eq!(after.len(), 4, "the summarized head is not sent again");
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::TurnDone { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn esc_during_a_compaction_leaves_a_session_that_still_runs() {
+        let provider = Arc::new(HangFirst::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(Message::User("old".into()));
+
+        send(&mut app, "/compact");
+        tokio::task::yield_now().await;
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::User(text)) if text == "old"),
+            "nothing was summarized"
+        );
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
+
+        // The session the interrupted compaction held is valid to go on.
+        send(&mut app, "next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::Assistant(reply)) if reply.text == "ok"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_queued_compaction_shows_its_label_until_the_turn_ends() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("ok".into())],
+            vec![StreamEvent::TextDelta("the summary".into())],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        send(&mut app, "go");
+        send(&mut app, "/compact");
+
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows[15].starts_with(" ⏵ 1 queued · /compact"),
+            "{:?}",
+            rows[15]
+        );
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the compaction runs next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted("the summary".into()))
+        );
     }
 
     #[tokio::test]

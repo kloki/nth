@@ -238,4 +238,17 @@ mod tests {
         ));
         assert!(!too_long(""));
     }
+
+    /// A billing refusal that happens to say "token limit" is about the
+    /// account, not the input, so it must not be compacted for.
+    #[test]
+    #[ignore = "bug: too_long matches the bare phrase `token limit` anywhere, so a 400 quota refusal becomes ContextOverflow"]
+    fn a_billing_error_naming_a_token_limit_is_not_an_overflow() {
+        let billing = r#"{"error":{"message":"You have reached your token limit for this month. Update your billing details to continue.","type":"insufficient_quota","code":"billing_hard_limit_reached"}}"#;
+
+        assert!(
+            !context_overflow(reqwest::StatusCode::BAD_REQUEST, billing),
+            "{billing}"
+        );
+    }
 }

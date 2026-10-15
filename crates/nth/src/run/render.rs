@@ -121,3 +121,56 @@ impl Printer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use nth_protocol::Event;
+
+    use super::*;
+
+    /// Set only in the child the test below re-executes itself as.
+    const CHILD: &str = "NTH_PRINTER_TEST_CHILD";
+
+    /// A compaction shows on stderr as one row holding the summary's first
+    /// line, on a line of its own when the answer was mid-line. Run in a
+    /// child process, since the printer writes to the real streams.
+    #[test]
+    fn a_compaction_prints_one_row_with_the_first_summary_line() {
+        if std::env::var_os(CHILD).is_some() {
+            // The child: print as the headless run's task does.
+            let mut printer = Printer::new(PathBuf::from("/repo"));
+            printer.event(&Event::TextDelta("partial ".into()));
+            printer.event(&Event::Compacted {
+                summary: "Objective: ship\n\n## Details\nrest".into(),
+            });
+            printer.finish();
+            return;
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "run::render::tests::a_compaction_prints_one_row_with_the_first_summary_line",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("runs the child");
+
+        assert!(child.status.success(), "{child:?}");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(
+            stderr.contains("compacted · Objective: ship"),
+            "the divider's row on stderr: {stderr:?}"
+        );
+        assert!(
+            !stderr.contains("## Details") && !stderr.contains("rest"),
+            "only the summary's first line: {stderr:?}"
+        );
+        assert!(
+            stdout.contains("partial \n"),
+            "the answer's line ends before the divider: {stdout:?}"
+        );
+    }
+}

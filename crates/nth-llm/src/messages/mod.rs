@@ -523,6 +523,83 @@ mod tests {
         assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
     }
 
+    /// The refusal phrased in a nested field, and as plain text: the
+    /// classification reads the whole body, not one field of it.
+    const NESTED_OVERFLOW: &[u8] = br#"{"error":{"message":"Request failed","detail":{"reason":"maximum context length exceeded"}}}"#;
+    const PLAIN_OVERFLOW: &[u8] = b"Input is too long for requested model";
+    /// An ordinary refusal that says nothing about a limit.
+    const ORDINARY: &[u8] =
+        br#"{"error":{"type":"invalid_request_error","message":"invalid model"}}"#;
+
+    #[tokio::test]
+    async fn any_overflow_phrasing_on_a_400_413_or_422_becomes_a_context_overflow() {
+        for status in [400, 413, 422] {
+            for body in [NESTED_OVERFLOW, PLAIN_OVERFLOW] {
+                let (url, _) = serve_status(status, body).await;
+                let client = Client::new(reqwest::Client::new(), url);
+                let error = client
+                    .stream(request(), None, &Auth::Key("key".into()))
+                    .await
+                    .err()
+                    .expect("refused");
+                assert!(
+                    error.downcast_ref::<ContextOverflow>().is_some(),
+                    "{status} with {}: {error}",
+                    String::from_utf8_lossy(body)
+                );
+                assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_overflow_body_on_a_transient_status_stays_a_status_error() {
+        for status in [429, 500] {
+            let (url, _) = serve_status(status, OVERFLOW).await;
+            let client = Client::new(reqwest::Client::new(), url);
+            let error = client
+                .stream(request(), None, &Auth::Key("key".into()))
+                .await
+                .err()
+                .expect("refused");
+            assert!(
+                error.downcast_ref::<ContextOverflow>().is_none(),
+                "{status}: {error}"
+            );
+            let expected = reqwest::StatusCode::from_u16(status).expect("a status");
+            assert!(
+                matches!(
+                    error.downcast_ref::<Error>(),
+                    Some(Error::Status { status, .. }) if *status == expected
+                ),
+                "{error}"
+            );
+            assert!(retry(&error).is_some(), "{status} is worth retrying");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_400_stays_a_status_error() {
+        let (url, _) = serve_status(400, ORDINARY).await;
+        let client = Client::new(reqwest::Client::new(), url);
+        let error = client
+            .stream(request(), None, &Auth::Key("key".into()))
+            .await
+            .err()
+            .expect("refused");
+
+        assert!(error.downcast_ref::<ContextOverflow>().is_none(), "{error}");
+        assert!(
+            matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::Status { status, message, .. })
+                    if *status == reqwest::StatusCode::BAD_REQUEST && message == "invalid model"
+            ),
+            "{error}"
+        );
+        assert_eq!(retry(&error), None);
+    }
+
     #[test]
     fn only_an_overflow_body_on_an_overflow_status_is_marked() {
         let bad_request = reqwest::StatusCode::BAD_REQUEST;
