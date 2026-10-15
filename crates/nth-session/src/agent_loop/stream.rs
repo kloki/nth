@@ -34,15 +34,47 @@ pub(super) enum Stop {
 }
 
 impl Turn<'_> {
-    /// One step's request, streamed to the end. Opening it is retried on a
-    /// transient provider error, as [`Turn::open_stream`] does; what each
-    /// attempt reports it used is counted to the turn's spend.
+    /// One step's request, retried on a transient provider error with
+    /// backoff: 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's
+    /// `Retry-After` when it gave one no longer than `RETRY_MAX_AFTER`. The
+    /// retry is announced as an [`Event::Retry`], and cancelling during the
+    /// wait ends the step. A failure — opening the stream or in the middle
+    /// of it — retries the whole attempt, so the reply starts over and the
+    /// partial one is never saved.
     pub(super) async fn stream_step(
         &mut self,
         last: bool,
         specs: &[ToolSpec],
         last_usage: &mut Option<Usage>,
     ) -> Result<AssistantMessage, Stop> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match self.stream_attempt(last, specs, last_usage).await {
+                Err(Stop::Failed(error)) => error,
+                done => return done,
+            };
+            let Some(delay) = self.retry_delay(&error, attempt) else {
+                return Err(Stop::Failed(error));
+            };
+            if !self.wait_to_retry(attempt, delay).await {
+                return Err(Stop::Cancelled(AssistantMessage::default()));
+            }
+        }
+    }
+
+    /// One whole attempt at the reply: opening the stream and streaming it
+    /// to the end. A failure from either is the caller's to retry, from
+    /// scratch: text already streamed stays on screen but the partial reply
+    /// is dropped, as [`Event::Retry`] says. What the attempt reports it
+    /// used is counted to the turn's spend.
+    async fn stream_attempt(
+        &mut self,
+        last: bool,
+        specs: &[ToolSpec],
+        last_usage: &mut Option<Usage>,
+    ) -> Result<AssistantMessage, Stop> {
+        let (events, cancel) = (self.events, self.cancel);
         let effective = effective(self.messages);
         let sent = if last {
             Cow::Owned(max_steps_messages(&effective))
@@ -57,8 +89,7 @@ impl Turn<'_> {
             messages: &sent,
             tools: specs,
         };
-        let (events, cancel) = (self.events, self.cancel);
-        let mut stream = self.open_stream(request).await?;
+        let mut stream = self.open_once(request).await?;
         let mut reply = AssistantMessage::default();
         loop {
             let event = tokio::select! {
@@ -93,43 +124,31 @@ impl Turn<'_> {
         Ok(reply)
     }
 
-    /// Opens `request`'s stream, retried on a transient provider error with
-    /// backoff: 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's
-    /// `Retry-After` when it gave one no longer than `RETRY_MAX_AFTER`. The
-    /// retry is announced as an [`Event::Retry`], and cancelling during the
-    /// wait ends the request. A step and the summary request open their
-    /// stream the same way.
-    pub(super) async fn open_stream(
-        &self,
-        request: Request<'_>,
-    ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let error = match self.open_once(request).await {
-                Err(Stop::Failed(error)) => error,
-                done => return done,
-            };
-            let delay = self
-                .provider
-                .retry(&error)
-                .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
-                .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
-                .filter(|delay| *delay <= RETRY_MAX_AFTER);
-            let Some(delay) = delay else {
-                return Err(Stop::Failed(error));
-            };
-            emit(self.events, Event::Retry { attempt, delay }).await;
-            tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
-                _ = tokio::time::sleep(delay) => {}
-            }
+    /// How long to wait before retrying `error` as the `attempt`-th try,
+    /// when the provider says a retry can help; `None` when it cannot, or
+    /// when its `Retry-After` is longer than `RETRY_MAX_AFTER` (the error
+    /// shows right away rather than an unexplained stall).
+    pub(super) fn retry_delay(&self, error: &BoxError, attempt: u32) -> Option<Duration> {
+        self.provider
+            .retry(error)
+            .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
+            .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
+            .filter(|delay| *delay <= RETRY_MAX_AFTER)
+    }
+
+    /// Announces a retry and waits out its delay; `false` when cancelled
+    /// during the wait, which ends the caller's request.
+    pub(super) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
+        emit(self.events, Event::Retry { attempt, delay }).await;
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => false,
+            _ = tokio::time::sleep(delay) => true,
         }
     }
 
     /// One attempt at opening `request`'s stream; cancelling ends it.
-    async fn open_once(
+    pub(super) async fn open_once(
         &self,
         request: Request<'_>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
@@ -361,6 +380,101 @@ mod tests {
             }
         }
         assert_eq!(retries, [(1, Duration::ZERO)]);
+    }
+
+    /// Streams a text delta and then fails, like a dropped connection; a
+    /// retried request answers whole.
+    struct DropsMidway {
+        attempts: Mutex<usize>,
+    }
+
+    impl Provider for DropsMidway {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let mut attempts = self.attempts.lock().expect("not poisoned");
+            *attempts += 1;
+            let first = *attempts == 1;
+            async move {
+                let events: Vec<Result<StreamEvent, BoxError>> = match first {
+                    true => vec![
+                        Ok(StreamEvent::TextDelta("partial".into())),
+                        Err(Box::new(Temporary) as BoxError),
+                    ],
+                    false => vec![Ok(StreamEvent::TextDelta("the whole answer".into()))],
+                };
+                Ok(stream::iter(events).boxed())
+            }
+            .boxed()
+        }
+
+        fn retry(&self, error: &BoxError) -> Option<Retry> {
+            error.downcast_ref::<Temporary>().map(|_| Retry {
+                // A retry that waits in a test would only slow it down.
+                after: Some(Duration::ZERO),
+            })
+        }
+    }
+
+    /// A failure in the middle of a reply retries the whole attempt: what
+    /// was already streamed is not saved, and the second attempt replaces
+    /// it, as `Event::Retry` promises.
+    #[tokio::test]
+    async fn a_mid_stream_failure_restarts_the_step_from_scratch() {
+        let provider = DropsMidway {
+            attempts: Mutex::new(0),
+        };
+        let ctx = ToolContext::new(".".into());
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let mut last_usage = None;
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &[],
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
+        .await
+        .expect("the retry answers");
+
+        assert_eq!(
+            messages[1..],
+            [Message::Assistant(AssistantMessage {
+                text: "the whole answer".into(),
+                ..Default::default()
+            })],
+            "the second, complete attempt is what is saved"
+        );
+        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        drop(tx);
+        let mut deltas = Vec::new();
+        let mut retries = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::TextDelta(text) => deltas.push(text),
+                Event::Retry { attempt, delay } => retries.push((attempt, delay)),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            deltas,
+            ["partial", "the whole answer"],
+            "the partial deltas were shown, then the reply started over"
+        );
+        assert_eq!(retries, [(1, Duration::ZERO)], "one retry announced");
     }
 
     #[tokio::test]

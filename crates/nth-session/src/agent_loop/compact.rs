@@ -3,7 +3,9 @@
 //! tail. Later requests start at the marker (see `stream::effective`).
 
 use futures::StreamExt;
-use nth_protocol::{BoxError, ContextOverflow, Event, Message, Request, StreamEvent, Usage};
+use nth_protocol::{
+    AssistantMessage, BoxError, ContextOverflow, Event, Message, Request, StreamEvent, Usage,
+};
 
 use super::{Error, Stop, Turn, emit};
 use crate::compaction::{self, SUMMARY_PROMPT};
@@ -109,9 +111,11 @@ impl Turn<'_> {
     }
 
     /// The summary request: one user message, no tools, streamed to the
-    /// end. Opening it is retried as a step's is; its usage is counted like
-    /// a step's, but its text is not streamed as an answer — the front-end
-    /// hears of it as [`Event::Compacted`].
+    /// end and retried as a step's is — a failure opening it or in the
+    /// middle of it restarts it from scratch, so a partial attempt is
+    /// discarded and only a complete one becomes the summary. Its usage is
+    /// counted like a step's, but its text is not streamed as an answer —
+    /// the front-end hears of it as [`Event::Compacted`].
     async fn summarize(&mut self, prompt: String) -> Result<String, Error> {
         let messages = [Message::User(prompt)];
         let request = Request {
@@ -122,21 +126,43 @@ impl Turn<'_> {
             messages: &messages,
             tools: &[],
         };
-        let mut stream = match self.open_stream(request).await {
-            Ok(stream) => stream,
-            Err(Stop::Cancelled(_)) => return Err(Error::Interrupted),
-            Err(Stop::Failed(error)) => return Err(self.request_failed(error)),
-        };
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match self.summary_attempt(request).await {
+                Err(Stop::Failed(error)) => error,
+                Err(Stop::Cancelled(_)) => return Err(Error::Interrupted),
+                Ok(summary) if summary.trim().is_empty() => return Err(Error::EmptyReply),
+                Ok(summary) => return Ok(summary),
+            };
+            // The provider refused the conversation as too long: another
+            // attempt cannot shrink it.
+            if error.downcast_ref::<ContextOverflow>().is_some() {
+                return Err(Error::TooBigToCompact);
+            }
+            let Some(delay) = self.retry_delay(&error, attempt) else {
+                return Err(self.request_failed(error));
+            };
+            if !self.wait_to_retry(attempt, delay).await {
+                return Err(Error::Interrupted);
+            }
+        }
+    }
+
+    /// One whole attempt at the summary, streamed to the end; a failure
+    /// leaves no summary behind, so the caller's retry starts it over.
+    async fn summary_attempt(&mut self, request: Request<'_>) -> Result<String, Stop> {
         let (events, cancel) = (self.events, self.cancel);
+        let mut stream = self.open_once(request).await?;
         let mut summary = String::new();
         loop {
             let event = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Err(Error::Interrupted),
+                _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
                 event = stream.next() => event,
             };
             let Some(event) = event else { break };
-            match event.map_err(|error| self.request_failed(error))? {
+            match event.map_err(Stop::Failed)? {
                 StreamEvent::TextDelta(text) => summary.push_str(&text),
                 StreamEvent::ReasoningDelta(_) => {}
                 // No tools were offered, so none can arrive.
@@ -147,9 +173,6 @@ impl Turn<'_> {
                     emit(events, Event::Usage(usage)).await;
                 }
             }
-        }
-        if summary.trim().is_empty() {
-            return Err(Error::EmptyReply);
         }
         Ok(summary)
     }
@@ -201,6 +224,11 @@ mod tests {
             ..Usage::default()
         }
     }
+
+    /// A retryable provider failure that is not an overflow.
+    #[derive(Debug, thiserror::Error)]
+    #[error("temporary failure")]
+    struct Temporary;
 
     /// A route with the model's window and an explicit tail budget, so the
     /// tests do not depend on estimated sizes. Usable is 10k − 2k.
@@ -721,11 +749,6 @@ mod tests {
     /// step's opening is, so the compaction still lands.
     #[tokio::test]
     async fn a_retryable_summary_failure_is_retried() {
-        /// A retryable provider failure that is not an overflow.
-        #[derive(Debug, thiserror::Error)]
-        #[error("temporary failure")]
-        struct Temporary;
-
         /// Fails the request named in `fail` (1-based) and answers the rest
         /// with `replies` in order, retrying at once.
         struct FlakySummary {
@@ -822,5 +845,114 @@ mod tests {
             }
         }
         assert_eq!(retries, [(1, Duration::ZERO)], "announced like a step's");
+    }
+
+    /// Streams a partial summary and then fails, like a dropped connection;
+    /// the second summary attempt answers whole.
+    struct DropsMidwaySummary {
+        steps: Mutex<usize>,
+        summaries: Mutex<usize>,
+    }
+
+    impl Provider for DropsMidwaySummary {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            if request.tools.is_empty() {
+                let mut summaries = self.summaries.lock().expect("not poisoned");
+                *summaries += 1;
+                let first = *summaries == 1;
+                return async move {
+                    let events: Vec<Result<StreamEvent, BoxError>> = match first {
+                        true => vec![
+                            Ok(StreamEvent::TextDelta("half a summary".into())),
+                            Err(Box::new(Temporary) as BoxError),
+                        ],
+                        false => vec![Ok(StreamEvent::TextDelta("the summary".into()))],
+                    };
+                    Ok(stream::iter(events).boxed())
+                }
+                .boxed();
+            }
+            let mut steps = self.steps.lock().expect("not poisoned");
+            *steps += 1;
+            let reply = match *steps {
+                1 => vec![
+                    StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+                    StreamEvent::Usage(usage(9_000, 1_500)),
+                ],
+                _ => vec![StreamEvent::TextDelta("done".into())],
+            };
+            async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
+        }
+
+        fn retry(&self, error: &BoxError) -> Option<Retry> {
+            error.downcast_ref::<Temporary>().map(|_| Retry {
+                // A retry that waits in a test would only slow it down.
+                after: Some(Duration::ZERO),
+            })
+        }
+    }
+
+    /// A failure in the middle of the summary stream restarts it from
+    /// scratch: only the complete second attempt becomes the summary.
+    #[tokio::test]
+    async fn a_mid_stream_summary_failure_restarts_the_summary() {
+        let provider = DropsMidwaySummary {
+            steps: Mutex::new(0),
+            summaries: Mutex::new(0),
+        };
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("old question".into()),
+            assistant(&"x".repeat(400)),
+            Message::User("go".into()),
+        ];
+        let mut spent = spend();
+        let mut last_usage = None;
+
+        Turn {
+            provider: &provider,
+            route: route(100),
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await
+        .expect("the retried summary lands the compaction");
+
+        assert_eq!(
+            messages[3],
+            Message::Compaction {
+                summary: "the summary".into()
+            },
+            "the complete second attempt's text, never the partial first"
+        );
+        assert_eq!(
+            *provider.summaries.lock().expect("not poisoned"),
+            2,
+            "the summary streamed twice"
+        );
+        drop(tx);
+        let mut retries = 0;
+        while let Some(event) = rx.recv().await {
+            retries += usize::from(matches!(event, Event::Retry { .. }));
+        }
+        assert_eq!(retries, 1, "one retry announced");
     }
 }
