@@ -24,6 +24,13 @@ pub struct Config {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub provider: BTreeMap<String, ProviderConfig>,
     pub session: SessionConfig,
+    /// How a session keeps itself inside the model's context window: whether
+    /// it compacts on its own, and the budgets that uses. The keys are
+    /// `auto` (compact when the last reply fills the window), `reserved`
+    /// (the buffer kept below it; 0 sizes it to the model) and `preserve`
+    /// (tokens kept verbatim; 0 sizes it to the window).
+    #[serde(default)]
+    pub context: nth_session::Compaction,
     pub task: TaskConfig,
     pub work: WorkConfig,
     pub mode: ModeConfig,
@@ -735,6 +742,28 @@ mod tests {
         let config = Config::parse("[layout]\nsplit_width = 0").expect("parses");
         assert_eq!(config.layout.split_width, 0);
         assert!(Config::parse("[layout]\nsplit_width = -1").is_err());
+    }
+
+    #[test]
+    fn context_takes_the_compaction_settings() {
+        let config = Config::parse(
+            r#"
+            [context]
+            auto = false
+            reserved = 30000
+            preserve = 1000
+            "#,
+        )
+        .expect("parses");
+        assert!(!config.context.auto);
+        assert_eq!(config.context.reserved, 30000);
+        assert_eq!(config.context.preserve, 1000);
+
+        let round = Config::parse(&config.to_toml().expect("serializes")).expect("parses");
+        assert_eq!(round, config);
+        assert!(Config::parse("[context]\nauto = \"x\"").is_err());
+        // A typo inside [context] is not caught yet: `Compaction`, in
+        // nth-session, does not deny unknown fields like these tables do.
     }
 
     #[test]

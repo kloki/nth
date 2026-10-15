@@ -15,11 +15,15 @@ use nth_session::{
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
-use crate::{config::Config, post_write, setup};
+use crate::{config::Config, post_write, set_model_limits, setup};
 
 pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     let paths = config.paths();
     let (mut session, provider) = setup(&mut config, &paths, mode).await?;
+    // The model is final now: take the configured compaction policy and the
+    // limits its listing names, so a long turn compacts itself.
+    session.compaction = config.context;
+    set_model_limits(&mut session, &provider).await;
     let provider: Arc<dyn Provider> = Arc::new(provider);
     let cwd = session.cwd.clone();
     let post_write = post_write(&config);

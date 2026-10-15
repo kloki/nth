@@ -227,6 +227,29 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     Ok((session, providers))
 }
 
+/// Sizes the session's compaction to its model: the context window and
+/// output limit the providers' listing names for it. Call it once the
+/// session's model is final. A listing that fails changes nothing, so a
+/// fresh session keeps both limits unknown and nothing compacts on its own.
+pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
+    let Ok(listing) = provider.models().await else {
+        return;
+    };
+    if let Some((context_window, max_output)) = limits(&listing, &session.model) {
+        session.set_limits(context_window, max_output);
+    }
+}
+
+/// The context window and output limit the listing gives `model`; `None`
+/// when the listing does not name it.
+fn limits(listing: &Listing, model: &str) -> Option<(Option<u64>, Option<u64>)> {
+    listing
+        .models
+        .iter()
+        .find(|info| info.id == model)
+        .map(|info| (info.context, info.output))
+}
+
 /// Any one of the models the providers list.
 async fn random_model(providers: &Providers) -> Result<String> {
     let listing = providers
@@ -384,6 +407,26 @@ mod tests {
             origin: None,
             cost: None,
         }
+    }
+
+    #[test]
+    fn limits_come_from_the_listing_entry_of_the_model() {
+        let listed = |id: &str, context: Option<u64>, output: Option<u64>| ModelInfo {
+            context,
+            output,
+            ..model(id)
+        };
+        let listing = Listing::from(vec![
+            listed("zen/a", Some(200_000), Some(64_000)),
+            listed("go/c", Some(1_000_000), None),
+        ]);
+
+        assert_eq!(
+            limits(&listing, "zen/a"),
+            Some((Some(200_000), Some(64_000)))
+        );
+        assert_eq!(limits(&listing, "go/c"), Some((Some(1_000_000), None)));
+        assert_eq!(limits(&listing, "not/listed"), None);
     }
 
     #[test]
