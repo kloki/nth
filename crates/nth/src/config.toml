@@ -194,6 +194,10 @@ enabled = true
 # `nth lsp` lists them and the project root each would run in.
 enabled = true
 
+# Stop a server no tool has touched for this many seconds; the next touch
+# starts it again. 0 keeps every server until nth exits.
+idle_secs = 600
+
 # One [lsp.<id>] table per server to change or add. A built-in id (rust,
 # typescript, pyright, gopls, clangd, ...) changes that server; any other id
 # adds one, which needs command and extensions. A server is only used when its

@@ -1,10 +1,12 @@
 //! The process-wide set of language server clients, started lazily: one per
-//! (server id, project root), the first time a file there is touched.
+//! (server id, project root), the first time a file there is touched, and
+//! stopped once none has been touched there for the configured idle time.
 
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 use futures::{
@@ -55,8 +57,17 @@ type Key = (String, PathBuf);
 /// good, which is opencode's `broken` set.
 type Slot = Shared<BoxFuture<'static, Option<Arc<Client>>>>;
 
+struct Entry {
+    slot: Slot,
+    /// The last touch of a file this client serves, which its idle time
+    /// counts from.
+    touched: Instant,
+}
+
 /// Cheap to clone; every clone shares the same clients. Dropping the last
-/// one stops them all; [`Lsp::shutdown`] first asks them to leave.
+/// one stops them all; [`Lsp::shutdown`] first asks them to leave. A client
+/// untouched for `idle` is stopped on its own, so a server a subagent
+/// started in some other root does not outlive its use.
 #[derive(Clone)]
 pub struct Lsp {
     inner: Arc<Inner>,
@@ -64,9 +75,10 @@ pub struct Lsp {
 
 struct Inner {
     servers: Arc<[Server]>,
-    clients: Mutex<HashMap<Key, Slot>>,
+    clients: Mutex<HashMap<Key, Entry>>,
     status: watch::Sender<Vec<ServerStatus>>,
     cancel: CancellationToken,
+    idle: Option<Duration>,
 }
 
 impl Drop for Inner {
@@ -77,16 +89,17 @@ impl Drop for Inner {
 
 impl Lsp {
     pub fn new(config: &LspConfig) -> Self {
-        Self::with_servers(server::registry(config))
+        Self::with_servers(server::registry(config), config.idle())
     }
 
-    fn with_servers(servers: Vec<Server>) -> Self {
+    fn with_servers(servers: Vec<Server>, idle: Option<Duration>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 servers: servers.into(),
                 clients: Mutex::new(HashMap::new()),
                 status: watch::Sender::new(Vec::new()),
                 cancel: CancellationToken::new(),
+                idle,
             }),
         }
     }
@@ -146,6 +159,10 @@ impl Lsp {
                 all.entry(file).or_default().extend(diagnostics);
             }
         }
+        // Waiting for a report is not idling.
+        for client in &clients {
+            self.stamp(client.id(), client.root());
+        }
         all
     }
 
@@ -161,7 +178,7 @@ impl Lsp {
                 .expect("lsp client map lock poisoned");
             clients
                 .values()
-                .filter_map(|slot| slot.peek().cloned().flatten())
+                .filter_map(|entry| entry.slot.peek().cloned().flatten())
                 .collect()
         };
         join_all(clients.iter().map(|client| client.shutdown())).await;
@@ -201,19 +218,34 @@ impl Lsp {
                 .clients
                 .lock()
                 .expect("lsp client map lock poisoned");
-            clients
+            let entry = clients
                 .entry((server.id.clone(), root.clone()))
                 .or_insert_with(|| {
                     let lsp = self.clone();
                     let started = tokio::spawn(async move { lsp.start(server, root).await });
-                    // A start that panicked counts as a failed one.
-                    async move { started.await.unwrap_or(None) }
-                        .boxed()
-                        .shared()
-                })
-                .clone()
+                    Entry {
+                        // A start that panicked counts as a failed one.
+                        slot: async move { started.await.unwrap_or(None) }
+                            .boxed()
+                            .shared(),
+                        touched: Instant::now(),
+                    }
+                });
+            entry.touched = Instant::now();
+            entry.slot.clone()
         };
         slot.await
+    }
+
+    fn stamp(&self, id: &str, root: &Path) {
+        let mut clients = self
+            .inner
+            .clients
+            .lock()
+            .expect("lsp client map lock poisoned");
+        if let Some(entry) = clients.get_mut(&(id.to_string(), root.to_path_buf())) {
+            entry.touched = Instant::now();
+        }
     }
 
     async fn start(&self, server: Server, root: PathBuf) -> Option<Arc<Client>> {
@@ -226,10 +258,16 @@ impl Lsp {
         self.set_state(&server.id, &root, ServerState::Starting);
         let stderr = Stderr::default();
         let cancel = self.inner.cancel.child_token();
-        match Client::spawn(&server.id, launch, cancel, stderr.clone()).await {
+        match Client::spawn(&server.id, launch, cancel.clone(), stderr.clone()).await {
             Ok(client) => {
                 self.set_state(&server.id, &root, ServerState::Connected);
-                Some(Arc::new(client))
+                let client = Arc::new(client);
+                if let Some(idle) = self.inner.idle {
+                    let inner = Arc::downgrade(&self.inner);
+                    let key = (server.id, root);
+                    tokio::spawn(stop_when_idle(inner, key, client.clone(), idle, cancel));
+                }
+                Some(client)
             }
             Err(e) => {
                 let reason = stderr.explain(&e.to_string());
@@ -262,6 +300,43 @@ impl Lsp {
     }
 }
 
+/// Stops `client` once its entry has gone `idle` without a touch: the entry
+/// and its status go, so the next touch starts the server again. Holds the
+/// pool only weakly, and ends with it.
+async fn stop_when_idle(
+    inner: Weak<Inner>,
+    key: Key,
+    client: Arc<Client>,
+    idle: Duration,
+    cancel: CancellationToken,
+) {
+    let mut deadline = Instant::now() + idle;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep_until(deadline) => {}
+        }
+        let Some(inner) = inner.upgrade() else { return };
+        let mut clients = inner.clients.lock().expect("lsp client map lock poisoned");
+        let Some(entry) = clients.get(&key) else {
+            return;
+        };
+        deadline = entry.touched + idle;
+        if deadline > Instant::now() {
+            continue;
+        }
+        clients.remove(&key);
+        // Under the lock, so a start for the same key that follows cannot
+        // have its status taken away.
+        inner
+            .status
+            .send_modify(|all| all.retain(|s| s.id != key.0 || s.root != key.1));
+        break;
+    }
+    client.shutdown().await;
+    cancel.cancel();
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -272,6 +347,7 @@ mod tests {
     fn config_with(id: &str, command: &[&str], extensions: &[&str]) -> LspConfig {
         let mut config = LspConfig {
             enabled: true,
+            idle_secs: 0,
             servers: BTreeMap::new(),
         };
         config.servers.insert(
@@ -350,6 +426,11 @@ done
     /// A checkout with one `.nthtest` file, served by the scripted server
     /// started with `args`.
     fn scripted(args: &[&str]) -> (tempfile::TempDir, PathBuf, Lsp) {
+        scripted_idling(args, None)
+    }
+
+    /// [`scripted`], stopping the server after `idle` untouched.
+    fn scripted_idling(args: &[&str], idle: Option<Duration>) -> (tempfile::TempDir, PathBuf, Lsp) {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".git")).unwrap();
@@ -360,7 +441,8 @@ done
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut command = vec![script.to_str().unwrap()];
         command.extend(args);
-        let lsp = Lsp::new(&config_with("fake", &command, &[".nthtest"]));
+        let config = config_with("fake", &command, &[".nthtest"]);
+        let lsp = Lsp::with_servers(server::registry(&config), idle);
         (tmp, file, lsp)
     }
 
@@ -412,6 +494,37 @@ done
             other => panic!("{other:?}"),
         }
         assert!(lsp.touch(&file, true).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_idle_server_is_stopped_and_started_again_on_touch() {
+        let (_tmp, file, lsp) = scripted_idling(&[], Some(Duration::from_millis(200)));
+        let mut status = lsp.status();
+
+        assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
+        assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));
+
+        tokio::time::timeout(Duration::from_secs(5), status.wait_for(|s| s.is_empty()))
+            .await
+            .expect("the idle server was stopped")
+            .unwrap();
+        assert!(lsp.inner.clients.lock().unwrap().is_empty());
+
+        assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
+        assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));
+    }
+
+    #[tokio::test]
+    async fn a_server_kept_busy_is_not_stopped() {
+        let (_tmp, file, lsp) = scripted_idling(&[], Some(Duration::from_millis(300)));
+        let status = lsp.status();
+
+        lsp.touch(&file, true).await;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            lsp.touch(&file, false).await;
+            assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));
+        }
     }
 
     #[tokio::test]
