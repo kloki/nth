@@ -19,7 +19,7 @@ pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
-    ToolContext,
+    ToolContext, Usage,
 };
 use stream::Stop;
 use tokio::sync::mpsc;
@@ -66,7 +66,7 @@ pub enum Error {
     /// The conversation cannot be shrunk below the window: the summary
     /// request itself was refused as too long, a replay overflowed again,
     /// or compacting changed nothing while the session was still over.
-    #[error("cannot compact: the summary request itself exceeds the context window")]
+    #[error("cannot compact: the conversation cannot be shrunk below the context window")]
     TooBigToCompact,
 }
 
@@ -104,6 +104,13 @@ pub struct Turn<'a> {
     /// What the requests used, counted as they report it, so a turn that
     /// fails or is interrupted still counts what it spent.
     pub spend: &'a mut Spend,
+    /// What the last finished reply reported it used, the automatic
+    /// compaction's trigger: seeded from the session's own, so a resumed
+    /// session compacting before its first request knows how full the
+    /// window was, and written back on every exit. It is one reply's
+    /// usage, not the turn's sum, whose input counts every step's whole
+    /// history over again.
+    pub last_usage: &'a mut Option<Usage>,
     /// Where progress goes.
     pub events: &'a mpsc::Sender<Event>,
     pub cancel: &'a CancellationToken,
@@ -115,8 +122,18 @@ impl Turn<'_> {
     ///
     /// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
     /// `messages` valid to continue from: partial text is kept, and every
-    /// tool call has a result.
+    /// tool call has a result. The last reply's usage is written back
+    /// whatever the outcome, so even a failed or interrupted turn leaves
+    /// the session knowing how full its window was.
     pub async fn run(mut self) -> Result<(), Error> {
+        let mut last_usage = *self.last_usage;
+        let result = self.step_loop(&mut last_usage).await;
+        *self.last_usage = last_usage;
+        result
+    }
+
+    /// The step loop [`Turn::run`] wraps, with the usage the trigger reads.
+    async fn step_loop(&mut self, last_usage: &mut Option<Usage>) -> Result<(), Error> {
         let specs: Vec<_> = self.tools.iter().map(|t| t.spec()).collect();
         // Looked up by name once per call; a spec is too costly to build for
         // every lookup.
@@ -129,9 +146,6 @@ impl Turn<'_> {
         // only calls made since the user last spoke.
         let start = self.messages.len();
         let max_steps = self.route.max_steps;
-        // The usage the last finished reply reported; what the automatic
-        // compaction reads, and nothing until a step reports some.
-        let mut last_usage = None;
         // A step is one request the model answers; compaction is
         // maintenance for the next one, so it does not use a step and the
         // last allowed step still gets its request.
@@ -141,16 +155,21 @@ impl Turn<'_> {
         let mut replayed = false;
         while step < max_steps {
             // A conversation that reached the usable window is compacted
-            // before another request is sent.
-            if step > 0 && self.compaction_due(last_usage) {
+            // before another request is sent — including one a resumed
+            // session left over it — and one compacting cannot get under
+            // the window stops the turn rather than summarizing every step.
+            if self.compaction_due(*last_usage) {
                 if !self.compact(false).await? {
                     return Err(Error::TooBigToCompact);
                 }
-                last_usage = None;
+                *last_usage = None;
+                if self.still_over_the_window() {
+                    return Err(Error::TooBigToCompact);
+                }
                 continue;
             }
             let last = step + 1 == max_steps;
-            let reply = match self.stream_step(last, &specs, &mut last_usage).await {
+            let reply = match self.stream_step(last, &specs, last_usage).await {
                 Ok(reply) => reply,
                 Err(Stop::Cancelled(partial)) => {
                     if !partial.text.is_empty() || !partial.reasoning.is_empty() {
@@ -166,7 +185,7 @@ impl Turn<'_> {
                             return Err(Error::TooBigToCompact);
                         }
                         replayed = true;
-                        last_usage = None;
+                        *last_usage = None;
                         continue;
                     }
                     return Err(Error::Provider(error));

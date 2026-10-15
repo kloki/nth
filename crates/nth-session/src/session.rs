@@ -69,9 +69,11 @@ pub struct Session {
     /// front-end hands them over. Sessions saved before it load with none.
     #[serde(default)]
     pub usage: Ledger,
-    /// The tokens the last turn's requests reported, added up. Saved so a
-    /// resumed session still says how full the window was; sessions saved
-    /// before it load with none.
+    /// The tokens the last reply reported it used, so a resumed session
+    /// still says how full the window was and compacts before its first
+    /// request when it is over; sessions saved before it load with none.
+    /// Cleared by a compaction, whose summary exchange is smaller than what
+    /// it replaced.
     #[serde(default)]
     pub last_usage: Option<Usage>,
     /// How the session keeps itself inside the model's window; sessions
@@ -352,14 +354,12 @@ impl Session {
             ctx: &ctx,
             messages: &mut self.messages,
             spend: &mut spend,
+            last_usage: &mut self.last_usage,
             events,
             cancel,
         }
         .run()
         .await;
-        if spend.steps > 0 {
-            self.last_usage = Some(spend.tokens);
-        }
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
@@ -397,6 +397,7 @@ impl Session {
             },
             context_window: self.context_window,
             max_output: self.max_output,
+            compaction: self.compaction,
             workdir: Workdir::new(self.origin.clone()),
             session: self.id.to_string(),
             ..ToolContext::new(self.cwd.clone())
@@ -419,6 +420,9 @@ impl Session {
         let mut spend = Spend::new(&self.model, None);
         let session_id = self.id.to_string();
         let parent_session_id = self.parent.map(|p| p.to_string());
+        // A compaction is not a turn; its usage is the summary request's,
+        // not the conversation's size, so it is never the trigger's.
+        let mut last_usage = None;
         let result = Turn {
             provider,
             route: Route {
@@ -435,18 +439,20 @@ impl Session {
             ctx: &ctx,
             messages: &mut self.messages,
             spend: &mut spend,
+            last_usage: &mut last_usage,
             events,
             cancel,
         }
         .compact(false)
-        .await
-        .map(|_| ());
-        if spend.steps > 0 {
-            self.last_usage = Some(spend.tokens);
+        .await;
+        if matches!(result, Ok(true)) {
+            // The conversation the old usage described is gone; keeping it
+            // would fire the trigger again at once.
+            self.last_usage = None;
         }
         self.usage.record(spend);
         self.updated_at = SystemTime::now();
-        result
+        result.map(|_| ())
     }
 }
 
@@ -1165,14 +1171,11 @@ mod tests {
             })
         );
         assert_eq!(
-            session.last_usage,
-            Some(Usage {
-                input: 50,
-                output: 5,
-                ..Usage::default()
-            })
+            session.last_usage, None,
+            "the summary request's own size is not the conversation's, and \
+             what was compacted is gone"
         );
-        assert_eq!(session.usage.total().steps, 1);
+        assert_eq!(session.usage.total().steps, 1, "the spend is still counted");
     }
 
     /// Says what it was asked to run, or never finishes on `hang`.

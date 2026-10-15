@@ -110,9 +110,9 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_summary
         .expect("turn completes");
 
     assert_eq!(
-        session.last_usage,
-        Some(usage(7_900, 100)),
-        "what the turn's requests reported"
+        session.last_usage, None,
+        "the reply after the compaction reported no usage, and the step's \
+         old size describes a conversation that is gone"
     );
     let sent = requests(&provider);
     assert_eq!(sent.len(), 3, "the step, the summary, then the step after");
@@ -338,12 +338,21 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
             summary: "a summary".into()
         }
     );
+    assert_eq!(
+        session.last_usage, None,
+        "the compaction cleared the size of what it summarized away"
+    );
+    // A reply after the compaction is what a resume has to carry.
+    session.last_usage = Some(usage(3_000, 500));
 
     store.save(&session).await.expect("saves");
     let mut resumed = store.load(session.id).await.expect("loads");
 
     assert_eq!(resumed.messages, session.messages, "the marker survives");
-    assert_eq!(resumed.last_usage, session.last_usage, "the usage survives");
+    assert_eq!(
+        resumed.last_usage, session.last_usage,
+        "the usage a later reply reported survives"
+    );
     assert_eq!(
         resumed.compaction, session.compaction,
         "the policy survives"
@@ -918,5 +927,184 @@ async fn a_replay_that_overflows_again_does_not_compact_forever() {
     assert!(
         summaries <= 2,
         "compacted {summaries} times for one exchange that will not shrink"
+    );
+}
+
+/// A compaction is not once per turn: when the steps after it grow the
+/// history over the window again, another reply that reaches it fires a
+/// second one, and requests after that start at the newest summary.
+#[tokio::test]
+async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    session.set_limits(Some(10_000), Some(2_000));
+    session.compaction.preserve = 100;
+    session.messages.extend([
+        Message::User("old question".into()),
+        assistant(&"x".repeat(400)),
+    ]);
+    let system = session.messages[0].clone();
+    let provider = Scripted::new(vec![
+        // The first step reaches the window; its tool result then keeps the
+        // history growing.
+        vec![
+            StreamEvent::ToolCall(call("1", "echo", r#"{"say":"one"}"#)),
+            StreamEvent::Usage(usage(7_900, 100)),
+        ],
+        vec![StreamEvent::TextDelta("first summary".into())],
+        // The step after the first compaction reaches it again.
+        vec![
+            StreamEvent::ToolCall(call("2", "echo", r#"{"say":"two"}"#)),
+            StreamEvent::Usage(usage(7_900, 100)),
+        ],
+        vec![StreamEvent::TextDelta("second summary".into())],
+        vec![StreamEvent::TextDelta("done".into())],
+    ]);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+
+    prompt(&mut session, "go", &provider, &tools)
+        .await
+        .expect("turn completes");
+
+    let markers: Vec<_> = session
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Compaction { summary } => Some(summary.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        markers,
+        ["first summary", "second summary"],
+        "both compactions landed, the second after the first"
+    );
+
+    let sent = requests(&provider);
+    assert_eq!(sent.len(), 5, "two steps, their summaries, then the answer");
+    let [Message::User(second_prompt)] = &sent[3][..] else {
+        panic!("one user message: {:?}", sent[3]);
+    };
+    assert!(
+        second_prompt.contains("[Summary]: first summary"),
+        "the second summary merges the first: {second_prompt}"
+    );
+    assert_eq!(
+        sent[4][..3],
+        [
+            system,
+            Message::User(WHAT_DID_WE_DO.into()),
+            assistant("second summary"),
+        ],
+        "the request after the second compaction starts at the newest summary"
+    );
+    assert_eq!(
+        sent[4][3],
+        Message::User("go".into()),
+        "then the verbatim tail"
+    );
+}
+
+/// A session left with its last reply already at the window compacts
+/// before its first request, instead of re-sending a history that overflows
+/// and only recovering through the one-replay overflow path.
+#[tokio::test]
+async fn a_resumed_session_over_the_window_compacts_before_its_first_request() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    session.set_limits(Some(10_000), Some(2_000));
+    session.compaction.preserve = 40;
+    session.max_steps = 1;
+    session.messages.extend([
+        Message::User("old question".into()),
+        assistant(&"x".repeat(400)),
+    ]);
+    // What the last reply reported before the session was left.
+    session.last_usage = Some(usage(9_500, 1_500));
+    let system = session.messages[0].clone();
+    let provider = Scripted::new(vec![
+        vec![StreamEvent::TextDelta("the summary".into())],
+        vec![StreamEvent::TextDelta("done".into())],
+    ]);
+
+    prompt(&mut session, "next", &provider, &[])
+        .await
+        .expect("turn completes");
+
+    let sent = requests(&provider);
+    assert_eq!(sent.len(), 2, "the summary, then the one allowed step");
+    let [Message::User(summary_prompt)] = &sent[0][..] else {
+        panic!("one user message: {:?}", sent[0]);
+    };
+    assert!(
+        summary_prompt.contains("[User]: old question"),
+        "the head is serialized: {summary_prompt}"
+    );
+    assert_eq!(
+        sent[1][..3],
+        [
+            system,
+            Message::User(WHAT_DID_WE_DO.into()),
+            assistant("the summary"),
+        ],
+        "the first request already starts at the summary exchange"
+    );
+    assert_eq!(session.messages.last(), Some(&assistant("done")));
+}
+
+/// `last_usage` is the last reply's usage, not the turn's sum: only it says
+/// how full the window is now.
+#[tokio::test]
+async fn last_usage_holds_the_last_replys_usage_not_the_turn_sum() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    let provider = Scripted::new(vec![
+        vec![
+            StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+            StreamEvent::Usage(usage(100, 10)),
+        ],
+        vec![
+            StreamEvent::TextDelta("done".into()),
+            StreamEvent::Usage(usage(200, 20)),
+        ],
+    ]);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+
+    prompt(&mut session, "go", &provider, &tools)
+        .await
+        .expect("turn completes");
+
+    assert_eq!(
+        session.last_usage,
+        Some(usage(200, 20)),
+        "the second reply's, not the 300 + 30 the turn summed"
+    );
+    assert_eq!(
+        session.usage.total().tokens,
+        usage(300, 30),
+        "the ledger still sums every request"
+    );
+}
+
+/// A manual compaction summarizes the conversation away, so the size the
+/// last reply reported no longer describes anything: it is cleared rather
+/// than replaced by the summary request's own usage.
+#[tokio::test]
+async fn a_manual_compaction_clears_the_last_usage() {
+    let mut session = Session::new("glm-5.3", "/repo".into());
+    session.compaction.preserve = 40;
+    session.messages.extend([
+        Message::User("old question".into()),
+        assistant(&"x".repeat(400)),
+    ]);
+    session.last_usage = Some(usage(9_500, 1_500));
+    let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("the summary".into())]]);
+
+    compact(&mut session, &provider).await.expect("compacts");
+
+    assert!(
+        matches!(session.messages[3], Message::Compaction { .. }),
+        "the compaction landed"
+    );
+    assert_eq!(
+        session.last_usage, None,
+        "the old size describes the conversation that was summarized away"
     );
 }

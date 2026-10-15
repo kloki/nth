@@ -3,7 +3,7 @@
 
 use std::{borrow::Cow, time::Duration};
 
-use futures::StreamExt;
+use futures::{StreamExt, stream::BoxStream};
 use nth_protocol::{
     AssistantMessage, BoxError, Event, Message, Request, StreamEvent, ToolSpec, Usage,
 };
@@ -18,7 +18,7 @@ const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 /// particular time.
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
-/// How many times one step's request may be retried before giving up.
+/// How many times one request may be retried before giving up.
 const RETRY_MAX_ATTEMPTS: u32 = 5;
 
 /// A server asking to wait longer than this is not retried: the error shows
@@ -34,59 +34,15 @@ pub(super) enum Stop {
 }
 
 impl Turn<'_> {
-    /// One step's request, retried on a transient provider error with
-    /// backoff: 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's
-    /// `Retry-After` when it gave one no longer than `RETRY_MAX_AFTER`. The
-    /// retry is announced as an [`Event::Retry`], and cancelling during the
-    /// wait ends the step. What each attempt reports it used is counted to
-    /// the turn's spend.
+    /// One step's request, streamed to the end. Opening it is retried on a
+    /// transient provider error, as [`Turn::open_stream`] does; what each
+    /// attempt reports it used is counted to the turn's spend.
     pub(super) async fn stream_step(
         &mut self,
         last: bool,
         specs: &[ToolSpec],
         last_usage: &mut Option<Usage>,
     ) -> Result<AssistantMessage, Stop> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let error = match self.one_attempt(last, specs, last_usage).await {
-                Err(Stop::Failed(error)) => error,
-                done => return done,
-            };
-            let delay = self
-                .provider
-                .retry(&error)
-                .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
-                .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
-                .filter(|delay| *delay <= RETRY_MAX_AFTER);
-            let Some(delay) = delay else {
-                return Err(Stop::Failed(error));
-            };
-            emit(self.events, Event::Retry { attempt, delay }).await;
-            tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
-                _ = tokio::time::sleep(delay) => {}
-            }
-        }
-    }
-
-    /// Streams one reply, appending text, reasoning and tool calls to it as
-    /// they arrive. On the `last` allowed step the model is told to answer
-    /// in words, so the turn ends itself rather than being cut off; the
-    /// prompt goes only into the request, never into the saved history.
-    ///
-    /// The request carries the effective messages: everything from the last
-    /// compaction on, opened by the summary exchange, so the protocols
-    /// never see a [`Message::Compaction`]. What the reply reports it used
-    /// is left in `last_usage`, which the automatic compaction reads.
-    async fn one_attempt(
-        &mut self,
-        last: bool,
-        specs: &[ToolSpec],
-        last_usage: &mut Option<Usage>,
-    ) -> Result<AssistantMessage, Stop> {
-        let (provider, events, cancel) = (self.provider, self.events, self.cancel);
         let effective = effective(self.messages);
         let sent = if last {
             Cow::Owned(max_steps_messages(&effective))
@@ -101,11 +57,8 @@ impl Turn<'_> {
             messages: &sent,
             tools: specs,
         };
-        let mut stream = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
-            stream = provider.stream(request) => stream.map_err(Stop::Failed)?,
-        };
+        let (events, cancel) = (self.events, self.cancel);
+        let mut stream = self.open_stream(request).await?;
         let mut reply = AssistantMessage::default();
         loop {
             let event = tokio::select! {
@@ -139,15 +92,63 @@ impl Turn<'_> {
         }
         Ok(reply)
     }
+
+    /// Opens `request`'s stream, retried on a transient provider error with
+    /// backoff: 2 s, doubling, at most `RETRY_MAX_DELAY`, or the server's
+    /// `Retry-After` when it gave one no longer than `RETRY_MAX_AFTER`. The
+    /// retry is announced as an [`Event::Retry`], and cancelling during the
+    /// wait ends the request. A step and the summary request open their
+    /// stream the same way.
+    pub(super) async fn open_stream(
+        &self,
+        request: Request<'_>,
+    ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match self.open_once(request).await {
+                Err(Stop::Failed(error)) => error,
+                done => return done,
+            };
+            let delay = self
+                .provider
+                .retry(&error)
+                .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
+                .map(|retry| retry.after.unwrap_or_else(|| backoff(attempt)))
+                .filter(|delay| *delay <= RETRY_MAX_AFTER);
+            let Some(delay) = delay else {
+                return Err(Stop::Failed(error));
+            };
+            emit(self.events, Event::Retry { attempt, delay }).await;
+            tokio::select! {
+                biased;
+                _ = self.cancel.cancelled() => return Err(Stop::Cancelled(AssistantMessage::default())),
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
+    }
+
+    /// One attempt at opening `request`'s stream; cancelling ends it.
+    async fn open_once(
+        &self,
+        request: Request<'_>,
+    ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => Err(Stop::Cancelled(AssistantMessage::default())),
+            stream = self.provider.stream(request) => stream.map_err(Stop::Failed),
+        }
+    }
 }
 
 /// The messages a request carries. Without a compaction marker, the history
 /// is the request. With one, the request starts at the marker, read the way
 /// opencode reads its compaction part: the system prompts, then the user
 /// asking [`WHAT_DID_WE_DO`] and the model answering with the summary, then
-/// everything after the marker verbatim. Only this filter and the summary
-/// request ever see the marker; the protocols never do.
-fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
+/// everything after the marker verbatim. Only this filter, the summary
+/// request and the check on what a compaction left do ever see the marker;
+/// the protocols never do.
+pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
     let Some(at) = messages
         .iter()
         .rposition(|message| matches!(message, Message::Compaction { .. }))
@@ -236,6 +237,7 @@ mod tests {
         let mut messages = vec![Message::User("go".into())];
 
         let mut spent = spend();
+        let mut last_usage = None;
         let turn = Turn {
             provider: &provider,
             route: ROUTE,
@@ -243,6 +245,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }
@@ -326,6 +329,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: ROUTE,
@@ -333,6 +337,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }
@@ -365,6 +370,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         let result = Turn {
             provider: &provider,
             route: ROUTE,
@@ -372,6 +378,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }

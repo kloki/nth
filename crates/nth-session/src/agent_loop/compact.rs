@@ -5,13 +5,14 @@
 use futures::StreamExt;
 use nth_protocol::{BoxError, ContextOverflow, Event, Message, Request, StreamEvent, Usage};
 
-use super::{Error, Turn, emit};
+use super::{Error, Stop, Turn, emit};
 use crate::compaction::{self, SUMMARY_PROMPT};
 
 impl Turn<'_> {
     /// Whether the next step should summarize instead of asking the model:
-    /// the session has automatic compaction on, knows the model's window,
-    /// and the last finished reply's usage reached the usable part of it.
+    /// the session has automatic compaction on, knows the model's window
+    /// with room left under the reserved buffer, and the last finished
+    /// reply's usage reached the usable part of it.
     pub(super) fn compaction_due(&self, last_usage: Option<Usage>) -> bool {
         let compaction = &self.route.compaction;
         if !compaction.auto {
@@ -21,7 +22,26 @@ impl Turn<'_> {
         else {
             return false;
         };
-        last_usage.is_some_and(|usage| usage.context() >= usable)
+        // Nothing fits a window that is all reserved buffer: a request
+        // cannot be made smaller than the summary it would start with, so
+        // compacting could never help.
+        usable > 0 && last_usage.is_some_and(|usage| usage.context() >= usable)
+    }
+
+    /// Whether the conversation the next request would carry still fills
+    /// the usable window right after a compaction. Compacting again would
+    /// summarize a view that no longer shrinks — a floor like a huge system
+    /// prompt, or a tail nothing can cut — so the turn gives up instead of
+    /// asking for a summary before every step.
+    pub(super) fn still_over_the_window(&self) -> bool {
+        let Some(usable) = self
+            .route
+            .compaction
+            .usable(self.route.context_window, self.route.max_output)
+        else {
+            return false;
+        };
+        usable > 0 && compaction::estimate(&super::stream::effective(self.messages)) >= usable
     }
 
     /// Summarizes everything a request would not keep verbatim and splices
@@ -89,8 +109,9 @@ impl Turn<'_> {
     }
 
     /// The summary request: one user message, no tools, streamed to the
-    /// end. Its usage is counted like a step's, but its text is not streamed
-    /// as an answer — the front-end hears of it as [`Event::Compacted`].
+    /// end. Opening it is retried as a step's is; its usage is counted like
+    /// a step's, but its text is not streamed as an answer — the front-end
+    /// hears of it as [`Event::Compacted`].
     async fn summarize(&mut self, prompt: String) -> Result<String, Error> {
         let messages = [Message::User(prompt)];
         let request = Request {
@@ -101,15 +122,12 @@ impl Turn<'_> {
             messages: &messages,
             tools: &[],
         };
-        let (provider, events, cancel) = (self.provider, self.events, self.cancel);
-        let mut stream = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(Error::Interrupted),
-            stream = provider.stream(request) => match stream {
-                Ok(stream) => stream,
-                Err(error) => return Err(self.request_failed(error)),
-            },
+        let mut stream = match self.open_stream(request).await {
+            Ok(stream) => stream,
+            Err(Stop::Cancelled(_)) => return Err(Error::Interrupted),
+            Err(Stop::Failed(error)) => return Err(self.request_failed(error)),
         };
+        let (events, cancel) = (self.events, self.cancel);
         let mut summary = String::new();
         loop {
             let event = tokio::select! {
@@ -148,7 +166,7 @@ impl Turn<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Duration};
 
     use futures::{
         FutureExt, StreamExt,
@@ -156,8 +174,8 @@ mod tests {
         stream::{self, BoxStream},
     };
     use nth_protocol::{
-        AssistantMessage, BoxError, Listing, Provider, Request, StreamEvent, Tool, ToolContext,
-        Usage,
+        AssistantMessage, BoxError, Listing, Provider, Request, Retry, StreamEvent, Tool,
+        ToolContext, Usage,
     };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -218,6 +236,7 @@ mod tests {
         ];
         let mut spent = spend();
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: route(40),
@@ -225,6 +244,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }
@@ -302,6 +322,7 @@ mod tests {
         ];
         let mut spent = spend();
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: route(100),
@@ -309,6 +330,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }
@@ -408,6 +430,7 @@ mod tests {
         ];
         let mut spent = spend();
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: route(40),
@@ -415,6 +438,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }
@@ -469,6 +493,7 @@ mod tests {
             Message::User("go".into()),
         ];
         let mut spent = spend();
+        let mut last_usage = None;
         let mut turn = Turn {
             provider: &provider,
             route: route(40),
@@ -476,6 +501,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         };
@@ -539,6 +565,7 @@ mod tests {
         ];
         let mut spent = spend();
 
+        let mut last_usage = None;
         let result = Turn {
             provider: &Always,
             route: route(40),
@@ -546,6 +573,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spent,
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }
@@ -553,5 +581,246 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(Error::TooBigToCompact)));
+    }
+
+    /// A conversation with a floor compacting cannot lift: every step's
+    /// reply reports the request's own size as used, and the system prompt
+    /// alone fills more than the usable window. The review's reproduction.
+    #[derive(Default)]
+    struct FullWindow {
+        requests: Mutex<usize>,
+        summaries: Mutex<usize>,
+    }
+
+    impl Provider for FullWindow {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let n = {
+                let mut requests = self.requests.lock().expect("not poisoned");
+                *requests += 1;
+                *requests
+            };
+            if request.tools.is_empty() {
+                *self.summaries.lock().expect("not poisoned") += 1;
+                let reply = vec![StreamEvent::TextDelta("# Objective\nstill over".into())];
+                return async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed();
+            }
+            let input = compaction::estimate(request.messages);
+            // A different call each step, so the doom-loop guard does not
+            // end the turn before the compaction churn shows.
+            let reply = vec![
+                StreamEvent::ToolCall(call(
+                    &n.to_string(),
+                    "echo",
+                    &format!(r#"{{"say":"hi-{n}"}}"#),
+                )),
+                StreamEvent::Usage(usage(input, 10)),
+            ];
+            async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
+        }
+    }
+
+    /// Compacting cannot shrink a conversation whose system prompt alone
+    /// fills the window: the turn must stop at once rather than ask for a
+    /// summary before every one of its steps.
+    #[tokio::test]
+    async fn a_floor_over_the_window_stops_the_turn_instead_of_compacting_every_step() {
+        let provider = FullWindow::default();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        // Some 15k estimated tokens, well over the 10k − 2k usable window.
+        let mut messages = vec![
+            Message::System("s".repeat(60_000)),
+            Message::User("go".into()),
+        ];
+        let mut spent = spend();
+        let mut last_usage = None;
+
+        let result = Turn {
+            provider: &provider,
+            route: Route {
+                max_steps: 4,
+                ..route(100)
+            },
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await;
+
+        assert!(matches!(result, Err(Error::TooBigToCompact)), "{result:?}");
+        assert_eq!(
+            *provider.summaries.lock().expect("not poisoned"),
+            1,
+            "one summary, not one before each of the four steps"
+        );
+    }
+
+    /// A window that is all reserved buffer has no usable room: no usage,
+    /// however large, can be helped by compacting, so the trigger never
+    /// fires.
+    #[tokio::test]
+    async fn a_window_with_no_usable_room_never_compacts() {
+        let provider = FullWindow::default();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut messages = vec![Message::System("sys".into()), Message::User("go".into())];
+        let mut spent = spend();
+        let mut last_usage = None;
+
+        let result = Turn {
+            provider: &provider,
+            route: Route {
+                max_steps: 2,
+                // reserved = min(20k, output) = the whole window.
+                context_window: Some(1_000),
+                max_output: Some(1_000),
+                ..route(100)
+            },
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await;
+
+        assert!(matches!(result, Err(Error::TooManySteps(2))), "{result:?}");
+        assert_eq!(
+            *provider.summaries.lock().expect("not poisoned"),
+            0,
+            "nothing fires with no room to compact into"
+        );
+        assert_eq!(
+            *provider.requests.lock().expect("not poisoned"),
+            2,
+            "just the two steps"
+        );
+    }
+
+    /// A transient failure on the summary request is retried exactly as a
+    /// step's opening is, so the compaction still lands.
+    #[tokio::test]
+    async fn a_retryable_summary_failure_is_retried() {
+        /// A retryable provider failure that is not an overflow.
+        #[derive(Debug, thiserror::Error)]
+        #[error("temporary failure")]
+        struct Temporary;
+
+        /// Fails the request named in `fail` (1-based) and answers the rest
+        /// with `replies` in order, retrying at once.
+        struct FlakySummary {
+            fail: usize,
+            attempts: Mutex<usize>,
+            replies: Mutex<Vec<Vec<StreamEvent>>>,
+        }
+
+        impl Provider for FlakySummary {
+            fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+                async { Ok(Listing::default()) }.boxed()
+            }
+
+            fn stream<'a>(
+                &'a self,
+                _: Request<'a>,
+            ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+            {
+                let mut attempts = self.attempts.lock().expect("not poisoned");
+                *attempts += 1;
+                if *attempts == self.fail {
+                    return async { Err(Box::new(Temporary) as BoxError) }.boxed();
+                }
+                let reply = self.replies.lock().expect("not poisoned").remove(0);
+                async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
+            }
+
+            fn retry(&self, error: &BoxError) -> Option<Retry> {
+                error.downcast_ref::<Temporary>().map(|_| Retry {
+                    // A retry that waits in a test would only slow it down.
+                    after: Some(Duration::ZERO),
+                })
+            }
+        }
+
+        let provider = FlakySummary {
+            // The step, then the summary; the retried summary answers.
+            fail: 2,
+            attempts: Mutex::new(0),
+            replies: Mutex::new(vec![
+                vec![
+                    StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+                    StreamEvent::Usage(usage(9_000, 1_500)),
+                ],
+                vec![StreamEvent::TextDelta("the summary".into())],
+                vec![StreamEvent::TextDelta("done".into())],
+            ]),
+        };
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("old question".into()),
+            assistant(&"x".repeat(400)),
+            Message::User("go".into()),
+        ];
+        let mut spent = spend();
+        let mut last_usage = None;
+
+        Turn {
+            provider: &provider,
+            route: route(100),
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spent,
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &cancel,
+        }
+        .run()
+        .await
+        .expect("the retried summary lands the compaction");
+
+        assert_eq!(
+            messages[3],
+            Message::Compaction {
+                summary: "the summary".into()
+            },
+            "the second summary attempt's text is the marker"
+        );
+        assert_eq!(
+            *provider.attempts.lock().expect("not poisoned"),
+            4,
+            "the step, the failed summary, the retried summary, then the step"
+        );
+        drop(tx);
+        let mut retries = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let Event::Retry { attempt, delay } = event {
+                retries.push((attempt, delay));
+            }
+        }
+        assert_eq!(retries, [(1, Duration::ZERO)], "announced like a step's");
     }
 }

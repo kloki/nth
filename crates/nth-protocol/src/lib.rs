@@ -1,6 +1,7 @@
 //! Types every nth crate shares: messages, events and the traits that let a
 //! provider or tool be swapped without touching the session loop.
 
+mod compaction;
 mod event;
 mod inbox;
 mod message;
@@ -13,6 +14,7 @@ mod tool;
 mod workdir;
 mod writable;
 
+pub use compaction::Compaction;
 pub use event::{Event, retry_label};
 pub use inbox::{
     Inbox, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice,
