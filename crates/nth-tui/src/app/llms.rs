@@ -168,7 +168,6 @@ fn set_hint(target: Target, model: &str, effort: Effort) -> String {
         Target::Act => "Act",
         Target::Subagent => "Subagents",
         Target::Clerk => "Clerk",
-        Target::All => "All modes",
     };
     match effort {
         Effort::Default => format!("{what} set to {model}"),
@@ -471,22 +470,24 @@ mod tests {
         app.apply(Action::NextTab);
         app.apply(Action::NextTab);
         app.apply(Action::NextTab);
-        app.apply(Action::NextTab);
-        assert_eq!(picker(&app).target(), Target::Plan, "wraps past all");
+        assert_eq!(picker(&app).target(), Target::Plan, "wraps past clerk");
         app.apply(Action::PrevTab);
-        assert_eq!(picker(&app).target(), Target::All);
-        assert_eq!(picker(&app).chosen().map(|c| c.0), Some("glm".into()));
+        assert_eq!(picker(&app).target(), Target::Clerk);
+        assert_eq!(
+            picker(&app).chosen().map(|c| c.0),
+            Some("plain".into()),
+            "the subagents' until picked"
+        );
+        app.apply(Action::SelectPrev);
         app.apply(Action::Right);
         app.apply(Action::Submit);
         let low = Llm {
             model: "glm".into(),
             effort: Effort::Low,
         };
-        for target in [Target::Plan, Target::Act, Target::Subagent] {
-            assert_eq!(app.llm_of(target), low, "{target:?}");
-        }
-        assert_eq!(app.effort, Effort::Low);
-        assert_eq!(app.hint.as_deref(), Some("All modes set to glm · low"));
+        assert_eq!(app.llm_of(Target::Clerk), low);
+        assert_eq!(app.llm_of(Target::Subagent).model, "plain", "untouched");
+        assert_eq!(app.hint.as_deref(), Some("Clerk set to glm · low"));
     }
 
     #[tokio::test]
