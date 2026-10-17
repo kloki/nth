@@ -5,7 +5,11 @@
 use super::{Location, Skill, Source};
 use crate::frontmatter;
 
-const SKILLS: [&str; 1] = [include_str!("work-plan/SKILL.md")];
+const SKILLS: [&str; 3] = [
+    include_str!("init/SKILL.md"),
+    include_str!("setup-worktrees/SKILL.md"),
+    include_str!("work-plan/SKILL.md"),
+];
 
 /// Every internal skill. They are part of nth, so one that does not parse
 /// is a bug the tests catch, not something to warn about.

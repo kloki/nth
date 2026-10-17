@@ -2,10 +2,6 @@
 
 What opencode has that nth does not yet, plus nth's own review backlog. Each item names the opencode code to copy from, where there is one.
 
-### Commands
-
-- [ ] /init Set agent.md
-
 ### Subagents and orchestrations
 
 - [ ] Save subagent sessions under the parent's, so `/resume` brings them back

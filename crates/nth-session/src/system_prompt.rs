@@ -253,6 +253,22 @@ mod tests {
             .split_once("</available_skills>\n")
             .expect("skills block");
         let location = dir.path().join(".agents/skills/deploy/SKILL.md");
+        let built_in: String = ["init", "setup-worktrees", "work-plan"]
+            .iter()
+            .map(|name| {
+                let description = context
+                    .skills
+                    .get(name)
+                    .and_then(|s| s.description.as_deref())
+                    .expect("described");
+                format!(
+                    "  <skill>\n    <name>{name}</name>\n    \
+                     <description>{}</description>\n    \
+                     <location>&lt;built-in&gt;</location>\n  </skill>\n",
+                    escape(description)
+                )
+            })
+            .collect();
         assert_eq!(
             skills,
             format!(
@@ -260,17 +276,8 @@ mod tests {
                  Use the skill tool to load a skill when a task matches its description.\n\
                  <available_skills>\n  <skill>\n    <name>deploy</name>\n    \
                  <description>Ship &lt;it&gt; &amp; tag</description>\n    \
-                 <location>{}</location>\n  </skill>\n  <skill>\n    \
-                 <name>work-plan</name>\n    <description>{}</description>\n    \
-                 <location>&lt;built-in&gt;</location>\n  </skill>\n",
+                 <location>{}</location>\n  </skill>\n{built_in}",
                 location.display(),
-                escape(
-                    context
-                        .skills
-                        .get("work-plan")
-                        .and_then(|s| s.description.as_deref())
-                        .expect("described")
-                )
             )
         );
         assert!(
