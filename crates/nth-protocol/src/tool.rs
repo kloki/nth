@@ -72,8 +72,10 @@ pub struct ToolContext {
     /// rather than send what the model cannot see.
     pub takes_images: bool,
     /// The folder a tool keeps image files in: the session's, which its
-    /// subagents share, so deleting the session deletes them.
-    pub images: PathBuf,
+    /// subagents share, so deleting the session deletes them. A tool that
+    /// shows images refuses without one, rather than leave them where
+    /// another user could read or swap them.
+    pub images: Option<PathBuf>,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -114,7 +116,7 @@ impl ToolContext {
             session: String::new(),
             attachments: Attachments::default(),
             takes_images: true,
-            images: std::env::temp_dir().join("nth").join("images"),
+            images: None,
         }
     }
 }

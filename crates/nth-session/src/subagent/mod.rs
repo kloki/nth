@@ -160,7 +160,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.parent = ctx.session.parse().ok();
     session.takes_images = takes_images;
     // Its images go with its parent's, so deleting the parent deletes them.
-    session.images = Some(ctx.images.clone());
+    session.images = ctx.images.clone();
     session
 }
 
@@ -523,15 +523,12 @@ pub(crate) mod tests {
                 max_output: Some(8_000),
                 takes_images: Some(false),
             }),
+            images: Some("/data/images/parent".into()),
             ..ToolContext::new("/repo".into())
         };
         let child = child_session(&explore(), &ctx, 5);
         assert!(!child.takes_images, "the subagent model takes none");
-        assert_eq!(
-            child.images,
-            Some(ctx.images.clone()),
-            "its parent's folder"
-        );
+        assert_eq!(child.images, ctx.images, "its parent's folder");
         assert_eq!(
             (child.model.as_str(), child.effort),
             ("minimax", nth_protocol::Effort::Low)

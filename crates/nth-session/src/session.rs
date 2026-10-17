@@ -396,11 +396,6 @@ impl Session {
         // The system prompt's files count as loaded, so read never repeats them.
         let mut loaded = self.loaded_instructions.clone();
         loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
-        let base = ToolContext::new(self.cwd.clone());
-        let images = match &self.images {
-            Some(images) => images.clone(),
-            None => base.images.clone(),
-        };
         ToolContext {
             extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(loaded)),
@@ -424,8 +419,8 @@ impl Session {
             workdir: Workdir::new(self.origin.clone()),
             session: self.id.to_string(),
             takes_images: self.takes_images,
-            images,
-            ..base
+            images: self.images.clone(),
+            ..ToolContext::new(self.cwd.clone())
         }
     }
 
