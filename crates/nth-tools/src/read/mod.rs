@@ -1,3 +1,5 @@
+mod image;
+
 use std::path::Path;
 
 use futures::{FutureExt, future::BoxFuture};
@@ -92,7 +94,15 @@ impl Tool for Read {
             let (mut content, dir) = if meta.is_dir() {
                 (list_dir(&path, offset, limit).await?, path)
             } else {
-                let content = read_file(&path, offset, limit, &self.config).await?;
+                let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+                // An image is shown, not read as text, and has no language
+                // server or instructions beside it to speak of.
+                if let Some(format) = image::sniff(&bytes) {
+                    let text = image::read(&path, bytes, format, ctx).await?;
+                    ctx.output.send(text.clone()).await;
+                    return Ok(text);
+                }
+                let content = read_text(&path, &bytes, offset, limit, &self.config)?;
                 // Detached so the read never waits on a server starting,
                 // which can take seconds. Not cancelled with the turn: the
                 // touch only opens the file, and a server it starts is
@@ -150,12 +160,17 @@ async fn list_dir(path: &Path, offset: usize, limit: usize) -> ToolResult {
     Ok(out)
 }
 
-async fn read_file(path: &Path, offset: usize, limit: usize, config: &ReadConfig) -> ToolResult {
-    let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+fn read_text(
+    path: &Path,
+    bytes: &[u8],
+    offset: usize,
+    limit: usize,
+    config: &ReadConfig,
+) -> ToolResult {
     if bytes.iter().take(8192).any(|&b| b == 0) {
         return Err(format!("cannot read binary file: {}", path.display()));
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
     let total = text.lines().count();
     if offset > total.max(1) {
         return Err(format!(
