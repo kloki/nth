@@ -85,41 +85,44 @@ fn lines(
     turns: &[(&str, u64)],
     cost: &dyn Fn(&str) -> Option<Cost>,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![title("current session")];
+    let mut session = vec![title("current session")];
+    let mut sections = Vec::new();
     let total = ledger.total();
     if total.steps == 0 {
-        lines.push(note("nothing spent yet in this session".into()));
+        session.push(note("nothing spent yet in this session".into()));
+        sections.push(session);
     } else {
         let price = |model: &str, total: Total| usage::price([(model, total)], cost);
         let all = row("all", total, ledger.price(cost));
-        lines.extend(styled(&[all]));
+        session.extend(styled(&[all]));
+        sections.push(session);
 
-        lines.push(Line::default());
-        lines.push(title("per model"));
+        let mut per_model = vec![title("per model")];
         let models: Vec<_> = ledger
             .by_model()
             .into_iter()
             .map(|(model, total)| row(model, total, price(model, total)))
             .collect();
-        lines.extend(styled(&models));
+        per_model.extend(styled(&models));
+        sections.push(per_model);
 
-        lines.push(Line::default());
-        lines.push(title("per turn"));
-        let per_turn: Vec<_> = usage::turns(ledger)
+        let mut per_turn = vec![title("per turn")];
+        let turns: Vec<_> = usage::turns(ledger)
             .map(|(who, spend)| row(&who, spend.into(), price(&spend.model, spend.into())))
             .collect();
-        lines.extend(styled(&per_turn));
-
-        lines.push(Line::default());
-        lines.push(note(
+        per_turn.extend(styled(&turns));
+        // The caveat stays with the prices it is about.
+        per_turn.push(Line::default());
+        per_turn.push(note(
             "prices are list-price estimates from models.dev, whatever your plan bills".into(),
         ));
+        sections.push(per_turn);
     }
 
-    lines.push(Line::default());
-    lines.push(title("all time"));
-    model_usage(&mut lines, turns);
-    lines
+    let mut all_time = vec![title("all time")];
+    model_usage(&mut all_time, turns);
+    sections.push(all_time);
+    theme::sections(sections)
 }
 
 /// Cells the busiest model's bar fills.
@@ -231,7 +234,10 @@ fn cached(cell: &str) -> Style {
 }
 
 fn title(text: &'static str) -> Line<'static> {
-    Line::styled(text, Style::new().add_modifier(Modifier::BOLD))
+    Line::from(Span::styled(
+        text,
+        Style::new().add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn note(text: String) -> Line<'static> {
@@ -298,15 +304,24 @@ mod tests {
     }
 
     #[test]
+    fn sections_carry_the_grey_bar() {
+        let lines = lines(&Ledger::default(), &[], &|_| None);
+        let bar = &lines[0].spans[0];
+        assert_eq!(bar.content, theme::BAR);
+        assert_eq!(bar.style.fg, Some(Color::DarkGray));
+        assert!(lines[2].spans.is_empty(), "no bar between sections");
+    }
+
+    #[test]
     fn an_empty_session_says_so() {
         assert_eq!(
             text(&Ledger::default(), &[], &|_| None),
             [
-                "current session",
-                "  nothing spent yet in this session",
+                "▎ current session",
+                "▎   nothing spent yet in this session",
                 "",
-                "all time",
-                "  no turns yet",
+                "▎ all time",
+                "▎   no turns yet",
             ]
         );
     }
@@ -344,21 +359,21 @@ mod tests {
         assert_eq!(
             text(&ledger, &[], &cost),
             [
-                "current session",
-                "  all  4 steps  1.0M in  77% cached  20k out  $0.38+",
+                "▎ current session",
+                "▎   all  4 steps  1.0M in  77% cached  20k out  $0.38+",
                 "",
-                "per model",
-                "  glm    1 step  1.0M in  80% cached  20k out  $0.38",
-                "  kimi  3 steps   40k in     cache ?  900 out",
+                "▎ per model",
+                "▎   glm    1 step  1.0M in  80% cached  20k out  $0.38",
+                "▎   kimi  3 steps   40k in     cache ?  900 out",
                 "",
-                "per turn",
-                "  #1 glm             1 step  1.0M in  80% cached  20k out  $0.38",
-                "  #2 @explore kimi  3 steps   40k in     cache ?  900 out",
+                "▎ per turn",
+                "▎   #1 glm             1 step  1.0M in  80% cached  20k out  $0.38",
+                "▎   #2 @explore kimi  3 steps   40k in     cache ?  900 out",
+                "▎ ",
+                "▎   prices are list-price estimates from models.dev, whatever your plan bills",
                 "",
-                "  prices are list-price estimates from models.dev, whatever your plan bills",
-                "",
-                "all time",
-                "  no turns yet",
+                "▎ all time",
+                "▎   no turns yet",
             ]
         );
     }
@@ -367,8 +382,8 @@ mod tests {
     fn graphs_the_turns_on_each_model() {
         let turns = [("glm", 120), ("kimi", 30), ("qwen", 1)];
         let text = text(&Ledger::default(), &turns, &|_| None);
-        assert_eq!(text[3], "all time", "after the empty session's line");
-        let row = |model: &str, bar: &str, turns: &str| format!("  {model}  {bar:30}  {turns}");
+        assert_eq!(text[3], "▎ all time", "after the empty session's line");
+        let row = |model: &str, bar: &str, turns: &str| format!("▎   {model}  {bar:30}  {turns}");
         assert_eq!(text[4], row("glm ", &"█".repeat(30), "120"));
         assert_eq!(text[5], row("kimi", "███████▌", " 30"));
         assert_eq!(text[6], row("qwen", "▎", "  1"), "every used model shows");

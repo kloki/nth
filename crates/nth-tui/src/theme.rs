@@ -72,3 +72,25 @@ pub fn panel_row<'a>(accent: Color, content: impl IntoIterator<Item = Span<'a>>)
     spans.extend(content);
     Line::from(spans)
 }
+
+/// The bar down a section of the diagnostics and usage tabs: grey, so the
+/// sections read as the chat's blocks do without competing with them.
+pub const SECTION_COLOUR: Color = Color::DarkGray;
+
+/// The diagnostics and usage tabs' sections as barred blocks: the section
+/// bar on every row of each, blank ones too, and one bare blank line
+/// between them, as between chat entries.
+pub fn sections(blocks: Vec<Vec<Line<'static>>>) -> Vec<Line<'static>> {
+    let bar = Style::new().fg(SECTION_COLOUR);
+    let mut lines = Vec::new();
+    for block in blocks {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(block.into_iter().map(|mut line| {
+            line.spans.insert(0, Span::styled(BAR, bar));
+            line
+        }));
+    }
+    lines
+}

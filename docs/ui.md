@@ -195,36 +195,36 @@ Add retries with jitter to every client call.
 Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat, with the same scrollbar while it does not all fit.
 
 ```
-model
-    plan  kimi-k3 · high · 256k context
-  ▸ act   glm-5.3 · 128k context
-  25 models served
+▎ model
+▎     plan  kimi-k3 · high · 256k context
+▎   ▸ act   glm-5.3 · 128k context
+▎   25 models served
 
-instructions
-  ~/repos/nth/CLAUDE.md
+▎ instructions
+▎   ~/repos/nth/CLAUDE.md
 
-skills
-  ✦ research-opencode  project  ~/repos/nth/.claude/skills/research-opencode
+▎ skills
+▎   ✦ research-opencode  project  ~/repos/nth/.claude/skills/research-opencode
 
-agents
-  ↳ explore  builtin
-  ↳ general  builtin
+▎ agents
+▎   ↳ explore  builtin
+▎   ↳ general  builtin
 
-language servers
-  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
-  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
-  ✗ gopls     not on PATH
+▎ language servers
+▎   ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
+▎   ● ruff      ~/.local/bin/ruff  → ~/repos/nth
+▎   ✗ gopls     not on PATH
 
-formatters
-  ✓ rustfmt   rustfmt $FILE
-  ✗ prettier  no package.json here
+▎ formatters
+▎   ✓ rustfmt   rustfmt $FILE
+▎   ✗ prettier  no package.json here
 
-tools
-  ✓ rtk            ~/.cargo/bin/rtk
-  ✗ agent-browser  not on PATH, the browser skill installs it
+▎ tools
+▎   ✓ rtk            ~/.cargo/bin/rtk
+▎   ✗ agent-browser  not on PATH, the browser skill installs it
 ```
 
-- **Sections.** A bold title each, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
+- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
 - **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
 - **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
@@ -236,26 +236,26 @@ tools
 Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session spent, its subagents included — all of it, then per model, then per turn — and `all time`, the turns run on each model across runs. Each spend row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
 
 ```
-current session
-  all  4 steps  1.0M in  77% cached  20k out  $0.38+
+▎ current session
+▎   all  4 steps  1.0M in  77% cached  20k out  $0.38+
 
-per model
-  glm-5.3   1 step  1.0M in  80% cached  20k out  $0.38
-  kimi-k3  3 steps   40k in     cache ?  900 out
+▎ per model
+▎   glm-5.3   1 step  1.0M in  80% cached  20k out  $0.38
+▎   kimi-k3  3 steps   40k in     cache ?  900 out
 
-per turn
-  #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
-  #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
+▎ per turn
+▎   #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
+▎   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
+▎ 
+▎   prices are list-price estimates from models.dev, whatever your plan bills
 
-  prices are list-price estimates from models.dev, whatever your plan bills
-
-all time
-  opencode/glm-5.3  ██████████████████████████████  142
-  openrouter/kimi   ███████▍                         35
-  opencode/qwen-4   ▏                                 1
+▎ all time
+▎   opencode/glm-5.3  ██████████████████████████████  142
+▎   openrouter/kimi   ███████▍                         35
+▎   opencode/qwen-4   ▏                                 1
 ```
 
-`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold. The `all time` bars are one per model that ran a turn, most first, blue and scaled to the busiest one; the eighth blocks give the end of a bar, any used model shows at least one, and the count follows dim — "no turns yet" until there is one.
+`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold. Each part is a block with a grey (bright black) `▎` bar down its left, as on the diagnostics tab; the price note sits in the per-turn block. The `all time` bars are one per model that ran a turn, most first, blue and scaled to the busiest one; the eighth blocks give the end of a bar, any used model shows at least one, and the count follows dim — "no turns yet" until there is one.
 
 ## Chat
 
