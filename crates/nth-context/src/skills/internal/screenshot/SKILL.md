@@ -21,11 +21,17 @@ None there: tell the user which one to install for their desktop (below), and do
 
 ## Write it here
 
-`${TMPDIR:-/tmp}/nth-screenshot-$(date +%s).png`, then `read` that path. The read keeps its own copy, so the file may go afterwards.
+Into a fresh private folder, capturing and printing the path in the same bash call, since the next call has a new shell:
+
+```sh
+f="$(mktemp -d)/shot.png"; <capture command> "$f"; echo "$f"
+```
+
+`mktemp -d` makes a folder only the user can open, on Linux and macOS alike. `read` the printed path, then remove the folder with `rm -r` on the path's folder: the session keeps its own copy of every image it was shown, until the session is deleted.
 
 ## By desktop
 
-- **niri**: `niri msg --json windows` lists every window's `id`, `app_id` and `title`; pick by those. `niri msg action screenshot-window --id <id> --path <file> -d true` captures that window, focused or not, and `niri msg action screenshot-screen --path <file> -d true` the focused output. Both also put the image on the user's clipboard, replacing what was there; say so when you use them. For a region, use grim.
+- **niri**: `niri msg --json windows` lists every window's `id`, `app_id` and `title`; pick by those. `niri msg action screenshot-window --id <id> --path <file> -d true` captures that window, focused or not, and `niri msg action screenshot-screen --path <file> -d true` the focused output. niri writes the file after the command returns, so wait for it before the read: `for i in $(seq 20); do [ -s "$f" ] && break; sleep 0.1; done`. Both also put the image on the user's clipboard, replacing what was there; say so when you use them. For a region, use grim.
 - **wlroots compositors** (sway, Hyprland, river, niri too): `grim <file>` is every output, `grim -o <output> <file>` one (`swaymsg -t get_outputs`, `hyprctl monitors`), `grim -g "<x>,<y> <w>x<h>" <file>` a region. `grim -g "$(slurp)" <file>` lets the user drag the region: ask first, as they have to act.
 - **sway**: the focused window's region is `swaymsg -t get_tree | jq -r '.. | select(.focused?) | .rect | "\(.x),\(.y) \(.width)x\(.height)"'`, for `grim -g`.
 - **Hyprland**: `hyprctl -j activewindow | jq -r '"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"'`, for `grim -g`; `hyprctl -j clients` lists the others.
