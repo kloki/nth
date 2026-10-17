@@ -11,22 +11,24 @@ use crate::llm_picker::{LlmPicker, Target};
 
 impl App {
     /// Opens the picker on the current mode's LLM, listing LLMs the first
-    /// time.
+    /// time, and again while a provider is missing from the list.
     pub(super) fn open_llm_picker(&mut self) {
         self.completion = None;
         let mut picker = LlmPicker::new(Target::of(self.mode), &self.model, self.effort);
-        match &self.llms {
-            Some(llms) => picker.load(Ok(llms.clone())),
-            // The answer fills this picker when it comes.
-            None => self.list_llms(),
+        // The answer fills this picker when it comes, over what it shows.
+        if let Some(llms) = &self.llms {
+            picker.load(Ok(llms.clone()));
         }
+        self.list_llms();
         self.input = Input::LlmPicker(picker);
     }
 
-    /// Asks for the LLMs unless they are listed or already asked for. Done
-    /// at start-up too, since the status bar needs the context window.
+    /// Asks for the LLMs unless they are listed in full or already asked
+    /// for. Done at start-up too, since the status bar needs the context
+    /// window.
     pub(super) fn list_llms(&mut self) {
-        if self.llms.is_none() && !self.llm_listing.is_running() {
+        let listed = self.llms.as_ref().is_some_and(|l| l.failed.is_empty());
+        if !listed && !self.llm_listing.is_running() {
             let provider = self.provider.clone();
             self.llm_listing
                 .start(|_| tokio::spawn(async move { provider.models().await }));
@@ -66,13 +68,24 @@ impl App {
         self.spent.ledger.price(|model| self.cost_of(model))
     }
 
-    /// Only a list is kept; after a failure the next open asks again.
+    /// Whether a provider could not list, so its models are missing.
+    pub(super) fn llms_partial(&self) -> bool {
+        self.llms.as_ref().is_some_and(|l| !l.failed.is_empty())
+    }
+
+    /// Only a list is kept, even one a provider is missing from, since the
+    /// others' models are good; after any failure the next open asks again.
     pub(super) fn llms_listed(&mut self, llms: Result<Listing, BoxError>) {
         let llms = llms.map_err(|e| e.to_string());
+        // Asked again over a partial list, a failure leaves the picker on
+        // what it shows rather than on nothing.
+        let shown = self.llms.is_some();
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
         }
-        if let Input::LlmPicker(picker) = &mut self.input {
+        if let Input::LlmPicker(picker) = &mut self.input
+            && (llms.is_ok() || !shown)
+        {
             picker.load(llms);
         }
     }
@@ -500,6 +513,41 @@ mod tests {
 
         assert!(rows[7].starts_with(" ▎ → glm"), "{:?}", rows[7]);
         assert!(rows[8].contains("✗ Lyceum: 401: bad key"), "{:?}", rows[8]);
+    }
+
+    #[tokio::test]
+    async fn a_list_a_provider_is_missing_from_is_asked_for_again() {
+        let mut app = app();
+        app.llms = Some(Listing {
+            models: vec![model("glm", true)],
+            failed: vec![Failed {
+                origin: Origin {
+                    id: "chatgpt".into(),
+                    name: "ChatGPT".into(),
+                },
+                error: "401: expired".into(),
+            }],
+        });
+
+        app.apply(Action::LlmPicker);
+
+        assert!(app.llm_listing.is_running(), "asked again");
+        assert_eq!(
+            picker(&app).chosen(),
+            Some(("glm".into(), Effort::Default)),
+            "what it has shows meanwhile"
+        );
+        app.llm_listing.take().expect("listing").abort();
+
+        app.llms_listed(Err("offline".into()));
+        assert!(picker(&app).chosen().is_some(), "still shows glm");
+    }
+
+    #[tokio::test]
+    async fn a_full_list_is_not_asked_for_again() {
+        let mut app = llm_listed_app();
+        app.apply(Action::LlmPicker);
+        assert!(!app.llm_listing.is_running());
     }
 
     #[tokio::test]
