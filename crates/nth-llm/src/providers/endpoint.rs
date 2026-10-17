@@ -1,8 +1,9 @@
 //! One configured endpoint: where it is, how it is reached, and a client
 //! per protocol a model there may speak. Which protocol a model speaks is
 //! the catalogue's to say; the endpoint only holds the clients. The
-//! ChatGPT endpoint is the exception: it speaks responses, lists no
-//! `/models`, and runs only while you are connected (`chatgpt.rs`).
+//! ChatGPT endpoint is the exception: it speaks responses, lists its
+//! models from the Codex backend, and runs only while you are connected
+//! (`chatgpt.rs`).
 
 use nth_protocol::{ModelInfo, Origin};
 
@@ -88,7 +89,8 @@ impl Endpoint {
     /// The models to offer, with what the catalogue knows about them.
     pub(crate) async fn list(&self, catalog: &Snapshot) -> Result<Vec<ModelInfo>, listing::Error> {
         if self.chatgpt() {
-            return Ok(chatgpt::models(catalog.get().await));
+            let (catalog, auth) = futures::join!(catalog.get(), self.auth());
+            return chatgpt::list(&self.http, &self.base_url, &auth?, catalog).await;
         }
         // At once: the catalogue's deadline must not delay the list.
         let (catalog, ids) = futures::join!(catalog.get(), self.ids());
