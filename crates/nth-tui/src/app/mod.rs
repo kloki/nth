@@ -917,24 +917,30 @@ impl App {
                 }
             }
             Tab::Diagnostics => {
-                let row = |label, llm: Llm, current, inherited| diagnostics::ModeModel {
+                let row = |label, llm: Llm, current, inherits| diagnostics::ModeModel {
                     label,
                     effort: llm.effort.wire(),
                     context_window: self.context_window_of(&llm.model),
                     model: llm.model,
                     current,
-                    inherited,
+                    inherits,
                 };
                 let [plan, act] = Mode::ALL
-                    .map(|mode| row(mode.label(), self.llm(mode), mode == self.mode, false));
+                    .map(|mode| row(mode.label(), self.llm(mode), mode == self.mode, None));
                 let subagent = row(
                     "subagent",
                     self.subagent_llm(),
                     false,
-                    self.mode_llms.subagent.is_none(),
+                    self.mode_llms.subagent.is_none().then_some("the mode"),
+                );
+                let clerk = row(
+                    "clerk",
+                    self.clerk_llm(),
+                    false,
+                    self.mode_llms.clerk.is_none().then_some("subagent"),
                 );
                 let facts = diagnostics::Facts {
-                    models: [plan, act, subagent],
+                    models: [plan, act, subagent, clerk],
                     llms: self.llms.as_ref().map(|l| l.models.len()),
                     failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
                     listing: self.llm_listing.is_running(),

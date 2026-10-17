@@ -1,6 +1,7 @@
 //! The LLM picker: which LLM later turns go to, and how hard it
 //! reasons. Opened over the prompt, it waits for the list if it isn't in yet.
-//! Tab picks what the choice is for: plan, act, the subagents, or all three.
+//! Tab picks what the choice is for: plan, act, the subagents, the clerk,
+//! or all of them.
 
 pub mod usage;
 mod view;
@@ -18,12 +19,20 @@ pub enum Target {
     Plan,
     Act,
     Subagent,
-    /// Plan, act and the subagents at once.
+    /// The built-in clerk.
+    Clerk,
+    /// Plan, act, the subagents and the clerk at once.
     All,
 }
 
 impl Target {
-    pub const ALL: [Target; 4] = [Target::Plan, Target::Act, Target::Subagent, Target::All];
+    pub const ALL: [Target; 5] = [
+        Target::Plan,
+        Target::Act,
+        Target::Subagent,
+        Target::Clerk,
+        Target::All,
+    ];
 
     /// The one for what `mode` runs with.
     pub fn of(mode: Mode) -> Self {
@@ -38,6 +47,7 @@ impl Target {
             Target::Plan => "plan",
             Target::Act => "act",
             Target::Subagent => "subagent",
+            Target::Clerk => "clerk",
             Target::All => "all",
         }
     }
@@ -401,7 +411,8 @@ pub(crate) mod tests {
     fn tab_cycles_the_targets_and_wraps() {
         assert_eq!(Target::of(Mode::Plan).next(), Target::Act);
         assert_eq!(Target::Act.next(), Target::Subagent);
-        assert_eq!(Target::Subagent.next(), Target::All);
+        assert_eq!(Target::Subagent.next(), Target::Clerk);
+        assert_eq!(Target::Clerk.next(), Target::All);
         assert_eq!(Target::All.next(), Target::Plan);
         assert_eq!(Target::Plan.prev(), Target::All);
     }

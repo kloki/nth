@@ -109,10 +109,12 @@ default = "plan"
 
 # Profiles: what plan, act and subagents run with. A new chat starts on the
 # first, and ctrl+p cycles through them in the chat; a profile whose provider
-# has no key set is skipped. Each gives the model and effort for plan, act and
-# subagent. An empty plan or act model means the one above; an empty subagent
-# model means subagents run on their parent's model and effort, and an
-# agent's own `model` always wins. Effort is "default" (leave it to the
+# has no key set is skipped. Each gives the model and effort for plan, act,
+# subagent and clerk. An empty plan or act model means the one above; an empty
+# subagent model means subagents run on their parent's model and effort, and
+# an agent's own `model` always wins. The clerk is the built-in agent for
+# small one-off tasks, such as writing a commit message, so give it a cheap
+# model; an empty clerk model runs it on the subagent one. Effort is "default" (leave it to the
 # model, for endpoints that reject the field), "none", "minimal", "low",
 # "medium", "high", "xhigh" or "max"; a model is sent the nearest level it
 # takes (`nth models` lists them). With no profiles at all, both modes run
@@ -134,6 +136,10 @@ default = "plan"
 # [profiles.subagent]
 # model = "opencode/deepseek-v4.1-flash"
 # effort = "low"
+#
+# [profiles.clerk]
+# model = "opencode/glm-5.3-flash"
+# effort = "minimal"
 #
 # [[profiles]]
 # name = "zen"

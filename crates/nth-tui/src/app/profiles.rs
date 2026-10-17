@@ -47,12 +47,13 @@ impl App {
         self.runs(profile).then_some(profile.name.as_str())
     }
 
-    /// Whether both modes and the subagents still run `profile`'s llms.
+    /// Whether both modes, the subagents and the clerk still run `profile`'s llms.
     fn runs(&self, profile: &Profile) -> bool {
         Mode::ALL
             .iter()
             .all(|&mode| self.llm(mode) == *llm(profile, mode))
             && self.mode_llms.subagent == profile.llms.subagent
+            && self.mode_llms.clerk == profile.llms.clerk
     }
 
     /// ctrl+p: to the next profile, both modes on its llms. A model
@@ -148,6 +149,7 @@ mod tests {
                 plan: llm(&format!("{model}-plan")),
                 act: llm(&format!("{model}-act")),
                 subagent: Some(llm(&format!("{model}-subagent"))),
+                clerk: Some(llm(&format!("{model}-clerk"))),
             },
             unavailable: None,
             needs_chatgpt: false,
@@ -240,6 +242,19 @@ mod tests {
 
         app.apply(Action::NextProfile);
         assert_eq!(app.subagent_llm().model, "go-subagent", "put back");
+        assert_eq!(app.profile_name(), Some("go"));
+    }
+
+    #[test]
+    fn a_picked_clerk_model_leaves_the_profile() {
+        let mut app = profiled();
+        assert_eq!(app.clerk_llm().model, "go-clerk");
+        app.set_llm(crate::llm_picker::Target::Clerk, llm("picked"));
+        assert_eq!(app.clerk_llm().model, "picked");
+        assert_eq!(app.profile_name(), None);
+
+        app.apply(Action::NextProfile);
+        assert_eq!(app.clerk_llm().model, "go-clerk", "put back");
         assert_eq!(app.profile_name(), Some("go"));
     }
 

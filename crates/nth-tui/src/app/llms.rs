@@ -166,6 +166,7 @@ fn set_hint(target: Target, model: &str, effort: Effort) -> String {
         Target::Plan => "Plan",
         Target::Act => "Act",
         Target::Subagent => "Subagents",
+        Target::Clerk => "Clerk",
         Target::All => "All modes",
     };
     match effort {
@@ -436,6 +437,7 @@ mod tests {
         assert_eq!(app.hint.as_deref(), Some("Plan set to plain"));
 
         app.apply(Action::LlmPicker);
+        app.apply(Action::NextTab);
         app.apply(Action::NextTab);
         app.apply(Action::NextTab);
         app.apply(Action::NextTab);

@@ -15,6 +15,8 @@ pub struct ModeLlms {
     pub act: Llm,
     /// `None` runs subagents on the model of the mode that starts them.
     pub subagent: Option<Llm>,
+    /// `None` runs the built-in clerk on the subagents' model.
+    pub clerk: Option<Llm>,
 }
 
 impl ModeLlms {
@@ -24,6 +26,7 @@ impl ModeLlms {
             plan: llm.clone(),
             act: llm,
             subagent: None,
+            clerk: None,
         }
     }
 
@@ -96,12 +99,22 @@ impl App {
             .unwrap_or_else(|| self.llm(self.mode))
     }
 
+    /// What the clerk of the next turn runs on: its own pick, else the
+    /// subagents'.
+    pub(super) fn clerk_llm(&self) -> Llm {
+        self.mode_llms
+            .clerk
+            .clone()
+            .unwrap_or_else(|| self.subagent_llm())
+    }
+
     /// What `target` runs on now; for all, the current mode's.
     pub(super) fn llm_of(&self, target: Target) -> Llm {
         match target {
             Target::Plan => self.llm(Mode::Plan),
             Target::Act => self.llm(Mode::Act),
             Target::Subagent => self.subagent_llm(),
+            Target::Clerk => self.clerk_llm(),
             Target::All => self.llm(self.mode),
         }
     }
@@ -115,11 +128,16 @@ impl App {
                 self.mode_llms.subagent = Some(llm);
                 return;
             }
+            Target::Clerk => {
+                self.mode_llms.clerk = Some(llm);
+                return;
+            }
             Target::All => {
                 self.mode_llms = ModeLlms {
                     plan: llm.clone(),
                     act: llm.clone(),
-                    subagent: Some(llm),
+                    subagent: Some(llm.clone()),
+                    clerk: Some(llm),
                 };
                 self.load_llm();
                 return;
@@ -161,6 +179,7 @@ mod tests {
             plan: llm("kimi", Effort::High),
             act: llm("glm", Effort::Default),
             subagent: None,
+            clerk: None,
         });
         assert_eq!(app.mode, Mode::Act, "a bare session acts");
         assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · glm");
@@ -190,6 +209,7 @@ mod tests {
             plan: llm("kimi", Effort::High),
             act: llm("glm", Effort::Default),
             subagent: None,
+            clerk: None,
         });
         app.model = "qwen".into();
         assert_eq!(

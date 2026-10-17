@@ -23,7 +23,7 @@ use config::Config;
 use nth_context::Paths;
 use nth_icons::icons;
 use nth_llm::{Credentials, EndpointConfig, Providers, Unavailable};
-use nth_protocol::{Listing, Llm, Mode, Provider, SubagentLlm};
+use nth_protocol::{Effort, Listing, Llm, Mode, Provider, SubagentLlm};
 use nth_session::Session;
 use owo_colors::OwoColorize;
 
@@ -224,13 +224,15 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     session.mode = mode;
     session.effort = effort;
     session.max_steps = config.session.max_steps;
-    session.subagent_llm = config.subagent_for().map(|(model, effort)| SubagentLlm {
+    let picked = |(model, effort): (String, Effort)| SubagentLlm {
         llm: Llm {
             model: providers.qualify(&model),
             effort,
         },
         ..SubagentLlm::default()
-    });
+    };
+    session.subagent_llm = config.subagent_for().map(picked);
+    session.clerk_llm = config.clerk_for().map(picked);
     Ok((session, providers))
 }
 
@@ -246,7 +248,7 @@ pub(crate) async fn apply_context(session: &mut Session, config: &Config, provid
 
 /// Sizes the session's compaction to its model: the context window and
 /// output limit the providers' listing names for it, and for what its
-/// subagents run on. A listing that fails
+/// subagents and its clerk run on. A listing that fails
 /// changes nothing, so a fresh session keeps both limits unknown and
 /// nothing compacts on its own.
 pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
@@ -257,14 +259,15 @@ pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provi
         session.set_limits(context_window, max_output);
     }
     session.takes_images = takes_images(&listing, &session.model).unwrap_or(true);
-    if let Some(subagent) = &mut session.subagent_llm
-        && let Some((context_window, max_output)) = limits(&listing, &subagent.llm.model)
+    for picked in [&mut session.subagent_llm, &mut session.clerk_llm]
+        .into_iter()
+        .flatten()
     {
-        subagent.context_window = context_window;
-        subagent.max_output = max_output;
-    }
-    if let Some(subagent) = &mut session.subagent_llm {
-        subagent.takes_images = takes_images(&listing, &subagent.llm.model);
+        if let Some((context_window, max_output)) = limits(&listing, &picked.llm.model) {
+            picked.context_window = context_window;
+            picked.max_output = max_output;
+        }
+        picked.takes_images = takes_images(&listing, &picked.llm.model);
     }
 }
 
