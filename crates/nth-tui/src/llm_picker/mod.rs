@@ -121,6 +121,13 @@ impl LlmPicker {
         self.refilter(|_| {});
     }
 
+    /// Marks `current` at `effort` as what the target runs on now, just
+    /// picked: the highlight and the query stay where they are.
+    pub fn mark(&mut self, current: &str, effort: Effort) {
+        self.current = current.to_string();
+        self.effort = effort;
+    }
+
     /// Fills in the list, highlighting the model in use when it is listed.
     /// With no model at all, the first provider's failure, if any, is why.
     pub fn load(&mut self, listing: Result<Listing, String>) {

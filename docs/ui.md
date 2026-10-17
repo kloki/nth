@@ -319,7 +319,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 - **Context swaps it.** The model picker, the question tool, the session picker and settings are the ones so far; each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model and session pickers are a header, a query row and a list, 16 rows but at most half the screen. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
 - **The model picker keeps the listing's order** and opens on the model in use. A model that takes images (the read tool shows them) has `◩` in a dim column after its limits; the column is there only when some listed model takes images.
-- **Tab picks what the model picker changes.** The title row lists `plan · act · subagent · clerk · all`, the one the pick goes to in bold magenta; it opens on the current mode, and Tab and shift+Tab cycle it, wrapping. Each target marks and highlights what it runs on now. `subagent` is what subagents run on (an agent's own `model` still wins), the current mode's until picked; `clerk` is what the built-in clerk runs on, the subagents' until picked; `all` puts plan, act, the subagents and the clerk on the one pick.
+- **Tab picks what the model picker changes.** The title row lists `plan · act · subagent · clerk · all`, the one the pick goes to in bold magenta; it opens on the current mode, and Tab and shift+Tab cycle it, wrapping. Each target marks and highlights what it runs on now. `subagent` is what subagents run on (an agent's own `model` still wins), the current mode's until picked; `clerk` is what the built-in clerk runs on, the subagents' until picked; `all` puts plan, act, the subagents and the clerk on the one pick. Enter sets the target to the highlighted model and leaves the picker open, the pick marked and the query kept, so Tab can move on to set another target; esc closes it.
 - **Pickers filter as you type, as telescope does.** The model and session pickers have a query row under the title: `> query`, and how many items match against the right edge. Typing narrows the list by fuzzy matching (`fuzzy.rs`, nucleo, smart case, words in any order) and highlights the best match; the matched characters are bold and underlined. A model matches by its id and name, a session by its title and directory. Backspace widens the list again; ctrl+c clears the query, then closes. With an empty query the list keeps its own order: the listing's for models, newest first for sessions.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
 - **Keys go to the input panel first.** It handles what it knows and passes the rest on to app-level keys: content scrolling, tab switching and quit.
@@ -327,7 +327,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 | Input panel    | Height   | Opens on          | Returns on  |
 | -------------- | -------- | ----------------- | ----------- |
 | Prompt         | 4        | default           | —           |
-| Model picker   | ≤16      | `/models`, ctrl+m | enter, esc  |
+| Model picker   | ≤16      | `/models`, ctrl+m | esc         |
 | Session picker | ≤16      | `/resume`         | enter, esc  |
 | Question       | per call | the agent asks    | answer, esc |
 | Settings       | 3        | `/settings`       | esc         |

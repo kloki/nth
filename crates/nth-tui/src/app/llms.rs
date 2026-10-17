@@ -145,16 +145,17 @@ impl App {
 
     /// Switches the picker's target to the highlighted model for later
     /// turns; the session picks it up when the next turn starts, since
-    /// mid-turn it is in the turn task.
+    /// mid-turn it is in the turn task. The picker stays open, marking the
+    /// pick, so Tab can move on to another target; Esc closes it.
     pub(super) fn choose_llm(&mut self) {
-        let Input::LlmPicker(picker) = &self.input else {
+        let Input::LlmPicker(picker) = &mut self.input else {
             return;
         };
         if let Some((model, effort)) = picker.chosen() {
             let target = picker.target();
+            picker.mark(&model, effort);
             self.hint = Some(set_hint(target, &model, effort).into());
             self.set_llm(target, Llm { model, effort });
-            self.input = Input::Prompt;
         }
     }
 }
@@ -244,6 +245,11 @@ mod tests {
         app.apply(Action::Right);
         app.apply(Action::Right);
         app.apply(Action::Submit);
+        assert!(
+            matches!(app.input, Input::LlmPicker(_)),
+            "enter keeps it open"
+        );
+        app.apply(Action::Interrupt);
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
@@ -277,7 +283,18 @@ mod tests {
         app.apply(Action::Insert('p'));
         app.apply(Action::Submit);
         assert_eq!(app.model, "plain");
-        assert!(matches!(app.input, Input::Prompt));
+        assert!(matches!(app.input, Input::LlmPicker(_)));
+        let shown = crate::app::tests::rows(&mut app);
+        assert!(
+            shown[6].starts_with(" ▎ > p"),
+            "the query stays: {:?}",
+            shown[6]
+        );
+        assert!(
+            shown[7].starts_with(" ▎ → plain ✓"),
+            "marked: {:?}",
+            shown[7]
+        );
     }
 
     #[tokio::test]
@@ -427,6 +444,19 @@ mod tests {
         assert_eq!(app.hint.as_deref(), Some("Subagents set to plain"));
         assert_eq!(app.mode, Mode::Act, "Tab in the picker leaves the mode be");
 
+        app.apply(Action::NextTab);
+        assert_eq!(
+            picker(&app).target(),
+            Target::Clerk,
+            "open for the next pick"
+        );
+        assert_eq!(
+            picker(&app).chosen().map(|c| c.0),
+            Some("plain".into()),
+            "the clerk runs on the subagents' just picked"
+        );
+        app.apply(Action::Interrupt);
+
         app.apply(Action::LlmPicker);
         app.apply(Action::PrevTab);
         assert_eq!(picker(&app).target(), Target::Plan);
@@ -436,6 +466,7 @@ mod tests {
         assert_eq!(app.model, "glm", "act is untouched");
         assert_eq!(app.hint.as_deref(), Some("Plan set to plain"));
 
+        app.apply(Action::Interrupt);
         app.apply(Action::LlmPicker);
         app.apply(Action::NextTab);
         app.apply(Action::NextTab);
