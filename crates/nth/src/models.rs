@@ -43,7 +43,11 @@ pub async fn run(json: bool, config: Config) -> Result<()> {
             shown = origin;
         }
         let efforts: Vec<&str> = model.efforts.iter().map(|e| e.name()).collect();
-        let images = if model.takes_images { "images" } else { "" };
+        let images = if model.takes_images == Some(true) {
+            "images"
+        } else {
+            ""
+        };
         let limits = [model.limits(), efforts.join("/"), images.to_string()]
             .into_iter()
             .filter(|s| !s.is_empty())

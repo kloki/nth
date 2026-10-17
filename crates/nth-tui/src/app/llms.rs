@@ -55,7 +55,7 @@ impl App {
     /// Whether `model` takes images, when the listing names it.
     pub fn takes_images_of(&self, model: &str) -> Option<bool> {
         let llms = self.llms.as_ref()?;
-        Some(llms.models.iter().find(|llm| llm.id == model)?.takes_images)
+        llms.models.iter().find(|llm| llm.id == model)?.takes_images
     }
 
     /// The context window of `model`, when the provider says.
