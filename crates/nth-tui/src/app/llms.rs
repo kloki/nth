@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use nth_protocol::{BoxError, Cost, Listing};
+use nth_protocol::{BoxError, Cost, Effort, Listing};
 use nth_session::Price;
 
 use super::{App, Llm, input::Input};
@@ -133,9 +133,25 @@ impl App {
         };
         if let Some((model, effort)) = picker.chosen() {
             let target = picker.target();
+            self.hint = Some(set_hint(target, &model, effort).into());
             self.set_llm(target, Llm { model, effort });
             self.input = Input::Prompt;
         }
+    }
+}
+
+/// Says what the pick went to, since a target other than the mode in use
+/// changes nothing the status bar shows.
+fn set_hint(target: Target, model: &str, effort: Effort) -> String {
+    let what = match target {
+        Target::Plan => "Plan",
+        Target::Act => "Act",
+        Target::Subagent => "Subagents",
+        Target::All => "All modes",
+    };
+    match effort {
+        Effort::Default => format!("{what} set to {model}"),
+        effort => format!("{what} set to {model} · {}", effort.name()),
     }
 }
 
@@ -388,6 +404,7 @@ mod tests {
         app.apply(Action::Submit);
         assert_eq!(app.model, "glm", "the mode keeps its model");
         assert_eq!(app.subagent_llm().model, "plain");
+        assert_eq!(app.hint.as_deref(), Some("Subagents set to plain"));
         assert_eq!(app.mode, Mode::Act, "Tab in the picker leaves the mode be");
 
         app.apply(Action::LlmPicker);
@@ -397,6 +414,7 @@ mod tests {
         app.apply(Action::Submit);
         assert_eq!(app.llm(Mode::Plan).model, "plain");
         assert_eq!(app.model, "glm", "act is untouched");
+        assert_eq!(app.hint.as_deref(), Some("Plan set to plain"));
 
         app.apply(Action::LlmPicker);
         app.apply(Action::NextTab);
@@ -416,6 +434,7 @@ mod tests {
             assert_eq!(app.llm_of(target), low, "{target:?}");
         }
         assert_eq!(app.effort, Effort::Low);
+        assert_eq!(app.hint.as_deref(), Some("All modes set to glm · low"));
     }
 
     #[tokio::test]
