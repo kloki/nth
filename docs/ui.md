@@ -204,7 +204,7 @@ instructions
   ~/repos/nth/CLAUDE.md
 
 skills
-  ✦ research-opencode  claude
+  ✦ research-opencode  project  ~/repos/nth/.claude/skills/research-opencode
 
 agents
   ↳ explore  builtin
@@ -224,6 +224,7 @@ tools
 ```
 
 - **Sections.** A bold title each, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
+- **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
 - **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Tools.** The `rtk` bash would rewrite the model's commands through, when it is on PATH: a green `✓` with the path in cyan, or dim with a red `✗` and why — "not on PATH", or "disabled in the config" when `[tools.bash] rtk` is off.

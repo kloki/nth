@@ -5,7 +5,7 @@
 //! formatters that check writes, and the rtk the bash tool would rewrite
 //! commands through.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
@@ -306,7 +306,7 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         let mut line = row(
             Span::raw(icons().tool.skill),
             format!("{:width$}", skill.name),
-            skill.source.name().into(),
+            origin(skill.source.name(), skill.dir(), facts.home),
         );
         line.spans[2].style = Style::new().fg(Color::Cyan);
         lines.push(line);
@@ -321,10 +321,11 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         .max()
         .unwrap_or(0);
     for agent in facts.context.agents.iter() {
+        let dir = agent.path.as_deref().and_then(Path::parent);
         let mut line = row(
             Span::raw(icons().subagent),
             format!("{:width$}", agent.name),
-            agent.source.name().into(),
+            origin(agent.source.name(), dir, facts.home),
         );
         line.spans[2].style = Style::new().fg(Color::Cyan);
         lines.push(line);
@@ -390,6 +391,16 @@ fn unavailable(name: String, reason: String) -> Line<'static> {
 
 fn path(path: &std::path::Path, home: Option<&str>) -> String {
     status::place(path, home)
+}
+
+/// Where a skill or agent came from: its source alone for a built-in or
+/// internal one, else the source and the folder it was found in, so a global
+/// skill names `~/.claude/skills` and not just `global`.
+fn origin(source: &str, dir: Option<&Path>, home: Option<&str>) -> String {
+    match dir {
+        Some(dir) => format!("{source}  {}", path(dir, home)),
+        None => source.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -549,6 +560,54 @@ mod tests {
         assert!(text[..agents].contains(&"skills".to_string()));
         assert_eq!(text[agents + 1], "  ↳ explore  builtin");
         assert_eq!(text[agents + 2], "  ↳ general  builtin");
+    }
+
+    #[test]
+    fn names_the_folder_a_skill_and_agent_came_from() {
+        // Run from the home directory, so its `.claude` folders count as
+        // global and not as project ones.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (path, body) in [
+            (
+                ".claude/skills/deploy/SKILL.md",
+                "---\nname: deploy\ndescription: ship\n---\nbody\n",
+            ),
+            (
+                ".claude/agents/review.md",
+                "---\ndescription: reviews\n---\nprompt\n",
+            ),
+        ] {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).expect("dirs");
+            std::fs::write(file, body).expect("writes");
+        }
+        let home = dir.path().to_string_lossy().into_owned();
+        let paths = nth_context::Paths {
+            home: Some(dir.path().to_path_buf()),
+            config_home: Some(dir.path().join(".config")),
+            skill_paths: Vec::new(),
+        };
+        let context = Context::discover(dir.path(), &paths);
+        let mut facts = facts(&context, &[]);
+        facts.home = Some(&home);
+
+        let text = text(&Diagnostics::default(), &facts);
+
+        let skills = section(&text, "skills");
+        assert!(
+            text[skills + 1].starts_with("  ✦ deploy")
+                && text[skills + 1].ends_with("global  ~/.claude/skills/deploy"),
+            "{:?}",
+            text[skills + 1]
+        );
+        let agents = section(&text, "agents");
+        assert!(
+            text[agents..]
+                .iter()
+                .any(|l| l.starts_with("  ↳ review") && l.ends_with("global  ~/.claude/agents")),
+            "{:?}",
+            &text[agents..]
+        );
     }
 
     #[test]

@@ -68,6 +68,9 @@ pub struct Skill {
     pub description: Option<String>,
     pub location: Location,
     pub source: Source,
+    /// The folder searched that it was found under, e.g. `~/.claude/skills`;
+    /// `None` for an internal skill.
+    pub root: Option<PathBuf>,
 }
 
 /// Where a skill's `SKILL.md` is.
@@ -184,7 +187,7 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
     }
     for (root, source) in roots(cwd, paths) {
         for file in find(&root) {
-            match read(&file, source) {
+            match read(&file, &root, source) {
                 Ok(skill) => skills.insert(skill),
                 Err(e) => warnings.push(format!("skipped skill {}: {e}", file.display())),
             }
@@ -238,13 +241,15 @@ fn roots(cwd: &Path, paths: &Paths) -> Vec<(PathBuf, Source)> {
 
 /// Every `SKILL.md` under `root`, in path order so discovery is the same on
 /// every run. Ignore files are not applied: a skill folder that git ignores
-/// is still a skill.
+/// is still a skill. Hidden folders are skipped, so a `.trash` beside real
+/// skills does not list what was deleted.
 fn find(root: &Path) -> Vec<PathBuf> {
     if !root.is_dir() {
         return Vec::new();
     }
     let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
         .standard_filters(false)
+        .hidden(true)
         .follow_links(true)
         .max_depth(Some(MAX_DEPTH))
         .build()
@@ -256,7 +261,7 @@ fn find(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn read(file: &Path, source: Source) -> Result<Skill, String> {
+fn read(file: &Path, root: &Path, source: Source) -> Result<Skill, String> {
     let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
     let (front, _body) = frontmatter::split(&text)?;
     let name = match front.name {
@@ -276,6 +281,7 @@ fn read(file: &Path, source: Source) -> Result<Skill, String> {
         description: front.description,
         location: Location::File(file.to_path_buf()),
         source,
+        root: Some(root.to_path_buf()),
     })
 }
 
@@ -378,6 +384,40 @@ mod tests {
                 ("g", "project nth", "repo/.nth/skills/g"),
             ])
         );
+    }
+
+    #[test]
+    fn hidden_folders_are_not_searched() {
+        let tree = Tree::new();
+        tree.skill(
+            "home/.claude/skills/.trash/dead",
+            "name: dead\ndescription: gone",
+        )
+        .skill("home/.claude/skills/live", "name: live\ndescription: here");
+
+        assert_eq!(
+            tree.discover("home", &tree.paths()).0,
+            found(&[("live", "here", "home/.claude/skills/live")])
+        );
+    }
+
+    #[test]
+    fn a_skill_knows_the_root_it_was_found_under() {
+        let tree = Tree::new();
+        tree.skill("home/.claude/skills/a", "name: a")
+            .skill("repo/.agents/skills/group/b", "name: b");
+
+        let skills = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
+
+        assert_eq!(
+            skills.get("a").expect("a").root.as_deref(),
+            Some(tree.path("home/.claude/skills").as_path())
+        );
+        assert_eq!(
+            skills.get("b").expect("b").root.as_deref(),
+            Some(tree.path("repo/.agents/skills").as_path())
+        );
+        assert_eq!(skills.get("work-plan").expect("internal").root, None);
     }
 
     #[test]
