@@ -1,6 +1,7 @@
 //! The plan file: where plan mode writes its plan, and the reminders that
-//! tell the model it entered plan mode or left it, copied from opencode's
-//! `plan-mode.txt` and `build-switch.txt`.
+//! tell the model it entered plan mode or left it, based on opencode's
+//! `plan-mode.txt` and `build-switch.txt` with nth's own worktree and
+//! work-plan guidance added.
 
 pub mod edits;
 
@@ -117,6 +118,12 @@ mod tests {
             "No plan file exists yet. You should create your plan at /repo/.nth/plans/1.md using the write tool."
         ));
         assert!(fresh.contains("/approve"));
+        // The guidance nth adds on top of opencode's text.
+        assert!(fresh.contains("Always plan to work in a worktree"));
+        assert!(fresh.contains("enter_worktree"));
+        assert!(fresh.contains("the `work-plan` skill"));
+        assert!(fresh.contains("work plan in the plan file as a tree"));
+        assert!(fresh.contains("open a pull request with `gh`"));
         assert!(!fresh.contains('{'), "every placeholder filled");
 
         let again = plan_mode_reminder(plan, true, Approver::Nobody);
