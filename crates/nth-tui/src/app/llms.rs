@@ -52,6 +52,12 @@ impl App {
         Some((llm.context, llm.output))
     }
 
+    /// Whether `model` takes images, when the listing names it.
+    pub fn takes_images_of(&self, model: &str) -> Option<bool> {
+        let llms = self.llms.as_ref()?;
+        Some(llms.models.iter().find(|llm| llm.id == model)?.takes_images)
+    }
+
     /// The context window of `model`, when the provider says.
     pub fn context_window_of(&self, model: &str) -> Option<u64> {
         let llms = self.llms.as_ref()?;

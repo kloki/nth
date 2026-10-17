@@ -8,6 +8,7 @@
 
 mod chatgpt;
 mod endpoint;
+mod images;
 mod listing;
 
 pub use endpoint::{EndpointConfig, Unavailable};
@@ -179,6 +180,14 @@ impl Provider for Providers {
             let request = match efforts {
                 Some(efforts) => Request {
                     effort: request.effort.nearest(&efforts),
+                    ..request
+                },
+                None => request,
+            };
+            let prepared = images::prepare(request.messages, known.map(|k| k.takes_images()));
+            let request = match &prepared {
+                Some(messages) => Request {
+                    messages,
                     ..request
                 },
                 None => request,

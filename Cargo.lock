@@ -1626,6 +1626,7 @@ dependencies = [
 name = "nth-session"
 version = "1.1.1"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "jiff",
  "nth-context",

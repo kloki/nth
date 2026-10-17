@@ -18,7 +18,7 @@ pub(super) fn body(
         "stream": true,
         // Without it the stream carries no token counts.
         "stream_options": { "include_usage": true },
-        "messages": messages.iter().map(|m| message(m, mistral)).collect::<Vec<_>>(),
+        "messages": encode(messages, mistral),
     });
     if let Some(effort) = effort.wire() {
         body["reasoning_effort"] = json!(effort);
@@ -49,11 +49,48 @@ fn is_mistral(model: &str) -> bool {
     .any(|family| model.contains(family))
 }
 
+/// What leads the user message carrying tool results' images.
+const IMAGES_INTRO: &str = "The images the tool results above showed, in order:";
+
+/// The messages, with the images of a run of tool results in one user
+/// message after it: a `tool` message takes only text on some servers
+/// (GLM on OpenCode Go refuses an image part there), while a user message
+/// takes images on every one.
+fn encode(messages: &[Message], mistral: bool) -> Vec<Value> {
+    let mut out = Vec::with_capacity(messages.len());
+    let mut images: Vec<Value> = Vec::new();
+    for m in messages {
+        match m {
+            Message::ToolResult { images: shown, .. } => {
+                images.extend(shown.iter().filter_map(|image| {
+                    let url = image.data_url()?;
+                    Some(json!({ "type": "image_url", "image_url": { "url": url } }))
+                }));
+            }
+            _ => flush(&mut out, &mut images),
+        }
+        out.push(message(m, mistral));
+    }
+    flush(&mut out, &mut images);
+    out
+}
+
+fn flush(out: &mut Vec<Value>, images: &mut Vec<Value>) {
+    if images.is_empty() {
+        return;
+    }
+    let mut content = vec![json!({ "type": "text", "text": IMAGES_INTRO })];
+    content.append(images);
+    out.push(json!({ "role": "user", "content": content }));
+}
+
 fn message(message: &Message, mistral: bool) -> Value {
     match message {
         Message::System(text) => json!({ "role": "system", "content": text }),
         Message::User(text) => json!({ "role": "user", "content": text }),
-        Message::ToolResult { call_id, content } => {
+        Message::ToolResult {
+            call_id, content, ..
+        } => {
             json!({ "role": "tool", "tool_call_id": call_id, "content": content })
         }
         Message::Assistant(reply) => {
@@ -154,5 +191,54 @@ mod tests {
                 { "type": "text", "text": "Reading." },
             ])
         );
+    }
+
+    /// A read that showed a PNG, its bytes `iVBO`.
+    fn read_an_image() -> Message {
+        Message::ToolResult {
+            call_id: "call_1".into(),
+            content: "Image read: shot.png".into(),
+            images: vec![nth_protocol::Image {
+                mime: "image/png".into(),
+                sha256: "ab".into(),
+                width: 2,
+                height: 1,
+                path: "/images/ab.png".into(),
+                data: Some("iVBO".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn tool_results_images_follow_them_in_a_user_message() {
+        let text_only = Message::ToolResult {
+            call_id: "call_2".into(),
+            content: "2 files".into(),
+            images: Vec::new(),
+        };
+        let messages = [read_an_image(), text_only, Message::User("and now?".into())];
+        let out = body("glm", Effort::Default, None, &messages, &[])["messages"].clone();
+        assert_eq!(
+            out,
+            json!([
+                { "role": "tool", "tool_call_id": "call_1", "content": "Image read: shot.png" },
+                { "role": "tool", "tool_call_id": "call_2", "content": "2 files" },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": IMAGES_INTRO },
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBO" } },
+                    ],
+                },
+                { "role": "user", "content": "and now?" },
+            ])
+        );
+    }
+
+    #[test]
+    fn images_at_the_end_of_the_history_still_go() {
+        let out = body("glm", Effort::Default, None, &[read_an_image()], &[])["messages"].clone();
+        assert_eq!(out.as_array().map(Vec::len), Some(2));
+        assert_eq!(out[1]["role"], "user");
     }
 }

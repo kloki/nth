@@ -98,6 +98,7 @@ pub(crate) fn select(
                     efforts: catalog::BUDGET_EFFORTS.to_vec(),
                     origin: None,
                     cost: None,
+                    takes_images: false,
                 });
             };
             Some(ModelInfo {
@@ -108,6 +109,7 @@ pub(crate) fn select(
                 efforts: model.efforts(),
                 origin: None,
                 cost,
+                takes_images: model.takes_images(),
             })
         })
         .collect();
@@ -193,6 +195,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: false,
         }
     }
 
@@ -223,6 +226,7 @@ mod tests {
                     cache_read: Some(0.26),
                     cache_write: None,
                 }),
+                takes_images: false,
             }
         );
         assert_eq!(
@@ -281,6 +285,7 @@ mod tests {
                 efforts: Vec::new(),
                 origin: None,
                 cost: None,
+                takes_images: false,
             },
             "the canonical entry, zhipuai's"
         );

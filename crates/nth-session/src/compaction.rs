@@ -283,6 +283,7 @@ mod tests {
         Message::ToolResult {
             call_id: "1".into(),
             content: content.into(),
+            images: Vec::new(),
         }
     }
 

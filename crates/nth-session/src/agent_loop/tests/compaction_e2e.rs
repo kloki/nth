@@ -165,7 +165,8 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpo
             }),
             Message::ToolResult {
                 call_id: "1".into(),
-                content: "hi".into()
+                content: "hi".into(),
+                images: Vec::new(),
             },
             Message::Compaction {
                 summary: "the summary".into(),
@@ -460,14 +461,17 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
         Message::ToolResult {
             call_id: "1".into(),
             content: "one".repeat(200),
+            images: Vec::new(),
         },
         Message::ToolResult {
             call_id: "2".into(),
             content: "two".repeat(200),
+            images: Vec::new(),
         },
         Message::ToolResult {
             call_id: "3".into(),
             content: "three".repeat(200),
+            images: Vec::new(),
         },
         assistant("done"),
     ]);
@@ -728,7 +732,8 @@ async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
             }),
             Message::ToolResult {
                 call_id: "1".into(),
-                content: "hi".into()
+                content: "hi".into(),
+                images: Vec::new(),
             },
         ],
         "the whole history goes to the provider untouched"

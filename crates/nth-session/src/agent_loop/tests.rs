@@ -199,11 +199,13 @@ async fn runs_tools_until_the_model_answers() {
         [
             Message::ToolResult {
                 call_id: "1".into(),
-                content: "hi".into()
+                content: "hi".into(),
+                images: Vec::new(),
             },
             Message::ToolResult {
                 call_id: "2".into(),
-                content: "Error: unknown tool: nope".into()
+                content: "Error: unknown tool: nope".into(),
+                images: Vec::new(),
             },
             Message::Assistant(AssistantMessage {
                 text: "done".into(),
@@ -333,6 +335,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         Some(&Message::ToolResult {
             call_id: "1".into(),
             content: failed(MAX_STEPS_REACHED),
+            images: Vec::new(),
         })
     );
     drop(tx);

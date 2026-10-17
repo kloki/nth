@@ -378,11 +378,13 @@ impl App {
         if let Some((context_window, max_output)) = self.limits_of(&self.model) {
             session.set_limits(context_window, max_output);
         }
+        session.takes_images = self.takes_images_of(&self.model).unwrap_or(true);
         session.effort = self.effort;
         // Sized against its own model's window, when the listing names it.
         session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| {
             let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
             SubagentLlm {
+                takes_images: self.takes_images_of(&llm.model),
                 llm,
                 context_window,
                 max_output,
@@ -928,6 +930,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: false,
         }
     }
 

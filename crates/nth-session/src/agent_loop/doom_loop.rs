@@ -45,6 +45,7 @@ impl Turn<'_> {
             .extend(calls.iter().map(|call| Message::ToolResult {
                 call_id: call.id.clone(),
                 content: failed(reason),
+                images: Vec::new(),
             }));
         Err(error)
     }
@@ -221,6 +222,7 @@ mod tests {
             ["1", "2", "3"].map(|id| Message::ToolResult {
                 call_id: id.into(),
                 content: failed(STOPPED),
+                images: Vec::new(),
             }),
             "every call is answered, so the session stays valid"
         );
@@ -268,6 +270,7 @@ mod tests {
             ["1", "2", "3"].map(|id| Message::ToolResult {
                 call_id: id.into(),
                 content: failed(INTERRUPTED),
+                images: Vec::new(),
             }),
             "every call is answered, so the session stays valid"
         );
@@ -288,6 +291,7 @@ mod tests {
             ["1", "2", "3"].map(|id| Message::ToolResult {
                 call_id: id.into(),
                 content: failed(UNASKED),
+                images: Vec::new(),
             }),
             "stopped without blocking on a question nobody would answer"
         );

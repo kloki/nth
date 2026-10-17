@@ -184,7 +184,9 @@ impl Transcript {
                         t.apply(&Event::ToolStarted(call.clone()));
                     }
                 }
-                Message::ToolResult { call_id, content } => {
+                Message::ToolResult {
+                    call_id, content, ..
+                } => {
                     let Some(Item {
                         entry: Entry::Tool { call, .. },
                         ..
@@ -878,6 +880,7 @@ pub(super) mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "a.rs".into(),
+                images: Vec::new(),
             },
         ];
 
@@ -1007,10 +1010,12 @@ pub(super) mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "a.rs\nb.rs".into(),
+                images: Vec::new(),
             },
             Message::ToolResult {
                 call_id: "2".into(),
                 content: "Error: no such file".into(),
+                images: Vec::new(),
             },
             Message::Assistant(nth_protocol::AssistantMessage {
                 text: "done".into(),
@@ -1061,6 +1066,7 @@ pub(super) mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "Wrote file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
+                images: Vec::new(),
             },
         ];
 
@@ -1085,6 +1091,7 @@ pub(super) mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "Edited file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
+                images: Vec::new(),
             },
         ];
 
@@ -1124,6 +1131,7 @@ pub(super) mod tests {
                 call_id: "1".into(),
                 content: "<skill_content name=\"deploy\">\n# Skill: deploy\n</skill_content>"
                     .into(),
+                images: Vec::new(),
             },
         ];
 
@@ -1151,6 +1159,7 @@ pub(super) mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "1: fn main() {}\n\n<system-reminder>\nInstructions from: /repo/src/AGENTS.md\nBe brief.\n</system-reminder>\n".into(),
+                images: Vec::new(),
             },
         ];
 

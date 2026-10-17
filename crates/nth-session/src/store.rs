@@ -7,6 +7,8 @@ use std::{
     time::SystemTime,
 };
 
+use base64::Engine;
+use nth_protocol::Message;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -127,7 +129,10 @@ impl Store {
     pub async fn load(&self, id: Uuid) -> Result<Session, Error> {
         let path = self.path(id);
         let json = tokio::fs::read(&path).await.map_err(io_at(&path))?;
-        serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })
+        let mut session: Session =
+            serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })?;
+        load_images(&mut session.messages).await;
+        Ok(session)
     }
 
     /// Removes `id`'s save; one that was never saved is an error.
@@ -146,6 +151,24 @@ impl Store {
 
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
+    }
+}
+
+/// Reads the bytes of every image the tools showed, which the save leaves
+/// out, once, so the requests of a resumed session need not. An image
+/// whose file is gone stays without them, and its requests carry a note
+/// in its place.
+async fn load_images(messages: &mut [Message]) {
+    for message in messages {
+        let Message::ToolResult { images, .. } = message else {
+            continue;
+        };
+        for image in images {
+            if let Ok(bytes) = tokio::fs::read(&image.path).await {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                image.data = Some(data.into());
+            }
+        }
     }
 }
 
@@ -229,6 +252,37 @@ mod tests {
         session.messages.push(Message::User(prompt.into()));
         session.updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(at_secs);
         session
+    }
+
+    #[tokio::test]
+    async fn loading_reads_the_images_the_save_left_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let kept = dir.path().join("kept.png");
+        std::fs::write(&kept, b"png").expect("writes");
+        let image = |path: PathBuf| nth_protocol::Image {
+            mime: "image/png".into(),
+            sha256: "ab".into(),
+            width: 1,
+            height: 1,
+            path,
+            data: Some("cG5n".into()),
+        };
+        let mut shown = session("look", 1);
+        shown.messages.push(Message::ToolResult {
+            call_id: "1".into(),
+            content: "Image read".into(),
+            images: vec![image(kept), image(dir.path().join("gone.png"))],
+        });
+        store.save(&shown).await.expect("saves");
+
+        let loaded = store.load(shown.id).await.expect("loads");
+
+        let Some(Message::ToolResult { images, .. }) = loaded.messages.last() else {
+            panic!("the tool result");
+        };
+        let data: Vec<_> = images.iter().map(|i| i.data.as_deref()).collect();
+        assert_eq!(data, [Some("cG5n"), None], "the gone file's stays empty");
     }
 
     #[tokio::test]

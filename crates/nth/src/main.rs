@@ -256,12 +256,28 @@ pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provi
     if let Some((context_window, max_output)) = limits(&listing, &session.model) {
         session.set_limits(context_window, max_output);
     }
+    if let Some(takes) = takes_images(&listing, &session.model) {
+        session.takes_images = takes;
+    }
     if let Some(subagent) = &mut session.subagent_llm
         && let Some((context_window, max_output)) = limits(&listing, &subagent.llm.model)
     {
         subagent.context_window = context_window;
         subagent.max_output = max_output;
     }
+    if let Some(subagent) = &mut session.subagent_llm {
+        subagent.takes_images = takes_images(&listing, &subagent.llm.model);
+    }
+}
+
+/// Whether the listing says `model` takes images; `None` when it does not
+/// name it.
+fn takes_images(listing: &Listing, model: &str) -> Option<bool> {
+    listing
+        .models
+        .iter()
+        .find(|info| info.id == model)
+        .map(|info| info.takes_images)
 }
 
 /// The context window and output limit the listing gives `model`; `None`
@@ -431,6 +447,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: false,
         }
     }
 
