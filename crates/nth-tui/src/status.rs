@@ -165,7 +165,7 @@ fn link_rect(right: Rect, width: usize, at: usize, link: usize) -> Option<Rect> 
     })
 }
 
-/// Line 2, left: `⏵ 2 queued · <first line of the next prompt>`. Prompts
+/// Line 2, left: `> 2 queued · <first line of the next prompt>`. Prompts
 /// on their way into the running turn count too, and name the line: they
 /// are the next thing the model hears.
 fn queued(app: &App) -> Vec<Span<'static>> {

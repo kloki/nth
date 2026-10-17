@@ -158,7 +158,7 @@ mod tests {
 
         app.queue = [Queued::Prompt("lint".into())].into();
         let row = rows(&mut app)[15].clone();
-        assert!(row.starts_with(" ⏵ 1 queued · lint "), "{row:?}");
+        assert!(row.starts_with(" > 1 queued · lint "), "{row:?}");
         assert!(
             row.trim_end().ends_with("● rust  ● bash"),
             "the queue shares it: {row:?}"
@@ -167,7 +167,7 @@ mod tests {
         app.queue = [Queued::Prompt("fix the build".into())].into();
         let row = rows(&mut app)[15].clone();
         assert!(
-            row.starts_with(" ⏵ 1 queued · fix the build "),
+            row.starts_with(" > 1 queued · fix the build "),
             "the servers are cut first: {row:?}"
         );
     }

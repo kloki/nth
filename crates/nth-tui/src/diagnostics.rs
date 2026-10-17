@@ -581,7 +581,7 @@ mod tests {
             acting[1..5],
             [
                 "▎     plan      kimi",
-                "▎   ▸ act       glm · high · 128k context",
+                "▎   → act       glm · high · 128k context",
                 "▎     subagent  glm · high · 128k context · as the mode",
                 "▎     clerk     glm · high · 128k context · as subagent",
             ]
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(
             planning[1..5],
             [
-                "▎   ▸ plan      kimi",
+                "▎   → plan      kimi",
                 "▎     act       glm · high · 128k context",
                 "▎     subagent  minimax · low",
                 "▎     clerk     flash · minimal",

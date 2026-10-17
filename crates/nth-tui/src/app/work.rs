@@ -173,13 +173,20 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Work);
         assert!(app.flash.is_some(), "it comes in after a blank");
         app.flash = None;
-        let rows = rows(&mut app);
-        assert!(rows[0].starts_with("  › chat [⊞ work 1/2] "), "{rows:?}");
-        assert!(rows[2].starts_with(" work · 1/2 done"), "{rows:?}");
-        assert_eq!(rows[4].trim_end(), " ✓ 1 a  1/1");
-        assert_eq!(rows[5].trim_end(), " └─ ✓ store  1/2");
-        assert_eq!(rows[6].trim_end(), " ▸ 2 b  0/1");
-        assert_eq!(rows[7].trim_end(), " └─ ○ tab  1/2");
+        let top = rows(&mut app);
+        assert!(top[0].starts_with("  › chat [⊞ work 1/2] "), "{top:?}");
+        assert!(top[2].starts_with(" ▎ work · 1/2 done"), "{top:?}");
+        // The scrollbar sits on the right: the second cycle's item is below.
+        let shown = |row: &str| row.trim_end_matches([' ', '┃']).to_string();
+        assert_eq!(shown(&top[4]), " ▎ ✓ 1 a  1/1");
+        assert_eq!(shown(&top[5]), " ▎   ✓ store  1/2");
+        assert_eq!(shown(&top[7]), " ▎ → 2 b  0/1");
+        app.work.jump_bottom();
+        let bottom = rows(&mut app);
+        assert!(
+            bottom.iter().any(|r| shown(r) == " ▎   ● tab  1/2"),
+            "{bottom:?}"
+        );
     }
 
     #[tokio::test]

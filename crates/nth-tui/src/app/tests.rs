@@ -240,7 +240,7 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
     let rows = rows(&mut app);
 
     assert_eq!(rows[14].trim_end(), " /repo 0m", "the first line stays");
-    assert_eq!(rows[15].trim_end(), " ⏵ 2 queued · fix the build");
+    assert_eq!(rows[15].trim_end(), " > 2 queued · fix the build");
 }
 
 #[test]
@@ -484,7 +484,7 @@ async fn tabs_open_switch_and_close() {
     assert!(opened[2].starts_with(" ▎ model "), "{:?}", opened[2]);
     assert!(opened[3].starts_with(" ▎     plan      glm"));
     assert!(
-        opened[4].starts_with(" ▎   ▸ act       glm"),
+        opened[4].starts_with(" ▎   → act       glm"),
         "a bare app acts"
     );
     assert!(

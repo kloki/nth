@@ -78,19 +78,34 @@ pub fn panel_row<'a>(accent: Color, content: impl IntoIterator<Item = Span<'a>>)
 pub const SECTION_COLOUR: Color = Color::DarkGray;
 
 /// The diagnostics and usage tabs' sections as barred blocks: the section
-/// bar on every row of each, blank ones too, and one bare blank line
-/// between them, as between chat entries.
+/// bar on every row of each, blank ones too, joined as `join` does.
 pub fn sections(blocks: Vec<Vec<Line<'static>>>) -> Vec<Line<'static>> {
     let bar = Style::new().fg(SECTION_COLOUR);
+    join(
+        blocks
+            .into_iter()
+            .map(|block| {
+                block
+                    .into_iter()
+                    .map(|mut line| {
+                        line.spans.insert(0, Span::styled(BAR, bar));
+                        line
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+/// Barred blocks with one bare blank line between them, as between chat
+/// entries.
+pub fn join(blocks: Vec<Vec<Line<'static>>>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in blocks {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.extend(block.into_iter().map(|mut line| {
-            line.spans.insert(0, Span::styled(BAR, bar));
-            line
-        }));
+        lines.extend(block);
     }
     lines
 }
