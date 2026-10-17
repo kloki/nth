@@ -6,26 +6,61 @@ I wanted to tweak my coding harness more than I could, so I product engineered i
 
 Whenever I did not know what to do, I copied [opencode](https://github.com/anomalyco/opencode). So all props to them.
 
-## Install
-
-Every [release](https://github.com/kloki/nth/releases) ships prebuilt binaries for macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64, glibc and musl). To install the latest one, run its installer:
+# Install
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kloki/nth/releases/latest/download/nth-installer.sh | sh
 ```
 
-## Set up
+## Optional
 
-nth comes with no providers, so it needs a config before it can chat.
+nth integrates with these tools, and uses them automatically when they are installed:
 
-1. Run `nth init`. It writes `~/.config/nth/config.toml` with every key, its default and what it does.
-2. Uncomment a provider. OpenCode Go and OpenCode Zen are ready to go, or add your own `[provider.<id>]` block for any OpenAI-compatible endpoint.
-3. Export the API key in the variable that provider's `api_key_env` names. nth reads keys only from the environment, never from the config file:
+- [rtk](https://github.com/rtk-ai/rtk) compresses the output of common commands for the model.
+- [agent-browser](https://github.com/vercel-labs/agent-browser) drives a browser from the `browser` skill.
 
-   ```sh
-   export OPENCODE_API_KEY=...
-   ```
+# Set up
 
-4. Run `nth models` to see what the provider serves, and set `model` to one of them as `provider/model`. Leave it empty and nth picks one at random.
+```
+nth init
+```
 
-`nth config` prints the config nth actually uses. The template that `nth init` writes, [`crates/nth/src/config.toml`](crates/nth/src/config.toml), is the reference for every key.
+## Setup providers
+
+- Set up a provider in the config. There are examples for opencode go and zen
+- Set your API key as an environment variable: `  export OPENCODE_API_KEY=...`
+
+## Setup subscriptions
+
+Only Codex is supported.
+
+- run `/connect` in nth
+
+# Features
+
+## Tabbed view
+
+nth supports a tabbed view for main chat, plan, subagents, etc. The agent is aware of this and can control it.
+
+## Plan view
+
+- When the plan updates, show a diff view
+- Place a comment directly in the plan to be processed
+- Finalize with /approve
+
+## Worktree
+
+- nth will actually use worktrees when making features
+- `/setup-worktrees` to improve it for your project
+
+## Workplan
+
+- Complete a task in cycles
+- The model will dynamically update the plan based on its findings
+- nth will automatically use it when needed
+
+## Profiles
+
+- Profiles configure different models for plan/act/subagent
+- Defined in your config
+- ctrl-p toggles between them
