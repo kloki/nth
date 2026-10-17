@@ -196,6 +196,9 @@ pub struct ProfileConfig {
     /// What subagents run on. Unlike the modes', an empty model means the
     /// parent's model and effort, not the config's.
     pub subagent: ModeDefaults,
+    /// What the built-in clerk runs on. An empty model means the subagent
+    /// slot's.
+    pub clerk: ModeDefaults,
 }
 
 /// The model and effort one mode runs with in a profile.
@@ -279,6 +282,7 @@ impl Config {
             profile.plan.model.clear();
             profile.act.model.clear();
             profile.subagent.model.clear();
+            profile.clerk.model.clear();
         }
     }
 
@@ -316,8 +320,20 @@ impl Config {
     /// The model and effort subagents run with in `profile`; `None` when
     /// its subagent slot names no model, so they run on their parent's.
     pub fn profile_subagent(&self, profile: &ProfileConfig) -> Option<(String, Effort)> {
-        let defaults = &profile.subagent;
-        (!defaults.model.is_empty()).then(|| (defaults.model.clone(), defaults.effort))
+        slot(&profile.subagent)
+    }
+
+    /// The model and effort the clerk starts on: the first profile's clerk
+    /// slot. `None` when it names no model, or there are no profiles: the
+    /// clerk then runs as the other subagents.
+    pub fn clerk_for(&self) -> Option<(String, Effort)> {
+        self.profile_clerk(self.profiles.first()?)
+    }
+
+    /// The model and effort the clerk runs with in `profile`; `None` when
+    /// its clerk slot names no model, so it runs as the other subagents.
+    pub fn profile_clerk(&self, profile: &ProfileConfig) -> Option<(String, Effort)> {
+        slot(&profile.clerk)
     }
 
     /// Whether a random model has to fill the one above in: it is empty
@@ -425,6 +441,11 @@ pub fn init(explicit: Option<PathBuf>, force: bool) -> Result<()> {
         "uncomment a [provider.<id>] in it, export its key and set model".dimmed()
     );
     Ok(())
+}
+
+/// A profile's subagent or clerk slot; `None` when it names no model.
+fn slot(defaults: &ModeDefaults) -> Option<(String, Effort)> {
+    (!defaults.model.is_empty()).then(|| (defaults.model.clone(), defaults.effort))
 }
 
 fn write_template(path: &Path, force: bool) -> Result<()> {
@@ -634,6 +655,37 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_names_what_the_clerk_runs_on() {
+        let config = Config::parse(
+            r#"
+            [[profiles]]
+            name = "go"
+
+            [profiles.subagent]
+            model = "minimax"
+
+            [profiles.clerk]
+            model = "flash"
+            effort = "minimal"
+
+            [[profiles]]
+            name = "zen"
+
+            [profiles.clerk]
+            effort = "low"
+            "#,
+        )
+        .expect("parses");
+
+        assert_eq!(config.clerk_for(), Some(("flash".into(), Effort::Minimal)));
+        assert_eq!(
+            config.profile_clerk(&config.profiles[1]),
+            None,
+            "an empty clerk model runs it as the other subagents"
+        );
+    }
+
+    #[test]
     fn a_profile_model_falls_back_to_the_one_above() {
         let mut config = Config::parse(
             r#"
@@ -762,6 +814,9 @@ mod tests {
 
             [profiles.subagent]
             model = "minimax"
+
+            [profiles.clerk]
+            model = "flash"
             "#,
         )
         .expect("parses");
@@ -772,6 +827,7 @@ mod tests {
             None,
             "subagents run on their parent's, the flag's model"
         );
+        assert_eq!(config.clerk_for(), None, "so does the clerk");
 
         assert_eq!(
             config.llm_for(Mode::Plan),

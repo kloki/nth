@@ -49,24 +49,25 @@ pub enum Program {
     Missing,
 }
 
-/// The model a mode, or the subagents, run with.
+/// The model a mode, the subagents or the clerk run with.
 pub struct ModeModel {
-    /// `plan`, `act` or `subagent`.
+    /// `plan`, `act`, `subagent` or `clerk`.
     pub label: &'static str,
     pub model: String,
     pub effort: Option<&'static str>,
     pub context_window: Option<u64>,
     /// Whether the next turn runs in this mode.
     pub current: bool,
-    /// For the subagents: they run on the current mode's model, having
-    /// none of their own.
-    pub inherited: bool,
+    /// What it runs as, having no model of its own: the subagents as
+    /// `the mode`, the clerk as `subagent`.
+    pub inherits: Option<&'static str>,
 }
 
 /// Everything the tab shows that lives elsewhere on the app.
 pub struct Facts<'a> {
-    /// The model each mode runs with, plan first, then the subagents'.
-    pub models: [ModeModel; 3],
+    /// The model each mode runs with, plan first, then the subagents' and
+    /// the clerk's.
+    pub models: [ModeModel; 4],
     /// How many LLMs the provider lists, once listed.
     pub llms: Option<usize>,
     /// The providers that could not be asked for theirs.
@@ -258,7 +259,8 @@ fn program(
     }
 }
 
-/// A row per mode, the current one marked, then the subagents'.
+/// A row per mode, the current one marked, then the subagents' and the
+/// clerk's.
 fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("model"));
     let width = facts
@@ -284,8 +286,8 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
             Span::styled(format!(" {:width$}  ", mode.label), label),
             Span::styled(about.join(" · "), Style::new().fg(Color::Blue)),
         ];
-        if mode.inherited {
-            row.push(Span::styled(" · as the mode", theme::dim()));
+        if let Some(source) = mode.inherits {
+            row.push(Span::styled(format!(" · as {source}"), theme::dim()));
         }
         lines.push(Line::from(row));
     }
@@ -458,7 +460,7 @@ mod tests {
                     effort: None,
                     context_window: None,
                     current: false,
-                    inherited: false,
+                    inherits: None,
                 },
                 ModeModel {
                     label: "act",
@@ -466,7 +468,7 @@ mod tests {
                     effort: Some("high"),
                     context_window: Some(128_000),
                     current: true,
-                    inherited: false,
+                    inherits: None,
                 },
                 ModeModel {
                     label: "subagent",
@@ -474,7 +476,15 @@ mod tests {
                     effort: Some("high"),
                     context_window: Some(128_000),
                     current: false,
-                    inherited: true,
+                    inherits: Some("the mode"),
+                },
+                ModeModel {
+                    label: "clerk",
+                    model: "glm".into(),
+                    effort: Some("high"),
+                    context_window: Some(128_000),
+                    current: false,
+                    inherits: Some("subagent"),
                 },
             ],
             llms: Some(3),
@@ -522,7 +532,7 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[4], "  3 models served");
+        assert_eq!(text[5], "  3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
         assert_eq!(
@@ -544,11 +554,12 @@ mod tests {
         let mut facts = facts(&context, &[]);
         let acting = text(&Diagnostics::default(), &facts);
         assert_eq!(
-            acting[1..4],
+            acting[1..5],
             [
                 "    plan      kimi",
                 "  ▸ act       glm · high · 128k context",
                 "    subagent  glm · high · 128k context · as the mode",
+                "    clerk     glm · high · 128k context · as subagent",
             ]
         );
 
@@ -560,15 +571,24 @@ mod tests {
             effort: Some("low"),
             context_window: None,
             current: false,
-            inherited: false,
+            inherits: None,
+        };
+        facts.models[3] = ModeModel {
+            label: "clerk",
+            model: "flash".into(),
+            effort: Some("minimal"),
+            context_window: None,
+            current: false,
+            inherits: None,
         };
         let planning = text(&Diagnostics::default(), &facts);
         assert_eq!(
-            planning[1..4],
+            planning[1..5],
             [
                 "  ▸ plan      kimi",
                 "    act       glm · high · 128k context",
                 "    subagent  minimax · low",
+                "    clerk     flash · minimal",
             ]
         );
     }
@@ -587,8 +607,9 @@ mod tests {
             .position(|l| l == "agents")
             .expect("agents section");
         assert!(text[..agents].contains(&"skills".to_string()));
-        assert_eq!(text[agents + 1], "  ↳ explore  builtin");
-        assert_eq!(text[agents + 2], "  ↳ general  builtin");
+        assert_eq!(text[agents + 1], "  ↳ clerk    builtin");
+        assert_eq!(text[agents + 2], "  ↳ explore  builtin");
+        assert_eq!(text[agents + 3], "  ↳ general  builtin");
     }
 
     #[test]

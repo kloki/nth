@@ -202,18 +202,19 @@ mod tests {
         let files: Vec<String> = ["explorer.rs", "src/general.rs"].map(String::from).into();
 
         let all = items(&agents, &files, "");
-        assert_eq!(all.len(), 4);
-        assert!(matches!(&all[0], Item::Agent { name, .. } if name == "explore"));
-        assert!(matches!(&all[1], Item::Agent { name, .. } if name == "general"));
-        assert_eq!(all[2], Item::File("explorer.rs".into()));
+        assert_eq!(all.len(), 5);
+        assert!(matches!(&all[0], Item::Agent { name, .. } if name == "clerk"));
+        assert!(matches!(&all[1], Item::Agent { name, .. } if name == "explore"));
+        assert!(matches!(&all[2], Item::Agent { name, .. } if name == "general"));
+        assert_eq!(all[3], Item::File("explorer.rs".into()));
         let rows = rows(&all);
-        assert_eq!(rows[0].0, "@explore  ", "names lined up, then a space");
+        assert_eq!(rows[1].0, "@explore  ", "names lined up, then a space");
         assert!(
-            rows[0]
+            rows[1]
                 .1
                 .starts_with("Fast agent specialized for exploring codebases.")
         );
-        assert_eq!(rows[2], ("explorer.rs".to_string(), ""));
+        assert_eq!(rows[3], ("explorer.rs".to_string(), ""));
 
         let ex = items(&agents, &files, "ex");
         assert!(matches!(&ex[0], Item::Agent { name, .. } if name == "explore"));

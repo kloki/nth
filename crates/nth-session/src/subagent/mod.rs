@@ -133,16 +133,21 @@ pub(crate) fn tools_for(
 /// A new subagent session of `agent` in the parent's directory, in act
 /// mode: a planning parent's child is kept from writing by its tools
 /// instead, so it gets no plan file and no plan-mode reminder. It runs on
-/// the agent's own model, else what the front-end picked for subagents,
-/// else the parent's; the effort and limits come from the latter two.
+/// the agent's own model, else what the front-end picked for the clerk (for
+/// the clerk), else for subagents, else the parent's; the effort and limits
+/// come from the latter three.
 pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) -> Session {
-    let (llm, context_window, max_output) = match &ctx.subagent {
+    let picked = match agent.clerk {
+        true => ctx.clerk.as_ref().or(ctx.subagent.as_ref()),
+        false => ctx.subagent.as_ref(),
+    };
+    let (llm, context_window, max_output) = match picked {
         Some(subagent) => (&subagent.llm, subagent.context_window, subagent.max_output),
         None => (&ctx.llm, ctx.context_window, ctx.max_output),
     };
     // An agent's own model is not listed here, so it counts as taking
     // images, as an unknown one does.
-    let takes_images = match (&agent.model, ctx.subagent.as_ref()) {
+    let takes_images = match (&agent.model, picked) {
         (Some(_), _) => true,
         (None, Some(subagent)) => subagent.takes_images.unwrap_or(true),
         (None, None) => ctx.takes_images,
@@ -543,6 +548,53 @@ pub(crate) mod tests {
         own.model = Some("kimi".into());
         let child = child_session(&own, &ctx, 5);
         assert_eq!(child.model, "kimi", "the agent's own model wins");
+    }
+
+    fn clerk() -> Agent {
+        Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
+            .agents
+            .get("clerk")
+            .expect("built in")
+            .clone()
+    }
+
+    fn picked(model: &str) -> nth_protocol::SubagentLlm {
+        nth_protocol::SubagentLlm {
+            llm: nth_protocol::Llm {
+                model: model.into(),
+                effort: nth_protocol::Effort::Minimal,
+            },
+            context_window: Some(32_000),
+            ..nth_protocol::SubagentLlm::default()
+        }
+    }
+
+    #[test]
+    fn the_clerk_runs_on_its_llm_else_the_subagents_else_the_parents() {
+        let mut ctx = ToolContext {
+            llm: nth_protocol::Llm {
+                model: "glm-5.3".into(),
+                effort: nth_protocol::Effort::High,
+            },
+            subagent: Some(picked("minimax")),
+            clerk: Some(picked("flash")),
+            ..ToolContext::new("/repo".into())
+        };
+        let child = child_session(&clerk(), &ctx, 5);
+        assert_eq!(
+            (child.model.as_str(), child.effort, child.context_window),
+            ("flash", nth_protocol::Effort::Minimal, Some(32_000))
+        );
+        assert_eq!(
+            child_session(&explore(), &ctx, 5).model,
+            "minimax",
+            "only the clerk runs on it"
+        );
+
+        ctx.clerk = None;
+        assert_eq!(child_session(&clerk(), &ctx, 5).model, "minimax");
+        ctx.subagent = None;
+        assert_eq!(child_session(&clerk(), &ctx, 5).model, "glm-5.3");
     }
 
     /// The `[context]` policy rides where the limits do: a child of a

@@ -53,6 +53,8 @@ pub struct ToolContext {
     /// What a subagent the session starts runs on, when that is not the
     /// session's own model; an agent's own model still wins.
     pub subagent: Option<SubagentLlm>,
+    /// What the built-in clerk runs on, when that is not `subagent`'s.
+    pub clerk: Option<SubagentLlm>,
     /// The model's context window and output limit, when the front-end
     /// knows them, for a tool that starts another session on the same
     /// model: they size the child's compaction trigger.
@@ -110,6 +112,7 @@ impl ToolContext {
             writable: Writable::Any,
             llm: Llm::default(),
             subagent: None,
+            clerk: None,
             context_window: None,
             max_output: None,
             compaction: Compaction::default(),

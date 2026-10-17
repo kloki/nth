@@ -1,5 +1,5 @@
 //! Agents the model delegates to with the task tool: opencode's built-in
-//! `general` and `explore`, and one markdown file per agent of your own,
+//! `general` and `explore`, nth's `clerk`, and one markdown file per agent of your own,
 //! read where Claude Code and opencode keep them, so an agent written for
 //! either works here too. The frontmatter names and describes the agent
 //! and may pick its model and tools; the body is its system prompt.
@@ -15,9 +15,12 @@ use crate::{Paths, frontmatter, project_root};
 
 /// opencode's explore prompt, `PROMPT_EXPLORE` in `plugin/agent.ts`.
 const EXPLORE: &str = include_str!("explore.md");
+/// The clerk's prompt, nth's own.
+const CLERK: &str = include_str!("clerk.md");
 /// opencode's descriptions, `agent/agent.ts`.
 const GENERAL_DESCRIPTION: &str = "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.";
 const EXPLORE_DESCRIPTION: &str = "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.";
+const CLERK_DESCRIPTION: &str = "Cheap, fast agent for small one-off tasks with a clear result: writing a commit message, a pull request title or description, summarising a diff or a file, a quick lookup. Give it everything it needs in the prompt. Use general instead for anything that takes several steps or judgement.";
 /// What opencode's explore may do, in nth's tool names.
 const EXPLORE_TOOLS: [&str; 6] = ["read", "glob", "grep", "bash", "webfetch", "websearch"];
 
@@ -73,6 +76,9 @@ pub struct Agent {
     pub denied: Vec<String>,
     /// The model it runs on; `None` means its parent's.
     pub model: Option<String>,
+    /// Runs on the profile's clerk model, the cheap one for small tasks,
+    /// when it names none of its own. Only the built-in `clerk` is one.
+    pub clerk: bool,
     /// opencode's `hidden`: the model may delegate to it, but `@` does not
     /// offer it.
     pub hidden: bool,
@@ -142,7 +148,7 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
     agents
 }
 
-fn builtin() -> [Agent; 2] {
+fn builtin() -> [Agent; 3] {
     [
         Agent {
             name: "general".into(),
@@ -151,6 +157,7 @@ fn builtin() -> [Agent; 2] {
             tools: None,
             denied: Vec::new(),
             model: None,
+            clerk: false,
             hidden: false,
             path: None,
             source: Source::Builtin,
@@ -163,6 +170,20 @@ fn builtin() -> [Agent; 2] {
             tools: Some(EXPLORE_TOOLS.iter().map(|t| t.to_string()).collect()),
             denied: Vec::new(),
             model: None,
+            clerk: false,
+            hidden: false,
+            path: None,
+            source: Source::Builtin,
+            root: None,
+        },
+        Agent {
+            name: "clerk".into(),
+            description: Some(CLERK_DESCRIPTION.into()),
+            prompt: Some(CLERK.trim().into()),
+            tools: None,
+            denied: Vec::new(),
+            model: None,
+            clerk: true,
             hidden: false,
             path: None,
             source: Source::Builtin,
@@ -271,6 +292,7 @@ fn read(file: &Path, root: &Path, source: Source) -> Result<Read, String> {
         tools,
         denied,
         model: frontmatter::field(&front, "model").filter(|m| !PARENTS_MODEL.contains(&m.as_str())),
+        clerk: false,
         hidden: front.get("hidden").and_then(Value::as_bool) == Some(true),
         path: Some(file.to_path_buf()),
         source,
@@ -406,7 +428,7 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["explore", "general"]);
+        assert_eq!(names, ["clerk", "explore", "general"]);
         let explore = agents.get("explore").expect("explore");
         assert!(
             explore
@@ -427,6 +449,28 @@ mod tests {
         assert_eq!(general.prompt, None);
         assert!(general.allows("write"));
         assert_eq!(general.source, Source::Builtin);
+        assert!(!general.clerk && !explore.clerk);
+        let clerk = agents.get("clerk").expect("clerk");
+        assert!(clerk.clerk, "runs on the clerk model");
+        assert!(clerk.allows("write"), "every tool general has");
+        assert!(
+            clerk
+                .prompt
+                .as_deref()
+                .is_some_and(|p| p.starts_with("You are a clerk"))
+        );
+    }
+
+    #[test]
+    fn a_clerk_file_replaces_the_builtin_and_its_model() {
+        let tree = Tree::new();
+        tree.agent("home/.claude/agents/clerk.md", "description: mine", "");
+
+        let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
+
+        let clerk = agents.get("clerk").expect("clerk");
+        assert_eq!(clerk.description.as_deref(), Some("mine"));
+        assert!(!clerk.clerk, "only the built-in runs on the clerk model");
     }
 
     #[test]
@@ -607,7 +651,7 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["general", "secret"]);
+        assert_eq!(names, ["clerk", "general", "secret"]);
         assert!(agents.get("secret").expect("secret").hidden);
     }
 

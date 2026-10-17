@@ -7,7 +7,7 @@ use std::{
 };
 
 use nth_notify::Event;
-use nth_protocol::{Asker, FrontEnd, Screen, SubagentLlm};
+use nth_protocol::{Asker, FrontEnd, Llm, Screen, SubagentLlm};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
@@ -365,7 +365,7 @@ impl App {
     }
 
     /// The model, effort and limits the next request runs with, and what
-    /// its subagents run on: the picker
+    /// its subagents and its clerk run on: the picker
     /// may have changed them since the last turn, maybe mid-turn, and the
     /// session is in its task while one runs, so a turn and a compaction
     /// both take them from the app here. The limits follow the model in
@@ -385,16 +385,20 @@ impl App {
         }
         session.takes_images = self.takes_images_of(&self.model).unwrap_or(true);
         session.effort = self.effort;
-        // Sized against its own model's window, when the listing names it.
-        session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| {
-            let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
-            SubagentLlm {
-                takes_images: self.takes_images_of(&llm.model),
-                llm,
-                context_window,
-                max_output,
-            }
-        });
+        session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| self.picked(llm));
+        session.clerk_llm = self.mode_llms.clerk.clone().map(|llm| self.picked(llm));
+    }
+
+    /// What subagents or the clerk run on, sized against its own model's
+    /// window when the listing names it.
+    fn picked(&self, llm: Llm) -> SubagentLlm {
+        let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
+        SubagentLlm {
+            takes_images: self.takes_images_of(&llm.model),
+            llm,
+            context_window,
+            max_output,
+        }
     }
 
     /// Esc cancels the turn cooperatively so the session comes back;

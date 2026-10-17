@@ -1,6 +1,6 @@
 ---
 name: config
-description: How to configure nth itself through ~/.config/nth/config.toml - add a provider and a model, set profiles for plan, act and subagents, tune the context window, tool limits, extra skill folders, formatters, language servers and notifications. Load it when asked to set up, change or fix nth's own configuration, add a provider or model, or explain a config key.
+description: How to configure nth itself through ~/.config/nth/config.toml - add a provider and a model, set profiles for plan, act, subagents and the clerk, tune the context window, tool limits, extra skill folders, formatters, language servers and notifications. Load it when asked to set up, change or fix nth's own configuration, add a provider or model, or explain a config key.
 ---
 
 Configure nth itself. nth's opinions are hardcoded; this file only tunes
@@ -77,7 +77,7 @@ A model id is `provider/model`: the prefix picks the endpoint and the rest goes
 on the wire; a bare id goes to the default provider. Empty means nth picks one
 at random from `nth models`. `--model` / `NTH_MODEL` override it.
 
-### Profiles for plan, act and subagents
+### Profiles for plan, act, subagents and the clerk
 
 Profiles are presets a chat starts on and cycles through with ctrl+p; a profile
 whose provider has no key is skipped.
@@ -97,10 +97,16 @@ effort = "default"
 [profiles.subagent]
 model = "opencode/deepseek-v4.1-flash"
 effort = "low"
+
+[profiles.clerk]
+model = "opencode/glm-5.3-flash"
+effort = "minimal"
 ```
 
 `name` is required. An empty plan or act model falls back to `model`; an empty
-subagent model means subagents run on their parent's. `effort` is `default`,
+subagent model means subagents run on their parent's. `clerk` is what the
+built-in `clerk` agent runs on, a cheap model for small one-off tasks such as
+a commit message; an empty clerk model means the subagent one. `effort` is `default`,
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; a model gets the
 nearest level it takes. With no profiles, both modes run `model` at `default`
 effort. Set the starting mode with:
@@ -275,7 +281,7 @@ Every key with its default, in the order of `nth init`'s template.
 | --------- | -------- | --------------------------------------------------- |
 | `default` | `"plan"` | The mode a new chat starts in; `"plan"` or `"act"`. |
 
-**`[[profiles]]`** — plan, act and subagent presets, cycled with ctrl+p.
+**`[[profiles]]`** — plan, act, subagent and clerk presets, cycled with ctrl+p.
 
 | Key                     | Default     | Meaning                                                                  |
 | ----------------------- | ----------- | ------------------------------------------------------------------------ |
@@ -284,6 +290,8 @@ Every key with its default, in the order of `nth init`'s template.
 | `plan` / `act` `effort` | `"default"` | `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. |
 | `subagent` `model`      | `""`        | Empty runs subagents on their parent's model and effort.                 |
 | `subagent` `effort`     | `"default"` | As above. An agent's own `model` still wins.                             |
+| `clerk` `model`         | `""`        | The built-in clerk's model; empty runs it as the other subagents.        |
+| `clerk` `effort`        | `"default"` | As above.                                                                |
 
 **`[chat]`**
 

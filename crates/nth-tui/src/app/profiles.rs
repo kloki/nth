@@ -47,12 +47,13 @@ impl App {
         self.runs(profile).then_some(profile.name.as_str())
     }
 
-    /// Whether both modes and the subagents still run `profile`'s llms.
+    /// Whether both modes, the subagents and the clerk still run `profile`'s llms.
     fn runs(&self, profile: &Profile) -> bool {
         Mode::ALL
             .iter()
             .all(|&mode| self.llm(mode) == *llm(profile, mode))
             && self.mode_llms.subagent == profile.llms.subagent
+            && self.mode_llms.clerk == profile.llms.clerk
     }
 
     /// ctrl+p: to the next profile, both modes on its llms. A model
@@ -86,7 +87,14 @@ impl App {
                 None => {
                     self.apply_profile(i);
                     if !skipped.is_empty() {
-                        self.hint = Some(format!("skipped {}", skipped.join(", ")).into());
+                        self.hint = Some(
+                            format!(
+                                "Profile set to {} · skipped {}",
+                                self.profiles[i].name,
+                                skipped.join(", ")
+                            )
+                            .into(),
+                        );
                     }
                     return;
                 }
@@ -112,10 +120,11 @@ impl App {
     }
 
     /// Both modes on `profile`'s llms, the current mode's model and
-    /// effort with them.
+    /// effort with them, and the status bar says so.
     fn apply_profile(&mut self, i: usize) {
         self.set_mode_llms(self.profiles[i].llms.clone());
         self.profile = Some(i);
+        self.hint = Some(format!("Profile set to {}", self.profiles[i].name).into());
         // Its models may be of a provider that could not list, whose
         // limits only another listing brings.
         if self.llms_partial() {
@@ -148,6 +157,7 @@ mod tests {
                 plan: llm(&format!("{model}-plan")),
                 act: llm(&format!("{model}-act")),
                 subagent: Some(llm(&format!("{model}-subagent"))),
+                clerk: Some(llm(&format!("{model}-clerk"))),
             },
             unavailable: None,
             needs_chatgpt: false,
@@ -180,6 +190,7 @@ mod tests {
 
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "go-plan", "wraps to the first");
+        assert_eq!(app.hint.as_deref(), Some("Profile set to go"));
         assert_eq!(rows(&mut app)[9].trim_end(), " ▎ plan · go-plan · go");
     }
 
@@ -219,6 +230,7 @@ mod tests {
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "go-act", "the same profile comes back");
         assert_eq!(app.profile_name(), Some("go"));
+        assert_eq!(app.hint.as_deref(), Some("Profile set to go"));
 
         app.apply(Action::NextTab);
         assert_eq!(
@@ -244,6 +256,19 @@ mod tests {
     }
 
     #[test]
+    fn a_picked_clerk_model_leaves_the_profile() {
+        let mut app = profiled();
+        assert_eq!(app.clerk_llm().model, "go-clerk");
+        app.set_llm(crate::llm_picker::Target::Clerk, llm("picked"));
+        assert_eq!(app.clerk_llm().model, "picked");
+        assert_eq!(app.profile_name(), None);
+
+        app.apply(Action::NextProfile);
+        assert_eq!(app.clerk_llm().model, "go-clerk", "put back");
+        assert_eq!(app.profile_name(), Some("go"));
+    }
+
+    #[test]
     fn a_profile_that_cannot_run_is_skipped_and_said() {
         let mut zen = profile("zen", "zen");
         zen.unavailable = Some("ZEN_API_KEY is not set".into());
@@ -253,7 +278,7 @@ mod tests {
         assert_eq!(app.model, "ly-act");
         assert_eq!(
             app.hint.as_deref(),
-            Some("skipped zen (ZEN_API_KEY is not set)")
+            Some("Profile set to lyceum · skipped zen (ZEN_API_KEY is not set)")
         );
     }
 

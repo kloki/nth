@@ -54,10 +54,12 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 plan: llm(config.profile_llm(profile, Mode::Plan)),
                 act: llm(config.profile_llm(profile, Mode::Act)),
                 subagent: config.profile_subagent(profile).map(llm),
+                clerk: config.profile_clerk(profile).map(llm),
             };
             let runs: Vec<&Llm> = [&llms.plan, &llms.act]
                 .into_iter()
                 .chain(&llms.subagent)
+                .chain(&llms.clerk)
                 .collect();
             let unavailable = runs
                 .iter()
@@ -82,6 +84,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         plan: llm(config.llm_for(Mode::Plan)),
         act: llm(config.llm_for(Mode::Act)),
         subagent: config.subagent_for().map(llm),
+        clerk: config.clerk_for().map(llm),
     };
     // A resumed session keeps its model; the other mode starts on the
     // config's.

@@ -107,6 +107,10 @@ pub struct Session {
     /// its own model. Set by the front-end before each turn, not saved.
     #[serde(skip)]
     pub subagent_llm: Option<SubagentLlm>,
+    /// What the built-in clerk runs on; `None` runs it as the other
+    /// subagents. Set by the front-end before each turn, not saved.
+    #[serde(skip)]
+    pub clerk_llm: Option<SubagentLlm>,
     /// Runs for another session's model rather than for you: it has no
     /// task tool, so it is told of no agents and `@name` means nothing.
     #[serde(default)]
@@ -160,6 +164,7 @@ impl Session {
             takes_images: true,
             images: None,
             subagent_llm: None,
+            clerk_llm: None,
             subagent: false,
             parent: None,
             persona: None,
@@ -413,6 +418,7 @@ impl Session {
                 effort: self.effort,
             },
             subagent: self.subagent_llm.clone(),
+            clerk: self.clerk_llm.clone(),
             context_window: self.context_window,
             max_output: self.max_output,
             compaction: self.compaction,
