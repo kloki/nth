@@ -431,10 +431,10 @@ mod tests {
     #[test]
     fn an_image_is_a_line_in_the_transcript() {
         assert_eq!(
-            entry(&read_an_image()).as_deref(),
-            Some(
-                "[Tool result]: Image read: shot.png, 1920×1080 png\n[Read image/png: /images/ab.png]"
-            )
+            entry(&read_an_image()),
+            Some(format!(
+                "[Tool result]: Image read: shot.png, 1920×1080 png\n[Read image/png: /images/ab.png]\n{IMAGE_REMOVED}"
+            ))
         );
     }
 
@@ -484,8 +484,10 @@ mod tests {
         };
         assert_eq!(
             entry(&shown),
-            Some(format!("[Tool result]: Image read\n{IMAGE_REMOVED}")),
-            "the image is gone once it is text"
+            Some(format!(
+                "[Tool result]: Image read\n[Read image/png: /images/ab.png]\n{IMAGE_REMOVED}"
+            )),
+            "the image is named, and gone once it is text"
         );
         assert_eq!(entry(&Message::System("p".into())), None);
         assert_eq!(
