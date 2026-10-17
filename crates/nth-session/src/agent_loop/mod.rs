@@ -217,6 +217,7 @@ impl Turn<'_> {
                     .extend(calls.into_iter().map(|call| Message::ToolResult {
                         call_id: call.id,
                         content: failed(MAX_STEPS_REACHED),
+                        images: Vec::new(),
                     }));
                 return Err(Error::TooManySteps(max_steps));
             }
@@ -229,17 +230,12 @@ impl Turn<'_> {
             // before it keeps its result and every call started also
             // finishes.
             let (ctx, events, cancel) = (self.ctx, self.events, self.cancel);
-            let results = futures::future::join_all(calls.iter().map(|call| {
+            let answers = futures::future::join_all(calls.iter().map(|call| {
                 let tool = by_name.get(call.name.as_str()).copied();
                 run_call(tool, ctx, call, events, cancel)
             }))
             .await;
-            for (call, result) in calls.into_iter().zip(results) {
-                self.messages.push(Message::ToolResult {
-                    call_id: call.id,
-                    content: result.unwrap_or_else(|reason| failed(&reason)),
-                });
-            }
+            self.messages.extend(answers);
             if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
             }

@@ -295,6 +295,7 @@ pub(crate) mod tests {
             },
             origin: None,
             cost: None,
+            takes_images: None,
         }
     }
 

@@ -116,6 +116,11 @@ impl App {
     fn apply_profile(&mut self, i: usize) {
         self.set_mode_llms(self.profiles[i].llms.clone());
         self.profile = Some(i);
+        // Its models may be of a provider that could not list, whose
+        // limits only another listing brings.
+        if self.llms_partial() {
+            self.list_llms();
+        }
     }
 }
 
@@ -176,6 +181,28 @@ mod tests {
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "go-plan", "wraps to the first");
         assert_eq!(rows(&mut app)[9].trim_end(), " ▎ plan · go-plan · go");
+    }
+
+    #[tokio::test]
+    async fn cycling_lists_again_while_a_provider_is_missing() {
+        let mut app = profiled();
+        app.llms = Some(Default::default());
+        app.apply(Action::NextProfile);
+        assert!(!app.llm_listing.is_running(), "listed in full");
+
+        app.llms = Some(nth_protocol::Listing {
+            models: Vec::new(),
+            failed: vec![nth_protocol::Failed {
+                origin: nth_protocol::Origin {
+                    id: "chatgpt".into(),
+                    name: "ChatGPT".into(),
+                },
+                error: "401: expired".into(),
+            }],
+        });
+        app.apply(Action::NextProfile);
+        assert!(app.llm_listing.is_running(), "asked again");
+        app.llm_listing.take().expect("listing").abort();
     }
 
     #[test]

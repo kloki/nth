@@ -134,6 +134,8 @@ async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec
     let dirs = [
         session.work_dir(),
         monitor_log_dir(data_dir, &session.id.to_string()),
+        // Its subagents' images too: they keep theirs in its folder.
+        store.images_dir(session.id),
     ];
     for dir in dirs {
         if gone(tokio::fs::remove_dir_all(&dir).await, &dir)? {
@@ -327,7 +329,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_the_save_plan_work_and_monitor_logs() {
+    async fn delete_removes_the_save_plan_work_monitor_logs_and_images() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path().join("sessions"));
         let data = dir.path().join("data");
@@ -338,11 +340,13 @@ mod tests {
         let plan = session.plan_path();
         let work = session.work_dir();
         let monitors = monitor_log_dir(&data, &session.id.to_string());
+        let images = store.images_dir(session.id);
         let kept = other.plan_path();
         for file in [
             &plan,
             &work.join("01-a/item.md"),
             &monitors.join("1.log"),
+            &images.join("ab.png"),
             &kept,
         ] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -351,9 +355,12 @@ mod tests {
 
         let removed = delete(&store, &session, &data).await.expect("deletes");
 
-        assert_eq!(removed, [plan.clone(), work.clone(), monitors.clone()]);
+        assert_eq!(
+            removed,
+            [plan.clone(), work.clone(), monitors.clone(), images.clone()]
+        );
         assert!(store.list().await.expect("lists").is_empty());
-        assert!(!plan.exists() && !work.exists() && !monitors.exists());
+        assert!(!plan.exists() && !work.exists() && !monitors.exists() && !images.exists());
         assert!(kept.exists(), "another session's plan stays");
         assert!(delete(&store, &session, &data).await.is_err(), "gone");
     }

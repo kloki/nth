@@ -287,6 +287,11 @@ impl App {
         };
         self.notices_due = None;
         self.adopt_llm(&mut session);
+        // The read tool keeps images beside the save, so deleting the
+        // session deletes them; without a store the read tool shows none.
+        if let Some(store) = &self.store {
+            session.images = Some(store.images_dir(session.id));
+        }
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
         if session.extra_dirs != self.extra_dirs {
@@ -378,11 +383,13 @@ impl App {
         if let Some((context_window, max_output)) = self.limits_of(&self.model) {
             session.set_limits(context_window, max_output);
         }
+        session.takes_images = self.takes_images_of(&self.model).unwrap_or(true);
         session.effort = self.effort;
         // Sized against its own model's window, when the listing names it.
         session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| {
             let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
             SubagentLlm {
+                takes_images: self.takes_images_of(&llm.model),
                 llm,
                 context_window,
                 max_output,
@@ -928,6 +935,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: None,
         }
     }
 

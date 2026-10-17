@@ -9,7 +9,7 @@ use nth_protocol::{
 };
 
 use super::{Turn, emit, max_steps_messages};
-use crate::compaction::checkpoint;
+use crate::compaction::{checkpoint, last_marker};
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -168,10 +168,7 @@ impl Turn<'_> {
 /// Only this filter and the check on what a compaction left ever see the
 /// marker; the protocols never do.
 pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
-    let Some(at) = messages
-        .iter()
-        .rposition(|message| matches!(message, Message::Compaction { .. }))
-    else {
+    let Some(at) = last_marker(messages) else {
         return Cow::Borrowed(messages);
     };
     let mut sent: Vec<Message> = messages[..at]

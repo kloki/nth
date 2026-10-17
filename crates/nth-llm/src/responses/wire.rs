@@ -3,7 +3,7 @@
 use nth_protocol::{Effort, Message, ToolSpec};
 use serde_json::{Value, json};
 
-/// `reasons` is whether the catalogue says the model reasons: its summary
+/// `reasons` is whether the model is known to reason: its summary
 /// is then asked for even when the effort is left to the model.
 pub(super) fn body(
     model: &str,
@@ -55,11 +55,27 @@ fn items(message: &Message) -> Vec<Value> {
             "role": "user",
             "content": [{ "type": "input_text", "text": text }],
         })],
-        Message::ToolResult { call_id, content } => vec![json!({
-            "type": "function_call_output",
-            "call_id": call_id,
-            "output": content,
-        })],
+        Message::ToolResult {
+            call_id,
+            content,
+            images,
+        } => {
+            let output = if images.is_empty() {
+                json!(content)
+            } else {
+                let text =
+                    (!content.is_empty()).then(|| json!({ "type": "input_text", "text": content }));
+                let shown = images.iter().filter_map(|image| {
+                    Some(json!({ "type": "input_image", "image_url": image.data_url()? }))
+                });
+                json!(text.into_iter().chain(shown).collect::<Vec<_>>())
+            };
+            vec![json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            })]
+        }
         Message::Assistant(reply) => {
             let text = (!reply.text.is_empty()).then(|| {
                 json!({
@@ -121,6 +137,7 @@ mod tests {
             Message::ToolResult {
                 call_id: "functions.read:0".into(),
                 content: "A".into(),
+                images: Vec::new(),
             },
             Message::Assistant(AssistantMessage {
                 text: "Done.".into(),
@@ -194,5 +211,36 @@ mod tests {
             json!({ "summary": "auto" })
         );
         assert_eq!(reasoning(Effort::Default, false), Value::Null);
+    }
+
+    /// A read that showed a PNG, its bytes `iVBO`.
+    fn read_an_image() -> Message {
+        Message::ToolResult {
+            call_id: "call_1".into(),
+            content: "Image read: shot.png".into(),
+            images: vec![nth_protocol::Image {
+                mime: "image/png".into(),
+                sha256: "ab".into(),
+                width: 2,
+                height: 1,
+                path: "/images/ab.png".into(),
+                data: Some("iVBO".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_tool_results_images_go_in_its_output() {
+        assert_eq!(
+            items(&read_an_image()),
+            [json!({
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [
+                    { "type": "input_text", "text": "Image read: shot.png" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,iVBO" },
+                ],
+            })]
+        );
     }
 }

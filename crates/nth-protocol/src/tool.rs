@@ -9,7 +9,8 @@ use nth_context::Context;
 use tokio::sync::mpsc;
 
 use crate::{
-    Asker, Compaction, Event, Inbox, Llm, Monitors, Screen, SubagentLlm, Workdir, Writable,
+    Asker, Attachments, Compaction, Event, Inbox, Llm, Monitors, Screen, SubagentLlm, Workdir,
+    Writable,
 };
 
 #[derive(Debug, Clone)]
@@ -64,6 +65,17 @@ pub struct ToolContext {
     /// The id of the session the call runs for, for a tool that keeps
     /// something per session; empty outside one.
     pub session: String,
+    /// Where a tool puts the images it shows the model, beside its text
+    /// result; each call has its own.
+    pub attachments: Attachments,
+    /// Whether the model takes images, so a tool can refuse to read one
+    /// rather than send what the model cannot see.
+    pub takes_images: bool,
+    /// The folder a tool keeps image files in: the session's, which its
+    /// subagents share, so deleting the session deletes them. A tool that
+    /// shows images refuses without one, rather than leave them where
+    /// another user could read or swap them.
+    pub images: Option<PathBuf>,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -102,6 +114,9 @@ impl ToolContext {
             max_output: None,
             compaction: Compaction::default(),
             session: String::new(),
+            attachments: Attachments::default(),
+            takes_images: true,
+            images: None,
         }
     }
 }

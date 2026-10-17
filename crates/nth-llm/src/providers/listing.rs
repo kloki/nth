@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use nth_protocol::{Failed, Listing, ModelInfo, Origin};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::{auth::Auth, catalog, http::USER_AGENT};
 
@@ -43,8 +43,16 @@ pub(crate) async fn listed(
     base_url: &str,
     auth: &Auth,
 ) -> Result<Vec<String>, Error> {
-    let response = auth
-        .bearer(http.get(format!("{base_url}/models")), None)
+    let list: ModelList = fetch(auth.bearer(http.get(format!("{base_url}/models")), None)).await?;
+    Ok(list.data.into_iter().map(|m| m.id).collect())
+}
+
+/// The JSON body `request` answers with, under the list's deadline; a
+/// non-2xx answer is an error carrying its body.
+pub(crate) async fn fetch<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, Error> {
+    let response = request
         .timeout(LIST_TIMEOUT)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
@@ -54,8 +62,7 @@ pub(crate) async fn listed(
         let body = response.text().await.unwrap_or_default();
         return Err(Error::Status { status, body });
     }
-    let list: ModelList = response.json().await?;
-    Ok(list.data.into_iter().map(|m| m.id).collect())
+    Ok(response.json().await?)
 }
 
 /// Only the models whose protocol nth speaks. Without a catalogue entry for
@@ -91,6 +98,7 @@ pub(crate) fn select(
                     efforts: catalog::BUDGET_EFFORTS.to_vec(),
                     origin: None,
                     cost: None,
+                    takes_images: None,
                 });
             };
             Some(ModelInfo {
@@ -101,6 +109,7 @@ pub(crate) fn select(
                 efforts: model.efforts(),
                 origin: None,
                 cost,
+                takes_images: Some(model.takes_images()),
             })
         })
         .collect();
@@ -186,6 +195,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: Some(false),
         }
     }
 
@@ -216,6 +226,7 @@ mod tests {
                     cache_read: Some(0.26),
                     cache_write: None,
                 }),
+                takes_images: Some(false),
             }
         );
         assert_eq!(
@@ -236,6 +247,7 @@ mod tests {
             catalog::BUDGET_EFFORTS,
             "unlisted models may reason"
         );
+        assert_eq!(models[4].takes_images, None, "nor is it known to see");
     }
 
     #[test]
@@ -274,6 +286,7 @@ mod tests {
                 efforts: Vec::new(),
                 origin: None,
                 cost: None,
+                takes_images: Some(false),
             },
             "the canonical entry, zhipuai's"
         );

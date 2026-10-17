@@ -516,7 +516,13 @@ mod tests {
         let tree = Tree::new();
         let skills = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
-        for name in ["config", "init", "setup-worktrees", "work-plan"] {
+        for name in [
+            "config",
+            "init",
+            "screenshot",
+            "setup-worktrees",
+            "work-plan",
+        ] {
             let skill = skills.get(name).expect(name);
             assert_eq!(skill.source, Source::Internal);
             assert!(skill.description.is_some());

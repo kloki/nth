@@ -41,6 +41,8 @@ pub struct Icons {
     /// A question not yet answered, and one answered.
     pub unchecked: &'static str,
     pub checked: &'static str,
+    /// A model that takes images, in the model lists.
+    pub image: &'static str,
     pub work: WorkIcons,
     pub tree: TreeIcons,
     pub tab: TabIcons,
@@ -138,6 +140,7 @@ pub static PLAIN: Icons = Icons {
     effort_more: "▸",
     unchecked: "☐",
     checked: "☒",
+    image: "◩",
     work: WorkIcons {
         pending: "○",
         upcoming: "◇",
@@ -239,6 +242,7 @@ impl Icons {
             effort_more,
             unchecked,
             checked,
+            image,
             work,
             tree,
             tab,
@@ -265,6 +269,7 @@ impl Icons {
             *effort_more,
             *unchecked,
             *checked,
+            *image,
             work.pending,
             work.upcoming,
             tree.bar,

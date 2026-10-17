@@ -59,6 +59,8 @@ pub struct SubagentLlm {
     pub llm: Llm,
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
+    /// Whether its model takes images; `None` when the listing does not say.
+    pub takes_images: Option<bool>,
 }
 
 /// How hard a reasoning model thinks before it answers. The levels are
@@ -246,6 +248,9 @@ pub struct ModelInfo {
     pub origin: Option<Origin>,
     /// What it costs, when the catalogue says.
     pub cost: Option<Cost>,
+    /// Whether it takes images, as the read tool shows them; `None` for a
+    /// model nothing is known about.
+    pub takes_images: Option<bool>,
 }
 
 /// What listing the models gave: the models, and the providers that could
@@ -395,6 +400,7 @@ mod tests {
             efforts: vec![Effort::High],
             origin: None,
             cost: None,
+            takes_images: None,
         };
         assert_eq!(model.limits(), "1M ctx · 131k out");
         let unknown = ModelInfo {
@@ -427,6 +433,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
+            takes_images: None,
         };
         assert_eq!(bare.wire_id(), "z-ai/glm-5.2");
         let served = ModelInfo {

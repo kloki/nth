@@ -1,6 +1,6 @@
-//! `nth models`: the models the providers serve, with their limits and
-//! efforts and the one in use marked, and on stderr the providers that
-//! could not be asked.
+//! `nth models`: the models the providers serve, with their limits,
+//! efforts and whether they take images, the one in use marked, and on
+//! stderr the providers that could not be asked.
 
 use std::io::{IsTerminal, Write};
 
@@ -43,7 +43,12 @@ pub async fn run(json: bool, config: Config) -> Result<()> {
             shown = origin;
         }
         let efforts: Vec<&str> = model.efforts.iter().map(|e| e.name()).collect();
-        let limits = [model.limits(), efforts.join("/")]
+        let images = if model.takes_images == Some(true) {
+            "images"
+        } else {
+            ""
+        };
+        let limits = [model.limits(), efforts.join("/"), images.to_string()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()

@@ -14,7 +14,6 @@ use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent, ToolC
 
 use crate::{
     auth::Auth,
-    catalog,
     http::{self, STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
 };
 
@@ -62,15 +61,14 @@ impl Client {
         }
     }
 
-    /// `known` is the catalogue's entry for the model, if it has one: it
-    /// says whether the model reasons.
+    /// `reasons` is whether the model is known to reason, which asks for
+    /// its summary even when the effort is left to it.
     pub(crate) async fn stream(
         &self,
         request: Request<'_>,
-        known: Option<&catalog::Model>,
+        reasons: bool,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let reasons = known.and_then(|m| m.reasoning).unwrap_or(false);
         let signed = auth.bearer(
             self.http.post(format!("{}/responses", self.base_url)),
             Some(request.session_id),
@@ -463,7 +461,7 @@ mod tests {
         let (url, _) = serve_status(400, OVERFLOW).await;
         let client = Client::new(reqwest::Client::new(), url);
         let error = client
-            .stream(request(), None, &Auth::Key("key".into()))
+            .stream(request(), false, &Auth::Key("key".into()))
             .await
             .err()
             .expect("refused");
@@ -485,7 +483,7 @@ mod tests {
                 let (url, _) = serve_status(status, body).await;
                 let client = Client::new(reqwest::Client::new(), url);
                 let error = client
-                    .stream(request(), None, &Auth::Key("key".into()))
+                    .stream(request(), false, &Auth::Key("key".into()))
                     .await
                     .err()
                     .expect("refused");
@@ -505,7 +503,7 @@ mod tests {
             let (url, _) = serve_status(status, OVERFLOW).await;
             let client = Client::new(reqwest::Client::new(), url);
             let error = client
-                .stream(request(), None, &Auth::Key("key".into()))
+                .stream(request(), false, &Auth::Key("key".into()))
                 .await
                 .err()
                 .expect("refused");
@@ -530,7 +528,7 @@ mod tests {
         let (url, _) = serve_status(400, ORDINARY).await;
         let client = Client::new(reqwest::Client::new(), url);
         let error = client
-            .stream(request(), None, &Auth::Key("key".into()))
+            .stream(request(), false, &Auth::Key("key".into()))
             .await
             .err()
             .expect("refused");

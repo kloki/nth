@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Image;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Message {
@@ -11,6 +13,10 @@ pub enum Message {
     ToolResult {
         call_id: String,
         content: String,
+        /// What the tool showed the model beside its text, as the read
+        /// tool does an image file.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
     /// A compaction, appended after the messages it covers: the summary of
     /// the older ones and the newest kept as text. The history is marked,

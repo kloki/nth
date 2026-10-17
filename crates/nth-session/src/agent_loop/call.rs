@@ -1,7 +1,7 @@
 //! Running one tool call: its arguments parsed and repaired, its output
 //! streamed, and its result or why it failed.
 
-use nth_protocol::{Event, OutputSink, Tool, ToolCall, ToolContext, ToolResult};
+use nth_protocol::{Attachments, Event, Message, OutputSink, Tool, ToolCall, ToolContext};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -25,17 +25,18 @@ pub(crate) fn failed(reason: &str) -> String {
 }
 
 /// Runs `call` on `tool`, announcing it with [`Event::ToolStarted`] and
-/// [`Event::ToolFinished`] and streaming its output in between. No `tool`
-/// means the model named one that does not exist. Cancelling `cancel` stops
-/// the tool and fails the call with [`INTERRUPTED`], finished event
-/// included, so a front-end sees every started call end.
+/// [`Event::ToolFinished`] and streaming its output in between, and answers
+/// it: the tool's text, or why it failed, with the images it showed. No
+/// `tool` means the model named one that does not exist. Cancelling
+/// `cancel` stops the tool and fails the call with [`INTERRUPTED`],
+/// finished event included, so a front-end sees every started call end.
 pub(crate) async fn run_call(
     tool: Option<&dyn Tool>,
     ctx: &ToolContext,
     call: &ToolCall,
     events: &mpsc::Sender<Event>,
     cancel: &CancellationToken,
-) -> ToolResult {
+) -> Message {
     emit(events, Event::ToolStarted(call.clone())).await;
     // A tool in an earlier step may have moved the session.
     let moved = ctx.workdir.moved_to();
@@ -59,6 +60,9 @@ pub(crate) async fn run_call(
         max_output: ctx.max_output,
         compaction: ctx.compaction,
         session: ctx.session.clone(),
+        attachments: Attachments::default(),
+        takes_images: ctx.takes_images,
+        images: ctx.images.clone(),
     };
     let run = async {
         match tool {
@@ -92,7 +96,16 @@ pub(crate) async fn run_call(
         },
     )
     .await;
-    result
+    // A failed call's images are dropped with its result.
+    let (content, images) = match result {
+        Ok(text) => (text, ctx.attachments.take()),
+        Err(reason) => (failed(&reason), Vec::new()),
+    };
+    Message::ToolResult {
+        call_id: call.id.clone(),
+        content,
+        images,
+    }
 }
 
 fn parse_arguments(raw: &str) -> Result<serde_json::Value, String> {
@@ -211,9 +224,16 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let ctx = ToolContext::new(".".into());
 
-        let result = run_call(Some(&Limit), &ctx, &raw, &tx, &CancellationToken::new()).await;
+        let answer = run_call(Some(&Limit), &ctx, &raw, &tx, &CancellationToken::new()).await;
 
-        assert_eq!(result, Ok("20".to_string()));
+        assert_eq!(
+            answer,
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "20".into(),
+                images: Vec::new(),
+            }
+        );
         // What the model sent is what the front-ends show.
         match rx.recv().await {
             Some(Event::ToolStarted(started)) => assert_eq!(started, raw),
@@ -267,7 +287,8 @@ mod tests {
             messages[2],
             Message::ToolResult {
                 call_id: "7".into(),
-                content: "for 7".into()
+                content: "for 7".into(),
+                images: Vec::new(),
             }
         );
     }
@@ -305,6 +326,7 @@ mod tests {
             ["1", "2"].map(|id| Message::ToolResult {
                 call_id: id.into(),
                 content: failed(INTERRUPTED),
+                images: Vec::new(),
             })
         );
         // A front-end that only sees events, like `nth run`, sees each call
