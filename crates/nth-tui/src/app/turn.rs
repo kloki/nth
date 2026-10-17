@@ -287,6 +287,11 @@ impl App {
         };
         self.notices_due = None;
         self.adopt_llm(&mut session);
+        // The read tool keeps images beside the save, so deleting the
+        // session deletes them; without a store the read tool shows none.
+        if let Some(store) = &self.store {
+            session.images = Some(store.images_dir(session.id));
+        }
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
         if session.extra_dirs != self.extra_dirs {

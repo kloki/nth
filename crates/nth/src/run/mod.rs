@@ -24,6 +24,11 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     // limits its listing names, so a long turn compacts itself.
     apply_context(&mut session, &config, &provider).await;
     let provider: Arc<dyn Provider> = Arc::new(provider);
+    // The read tool keeps images beside the save, as the chat's does.
+    let store = Store::open();
+    if let Ok(store) = &store {
+        session.images = Some(store.images_dir(session.id));
+    }
     let cwd = session.cwd.clone();
     let post_write = post_write(&config);
     let lsp = post_write.lsp().clone();
@@ -69,7 +74,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     printer.finish();
     // Saved even when the turn failed, so `nth -c` can pick it up. Not
     // saving is worth a warning, not a failed run.
-    let saved = match Store::open() {
+    let saved = match store {
         Ok(store) => store.save(&session).await,
         Err(e) => Err(e),
     };

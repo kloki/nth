@@ -193,8 +193,9 @@ fn entries(messages: &[Message]) -> Vec<Entry> {
 
 /// One message as transcript text: `[User]: …`, `[Assistant]: …`,
 /// `[Assistant tool call]: <name> <arguments>`, `[Tool result]: …` with
-/// results cut, and the removal note where a result showed images, which
-/// text cannot keep. `None` for what a transcript leaves out.
+/// results cut, and `[Read <mime>: <file>]` for each image a result showed,
+/// then the removal note, since the summary request carries no image.
+/// `None` for what a transcript leaves out.
 fn entry(message: &Message) -> Option<String> {
     let text =
         match message {
@@ -217,6 +218,13 @@ fn entry(message: &Message) -> Option<String> {
                 content, images, ..
             } => {
                 let mut text = format!("[Tool result]: {}", cut(content, TOOL_RESULT_MAX_CHARS));
+                for image in images {
+                    text.push_str(&format!(
+                        "\n[Read {}: {}]",
+                        image.mime,
+                        image.path.display()
+                    ));
+                }
                 if !images.is_empty() {
                     text.push('\n');
                     text.push_str(IMAGE_REMOVED);
@@ -255,9 +263,18 @@ pub(crate) fn text_tokens(text: &str) -> u64 {
     text.len() as u64 / 4
 }
 
-/// A message's size in tokens, estimated from its serialized form.
+/// What one image a tool showed is counted as: what a screenshot at the
+/// read tool's 1920 px cost the models measured, give or take.
+const IMAGE_TOKENS: u64 = 2_500;
+
+/// A message's size in tokens, estimated from its serialized form, which
+/// leaves an image's bytes out, so each image counts as `IMAGE_TOKENS`.
 fn tokens(message: &Message) -> u64 {
-    serde_json::to_string(message).map_or(0, |json| text_tokens(&json))
+    let images = match message {
+        Message::ToolResult { images, .. } => images.len() as u64,
+        _ => 0,
+    };
+    serde_json::to_string(message).map_or(0, |json| text_tokens(&json)) + images * IMAGE_TOKENS
 }
 
 /// What `messages` are estimated to fill, the same way a single message is:
@@ -396,6 +413,41 @@ mod tests {
         assert_eq!(exchanges("", &messages[..1]), Vec::<String>::new());
     }
 
+    fn read_an_image() -> Message {
+        Message::ToolResult {
+            call_id: "1".into(),
+            content: "Image read: shot.png, 1920×1080 png".into(),
+            images: vec![nth_protocol::Image {
+                mime: "image/png".into(),
+                sha256: "ab".into(),
+                width: 1920,
+                height: 1080,
+                path: "/images/ab.png".into(),
+                data: Some("A".repeat(400_000).into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn an_image_is_a_line_in_the_transcript() {
+        assert_eq!(
+            entry(&read_an_image()),
+            Some(format!(
+                "[Tool result]: Image read: shot.png, 1920×1080 png\n[Read image/png: /images/ab.png]\n{IMAGE_REMOVED}"
+            ))
+        );
+    }
+
+    #[test]
+    fn an_image_counts_as_a_screenshot_not_its_bytes() {
+        let text_only = tokens(&result("Image read: shot.png, 1920×1080 png"));
+        let with_image = tokens(&read_an_image());
+        assert!(
+            (IMAGE_TOKENS..IMAGE_TOKENS + 100).contains(&(with_image - text_only)),
+            "{text_only} then {with_image}"
+        );
+    }
+
     #[test]
     fn transcript_lines_name_who_spoke_and_cut_tool_results() {
         let long = "x".repeat(3_000);
@@ -432,8 +484,10 @@ mod tests {
         };
         assert_eq!(
             entry(&shown),
-            Some(format!("[Tool result]: Image read\n{IMAGE_REMOVED}")),
-            "the image is gone once it is text"
+            Some(format!(
+                "[Tool result]: Image read\n[Read image/png: /images/ab.png]\n{IMAGE_REMOVED}"
+            )),
+            "the image is named, and gone once it is text"
         );
         assert_eq!(entry(&Message::System("p".into())), None);
         assert_eq!(

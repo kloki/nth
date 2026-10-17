@@ -37,7 +37,7 @@ Wait for the page, not for time: `wait @e3`, `wait --text "Saved"`, `wait --url 
 - `agent-browser console` is the page's console; it is verbose, so pipe it through grep for errors or the app's own prefix. `agent-browser errors` is the uncaught exceptions. `agent-browser network requests` lists what the page fetched and with what status (`--filter <term>` narrows it).
 - `agent-browser eval "<js>"` reads page state; `eval --stdin` with a heredoc for anything longer than a line. `get text @e3`, `get html @e3`, `get value @e5`, `get attr @e3 href`, `get url`, `get title` read without JavaScript.
 - Fix the code, then `agent-browser reload` and check again. Make the check concrete: the element that should be there, the console entry that should be gone.
-- `agent-browser screenshot <path>` (`--full` for the whole page, `--annotate` to number the interactive elements) writes an image file you cannot see. Give the user the path, and describe the page from the snapshot and the DOM, never from the screenshot.
+- `agent-browser screenshot <path>` (`--full` for the whole page, `--annotate` to number the interactive elements with the snapshot's refs) writes an image file; `read` it to look at the page. Look when the question is how the page looks (layout, styling, a visual bug), which the snapshot and the DOM cannot answer; find and act on elements through the snapshot, so not every step needs a screenshot. On a model that takes no images, read refuses the file: then describe the page from the snapshot and the DOM and give the user the path.
 
 ## Dialogs
 
