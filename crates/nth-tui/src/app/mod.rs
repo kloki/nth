@@ -85,7 +85,7 @@ use crate::{
     Checkers,
     chat::Chat,
     command::Command,
-    diagnostics::{self, Diagnostics, Rtk},
+    diagnostics::{self, Diagnostics, Program},
     file::{FileId, FileRead, FileView},
     git::{GitStatus, Pr},
     header, hero,
@@ -175,6 +175,7 @@ pub struct App {
     servers_lookup: Job<Vec<ServerInfo>>,
     formatters_lookup: Job<Vec<FormatterStatus>>,
     rtk_lookup: Job<Option<PathBuf>>,
+    browser_lookup: Job<Option<PathBuf>>,
     /// What fills the input panel.
     input: Input,
     /// The model and effort the next turn runs with.
@@ -413,6 +414,7 @@ enum Step {
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     RtkFound(Result<Option<PathBuf>, JoinError>),
+    BrowserFound(Result<Option<PathBuf>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
     /// The notification backend failed for the first time.
@@ -475,6 +477,7 @@ impl App {
             servers_lookup: Job::default(),
             formatters_lookup: Job::default(),
             rtk_lookup: Job::default(),
+            browser_lookup: Job::default(),
             input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
@@ -680,6 +683,7 @@ impl App {
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
+                browser = self.browser_lookup.join() => Step::BrowserFound(browser),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
             };
@@ -743,9 +747,16 @@ impl App {
                 }
                 Step::RtkFound(rtk) => {
                     self.diagnostics.rtk = Some(match rtk.context("finding rtk failed")? {
-                        Some(program) => Rtk::Found(program),
-                        None => Rtk::Missing,
+                        Some(program) => Program::Found(program),
+                        None => Program::Missing,
                     });
+                }
+                Step::BrowserFound(browser) => {
+                    self.diagnostics.browser =
+                        Some(match browser.context("finding agent-browser failed")? {
+                            Some(program) => Program::Found(program),
+                            None => Program::Missing,
+                        });
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 // Nothing changed but time: the redraw advances the timers.

@@ -2,8 +2,8 @@
 //! as expected. The model each mode and the subagents run with, the
 //! instruction files,
 //! skills and agents found for the project, the language servers and
-//! formatters that check writes, and the rtk the bash tool would rewrite
-//! commands through.
+//! formatters that check writes, the rtk the bash tool would rewrite
+//! commands through and the agent-browser the browser skill drives.
 
 use std::path::{Path, PathBuf};
 
@@ -31,16 +31,18 @@ pub struct Diagnostics {
     pub formatters: Option<Vec<FormatterStatus>>,
     /// The `rtk` on PATH, looked up each time the tab opens; `None` while
     /// being looked up.
-    pub rtk: Option<Rtk>,
+    pub rtk: Option<Program>,
+    /// The `agent-browser` on PATH, the same way.
+    pub browser: Option<Program>,
     /// The first line in view, and how far it can go, as of the last draw.
     top: usize,
     max_top: usize,
     height: usize,
 }
 
-/// What the `rtk` lookup found.
+/// What looking a program up on PATH found.
 #[derive(Debug)]
-pub enum Rtk {
+pub enum Program {
     /// On PATH.
     Found(PathBuf),
     /// Not on PATH.
@@ -207,27 +209,52 @@ impl Diagnostics {
         }
     }
 
-    /// The `rtk` bash would rewrite the model's commands through, or why
-    /// it would not.
+    /// The programs the tools run through, and why one would not: the
+    /// `rtk` bash rewrites the model's commands through, and the
+    /// `agent-browser` the browser skill drives a browser with.
     fn tools(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
         lines.push(title("tools"));
         if !facts.checks {
             lines.push(note("not checked in this session".into()));
             return;
         }
-        if !facts.rtk {
-            lines.push(unavailable("rtk".into(), "disabled in the config".into()));
-            return;
+        let width = "agent-browser".len();
+        match (facts.rtk, &self.rtk) {
+            (false, _) => lines.push(unavailable(
+                format!("{:width$}", "rtk"),
+                "disabled in the config".into(),
+            )),
+            (true, rtk) => program(lines, "rtk", width, rtk, "not on PATH", facts.home),
         }
-        match &self.rtk {
-            None => lines.push(note("checking…".into())),
-            Some(Rtk::Found(program)) => {
-                let mut line = row(tick(), "rtk".into(), path(program, facts.home));
-                line.spans[2].style = Style::new().fg(Color::Cyan);
-                lines.push(line);
-            }
-            Some(Rtk::Missing) => lines.push(unavailable("rtk".into(), "not on PATH".into())),
+        program(
+            lines,
+            "agent-browser",
+            width,
+            &self.browser,
+            "not on PATH, the browser skill installs it",
+            facts.home,
+        );
+    }
+}
+
+/// A row for a program the tools run: a tick and its path, a cross and
+/// `missing` when it is not there, or `checking…` while it is looked up.
+fn program(
+    lines: &mut Vec<Line<'static>>,
+    name: &str,
+    width: usize,
+    found: &Option<Program>,
+    missing: &str,
+    home: Option<&str>,
+) {
+    match found {
+        None => lines.push(note(format!("{name:width$}  checking…"))),
+        Some(Program::Found(program)) => {
+            let mut line = row(tick(), format!("{name:width$}"), path(program, home));
+            line.spans[2].style = Style::new().fg(Color::Cyan);
+            lines.push(line);
         }
+        Some(Program::Missing) => lines.push(unavailable(format!("{name:width$}"), missing.into())),
     }
 }
 
@@ -489,7 +516,8 @@ mod tests {
                 extensions: vec![],
                 command: Ok(vec!["rustfmt".into(), "$FILE".into()]),
             }]),
-            rtk: Some(Rtk::Found("/bin/rtk".into())),
+            rtk: Some(Program::Found("/bin/rtk".into())),
+            browser: Some(Program::Found("/bin/agent-browser".into())),
             ..Diagnostics::default()
         };
 
@@ -505,7 +533,8 @@ mod tests {
         let formatters = section(&text, "formatters");
         assert_eq!(text[formatters + 1], "  ✓ rustfmt  rustfmt $FILE");
         let tools = section(&text, "tools");
-        assert_eq!(text[tools + 1], "  ✓ rtk  /bin/rtk");
+        assert_eq!(text[tools + 1], "  ✓ rtk            /bin/rtk");
+        assert_eq!(text[tools + 2], "  ✓ agent-browser  /bin/agent-browser");
         assert!(text.contains(&"  none found".to_string()));
     }
 
@@ -618,7 +647,8 @@ mod tests {
         let servers = section(&checking, "language servers");
         assert_eq!(checking[servers + 1], "  checking…");
         let tools = section(&checking, "tools");
-        assert_eq!(checking[tools + 1], "  checking…");
+        assert_eq!(checking[tools + 1], "  rtk            checking…");
+        assert_eq!(checking[tools + 2], "  agent-browser  checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
@@ -627,27 +657,42 @@ mod tests {
     }
 
     #[test]
-    fn says_why_rtk_does_not_run() {
+    fn says_why_a_tool_program_does_not_run() {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
 
         let found = Diagnostics {
-            rtk: Some(Rtk::Found("/bin/rtk".into())),
+            rtk: Some(Program::Found("/bin/rtk".into())),
+            browser: Some(Program::Found("/bin/agent-browser".into())),
             ..Diagnostics::default()
         };
         let lines = text(&found, &facts);
         let tools = section(&lines, "tools");
-        assert_eq!(lines[tools + 1], "  ✓ rtk  /bin/rtk");
+        assert_eq!(lines[tools + 1], "  ✓ rtk            /bin/rtk");
+        assert_eq!(lines[tools + 2], "  ✓ agent-browser  /bin/agent-browser");
 
         let missing = Diagnostics {
-            rtk: Some(Rtk::Missing),
+            rtk: Some(Program::Missing),
+            browser: Some(Program::Missing),
             ..Diagnostics::default()
         };
         let lines = text(&missing, &facts);
-        assert_eq!(lines[tools + 1], "  ✗ rtk  not on PATH");
+        assert_eq!(lines[tools + 1], "  ✗ rtk            not on PATH");
+        assert_eq!(
+            lines[tools + 2],
+            "  ✗ agent-browser  not on PATH, the browser skill installs it"
+        );
 
+        // rtk off in the config says nothing about the browser.
         facts.rtk = false;
         let lines = text(&missing, &facts);
-        assert_eq!(lines[tools + 1], "  ✗ rtk  disabled in the config");
+        assert_eq!(
+            lines[tools + 1],
+            "  ✗ rtk            disabled in the config"
+        );
+        assert_eq!(
+            lines[tools + 2],
+            "  ✗ agent-browser  not on PATH, the browser skill installs it"
+        );
     }
 }

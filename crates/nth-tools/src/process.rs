@@ -12,7 +12,14 @@ pub(crate) const MIN_TIMEOUT_MS: u64 = 1_000;
 
 /// `bash -c script` in `cwd`, with no stdin, in its own process group so a
 /// timeout or a stop can kill everything the script started, not just bash.
-pub(crate) fn shell(script: &str, cwd: &Path) -> Command {
+///
+/// `session` is the id of the session the command runs for, and goes out
+/// as `AGENT_BROWSER_SESSION`: the agent-browser CLI the `browser` skill
+/// drives keeps one browser per session name, so every command of a
+/// session reaches the same browser, the user's `!` commands included,
+/// while parallel sessions and subagents, each with an id of its own,
+/// never share one. Nothing is set outside a session.
+pub(crate) fn shell(script: &str, cwd: &Path, session: &str) -> Command {
     let mut command = Command::new("bash");
     command
         .arg("-c")
@@ -21,6 +28,9 @@ pub(crate) fn shell(script: &str, cwd: &Path) -> Command {
         .stdin(Stdio::null())
         .process_group(0)
         .kill_on_drop(true);
+    if !session.is_empty() {
+        command.env("AGENT_BROWSER_SESSION", format!("nth-{session}"));
+    }
     command
 }
 

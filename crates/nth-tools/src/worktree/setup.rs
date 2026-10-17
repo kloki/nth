@@ -24,18 +24,18 @@ const DRAIN: Duration = Duration::from_millis(100);
 
 /// Runs `<root>/.nth/worktree-setup` with bash in `worktree`, if the
 /// project has one, and says how it went for the tool result.
-pub(super) async fn run(root: &Path, worktree: &Path) -> Option<String> {
-    run_for(root, worktree, TIMEOUT).await
+pub(super) async fn run(root: &Path, worktree: &Path, session: &str) -> Option<String> {
+    run_for(root, worktree, session, TIMEOUT).await
 }
 
-async fn run_for(root: &Path, worktree: &Path, timeout: Duration) -> Option<String> {
+async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration) -> Option<String> {
     if !root.join(SCRIPT).is_file() {
         return None;
     }
     // Run through bash so the script needs no executable bit, and named
     // through the variable so no path needs quoting.
     let script = format!("exec 2>&1\nexec bash \"$NTH_WORKTREE_BASE/{SCRIPT}\"");
-    let spawned = process::shell(&script, worktree)
+    let spawned = process::shell(&script, worktree, session)
         .env("NTH_WORKTREE_BASE", root)
         .env("NTH_WORKTREE_PATH", worktree)
         .stdout(Stdio::piped())
@@ -111,7 +111,7 @@ mod tests {
         let root = dir.path();
         hanging(root);
 
-        let out = run_for(root, root, Duration::from_millis(300))
+        let out = run_for(root, root, "", Duration::from_millis(300))
             .await
             .expect("ran");
 
@@ -130,7 +130,7 @@ mod tests {
 
         let cancelled = tokio::time::timeout(
             Duration::from_millis(300),
-            run_for(root, root, Duration::from_secs(60)),
+            run_for(root, root, "", Duration::from_secs(60)),
         )
         .await;
 

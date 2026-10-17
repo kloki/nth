@@ -138,7 +138,7 @@ impl Tool for Bash {
                 None => None,
             };
             let command = rewritten.as_deref().unwrap_or(&args.command);
-            let mut child = process::shell(&format!("exec 2>&1\n{command}"), &ctx.cwd)
+            let mut child = process::shell(&format!("exec 2>&1\n{command}"), &ctx.cwd, &ctx.session)
                 .stdout(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
@@ -319,6 +319,22 @@ mod tests {
     async fn reports_exit_code() {
         let out = bash(json!({ "command": "echo no; exit 3", "description": "t" })).await;
         assert_eq!(out, Ok("no\n\n\n(exit code 3)".to_string()));
+    }
+
+    #[tokio::test]
+    async fn names_the_browser_session_after_the_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let args = json!({ "command": "echo \"[$AGENT_BROWSER_SESSION]\"", "description": "t" });
+        let ctx = ToolContext {
+            session: "abc".into(),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let out = Bash::default().call(args.clone(), &ctx).await;
+        assert_eq!(out, Ok("[nth-abc]\n".to_string()));
+
+        // Outside a session there is nothing to name it after.
+        let out = bash(args).await;
+        assert_eq!(out, Ok("[]\n".to_string()));
     }
 
     #[tokio::test]
