@@ -311,13 +311,13 @@ mod tests {
                 "  0/2 done · 1 returned",
                 "  Add retries.",
                 "",
-                "  ▸ 1 a  0/1",
+                "  → 1 a  0/1",
                 "  └─ ∎ store  1/2  @general #2 · returned completed",
                 "       ☒ parse",
                 "       ☐ write",
                 "",
-                "  ◇ 2 b  0/1",
-                "  └─ ○ tab  1/2",
+                "  ● 2 b  0/1",
+                "  └─ ● tab  1/2",
             ]
         );
     }

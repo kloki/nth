@@ -240,7 +240,7 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
     let rows = rows(&mut app);
 
     assert_eq!(rows[14].trim_end(), " /repo 0m", "the first line stays");
-    assert_eq!(rows[15].trim_end(), " ⏵ 2 queued · fix the build");
+    assert_eq!(rows[15].trim_end(), " > 2 queued · fix the build");
 }
 
 #[test]
@@ -463,12 +463,12 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
     app.submit();
     let opened = rows(&mut app);
     assert!(opened[0].starts_with("  › chat [∑ usage] "), "{opened:#?}");
-    assert!(opened[2].starts_with(" current session "), "{opened:#?}");
+    assert!(opened[2].starts_with(" ▎ current session "), "{opened:#?}");
     assert!(
-        opened[3].starts_with("   all  1 step  2.0k in  75% cached"),
+        opened[3].starts_with(" ▎   all  1 step  2.0k in  75% cached"),
         "{opened:#?}"
     );
-    assert!(opened[6].starts_with("   glm  1 step"), "{opened:#?}");
+    assert!(opened[6].starts_with(" ▎   glm  1 step"), "{opened:#?}");
 }
 
 #[tokio::test]
@@ -481,16 +481,14 @@ async fn tabs_open_switch_and_close() {
         opened[0].starts_with("  › chat [● diagnostics] "),
         "{opened:#?}"
     );
-    assert!(opened[2].starts_with(" model "), "{:?}", opened[2]);
-    assert!(opened[3].trim_start().starts_with("plan      glm"));
+    assert!(opened[2].starts_with(" ▎ model "), "{:?}", opened[2]);
+    assert!(opened[3].starts_with(" ▎     plan      glm"));
     assert!(
-        opened[4].trim_start().starts_with("▸ act       glm"),
+        opened[4].starts_with(" ▎   → act       glm"),
         "a bare app acts"
     );
     assert!(
-        opened[5]
-            .trim_start()
-            .starts_with("subagent  glm · as the mode"),
+        opened[5].starts_with(" ▎     subagent  glm · as the mode"),
         "{:?}",
         opened[5]
     );

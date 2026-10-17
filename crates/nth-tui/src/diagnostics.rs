@@ -127,17 +127,15 @@ impl Diagnostics {
     }
 
     fn lines(&self, facts: &Facts) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        model(&mut lines, facts);
-        lines.push(Line::default());
-        context(&mut lines, facts);
-        lines.push(Line::default());
-        self.servers(&mut lines, facts);
-        lines.push(Line::default());
-        self.formatters(&mut lines, facts);
-        lines.push(Line::default());
-        self.tools(&mut lines, facts);
-        lines
+        theme::sections(vec![
+            section(|l| model(l, facts)),
+            section(|l| instructions(l, facts)),
+            section(|l| skills(l, facts)),
+            section(|l| agents(l, facts)),
+            section(|l| self.servers(l, facts)),
+            section(|l| self.formatters(l, facts)),
+            section(|l| self.tools(l, facts)),
+        ])
     }
 
     /// Every server nth knows, the ones that can run here first. A server
@@ -238,6 +236,13 @@ impl Diagnostics {
     }
 }
 
+/// The lines `fill` writes, as one section.
+fn section(fill: impl FnOnce(&mut Vec<Line<'static>>)) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    fill(&mut lines);
+    lines
+}
+
 /// A row for a program the tools run: a tick and its path, a cross and
 /// `missing` when it is not there, or `checking…` while it is looked up.
 fn program(
@@ -306,9 +311,8 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     }
 }
 
-/// The instruction files in the system prompt, the skills and agents
-/// found, and what went wrong finding them.
-fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
+/// The instruction files in the system prompt.
+fn instructions(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("instructions"));
     if facts.context.instructions.is_empty() {
         lines.push(note("none found".into()));
@@ -319,7 +323,10 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
             Span::raw(path(&instruction.path, facts.home)),
         ]));
     }
-    lines.push(Line::default());
+}
+
+/// The skills found.
+fn skills(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("skills"));
     if facts.context.skills.is_empty() {
         lines.push(note("none found".into()));
@@ -340,7 +347,10 @@ fn context(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         line.spans[2].style = Style::new().fg(Color::Cyan);
         lines.push(line);
     }
-    lines.push(Line::default());
+}
+
+/// The agents found, then what went wrong finding them all.
+fn agents(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("agents"));
     let width = facts
         .context
@@ -382,7 +392,10 @@ fn checked<'a, T>(
 }
 
 fn title(text: &'static str) -> Line<'static> {
-    Line::styled(text, Style::new().add_modifier(Modifier::BOLD))
+    Line::from(Span::styled(
+        text,
+        Style::new().add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn note(text: String) -> Line<'static> {
@@ -447,7 +460,7 @@ mod tests {
     /// Where the section titled `title` starts.
     fn section(text: &[String], title: &str) -> usize {
         text.iter()
-            .position(|l| l == title)
+            .position(|l| *l == format!("▎ {title}"))
             .unwrap_or_else(|| panic!("{title} section"))
     }
 
@@ -532,20 +545,31 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[5], "  3 models served");
+        assert_eq!(text[5], "▎   3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
         assert_eq!(
             text[servers + 1],
-            "  ● rust   /bin/rust-analyzer  → /repo  exited"
+            "▎   ● rust   /bin/rust-analyzer  → /repo  exited"
         );
-        assert_eq!(text[servers + 2], "  ✗ gopls  not on PATH");
+        assert_eq!(text[servers + 2], "▎   ✗ gopls  not on PATH");
         let formatters = section(&text, "formatters");
-        assert_eq!(text[formatters + 1], "  ✓ rustfmt  rustfmt $FILE");
+        assert_eq!(text[formatters + 1], "▎   ✓ rustfmt  rustfmt $FILE");
         let tools = section(&text, "tools");
-        assert_eq!(text[tools + 1], "  ✓ rtk            /bin/rtk");
-        assert_eq!(text[tools + 2], "  ✓ agent-browser  /bin/agent-browser");
-        assert!(text.contains(&"  none found".to_string()));
+        assert_eq!(text[tools + 1], "▎   ✓ rtk            /bin/rtk");
+        assert_eq!(text[tools + 2], "▎   ✓ agent-browser  /bin/agent-browser");
+        assert!(text.contains(&"▎   none found".to_string()));
+    }
+
+    #[test]
+    fn sections_carry_the_grey_bar() {
+        let context = Context::default();
+        let lines = Diagnostics::default().lines(&facts(&context, &[]));
+        let bar = &lines[0].spans[0];
+        assert_eq!(bar.content, theme::BAR);
+        assert_eq!(bar.style.fg, Some(Color::DarkGray));
+        let gap = lines.iter().position(|l| l.spans.is_empty()).expect("gap");
+        assert_eq!(lines[gap + 1].to_string(), "▎ instructions");
     }
 
     #[test]
@@ -556,10 +580,10 @@ mod tests {
         assert_eq!(
             acting[1..5],
             [
-                "    plan      kimi",
-                "  ▸ act       glm · high · 128k context",
-                "    subagent  glm · high · 128k context · as the mode",
-                "    clerk     glm · high · 128k context · as subagent",
+                "▎     plan      kimi",
+                "▎   → act       glm · high · 128k context",
+                "▎     subagent  glm · high · 128k context · as the mode",
+                "▎     clerk     glm · high · 128k context · as subagent",
             ]
         );
 
@@ -585,10 +609,10 @@ mod tests {
         assert_eq!(
             planning[1..5],
             [
-                "  ▸ plan      kimi",
-                "    act       glm · high · 128k context",
-                "    subagent  minimax · low",
-                "    clerk     flash · minimal",
+                "▎   → plan      kimi",
+                "▎     act       glm · high · 128k context",
+                "▎     subagent  minimax · low",
+                "▎     clerk     flash · minimal",
             ]
         );
     }
@@ -604,12 +628,12 @@ mod tests {
         let text = text(&Diagnostics::default(), &facts(&context, &[]));
         let agents = text
             .iter()
-            .position(|l| l == "agents")
+            .position(|l| l == "▎ agents")
             .expect("agents section");
-        assert!(text[..agents].contains(&"skills".to_string()));
-        assert_eq!(text[agents + 1], "  ↳ clerk    builtin");
-        assert_eq!(text[agents + 2], "  ↳ explore  builtin");
-        assert_eq!(text[agents + 3], "  ↳ general  builtin");
+        assert!(text[..agents].contains(&"▎ skills".to_string()));
+        assert_eq!(text[agents + 1], "▎   ↳ clerk    builtin");
+        assert_eq!(text[agents + 2], "▎   ↳ explore  builtin");
+        assert_eq!(text[agents + 3], "▎   ↳ general  builtin");
     }
 
     #[test]
@@ -648,7 +672,7 @@ mod tests {
         assert!(
             text[skills..]
                 .iter()
-                .any(|l| l.starts_with("  ✦ deploy")
+                .any(|l| l.starts_with("▎   ✦ deploy")
                     && l.ends_with("global  ~/.claude/skills/deploy")),
             "{:?}",
             &text[skills..]
@@ -657,7 +681,7 @@ mod tests {
         assert!(
             text[agents..]
                 .iter()
-                .any(|l| l.starts_with("  ↳ review") && l.ends_with("global  ~/.claude/agents")),
+                .any(|l| l.starts_with("▎   ↳ review") && l.ends_with("global  ~/.claude/agents")),
             "{:?}",
             &text[agents..]
         );
@@ -669,15 +693,15 @@ mod tests {
         let mut facts = facts(&context, &[]);
         let checking = text(&Diagnostics::default(), &facts);
         let servers = section(&checking, "language servers");
-        assert_eq!(checking[servers + 1], "  checking…");
+        assert_eq!(checking[servers + 1], "▎   checking…");
         let tools = section(&checking, "tools");
-        assert_eq!(checking[tools + 1], "  rtk            checking…");
-        assert_eq!(checking[tools + 2], "  agent-browser  checking…");
+        assert_eq!(checking[tools + 1], "▎   rtk            checking…");
+        assert_eq!(checking[tools + 2], "▎   agent-browser  checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
-        assert_eq!(unchecked[servers + 1], "  not checked in this session");
-        assert_eq!(unchecked[tools + 1], "  not checked in this session");
+        assert_eq!(unchecked[servers + 1], "▎   not checked in this session");
+        assert_eq!(unchecked[tools + 1], "▎   not checked in this session");
     }
 
     #[test]
@@ -692,8 +716,8 @@ mod tests {
         };
         let lines = text(&found, &facts);
         let tools = section(&lines, "tools");
-        assert_eq!(lines[tools + 1], "  ✓ rtk            /bin/rtk");
-        assert_eq!(lines[tools + 2], "  ✓ agent-browser  /bin/agent-browser");
+        assert_eq!(lines[tools + 1], "▎   ✓ rtk            /bin/rtk");
+        assert_eq!(lines[tools + 2], "▎   ✓ agent-browser  /bin/agent-browser");
 
         let missing = Diagnostics {
             rtk: Some(Program::Missing),
@@ -701,10 +725,10 @@ mod tests {
             ..Diagnostics::default()
         };
         let lines = text(&missing, &facts);
-        assert_eq!(lines[tools + 1], "  ✗ rtk            not on PATH");
+        assert_eq!(lines[tools + 1], "▎   ✗ rtk            not on PATH");
         assert_eq!(
             lines[tools + 2],
-            "  ✗ agent-browser  not on PATH, the browser skill installs it"
+            "▎   ✗ agent-browser  not on PATH, the browser skill installs it"
         );
 
         // rtk off in the config says nothing about the browser.
@@ -712,11 +736,11 @@ mod tests {
         let lines = text(&missing, &facts);
         assert_eq!(
             lines[tools + 1],
-            "  ✗ rtk            disabled in the config"
+            "▎   ✗ rtk            disabled in the config"
         );
         assert_eq!(
             lines[tools + 2],
-            "  ✗ agent-browser  not on PATH, the browser skill installs it"
+            "▎   ✗ agent-browser  not on PATH, the browser skill installs it"
         );
     }
 }

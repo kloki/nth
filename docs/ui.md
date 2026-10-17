@@ -154,32 +154,35 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles of items worked on in parallel, one subagent an item. The model writes items with `work_item`, puts subagents on them with `work_assign`, and closes them with `work_close`; nothing moves on by itself. The tab opens without being shown once there is a plan, and stays while there is one.
 
 ```
-.nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+▎ .nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+▎
+▎ Retry for the fetch client
+▎ Add retries with jitter to every client call.
 
-Retry for the fetch client
-Add retries with jitter to every client call.
+▎ ✓ 1 scaffold  2/2
+▎   ✓ client-trait  3/3
+▎   ✓ retry-config  2/2
 
-✓ 1 scaffold  2/2
-├─ ✓ client-trait  3/3
-└─ ✓ retry-config  2/2
-▸ 2 implement  1/3
-├─ ✓ backoff  4/4
-├─ ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
-│    ☒ wrap idempotent requests
-│    ☐ cap at 5 tries
-└─ ∎ docs  3/3  @explore #4 · returned completed
-     ☒ write the section
-◇ 3 verify  0/2
-├─ ○ integration-test  0/4
-└─ ○ changelog  0/1
+▎ → 2 implement  1/3
+▎   ✓ backoff  4/4
+▎   ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
+▎     ☒ wrap idempotent requests
+▎     ☐ cap at 5 tries
+▎   ∎ docs  3/3  @explore #4 · returned completed
+▎     ☒ write the section
+
+▎ ● 3 verify  0/2
+▎   ● integration-test  0/4
+▎   ● changelog  0/1
 ```
 
 - **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
+- **Bars.** Every row has the chat's `▎` bar, coloured by the state of what it belongs to, so the plan's progress reads down the left edge. The header and overview are one block with a grey (bright black) bar; then a block per cycle, a bare blank line between them. A cycle's row carries the cycle's colour, an item's row and its todos and note the item's.
 - **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
 - **Overview.** `plan.md` rendered as markdown — its first heading, then the rest — when the model wrote one.
-- **Cycles.** `✓` green once every item is closed, `▸` blue for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim for the ones after it. Closed items over all follow.
-- **Items.** Behind tree guides: `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
-- **Todos.** Under the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
+- **Cycles.** `✓` and a green bar once every item is closed, `→` and a blue bar for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `●` dim with a grey bar for the ones after it. Closed items over all follow.
+- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `●` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
+- **Todos.** Under the item's name, behind its bar, for the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
 - **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
 - **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
@@ -188,45 +191,45 @@ Add retries with jitter to every client call.
 - **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
 - **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.
 - **The subagents.** Each has its usual tab, named `work <cycle>/<item>`. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (600) before the item returns failed or timed out.
-- **Outside the TUI.** `nth work [<session>]` prints the same tree for a saved session, `--json` for the plan as data.
+- **Outside the TUI.** `nth work [<session>]` prints the plan of a saved session as a tree, with guides in place of the bars, `--json` for the plan as data.
 
 ## Diagnostics
 
 Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat, with the same scrollbar while it does not all fit.
 
 ```
-model
-    plan  kimi-k3 · high · 256k context
-  ▸ act   glm-5.3 · 128k context
-  25 models served
+▎ model
+▎     plan  kimi-k3 · high · 256k context
+▎   → act   glm-5.3 · 128k context
+▎   25 models served
 
-instructions
-  ~/repos/nth/CLAUDE.md
+▎ instructions
+▎   ~/repos/nth/CLAUDE.md
 
-skills
-  ✦ research-opencode  project  ~/repos/nth/.claude/skills/research-opencode
+▎ skills
+▎   ✦ research-opencode  project  ~/repos/nth/.claude/skills/research-opencode
 
-agents
-  ↳ explore  builtin
-  ↳ general  builtin
+▎ agents
+▎   ↳ explore  builtin
+▎   ↳ general  builtin
 
-language servers
-  ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
-  ● ruff      ~/.local/bin/ruff  → ~/repos/nth
-  ✗ gopls     not on PATH
+▎ language servers
+▎   ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
+▎   ● ruff      ~/.local/bin/ruff  → ~/repos/nth
+▎   ✗ gopls     not on PATH
 
-formatters
-  ✓ rustfmt   rustfmt $FILE
-  ✗ prettier  no package.json here
+▎ formatters
+▎   ✓ rustfmt   rustfmt $FILE
+▎   ✗ prettier  no package.json here
 
-tools
-  ✓ rtk            ~/.cargo/bin/rtk
-  ✗ agent-browser  not on PATH, the browser skill installs it
+▎ tools
+▎   ✓ rtk            ~/.cargo/bin/rtk
+▎   ✗ agent-browser  not on PATH, the browser skill installs it
 ```
 
-- **Sections.** A bold title each, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
+- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
 - **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
-- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
+- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `→` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Tools.** The programs the tools run through, each a green `✓` with its path in cyan when it is on PATH, or dim with a red `✗` and why: the `rtk` bash would rewrite the model's commands through ("not on PATH", or "disabled in the config" when `[tools.bash] rtk` is off), and the `agent-browser` the browser skill drives a browser with ("not on PATH, the browser skill installs it").
 - **Fresh on open.** Servers, formatters and the tools' programs are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
@@ -236,26 +239,26 @@ tools
 Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session spent, its subagents included — all of it, then per model, then per turn — and `all time`, the turns run on each model across runs. Each spend row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
 
 ```
-current session
-  all  4 steps  1.0M in  77% cached  20k out  $0.38+
+▎ current session
+▎   all  4 steps  1.0M in  77% cached  20k out  $0.38+
 
-per model
-  glm-5.3   1 step  1.0M in  80% cached  20k out  $0.38
-  kimi-k3  3 steps   40k in     cache ?  900 out
+▎ per model
+▎   glm-5.3   1 step  1.0M in  80% cached  20k out  $0.38
+▎   kimi-k3  3 steps   40k in     cache ?  900 out
 
-per turn
-  #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
-  #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
+▎ per turn
+▎   #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
+▎   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
+▎ 
+▎   prices are list-price estimates from models.dev, whatever your plan bills
 
-  prices are list-price estimates from models.dev, whatever your plan bills
-
-all time
-  opencode/glm-5.3  ██████████████████████████████  142
-  openrouter/kimi   ███████▍                         35
-  opencode/qwen-4   ▏                                 1
+▎ all time
+▎   opencode/glm-5.3  ██████████████████████████████  142
+▎   openrouter/kimi   ███████▍                         35
+▎   opencode/qwen-4   ▏                                 1
 ```
 
-`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold. The `all time` bars are one per model that ran a turn, most first, blue and scaled to the busiest one; the eighth blocks give the end of a bar, any used model shows at least one, and the count follows dim — "no turns yet" until there is one.
+`cache ?` means the provider never said what it cached. A price ending in `+` leaves out a model without one. Models are blue and agents cyan, turn numbers and step counts dim, the cache share green from half on and yellow under it (dim when unknown), and prices magenta. The `all` row is bold. Each part is a block with a grey (bright black) `▎` bar down its left, as on the diagnostics tab; the price note sits in the per-turn block. The `all time` bars are one per model that ran a turn, most first, blue and scaled to the busiest one; the eighth blocks give the end of a bar, any used model shows at least one, and the count follows dim — "no turns yet" until there is one.
 
 ## Chat
 
@@ -505,7 +508,7 @@ Fixed at 2 lines, always visible, below the input panel. It holds general state;
 
 ```
  ~/repos/nth 24m ◘ 42%                       git · fix-auth #123 +3 *4 󰊐 2
- ⏵ 2 queued · fix the failing test                  ● rust  ● typescript
+ > 2 queued · fix the failing test                  ● rust  ● typescript
 ```
 
 **Line 1: where you are**
@@ -554,7 +557,7 @@ Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHu
 
 A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in reversed, black on yellow, for 300ms so it catches the eye, and goes at the next key or after 2 seconds, whichever is first.
 
-Otherwise, while prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
+Otherwise, while prompts wait — queued behind the turn, or on their way into it — `> N queued · ` and the first line of the next one, in white. Blank otherwise.
 
 **Line 2, right: the language servers**
 
