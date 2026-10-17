@@ -253,30 +253,35 @@ mod tests {
             .split_once("</available_skills>\n")
             .expect("skills block");
         let location = dir.path().join(".agents/skills/deploy/SKILL.md");
-        let built_in: String = ["init", "setup-worktrees", "work-plan"]
-            .iter()
-            .map(|name| {
-                let description = context
-                    .skills
-                    .get(name)
-                    .and_then(|s| s.description.as_deref())
-                    .expect("described");
-                format!(
-                    "  <skill>\n    <name>{name}</name>\n    \
-                     <description>{}</description>\n    \
-                     <location>&lt;built-in&gt;</location>\n  </skill>\n",
-                    escape(description)
-                )
-            })
-            .collect();
+        // The built-in skills sort in among the project's by name.
+        let built_in = |names: &[&str]| -> String {
+            names
+                .iter()
+                .map(|name| {
+                    let description = context
+                        .skills
+                        .get(name)
+                        .and_then(|s| s.description.as_deref())
+                        .expect("described");
+                    format!(
+                        "  <skill>\n    <name>{name}</name>\n    \
+                         <description>{}</description>\n    \
+                         <location>&lt;built-in&gt;</location>\n  </skill>\n",
+                        escape(description)
+                    )
+                })
+                .collect()
+        };
+        let before = built_in(&["browser"]);
+        let after = built_in(&["init", "setup-worktrees", "work-plan"]);
         assert_eq!(
             skills,
             format!(
                 "\nSkills provide specialized instructions and workflows for specific tasks.\n\
                  Use the skill tool to load a skill when a task matches its description.\n\
-                 <available_skills>\n  <skill>\n    <name>deploy</name>\n    \
+                 <available_skills>\n{before}  <skill>\n    <name>deploy</name>\n    \
                  <description>Ship &lt;it&gt; &amp; tag</description>\n    \
-                 <location>{}</location>\n  </skill>\n{built_in}",
+                 <location>{}</location>\n  </skill>\n{after}",
                 location.display(),
             )
         );

@@ -56,7 +56,7 @@ impl Tool for EnterWorktree {
             // Only a new worktree is set up; the session enters it whatever
             // the script did, since the worktree is there either way.
             let setup = match worktree.created {
-                Some(_) => setup::run(&root, &path).await,
+                Some(_) => setup::run(&root, &path, &ctx.session).await,
                 None => None,
             };
             ctx.workdir.enter(&ctx.cwd, path.clone());

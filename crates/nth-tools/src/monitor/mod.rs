@@ -76,7 +76,7 @@ impl Tool for Monitor {
                     .unwrap_or(DEFAULT_TIMEOUT_MS)
                     .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
             );
-            let child = process::shell(&args.command, &ctx.cwd)
+            let child = process::shell(&args.command, &ctx.cwd, &ctx.session)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
