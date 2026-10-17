@@ -3,7 +3,7 @@
 use nth_protocol::{Effort, Message, ToolSpec};
 use serde_json::{Value, json};
 
-/// `reasons` is whether the catalogue says the model reasons: its summary
+/// `reasons` is whether the model is known to reason: its summary
 /// is then asked for even when the effort is left to the model.
 pub(super) fn body(
     model: &str,

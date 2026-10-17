@@ -43,16 +43,21 @@ pub(crate) fn known<'c>(catalog: Option<&'c Catalog>, model: &str) -> Option<&'c
 
 #[derive(Deserialize)]
 struct ModelList {
-    models: Vec<Listed>,
+    /// Each read on its own, so one entry of a shape nth does not know
+    /// costs that model, not the list.
+    models: Vec<serde_json::Value>,
 }
 
-/// One model as the backend lists it; nth reads only these fields.
+/// One model as the backend lists it; nth reads only these fields, and
+/// one that leaves out whether to offer it is not offered.
 #[derive(Deserialize)]
 struct Listed {
     slug: String,
     display_name: Option<String>,
     /// `list` for a model to offer; `hide` for the backend's own helpers.
+    #[serde(default)]
     visibility: String,
+    #[serde(default)]
     supported_in_api: bool,
     context_window: Option<u64>,
     #[serde(default)]
@@ -61,6 +66,8 @@ struct Listed {
 
 #[derive(Deserialize)]
 struct Level {
+    /// A level without one is dropped, as is one nth does not know.
+    #[serde(default)]
     effort: String,
 }
 
@@ -84,6 +91,7 @@ fn models(list: ModelList, catalog: Option<&Catalog>) -> Vec<ModelInfo> {
     let mut models: Vec<_> = list
         .models
         .into_iter()
+        .filter_map(|m| serde_json::from_value::<Listed>(m).ok())
         .filter(|m| m.visibility == "list" && m.supported_in_api)
         .map(|m| {
             let mut efforts: Vec<Effort> = m
@@ -163,5 +171,28 @@ mod tests {
         );
         assert!(models.iter().all(|m| m.cost == Some(Cost::default())));
         assert_eq!(models[0].context, None, "nothing said, nothing assumed");
+    }
+
+    #[test]
+    fn an_entry_nth_cannot_read_costs_only_that_model() {
+        let list = list(serde_json::json!({"models": [
+            {"slug": "gpt-6-luna", "visibility": "list", "supported_in_api": true,
+             "supported_reasoning_levels": [{"effort": "low"}, {"description": "?"}]},
+            {"display_name": "No slug", "visibility": "list", "supported_in_api": true},
+            {"slug": "gpt-5.6-luna", "visibility": 3, "supported_in_api": true},
+            {"slug": "gpt-chat"},
+            "not even an object",
+        ]}));
+
+        let models = models(list, None);
+
+        let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-6-luna"], "missing what to offer is not offered");
+        assert_eq!(models[0].efforts, [Effort::Low], "a level without effort");
+    }
+
+    #[test]
+    fn an_empty_list_offers_nothing() {
+        assert_eq!(models(list(serde_json::json!({"models": []})), None), []);
     }
 }
