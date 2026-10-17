@@ -476,10 +476,12 @@ mod tests {
         let tree = Tree::new();
         let skills = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
-        let plan = skills.get("work-plan").expect("work-plan");
-        assert_eq!(plan.source, Source::Internal);
-        assert!(plan.description.is_some());
-        assert_eq!(plan.path(), None);
+        for name in ["init", "setup-worktrees", "work-plan"] {
+            let skill = skills.get(name).expect(name);
+            assert_eq!(skill.source, Source::Internal);
+            assert!(skill.description.is_some());
+            assert_eq!(skill.path(), None);
+        }
     }
 
     #[test]
