@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
             names("/c"),
-            ["clear", "close", "compact", "connect", "copy-id"],
+            ["clear", "close", "compact", "connect", "copy-id", "config"],
             "the clear skill is hidden by the command"
         );
         assert_eq!(
