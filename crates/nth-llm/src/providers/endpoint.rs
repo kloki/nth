@@ -5,7 +5,9 @@
 //! models from the Codex backend, and runs only while you are connected
 //! (`chatgpt.rs`).
 
-use nth_protocol::{ModelInfo, Origin};
+use std::{collections::HashMap, sync::Mutex};
+
+use nth_protocol::{Effort, ModelInfo, Origin};
 
 use super::{Error, chatgpt, listing};
 use crate::{
@@ -43,6 +45,10 @@ pub(crate) struct Endpoint {
     /// The models to offer instead of asking the endpoint's `/models`, for
     /// an endpoint without one; empty asks.
     only: Vec<String>,
+    /// The efforts each model took in the endpoint's last list, by wire
+    /// id. Only ChatGPT's list says, and it is what you picked from, so it
+    /// beats the catalogue's.
+    pub(super) listed: Mutex<HashMap<String, Vec<Effort>>>,
     http: reqwest::Client,
     pub(crate) chat: chat_completions::Client,
     pub(crate) messages: messages::Client,
@@ -64,6 +70,7 @@ impl Endpoint {
             base_url,
             credentials: config.credentials,
             only: config.models,
+            listed: Mutex::default(),
             http,
         }
     }
@@ -90,7 +97,12 @@ impl Endpoint {
     pub(crate) async fn list(&self, catalog: &Snapshot) -> Result<Vec<ModelInfo>, listing::Error> {
         if self.chatgpt() {
             let (catalog, auth) = futures::join!(catalog.get(), self.auth());
-            return chatgpt::list(&self.http, &self.base_url, &auth?, catalog).await;
+            let models = chatgpt::list(&self.http, &self.base_url, &auth?, catalog).await?;
+            *self.listed.lock().expect("listed lock poisoned") = models
+                .iter()
+                .map(|m| (m.id.clone(), m.efforts.clone()))
+                .collect();
+            return Ok(models);
         }
         // At once: the catalogue's deadline must not delay the list.
         let (catalog, ids) = futures::join!(catalog.get(), self.ids());
@@ -99,6 +111,15 @@ impl Endpoint {
             catalog,
             catalog.and_then(|c| self.provider_in(c)).map(|(_, p)| p),
         ))
+    }
+
+    /// The efforts `model` took in the endpoint's last list, if it said.
+    pub(crate) fn listed_efforts(&self, model: &str) -> Option<Vec<Effort>> {
+        self.listed
+            .lock()
+            .expect("listed lock poisoned")
+            .get(model)
+            .cloned()
     }
 
     /// The ids of the models to offer: the configured ones, else what the

@@ -171,10 +171,14 @@ impl Provider for Providers {
             let catalog = self.catalog.get().await;
             let (wire, known) = endpoint.wire(catalog, model);
             // Whatever picked the effort (the config, a resumed session, a
-            // model switch), a known model is sent only a level it takes.
-            let request = match known {
-                Some(known) => Request {
-                    effort: request.effort.nearest(&known.efforts()),
+            // model switch), a known model is sent only a level it takes:
+            // one the endpoint listed, which the picker showed, else one
+            // the catalogue says.
+            let listed = endpoint.listed_efforts(model);
+            let efforts = listed.clone().or_else(|| known.map(|k| k.efforts()));
+            let request = match efforts {
+                Some(efforts) => Request {
+                    effort: request.effort.nearest(&efforts),
                     ..request
                 },
                 None => request,
@@ -187,7 +191,13 @@ impl Provider for Providers {
                     endpoint.chat.stream(request, cache_key, &auth).await?
                 }
                 Wire::Messages => endpoint.messages.stream(request, known, &auth).await?,
-                Wire::Responses => endpoint.responses.stream(request, known, &auth).await?,
+                Wire::Responses => {
+                    // A model listed with efforts reasons, whatever the
+                    // catalogue says, or whether it knows the model at all.
+                    let reasons = listed.is_some_and(|e| !e.is_empty())
+                        || known.and_then(|m| m.reasoning).unwrap_or(false);
+                    endpoint.responses.stream(request, reasons, &auth).await?
+                }
             })
         }
         .boxed()
@@ -204,6 +214,7 @@ impl Provider for Providers {
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
+    use nth_protocol::Effort;
 
     use super::*;
     use crate::Credentials;
@@ -513,6 +524,106 @@ mod tests {
         ] {
             assert!(lines.contains(&header), "{header} in {head}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_chatgpt_list_refused_leaves_chatgpt_failed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (store, chatgpt) = chatgpt(&dir);
+        connect(&store).await;
+        let lyceum = EndpointConfig {
+            models: vec!["glm".into()],
+            ..endpoint("lyceum")
+        };
+        let (url, _) = crate::testing::serve_status(401, br#"{"detail":"expired"}"#).await;
+        let codex = EndpointConfig {
+            base_url: url,
+            ..EndpointConfig::chatgpt(chatgpt)
+        };
+        let providers = Providers::build(
+            vec![lyceum, codex],
+            Vec::new(),
+            "glm",
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("both run");
+
+        let listing = providers.models().await.expect("lyceum listed");
+
+        let ids: Vec<_> = listing.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["lyceum/glm"]);
+        let failed: Vec<_> = listing
+            .failed
+            .iter()
+            .map(|f| f.origin.id.as_str())
+            .collect();
+        assert_eq!(failed, [chatgpt::ID]);
+    }
+
+    /// The body ChatGPT is sent for `model` at `effort`, once its list
+    /// said the model takes `listed`.
+    async fn sent_to_chatgpt(model: &str, listed: &[Effort], effort: Effort) -> serde_json::Value {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let (store, chatgpt) = chatgpt(&dir);
+        connect(&store).await;
+        let (url, sent) =
+            crate::testing::serve_once(include_bytes!("../../tests/fixtures/zen_responses.sse"))
+                .await;
+        let codex = EndpointConfig {
+            base_url: url,
+            ..EndpointConfig::chatgpt(chatgpt)
+        };
+        let providers = Providers::build(
+            vec![codex],
+            Vec::new(),
+            model,
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("connected");
+        providers.endpoints[0]
+            .listed
+            .lock()
+            .expect("listed lock poisoned")
+            .insert(model.into(), listed.to_vec());
+
+        let request = Request {
+            model,
+            session_id: "ses_1",
+            parent_session_id: None,
+            effort,
+            messages: &[],
+            tools: &[],
+        };
+        let events: Vec<_> = providers
+            .stream(request)
+            .await
+            .expect("streams")
+            .collect()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        let (_, body) = sent.await.expect("a request");
+        serde_json::from_str(&body).expect("a json body")
+    }
+
+    #[tokio::test]
+    async fn chatgpt_is_sent_the_efforts_its_list_offered() {
+        let body = sent_to_chatgpt("gpt-5.5", &[Effort::Low, Effort::XHigh], Effort::XHigh).await;
+        assert_eq!(
+            body["reasoning"]["effort"], "xhigh",
+            "listed, though the catalogue stops at high"
+        );
+
+        let body = sent_to_chatgpt("gpt-5.5", &[Effort::Low, Effort::XHigh], Effort::High).await;
+        assert_eq!(body["reasoning"]["effort"], "xhigh", "snapped to the list");
+
+        let body = sent_to_chatgpt("gpt-7", &[Effort::Low], Effort::Default).await;
+        assert_eq!(
+            body["reasoning"],
+            serde_json::json!({"summary": "auto"}),
+            "listed with efforts, so it reasons, though the catalogue does not know it"
+        );
     }
 
     /// The head, lowercased, and the body of the one request `providers`
