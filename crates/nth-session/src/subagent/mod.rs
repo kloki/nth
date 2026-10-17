@@ -130,20 +130,25 @@ pub(crate) fn tools_for(
         .collect()
 }
 
-/// A new subagent session of `agent` in the parent's directory, on the
-/// agent's model or the parent's, in act mode: a planning parent's child
-/// is kept from writing by its tools instead, so it gets no plan file and
-/// no plan-mode reminder.
+/// A new subagent session of `agent` in the parent's directory, in act
+/// mode: a planning parent's child is kept from writing by its tools
+/// instead, so it gets no plan file and no plan-mode reminder. It runs on
+/// the agent's own model, else what the front-end picked for subagents,
+/// else the parent's; the effort and limits come from the latter two.
 pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) -> Session {
-    let model = agent.model.clone().unwrap_or_else(|| ctx.llm.model.clone());
+    let (llm, context_window, max_output) = match &ctx.subagent {
+        Some(subagent) => (&subagent.llm, subagent.context_window, subagent.max_output),
+        None => (&ctx.llm, ctx.context_window, ctx.max_output),
+    };
+    let model = agent.model.clone().unwrap_or_else(|| llm.model.clone());
     let mut session = Session::new(model, ctx.cwd.clone())
         .with_extra_dirs(ctx.extra_dirs.clone())
         .with_context(ctx.context.clone())
         .as_subagent(agent.prompt.clone());
-    session.effort = ctx.llm.effort;
+    session.effort = llm.effort;
     session.mode = Mode::Act;
     session.max_steps = max_steps;
-    session.set_limits(ctx.context_window, ctx.max_output);
+    session.set_limits(context_window, max_output);
     session.compaction = ctx.compaction;
     session.parent = ctx.session.parse().ok();
     session
@@ -489,6 +494,41 @@ pub(crate) mod tests {
         assert_eq!(child.parent, Some(parent));
         assert_eq!(child.context_window, Some(200_000));
         assert_eq!(child.max_output, Some(64_000));
+    }
+
+    #[test]
+    fn a_child_runs_on_the_subagent_llm_unless_its_agent_names_one() {
+        let ctx = ToolContext {
+            llm: nth_protocol::Llm {
+                model: "glm-5.3".into(),
+                effort: nth_protocol::Effort::High,
+            },
+            context_window: Some(200_000),
+            subagent: Some(nth_protocol::SubagentLlm {
+                llm: nth_protocol::Llm {
+                    model: "minimax".into(),
+                    effort: nth_protocol::Effort::Low,
+                },
+                context_window: Some(100_000),
+                max_output: Some(8_000),
+            }),
+            ..ToolContext::new("/repo".into())
+        };
+        let child = child_session(&explore(), &ctx, 5);
+        assert_eq!(
+            (child.model.as_str(), child.effort),
+            ("minimax", nth_protocol::Effort::Low)
+        );
+        assert_eq!(
+            (child.context_window, child.max_output),
+            (Some(100_000), Some(8_000)),
+            "sized against its own model, not the parent's"
+        );
+
+        let mut own = explore();
+        own.model = Some("kimi".into());
+        let child = child_session(&own, &ctx, 5);
+        assert_eq!(child.model, "kimi", "the agent's own model wins");
     }
 
     /// The `[context]` policy rides where the limits do: a child of a

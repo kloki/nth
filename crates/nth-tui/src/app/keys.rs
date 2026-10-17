@@ -137,6 +137,8 @@ impl App {
                 Action::SelectPrev => picker.prev(),
                 Action::Right => picker.more(),
                 Action::Left => picker.less(),
+                Action::NextTab => self.cycle_llm_target(false),
+                Action::PrevTab => self.cycle_llm_target(true),
                 Action::Insert(c) => picker.insert(c),
                 Action::Backspace => picker.backspace(),
                 Action::Submit => self.choose_llm(),

@@ -482,10 +482,17 @@ async fn tabs_open_switch_and_close() {
         "{opened:#?}"
     );
     assert!(opened[2].starts_with(" model "), "{:?}", opened[2]);
-    assert!(opened[3].trim_start().starts_with("plan  glm"));
+    assert!(opened[3].trim_start().starts_with("plan      glm"));
     assert!(
-        opened[4].trim_start().starts_with("▸ act   glm"),
+        opened[4].trim_start().starts_with("▸ act       glm"),
         "a bare app acts"
+    );
+    assert!(
+        opened[5]
+            .trim_start()
+            .starts_with("subagent  glm · as the mode"),
+        "{:?}",
+        opened[5]
     );
 
     app.apply(Action::Content(0));

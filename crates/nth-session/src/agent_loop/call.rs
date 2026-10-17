@@ -54,6 +54,7 @@ pub(crate) async fn run_call(
         inbox: ctx.inbox.clone(),
         writable: ctx.writable.clone(),
         llm: ctx.llm.clone(),
+        subagent: ctx.subagent.clone(),
         context_window: ctx.context_window,
         max_output: ctx.max_output,
         compaction: ctx.compaction,

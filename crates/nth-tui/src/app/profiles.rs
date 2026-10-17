@@ -1,4 +1,4 @@
-//! Profiles: named presets of what plan and act run with. ctrl+p cycles
+//! Profiles: named presets of what plan, act and subagents run with. ctrl+p cycles
 //! through them; a model picked by hand in the model picker leaves the
 //! profile, and the next ctrl+p puts it back.
 
@@ -12,7 +12,7 @@ use super::{App, Llm, ModeLlms};
 pub struct Profile {
     /// What the prompt's label and the cycling hint call it.
     pub name: String,
-    /// What plan and act run with on this profile.
+    /// What plan, act and subagents run with on this profile.
     pub llms: ModeLlms,
     /// Why it cannot run, when its provider has no key set: cycling skips
     /// it and says this. `None` means it runs.
@@ -47,11 +47,12 @@ impl App {
         self.runs(profile).then_some(profile.name.as_str())
     }
 
-    /// Whether both modes still run `profile`'s llms.
+    /// Whether both modes and the subagents still run `profile`'s llms.
     fn runs(&self, profile: &Profile) -> bool {
         Mode::ALL
             .iter()
             .all(|&mode| self.llm(mode) == *llm(profile, mode))
+            && self.mode_llms.subagent == profile.llms.subagent
     }
 
     /// ctrl+p: to the next profile, both modes on its llms. A model
@@ -141,6 +142,7 @@ mod tests {
             llms: ModeLlms {
                 plan: llm(&format!("{model}-plan")),
                 act: llm(&format!("{model}-act")),
+                subagent: Some(llm(&format!("{model}-subagent"))),
             },
             unavailable: None,
             needs_chatgpt: false,
@@ -200,6 +202,18 @@ mod tests {
         assert_eq!(app.profile_name(), Some("go"));
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "zen-plan", "then cycling moves on");
+    }
+
+    #[test]
+    fn a_picked_subagent_model_leaves_the_profile() {
+        let mut app = profiled();
+        assert_eq!(app.subagent_llm().model, "go-subagent");
+        app.set_llm(crate::llm_picker::Target::Subagent, llm("picked"));
+        assert_eq!(app.profile_name(), None);
+
+        app.apply(Action::NextProfile);
+        assert_eq!(app.subagent_llm().model, "go-subagent", "put back");
+        assert_eq!(app.profile_name(), Some("go"));
     }
 
     #[test]

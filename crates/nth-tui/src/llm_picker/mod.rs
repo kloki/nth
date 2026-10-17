@@ -1,19 +1,65 @@
 //! The LLM picker: which LLM later turns go to, and how hard it
 //! reasons. Opened over the prompt, it waits for the list if it isn't in yet.
+//! Tab picks what the choice is for: plan, act, the subagents, or all three.
 
 pub mod usage;
 mod view;
 
 use std::collections::BTreeSet;
 
-use nth_protocol::{Effort, Failed, Listing, ModelInfo};
+use nth_protocol::{Effort, Failed, Listing, Mode, ModelInfo};
 pub use view::draw;
 
 use crate::fuzzy::Filter;
 
+/// What a picked LLM goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Plan,
+    Act,
+    Subagent,
+    /// Plan, act and the subagents at once.
+    All,
+}
+
+impl Target {
+    pub const ALL: [Target; 4] = [Target::Plan, Target::Act, Target::Subagent, Target::All];
+
+    /// The one for what `mode` runs with.
+    pub fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::Plan => Target::Plan,
+            Mode::Act => Target::Act,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Target::Plan => "plan",
+            Target::Act => "act",
+            Target::Subagent => "subagent",
+            Target::All => "all",
+        }
+    }
+
+    /// The next one, wrapping, as Tab moves.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous one, wrapping, as shift+Tab moves.
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
 #[derive(Debug)]
 pub struct LlmPicker {
-    /// The model in use, marked in the list.
+    /// What the pick goes to.
+    target: Target,
+    /// What the target runs on now, marked in the list.
     current: String,
     /// The effort last picked, kept while a model that takes fewer levels
     /// is highlighted, so moving back restores it. Each model is shown and
@@ -43,12 +89,26 @@ enum State {
 }
 
 impl LlmPicker {
-    pub fn new(current: &str, effort: Effort) -> Self {
+    pub fn new(target: Target, current: &str, effort: Effort) -> Self {
         Self {
+            target,
             current: current.to_string(),
             effort,
             state: State::Loading,
         }
+    }
+
+    pub fn target(&self) -> Target {
+        self.target
+    }
+
+    /// Points the pick at `target`, which runs on `current` at `effort`:
+    /// that is marked, and highlighted unless a query is narrowing the list.
+    pub fn retarget(&mut self, target: Target, current: &str, effort: Effort) {
+        self.target = target;
+        self.current = current.to_string();
+        self.effort = effort;
+        self.refilter(|_| {});
     }
 
     /// Fills in the list, highlighting the model in use when it is listed.
@@ -239,7 +299,7 @@ pub(crate) mod tests {
     }
 
     fn ready(current: &str) -> LlmPicker {
-        let mut picker = LlmPicker::new(current, Effort::Default);
+        let mut picker = LlmPicker::new(Target::Act, current, Effort::Default);
         picker.load(Ok(vec![model("glm", true), model("plain", false)].into()));
         picker
     }
@@ -279,7 +339,7 @@ pub(crate) mod tests {
 
     #[test]
     fn effort_steps_over_the_levels_the_model_takes() {
-        let mut picker = LlmPicker::new("glm", Effort::Low);
+        let mut picker = LlmPicker::new(Target::Act, "glm", Effort::Low);
         let mut few = model("few", true);
         few.efforts = vec![Effort::High, Effort::Max];
         picker.load(Ok(vec![model("glm", true), few].into()));
@@ -337,8 +397,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn tab_cycles_the_targets_and_wraps() {
+        assert_eq!(Target::of(Mode::Plan).next(), Target::Act);
+        assert_eq!(Target::Act.next(), Target::Subagent);
+        assert_eq!(Target::Subagent.next(), Target::All);
+        assert_eq!(Target::All.next(), Target::Plan);
+        assert_eq!(Target::Plan.prev(), Target::All);
+    }
+
+    #[test]
+    fn retargeting_marks_what_the_target_runs_on() {
+        let mut picker = ready("glm");
+        picker.retarget(Target::Subagent, "plain", Effort::Default);
+        assert_eq!(picker.target(), Target::Subagent);
+        assert_eq!(picker.chosen().map(|c| c.0), Some("plain".into()));
+
+        picker.insert('g');
+        picker.retarget(Target::All, "plain", Effort::Default);
+        assert_eq!(
+            picker.chosen().map(|c| c.0),
+            Some("glm".into()),
+            "the query keeps its best match"
+        );
+    }
+
+    #[test]
     fn nothing_is_chosen_until_the_list_is_in() {
-        let mut picker = LlmPicker::new("glm", Effort::High);
+        let mut picker = LlmPicker::new(Target::Act, "glm", Effort::High);
         picker.next();
         assert_eq!(picker.chosen(), None);
 

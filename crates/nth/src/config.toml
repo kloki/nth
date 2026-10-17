@@ -107,10 +107,12 @@ stall_secs = 120
 # `nth run` starts in act; `nth run --mode plan` plans instead.
 default = "plan"
 
-# Profiles: what plan and act run with. A new chat starts on the first, and
-# ctrl+p cycles through them in the chat; a profile whose provider has no
-# key set is skipped. Each gives the model and effort for plan and act. An
-# empty model means the one above. Effort is "default" (leave it to the
+# Profiles: what plan, act and subagents run with. A new chat starts on the
+# first, and ctrl+p cycles through them in the chat; a profile whose provider
+# has no key set is skipped. Each gives the model and effort for plan, act and
+# subagent. An empty plan or act model means the one above; an empty subagent
+# model means subagents run on their parent's model and effort, and an
+# agent's own `model` always wins. Effort is "default" (leave it to the
 # model, for endpoints that reject the field), "none", "minimal", "low",
 # "medium", "high", "xhigh" or "max"; a model is sent the nearest level it
 # takes (`nth models` lists them). With no profiles at all, both modes run
@@ -128,6 +130,10 @@ default = "plan"
 # [profiles.act]
 # model = "opencode/kimi-k3"
 # effort = "default"
+#
+# [profiles.subagent]
+# model = "opencode/deepseek-v4.1-flash"
+# effort = "low"
 #
 # [[profiles]]
 # name = "zen"

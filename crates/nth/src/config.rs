@@ -34,7 +34,8 @@ pub struct Config {
     pub task: TaskConfig,
     pub work: WorkConfig,
     pub mode: ModeConfig,
-    /// Named presets of a plan and an act LLM, cycled with ctrl+p. The
+    /// Named presets of a plan, an act and a subagent LLM, cycled with
+    /// ctrl+p. The
     /// first is where a new chat starts; empty means no presets, and
     /// both modes run the model above.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -182,7 +183,8 @@ impl Default for ModeConfig {
     }
 }
 
-/// A named preset: the model and effort plan and act run with. The first
+/// A named preset: the model and effort plan, act and subagents run
+/// with. The first
 /// is where a new chat starts; ctrl+p in the TUI cycles through them.
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -191,6 +193,9 @@ pub struct ProfileConfig {
     pub name: String,
     pub plan: ModeDefaults,
     pub act: ModeDefaults,
+    /// What subagents run on. Unlike the modes', an empty model means the
+    /// parent's model and effort, not the config's.
+    pub subagent: ModeDefaults,
 }
 
 /// The model and effort one mode runs with in a profile.
@@ -273,6 +278,7 @@ impl Config {
         for profile in &mut self.profiles {
             profile.plan.model.clear();
             profile.act.model.clear();
+            profile.subagent.model.clear();
         }
     }
 
@@ -298,6 +304,20 @@ impl Config {
             model => model.to_string(),
         };
         (model, defaults.effort)
+    }
+
+    /// The model and effort subagents start on: the first profile's
+    /// subagent slot. `None` when it names no model, or there are no
+    /// profiles: subagents then run on their parent's.
+    pub fn subagent_for(&self) -> Option<(String, Effort)> {
+        self.profile_subagent(self.profiles.first()?)
+    }
+
+    /// The model and effort subagents run with in `profile`; `None` when
+    /// its subagent slot names no model, so they run on their parent's.
+    pub fn profile_subagent(&self, profile: &ProfileConfig) -> Option<(String, Effort)> {
+        let defaults = &profile.subagent;
+        (!defaults.model.is_empty()).then(|| (defaults.model.clone(), defaults.effort))
     }
 
     /// Whether a random model has to fill the one above in: it is empty
@@ -578,6 +598,42 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_names_what_subagents_run_on() {
+        let config = Config::parse(
+            r#"
+            model = "glm"
+
+            [[profiles]]
+            name = "go"
+
+            [profiles.subagent]
+            model = "minimax"
+            effort = "low"
+
+            [[profiles]]
+            name = "zen"
+
+            [profiles.subagent]
+            effort = "high"
+            "#,
+        )
+        .expect("parses");
+
+        assert_eq!(config.subagent_for(), Some(("minimax".into(), Effort::Low)));
+        assert_eq!(
+            config.profile_subagent(&config.profiles[1]),
+            None,
+            "an empty subagent model means the parent's, not the model above"
+        );
+        assert_eq!(
+            Config::parse("model = \"glm\"")
+                .expect("parses")
+                .subagent_for(),
+            None
+        );
+    }
+
+    #[test]
     fn a_profile_model_falls_back_to_the_one_above() {
         let mut config = Config::parse(
             r#"
@@ -672,6 +728,9 @@ mod tests {
             [profiles.act]
             model = "glm"
 
+            [profiles.subagent]
+            model = "minimax"
+
             [[profiles]]
             name = "zen"
 
@@ -700,11 +759,19 @@ mod tests {
             [profiles.act]
             model = "glm"
             effort = "low"
+
+            [profiles.subagent]
+            model = "minimax"
             "#,
         )
         .expect("parses");
 
         config.set_model("from-flag".into());
+        assert_eq!(
+            config.subagent_for(),
+            None,
+            "subagents run on their parent's, the flag's model"
+        );
 
         assert_eq!(
             config.llm_for(Mode::Plan),
@@ -850,6 +917,10 @@ mod tests {
         assert_eq!(
             config.profile_llm(&config.profiles[0], Mode::Act),
             ("opencode/kimi-k3".into(), Effort::Default)
+        );
+        assert_eq!(
+            config.profile_subagent(&config.profiles[0]),
+            Some(("opencode/deepseek-v4.1-flash".into(), Effort::Low))
         );
         assert_eq!(config.profiles[1].name, "zen");
         assert_eq!(

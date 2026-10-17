@@ -8,7 +8,9 @@ use futures::future::BoxFuture;
 use nth_context::Context;
 use tokio::sync::mpsc;
 
-use crate::{Asker, Compaction, Event, Inbox, Llm, Monitors, Screen, Workdir, Writable};
+use crate::{
+    Asker, Compaction, Event, Inbox, Llm, Monitors, Screen, SubagentLlm, Workdir, Writable,
+};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -47,6 +49,9 @@ pub struct ToolContext {
     /// The model and effort the session runs on, for a tool that starts
     /// another session on the same.
     pub llm: Llm,
+    /// What a subagent the session starts runs on, when that is not the
+    /// session's own model; an agent's own model still wins.
+    pub subagent: Option<SubagentLlm>,
     /// The model's context window and output limit, when the front-end
     /// knows them, for a tool that starts another session on the same
     /// model: they size the child's compaction trigger.
@@ -92,6 +97,7 @@ impl ToolContext {
             inbox: Inbox::default(),
             writable: Writable::Any,
             llm: Llm::default(),
+            subagent: None,
             context_window: None,
             max_output: None,
             compaction: Compaction::default(),
