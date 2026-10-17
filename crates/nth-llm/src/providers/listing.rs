@@ -98,7 +98,7 @@ pub(crate) fn select(
                     efforts: catalog::BUDGET_EFFORTS.to_vec(),
                     origin: None,
                     cost: None,
-                    takes_images: false,
+                    takes_images: None,
                 });
             };
             Some(ModelInfo {
@@ -109,7 +109,7 @@ pub(crate) fn select(
                 efforts: model.efforts(),
                 origin: None,
                 cost,
-                takes_images: model.takes_images(),
+                takes_images: Some(model.takes_images()),
             })
         })
         .collect();
@@ -195,7 +195,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
-            takes_images: false,
+            takes_images: Some(false),
         }
     }
 
@@ -226,7 +226,7 @@ mod tests {
                     cache_read: Some(0.26),
                     cache_write: None,
                 }),
-                takes_images: false,
+                takes_images: Some(false),
             }
         );
         assert_eq!(
@@ -247,6 +247,7 @@ mod tests {
             catalog::BUDGET_EFFORTS,
             "unlisted models may reason"
         );
+        assert_eq!(models[4].takes_images, None, "nor is it known to see");
     }
 
     #[test]
@@ -285,7 +286,7 @@ mod tests {
                 efforts: Vec::new(),
                 origin: None,
                 cost: None,
-                takes_images: false,
+                takes_images: Some(false),
             },
             "the canonical entry, zhipuai's"
         );

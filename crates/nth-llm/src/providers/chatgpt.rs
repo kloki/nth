@@ -115,7 +115,7 @@ fn models(list: ModelList, catalog: Option<&Catalog>) -> Vec<ModelInfo> {
                 origin: None,
                 // Paid for by the subscription.
                 cost: Some(Cost::default()),
-                takes_images: m.input_modalities.iter().any(|i| i == "image"),
+                takes_images: Some(m.input_modalities.iter().any(|i| i == "image")),
             }
         })
         .collect();
@@ -175,8 +175,12 @@ mod tests {
         );
         assert!(models.iter().all(|m| m.cost == Some(Cost::default())));
         assert_eq!(models[0].context, None, "nothing said, nothing assumed");
-        assert!(luna.takes_images);
-        assert!(!models[0].takes_images, "nothing said, no images");
+        assert_eq!(luna.takes_images, Some(true));
+        assert_eq!(
+            models[0].takes_images,
+            Some(false),
+            "nothing said, no images"
+        );
     }
 
     #[test]

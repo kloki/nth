@@ -158,7 +158,7 @@ fn rows<'a>(
         .max()
         .unwrap_or(0);
     // The image column only when some model takes images.
-    let images = models.iter().any(|m| m.takes_images);
+    let images = models.iter().any(|m| m.takes_images == Some(true));
     let pick = pick();
 
     let mut lines: Vec<Line<'a>> = shown
@@ -198,7 +198,7 @@ fn rows<'a>(
                 dim(),
             ));
             if images {
-                let mark = if model.takes_images {
+                let mark = if model.takes_images == Some(true) {
                     icons().image
                 } else {
                     " "
@@ -282,7 +282,7 @@ mod tests {
                 name: origin.to_uppercase(),
             }),
             cost: None,
-            takes_images: false,
+            takes_images: None,
         }
     }
 
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn models_that_take_images_are_marked_in_a_column_of_their_own() {
         let seeing = ModelInfo {
-            takes_images: true,
+            takes_images: Some(true),
             ..listed("lyceum", "kimi", "Kimi", 200_000, 64_000, &[])
         };
         let blind = listed("lyceum", "glm", "GLM", 200_000, 64_000, &[]);

@@ -930,7 +930,7 @@ mod tests {
             efforts: Vec::new(),
             origin: None,
             cost: None,
-            takes_images: false,
+            takes_images: None,
         }
     }
 
