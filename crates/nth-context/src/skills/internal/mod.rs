@@ -21,6 +21,7 @@ pub(super) fn skills() -> impl Iterator<Item = Skill> {
             description: front.description,
             location: Location::Internal(text),
             source: Source::Internal,
+            root: None,
         })
     })
 }

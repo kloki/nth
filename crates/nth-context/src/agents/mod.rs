@@ -79,6 +79,9 @@ pub struct Agent {
     /// The file it was read from; built-ins have none.
     pub path: Option<PathBuf>,
     pub source: Source,
+    /// The folder searched that it was found under, e.g. `~/.claude/agents`;
+    /// `None` for a built-in.
+    pub root: Option<PathBuf>,
 }
 
 impl Agent {
@@ -127,7 +130,7 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
     }
     for (root, source) in roots(cwd, paths) {
         for file in find(&root) {
-            match read(&file, source) {
+            match read(&file, &root, source) {
                 Ok(Read::Agent(agent)) => agents.insert(agent),
                 // opencode's `disable` takes an agent away, a built-in too.
                 Ok(Read::Disabled(name)) => agents.remove(&name),
@@ -151,6 +154,7 @@ fn builtin() -> [Agent; 2] {
             hidden: false,
             path: None,
             source: Source::Builtin,
+            root: None,
         },
         Agent {
             name: "explore".into(),
@@ -162,6 +166,7 @@ fn builtin() -> [Agent; 2] {
             hidden: false,
             path: None,
             source: Source::Builtin,
+            root: None,
         },
     ]
 }
@@ -201,13 +206,14 @@ fn roots(cwd: &Path, paths: &Paths) -> Vec<(PathBuf, Source)> {
 
 /// Every `.md` file under `root`, in path order so discovery is the same on
 /// every run. Ignore files are not applied: an agent folder that git
-/// ignores still holds agents.
+/// ignores still holds agents. Hidden folders are skipped.
 fn find(root: &Path) -> Vec<PathBuf> {
     if !root.is_dir() {
         return Vec::new();
     }
     let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
         .standard_filters(false)
+        .hidden(true)
         .follow_links(true)
         .max_depth(Some(MAX_DEPTH))
         .build()
@@ -231,7 +237,7 @@ enum Read {
     Primary,
 }
 
-fn read(file: &Path, source: Source) -> Result<Read, String> {
+fn read(file: &Path, root: &Path, source: Source) -> Result<Read, String> {
     let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
     let (front, body) = frontmatter::parse(&text)?;
     if frontmatter::field(&front, "mode").as_deref() == Some("primary") {
@@ -268,6 +274,7 @@ fn read(file: &Path, source: Source) -> Result<Read, String> {
         hidden: front.get("hidden").and_then(Value::as_bool) == Some(true),
         path: Some(file.to_path_buf()),
         source,
+        root: Some(root.to_path_buf()),
     }))
 }
 
@@ -459,6 +466,41 @@ mod tests {
                 ("f", "project nth", "repo/.nth/agents/f.md"),
             ])
         );
+    }
+
+    #[test]
+    fn hidden_folders_are_not_searched() {
+        let tree = Tree::new();
+        tree.agent(
+            "home/.claude/agents/.trash/dead.md",
+            "description: gone",
+            "",
+        )
+        .agent("home/.claude/agents/live.md", "description: here", "");
+
+        assert_eq!(
+            tree.discover("home").0,
+            found(&[("live", "here", "home/.claude/agents/live.md")])
+        );
+    }
+
+    #[test]
+    fn an_agent_knows_the_root_it_was_found_under() {
+        let tree = Tree::new();
+        tree.agent("home/.claude/agents/a.md", "description: a", "")
+            .agent("repo/.opencode/agents/group/b.md", "description: b", "");
+
+        let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
+
+        assert_eq!(
+            agents.get("a").expect("a").root.as_deref(),
+            Some(tree.path("home/.claude/agents").as_path())
+        );
+        assert_eq!(
+            agents.get("b").expect("b").root.as_deref(),
+            Some(tree.path("repo/.opencode/agents").as_path())
+        );
+        assert_eq!(agents.get("explore").expect("explore").root, None);
     }
 
     #[test]
