@@ -24,6 +24,18 @@ pub fn unsupported(name: &str) -> String {
     )
 }
 
+/// What a model that takes images gets instead of `name`, an image too
+/// large to send: it can still look at part of it.
+pub fn too_large(name: &str) -> String {
+    format!(
+        "ERROR: Cannot show \"{name}\" (the image is too large to send). Read a smaller region or crop of it instead."
+    )
+}
+
+/// The most bytes one image may have: base64 makes 3,750,000 bytes 5 MB,
+/// the most Anthropic takes of one image, and the others take more.
+pub const MAX_IMAGE_BYTES: usize = 3_750_000;
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Image {
     /// `image/png`, `image/jpeg` or `image/webp`: what every provider takes.
