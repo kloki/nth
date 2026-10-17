@@ -1,5 +1,6 @@
 //! The diagnostics tab: nth's own state, for when something does not work
-//! as expected. The model each mode runs with, the instruction files,
+//! as expected. The model each mode and the subagents run with, the
+//! instruction files,
 //! skills and agents found for the project, the language servers and
 //! formatters that check writes, and the rtk the bash tool would rewrite
 //! commands through.
@@ -10,7 +11,7 @@ use nth_context::Context;
 use nth_format::FormatterStatus;
 use nth_icons::icons;
 use nth_lsp::{ServerInfo, ServerState, ServerStatus};
-use nth_protocol::{Failed, Mode};
+use nth_protocol::Failed;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -46,20 +47,24 @@ pub enum Rtk {
     Missing,
 }
 
-/// The model a mode runs with.
+/// The model a mode, or the subagents, run with.
 pub struct ModeModel {
-    pub mode: Mode,
+    /// `plan`, `act` or `subagent`.
+    pub label: &'static str,
     pub model: String,
     pub effort: Option<&'static str>,
     pub context_window: Option<u64>,
     /// Whether the next turn runs in this mode.
     pub current: bool,
+    /// For the subagents: they run on the current mode's model, having
+    /// none of their own.
+    pub inherited: bool,
 }
 
 /// Everything the tab shows that lives elsewhere on the app.
 pub struct Facts<'a> {
-    /// The model each mode runs with, plan first.
-    pub modes: [ModeModel; 2],
+    /// The model each mode runs with, plan first, then the subagents'.
+    pub models: [ModeModel; 3],
     /// How many LLMs the provider lists, once listed.
     pub llms: Option<usize>,
     /// The providers that could not be asked for theirs.
@@ -226,15 +231,16 @@ impl Diagnostics {
     }
 }
 
-/// A row per mode, the current one marked.
+/// A row per mode, the current one marked, then the subagents'.
 fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
     lines.push(title("model"));
-    let width = Mode::ALL
-        .map(|m| m.label().len())
-        .into_iter()
+    let width = facts
+        .models
+        .iter()
+        .map(|m| m.label.len())
         .max()
         .unwrap_or(0);
-    for mode in &facts.modes {
+    for mode in &facts.models {
         let mut about = vec![mode.model.clone()];
         about.extend(mode.effort.map(String::from));
         if let Some(window) = mode.context_window {
@@ -245,12 +251,16 @@ fn model(lines: &mut Vec<Line<'static>>, facts: &Facts) {
         } else {
             (" ", theme::dim())
         };
-        lines.push(Line::from(vec![
+        let mut row = vec![
             Span::raw(theme::INDENT),
             Span::raw(mark),
-            Span::styled(format!(" {:width$}  ", mode.mode.label()), label),
+            Span::styled(format!(" {:width$}  ", mode.label), label),
             Span::styled(about.join(" · "), Style::new().fg(Color::Blue)),
-        ]));
+        ];
+        if mode.inherited {
+            row.push(Span::styled(" · as the mode", theme::dim()));
+        }
+        lines.push(Line::from(row));
     }
     let listed = match facts.llms {
         _ if facts.listing => "listing models…".to_string(),
@@ -403,20 +413,30 @@ mod tests {
 
     fn facts<'a>(context: &'a Context, running: &'a [ServerStatus]) -> Facts<'a> {
         Facts {
-            modes: [
+            models: [
                 ModeModel {
-                    mode: Mode::Plan,
+                    label: "plan",
                     model: "kimi".into(),
                     effort: None,
                     context_window: None,
                     current: false,
+                    inherited: false,
                 },
                 ModeModel {
-                    mode: Mode::Act,
+                    label: "act",
                     model: "glm".into(),
                     effort: Some("high"),
                     context_window: Some(128_000),
                     current: true,
+                    inherited: false,
+                },
+                ModeModel {
+                    label: "subagent",
+                    model: "glm".into(),
+                    effort: Some("high"),
+                    context_window: Some(128_000),
+                    current: false,
+                    inherited: true,
                 },
             ],
             llms: Some(3),
@@ -463,7 +483,7 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[3], "  3 models served");
+        assert_eq!(text[4], "  3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
         assert_eq!(
@@ -484,16 +504,32 @@ mod tests {
         let mut facts = facts(&context, &[]);
         let acting = text(&Diagnostics::default(), &facts);
         assert_eq!(
-            acting[1..3],
-            ["    plan  kimi", "  ▸ act   glm · high · 128k context"]
+            acting[1..4],
+            [
+                "    plan      kimi",
+                "  ▸ act       glm · high · 128k context",
+                "    subagent  glm · high · 128k context · as the mode",
+            ]
         );
 
-        facts.modes[0].current = true;
-        facts.modes[1].current = false;
+        facts.models[0].current = true;
+        facts.models[1].current = false;
+        facts.models[2] = ModeModel {
+            label: "subagent",
+            model: "minimax".into(),
+            effort: Some("low"),
+            context_window: None,
+            current: false,
+            inherited: false,
+        };
         let planning = text(&Diagnostics::default(), &facts);
         assert_eq!(
-            planning[1..3],
-            ["  ▸ plan  kimi", "    act   glm · high · 128k context"]
+            planning[1..4],
+            [
+                "  ▸ plan      kimi",
+                "    act       glm · high · 128k context",
+                "    subagent  minimax · low",
+            ]
         );
     }
 

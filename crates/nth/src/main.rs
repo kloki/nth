@@ -23,7 +23,7 @@ use config::Config;
 use nth_context::Paths;
 use nth_icons::icons;
 use nth_llm::{Credentials, EndpointConfig, Providers, Unavailable};
-use nth_protocol::{Listing, Mode, Provider};
+use nth_protocol::{Listing, Llm, Mode, Provider, SubagentLlm};
 use nth_session::Session;
 use owo_colors::OwoColorize;
 
@@ -224,6 +224,13 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     session.mode = mode;
     session.effort = effort;
     session.max_steps = config.session.max_steps;
+    session.subagent_llm = config.subagent_for().map(|(model, effort)| SubagentLlm {
+        llm: Llm {
+            model: providers.qualify(&model),
+            effort,
+        },
+        ..SubagentLlm::default()
+    });
     Ok((session, providers))
 }
 
@@ -238,7 +245,8 @@ pub(crate) async fn apply_context(session: &mut Session, config: &Config, provid
 }
 
 /// Sizes the session's compaction to its model: the context window and
-/// output limit the providers' listing names for it. A listing that fails
+/// output limit the providers' listing names for it, and for what its
+/// subagents run on. A listing that fails
 /// changes nothing, so a fresh session keeps both limits unknown and
 /// nothing compacts on its own.
 pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
@@ -247,6 +255,12 @@ pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provi
     };
     if let Some((context_window, max_output)) = limits(&listing, &session.model) {
         session.set_limits(context_window, max_output);
+    }
+    if let Some(subagent) = &mut session.subagent_llm
+        && let Some((context_window, max_output)) = limits(&listing, &subagent.llm.model)
+    {
+        subagent.context_window = context_window;
+        subagent.max_output = max_output;
     }
 }
 

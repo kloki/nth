@@ -3,17 +3,18 @@
 
 use std::path::Path;
 
-use nth_protocol::{BoxError, Cost, Listing};
+use nth_protocol::{BoxError, Cost, Effort, Listing};
 use nth_session::Price;
 
-use super::{App, input::Input};
-use crate::llm_picker::LlmPicker;
+use super::{App, Llm, input::Input};
+use crate::llm_picker::{LlmPicker, Target};
 
 impl App {
-    /// Opens the picker on the LLM in use, listing LLMs the first time.
+    /// Opens the picker on the current mode's LLM, listing LLMs the first
+    /// time.
     pub(super) fn open_llm_picker(&mut self) {
         self.completion = None;
-        let mut picker = LlmPicker::new(&self.model, self.effort);
+        let mut picker = LlmPicker::new(Target::of(self.mode), &self.model, self.effort);
         match &self.llms {
             Some(llms) => picker.load(Ok(llms.clone())),
             // The answer fills this picker when it comes.
@@ -107,17 +108,50 @@ impl App {
         }
     }
 
-    /// Switches later turns to the highlighted model; the session picks it
-    /// up when the next turn starts, since mid-turn it is in the turn task.
+    /// Tab in the picker: the pick goes to the next target (`back`: the
+    /// previous), marking what that runs on.
+    pub(super) fn cycle_llm_target(&mut self, back: bool) {
+        let Input::LlmPicker(picker) = &self.input else {
+            return;
+        };
+        let target = match back {
+            false => picker.target().next(),
+            true => picker.target().prev(),
+        };
+        let llm = self.llm_of(target);
+        if let Input::LlmPicker(picker) = &mut self.input {
+            picker.retarget(target, &llm.model, llm.effort);
+        }
+    }
+
+    /// Switches the picker's target to the highlighted model for later
+    /// turns; the session picks it up when the next turn starts, since
+    /// mid-turn it is in the turn task.
     pub(super) fn choose_llm(&mut self) {
         let Input::LlmPicker(picker) = &self.input else {
             return;
         };
         if let Some((model, effort)) = picker.chosen() {
-            self.model = model;
-            self.effort = effort;
+            let target = picker.target();
+            self.hint = Some(set_hint(target, &model, effort).into());
+            self.set_llm(target, Llm { model, effort });
             self.input = Input::Prompt;
         }
+    }
+}
+
+/// Says what the pick went to, since a target other than the mode in use
+/// changes nothing the status bar shows.
+fn set_hint(target: Target, model: &str, effort: Effort) -> String {
+    let what = match target {
+        Target::Plan => "Plan",
+        Target::Act => "Act",
+        Target::Subagent => "Subagents",
+        Target::All => "All modes",
+    };
+    match effort {
+        Effort::Default => format!("{what} set to {model}"),
+        effort => format!("{what} set to {model} · {}", effort.name()),
     }
 }
 
@@ -132,7 +166,7 @@ mod tests {
     };
 
     use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{Effort, Failed, Origin, Provider, Request, StreamEvent};
+    use nth_protocol::{Effort, Failed, Mode, Origin, Provider, Request, StreamEvent};
     use nth_session::Session;
 
     use super::*;
@@ -345,6 +379,90 @@ mod tests {
         assert_eq!(
             (session.model.as_str(), session.effort),
             ("glm", Effort::Low)
+        );
+    }
+
+    #[test]
+    fn tab_in_the_picker_picks_what_the_choice_is_for() {
+        let mut app = llm_listed_app();
+        app.apply(Action::LlmPicker);
+        assert_eq!(picker(&app).target(), Target::Act, "the mode in use");
+        assert!(
+            rows(&mut app)[5].starts_with(" ▎ switch model  plan · act · subagent"),
+            "{:?}",
+            rows(&mut app)[5]
+        );
+
+        app.apply(Action::NextTab);
+        assert_eq!(picker(&app).target(), Target::Subagent);
+        assert_eq!(
+            picker(&app).chosen().map(|c| c.0),
+            Some("glm".into()),
+            "subagents run on the mode's until picked"
+        );
+        app.apply(Action::SelectNext);
+        app.apply(Action::Submit);
+        assert_eq!(app.model, "glm", "the mode keeps its model");
+        assert_eq!(app.subagent_llm().model, "plain");
+        assert_eq!(app.hint.as_deref(), Some("Subagents set to plain"));
+        assert_eq!(app.mode, Mode::Act, "Tab in the picker leaves the mode be");
+
+        app.apply(Action::LlmPicker);
+        app.apply(Action::PrevTab);
+        assert_eq!(picker(&app).target(), Target::Plan);
+        app.apply(Action::SelectNext);
+        app.apply(Action::Submit);
+        assert_eq!(app.llm(Mode::Plan).model, "plain");
+        assert_eq!(app.model, "glm", "act is untouched");
+        assert_eq!(app.hint.as_deref(), Some("Plan set to plain"));
+
+        app.apply(Action::LlmPicker);
+        app.apply(Action::NextTab);
+        app.apply(Action::NextTab);
+        app.apply(Action::NextTab);
+        assert_eq!(picker(&app).target(), Target::Plan, "wraps past all");
+        app.apply(Action::PrevTab);
+        assert_eq!(picker(&app).target(), Target::All);
+        assert_eq!(picker(&app).chosen().map(|c| c.0), Some("glm".into()));
+        app.apply(Action::Right);
+        app.apply(Action::Submit);
+        let low = Llm {
+            model: "glm".into(),
+            effort: Effort::Low,
+        };
+        for target in [Target::Plan, Target::Act, Target::Subagent] {
+            assert_eq!(app.llm_of(target), low, "{target:?}");
+        }
+        assert_eq!(app.effort, Effort::Low);
+        assert_eq!(app.hint.as_deref(), Some("All modes set to glm · low"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_hands_the_subagent_llm_to_the_session() {
+        let mut app = llm_listed_app();
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+        let session = app.session.as_ref().expect("idle");
+        assert_eq!(session.subagent_llm, None, "the parent's unless picked");
+
+        app.set_llm(
+            Target::Subagent,
+            Llm {
+                model: "plain".into(),
+                effort: Effort::Low,
+            },
+        );
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+        let session = app.session.as_ref().expect("idle");
+        let subagent = session.subagent_llm.as_ref().expect("picked");
+        assert_eq!(
+            (subagent.llm.model.as_str(), subagent.llm.effort),
+            ("plain", Effort::Low)
         );
     }
 

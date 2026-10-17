@@ -28,7 +28,7 @@ pub use monitor::{
 };
 pub use provider::{
     BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
-    Request, Retry, StreamEvent, Usage,
+    Request, Retry, StreamEvent, SubagentLlm, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};

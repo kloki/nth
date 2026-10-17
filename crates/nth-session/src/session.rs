@@ -7,8 +7,8 @@ use std::{
 
 use nth_context::Context;
 use nth_protocol::{
-    AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, Tool, ToolCall,
-    ToolContext, Usage, Workdir, Writable,
+    AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm, Tool,
+    ToolCall, ToolContext, Usage, Workdir, Writable,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -94,6 +94,10 @@ pub struct Session {
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
     pub max_steps: usize,
+    /// What the subagents this session starts run on; `None` runs them on
+    /// its own model. Set by the front-end before each turn, not saved.
+    #[serde(skip)]
+    pub subagent_llm: Option<SubagentLlm>,
     /// Runs for another session's model rather than for you: it has no
     /// task tool, so it is told of no agents and `@name` means nothing.
     #[serde(default)]
@@ -144,6 +148,7 @@ impl Session {
             context_window: None,
             max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
+            subagent_llm: None,
             subagent: false,
             parent: None,
             persona: None,
@@ -396,6 +401,7 @@ impl Session {
                 model: self.model.clone(),
                 effort: self.effort,
             },
+            subagent: self.subagent_llm.clone(),
             context_window: self.context_window,
             max_output: self.max_output,
             compaction: self.compaction,

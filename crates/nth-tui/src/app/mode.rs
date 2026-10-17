@@ -1,24 +1,29 @@
 //! Plan and act: Tab switches between them, and each keeps its own model
 //! and effort, so planning can run on a different model than acting.
+//! Subagents have a third, which by default is the parent's.
 
 pub use nth_protocol::Llm;
 use nth_protocol::Mode;
 
 use super::App;
+use crate::llm_picker::Target;
 
-/// What each mode runs with.
+/// What each mode runs with, and what the subagents its turns start do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeLlms {
     pub plan: Llm,
     pub act: Llm,
+    /// `None` runs subagents on the model of the mode that starts them.
+    pub subagent: Option<Llm>,
 }
 
 impl ModeLlms {
-    /// Both modes on `llm`.
+    /// Both modes on `llm`, subagents on theirs.
     pub fn same(llm: Llm) -> Self {
         Self {
             plan: llm.clone(),
             act: llm,
+            subagent: None,
         }
     }
 
@@ -82,6 +87,50 @@ impl App {
         }
     }
 
+    /// What the subagents of the next turn run on: their own pick, else
+    /// the current mode's.
+    pub(super) fn subagent_llm(&self) -> Llm {
+        self.mode_llms
+            .subagent
+            .clone()
+            .unwrap_or_else(|| self.llm(self.mode))
+    }
+
+    /// What `target` runs on now; for all, the current mode's.
+    pub(super) fn llm_of(&self, target: Target) -> Llm {
+        match target {
+            Target::Plan => self.llm(Mode::Plan),
+            Target::Act => self.llm(Mode::Act),
+            Target::Subagent => self.subagent_llm(),
+            Target::All => self.llm(self.mode),
+        }
+    }
+
+    /// Puts `target` on `llm`, from the next turn.
+    pub(super) fn set_llm(&mut self, target: Target, llm: Llm) {
+        let mode = match target {
+            Target::Plan => Mode::Plan,
+            Target::Act => Mode::Act,
+            Target::Subagent => {
+                self.mode_llms.subagent = Some(llm);
+                return;
+            }
+            Target::All => {
+                self.mode_llms = ModeLlms {
+                    plan: llm.clone(),
+                    act: llm.clone(),
+                    subagent: Some(llm),
+                };
+                self.load_llm();
+                return;
+            }
+        };
+        *self.mode_llms.get_mut(mode) = llm;
+        if mode == self.mode {
+            self.load_llm();
+        }
+    }
+
     fn load_llm(&mut self) {
         let llm = self.mode_llms.get(self.mode);
         self.model = llm.model.clone();
@@ -111,6 +160,7 @@ mod tests {
         let mut app = app().with_mode_llms(ModeLlms {
             plan: llm("kimi", Effort::High),
             act: llm("glm", Effort::Default),
+            subagent: None,
         });
         assert_eq!(app.mode, Mode::Act, "a bare session acts");
         assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · glm");
@@ -139,6 +189,7 @@ mod tests {
         let mut app = app().with_mode_llms(ModeLlms {
             plan: llm("kimi", Effort::High),
             act: llm("glm", Effort::Default),
+            subagent: None,
         });
         app.model = "qwen".into();
         assert_eq!(

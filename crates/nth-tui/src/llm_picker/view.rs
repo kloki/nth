@@ -11,24 +11,26 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{LlmPicker, State, haystack, shown_id};
+use super::{LlmPicker, State, Target, haystack, shown_id};
 use crate::{
     fuzzy::{self, Filter, query_row},
-    theme::{BAR, dim, panel_row, panel_title, pick},
+    theme::{dim, panel_row, panel_title, pick},
 };
 
 const TITLE: &str = "switch model";
-const KEYS: &str = "type to filter · ↑↓ model · ←→ effort · enter · esc";
+const KEYS: &str = "tab target · type to filter · ↑↓ model · ←→ effort · enter · esc";
 
 /// The picker's bar and title; see `theme::panel_title`.
 const ACCENT: Color = Color::Magenta;
 
 pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
     let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    frame.render_widget(Paragraph::new(panel_title(TITLE, ACCENT)), header);
+    let title = targets(panel_title(TITLE, ACCENT), picker.target());
+    let title_width = title.width();
+    frame.render_widget(Paragraph::new(title), header);
     // Dropped rather than drawn over the title when the row is too narrow.
     let room = usize::from(header.width);
-    if room > BAR.chars().count() + TITLE.len() + KEYS.chars().count() + 2 {
+    if room > title_width + KEYS.chars().count() + 2 {
         frame.render_widget(
             Paragraph::new(Span::styled(KEYS, dim())).alignment(Alignment::Right),
             header,
@@ -79,6 +81,22 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
         }
     };
     frame.render_widget(Paragraph::new(lines), list);
+}
+
+/// The title, then what the pick goes to, Tab's choice picked out.
+fn targets(mut title: Line<'static>, target: Target) -> Line<'static> {
+    title.spans.push(Span::raw("  "));
+    for (i, each) in Target::ALL.into_iter().enumerate() {
+        if i > 0 {
+            title.spans.push(Span::styled(" · ", dim()));
+        }
+        let style = match each == target {
+            true => pick(),
+            false => dim(),
+        };
+        title.spans.push(Span::styled(each.label(), style));
+    }
+    title
 }
 
 fn note(text: Span<'_>) -> Line<'_> {
@@ -267,7 +285,7 @@ mod tests {
     }
 
     fn picker(models: Vec<ModelInfo>, current: &str) -> LlmPicker {
-        let mut picker = LlmPicker::new(current, Effort::Default);
+        let mut picker = LlmPicker::new(super::Target::Act, current, Effort::Default);
         picker.load(Ok(Listing::from(models)));
         picker
     }

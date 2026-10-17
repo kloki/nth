@@ -52,6 +52,15 @@ pub struct Llm {
     pub effort: Effort,
 }
 
+/// What subagents run on when the front-end picked it apart from the
+/// parent's model, with that model's limits for their compaction trigger.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubagentLlm {
+    pub llm: Llm,
+    pub context_window: Option<u64>,
+    pub max_output: Option<u64>,
+}
+
 /// How hard a reasoning model thinks before it answers. The levels are
 /// models.dev's; a model takes only some of them (`ModelInfo::efforts`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

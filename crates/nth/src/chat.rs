@@ -53,10 +53,14 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
             let llms = ModeLlms {
                 plan: llm(config.profile_llm(profile, Mode::Plan)),
                 act: llm(config.profile_llm(profile, Mode::Act)),
+                subagent: config.profile_subagent(profile).map(llm),
             };
-            let runs = [&llms.plan, &llms.act];
-            let unavailable = runs
+            let runs: Vec<&Llm> = [&llms.plan, &llms.act]
                 .into_iter()
+                .chain(&llms.subagent)
+                .collect();
+            let unavailable = runs
+                .iter()
                 .find_map(|llm| match provider.check(&llm.model) {
                     Err(Error::Auth(nth_auth::Error::NotConnected)) | Ok(()) => None,
                     Err(error) => Some(why_unavailable(error)),
@@ -77,6 +81,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
     let mut mode_llms = ModeLlms {
         plan: llm(config.llm_for(Mode::Plan)),
         act: llm(config.llm_for(Mode::Act)),
+        subagent: config.subagent_for().map(llm),
     };
     // A resumed session keeps its model; the other mode starts on the
     // config's.
