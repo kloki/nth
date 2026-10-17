@@ -368,6 +368,11 @@ mod tests {
         Snapshot::of(serde_json::from_value(catalog).expect("a valid catalogue"))
     }
 
+    /// The Codex backend's model list, serving only `gpt-5.5`.
+    const CODEX_MODELS: &[u8] = br#"{"models": [
+        {"slug": "gpt-5.5", "visibility": "list", "supported_in_api": true}
+    ]}"#;
+
     #[tokio::test]
     async fn chatgpt_runs_only_while_connected() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -376,8 +381,13 @@ mod tests {
             models: vec!["glm".into()],
             ..endpoint("lyceum")
         };
+        let (url, head) = crate::testing::serve_json(CODEX_MODELS).await;
+        let codex = EndpointConfig {
+            base_url: url,
+            ..EndpointConfig::chatgpt(chatgpt)
+        };
         let providers = Providers::build(
-            vec![lyceum, EndpointConfig::chatgpt(chatgpt)],
+            vec![lyceum, codex],
             Vec::new(),
             "glm",
             reqwest::Client::new(),
@@ -420,6 +430,18 @@ mod tests {
             Some((0, "glm")),
             "still lyceum"
         );
+
+        let (head, _) = head.await.expect("the list was asked");
+        let head = head.to_lowercase();
+        let lines: Vec<_> = head.lines().collect();
+        assert_eq!(lines[0], "get /models?client_version=999.0.0 http/1.1");
+        for header in [
+            "authorization: bearer access",
+            "chatgpt-account-id: account",
+            "originator: nth",
+        ] {
+            assert!(lines.contains(&header), "{header} in {head}");
+        }
     }
 
     #[tokio::test]

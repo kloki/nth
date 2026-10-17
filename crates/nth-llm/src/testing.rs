@@ -36,6 +36,13 @@ pub(crate) async fn serve_once(
     serve(200, "text/event-stream", body).await
 }
 
+/// As `serve_once`, but answering with a JSON body, as a list does.
+pub(crate) async fn serve_json(
+    body: &'static [u8],
+) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
+    serve(200, "application/json", body).await
+}
+
 /// As `serve_once`, but answering with a non-2xx `status` and a JSON body,
 /// as a refused request does.
 pub(crate) async fn serve_status(
