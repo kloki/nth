@@ -9,7 +9,7 @@ use nth_session::{
     subagent::SubagentId,
     work::{
         Item, Plan, Status,
-        outline::{CycleState, Guide, Kind, Outline, Row},
+        outline::{CycleState, Kind, Outline},
     },
 };
 use ratatui::{
@@ -19,7 +19,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, ScrollbarState},
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::{app::TabState, rich, spinner, theme};
 
@@ -152,27 +151,82 @@ impl WorkView {
         frame.render_widget(Paragraph::new(lines).scroll((top, 0)), area);
     }
 
-    /// The header, then the tree, every row wrapped to `width`.
+    /// The header and overview, then a block per cycle, every row behind
+    /// a bar in the colour of what it belongs to and wrapped to `width`.
     fn lines(&self, place: &str, width: usize, live: &Live) -> Vec<Line<'static>> {
         let dim = theme::dim();
         let Some(plan) = self.plan.as_ref().filter(|plan| !plan.cycles.is_empty()) else {
-            return vec![Line::styled("No work plan yet.", dim)];
+            return theme::sections(vec![vec![Line::styled("No work plan yet.", dim)]]);
         };
         let outline = plan.outline();
-        let mut lines = vec![Line::styled(header(place, &outline, plan, live), dim)];
-        lines.push(Line::default());
-        let mut overview = false;
+        let mut overview = vec![
+            Line::styled(header(place, &outline, plan, live), dim),
+            Line::default(),
+        ];
+        let room = width.saturating_sub(usize::from(theme::BAR_WIDTH)).max(1);
+        let mut cycles: Vec<Vec<Line<'static>>> = Vec::new();
+        // The bar of the item a todo or note belongs to.
+        let mut item = theme::SECTION_COLOUR;
         for row in &outline.rows {
-            if matches!(row.kind, Kind::Cycle { .. }) && overview {
-                lines.push(Line::default());
-                overview = false;
+            match &row.kind {
+                // `plan.md` as written: its heading, then the rest, as markdown.
+                Kind::Title(title) => {
+                    overview.extend(rich::markdown(&format!("# {title}"), room).lines)
+                }
+                Kind::Goal(goal) => overview.extend(rich::markdown(goal, room).lines),
+                Kind::Cycle { state, .. } => {
+                    cycles.push(wrapped(&row.kind, width, cycle_colour(*state), 0, live));
+                }
+                Kind::Item(it) => {
+                    item = item_colour(it, live);
+                    push(&mut cycles, wrapped(&row.kind, width, item, ITEM, live));
+                }
+                Kind::Todo { .. } | Kind::Note(_) => {
+                    push(&mut cycles, wrapped(&row.kind, width, item, TODO, live));
+                }
             }
-            if matches!(row.kind, Kind::Title(_) | Kind::Goal(_)) {
-                overview = true;
-            }
-            lines.extend(wrapped(row, width, live));
         }
-        lines
+        if matches!(overview.last(), Some(line) if line.spans.is_empty()) {
+            overview.pop();
+        }
+        let mut blocks = theme::sections(vec![overview]);
+        blocks.push(Line::default());
+        blocks.extend(theme::join(cycles));
+        blocks
+    }
+}
+
+/// How far in an item sits under its cycle, and a todo or note under the
+/// item's name, past its mark.
+const ITEM: usize = theme::INDENT.len();
+const TODO: usize = ITEM + 2;
+
+/// Adds `lines` to the last cycle's block.
+fn push(cycles: &mut Vec<Vec<Line<'static>>>, lines: Vec<Line<'static>>) {
+    match cycles.last_mut() {
+        Some(cycle) => cycle.extend(lines),
+        None => cycles.push(lines),
+    }
+}
+
+/// A cycle's bar: green once closed, blue while current, grey ahead.
+fn cycle_colour(state: CycleState) -> Color {
+    match state {
+        CycleState::Closed => Color::Green,
+        CycleState::Current => Color::Blue,
+        CycleState::Upcoming => theme::SECTION_COLOUR,
+    }
+}
+
+/// An item's bar and mark: grey pending, yellow running or lost, magenta
+/// returned, green done, red failed.
+fn item_colour(item: &Item, live: &Live) -> Color {
+    match (&item.status, seen(item, live)) {
+        (_, Seen::Lost) | (Status::Running, _) => Color::Yellow,
+        (Status::Pending, _) => theme::SECTION_COLOUR,
+        (Status::Returned, _) => Color::Magenta,
+        (Status::Done, _) => Color::Green,
+        (Status::Failed | Status::Broken(_), _) => Color::Red,
     }
 }
 
@@ -197,48 +251,39 @@ fn header(place: &str, outline: &Outline, plan: &Plan, live: &Live) -> String {
     parts.join(" · ")
 }
 
-/// The guides in front of a row, and in front of its wrapped rest.
-fn guides(row: &Row) -> (String, String) {
-    let tree = &icons().tree;
-    let (mut first, mut rest) = (String::new(), String::new());
-    for guide in &row.guides {
-        let (here, after) = match guide {
-            Guide::Bar => (format!("{}  ", tree.bar), format!("{}  ", tree.bar)),
-            Guide::Blank => ("   ".to_string(), "   ".to_string()),
-            Guide::Tee => (
-                format!("{}{} ", tree.tee, tree.dash),
-                format!("{}  ", tree.bar),
-            ),
-            Guide::Elbow => (format!("{}{} ", tree.elbow, tree.dash), "   ".to_string()),
-        };
-        first.push_str(&here);
-        rest.push_str(&after);
-    }
-    // A todo or note sits under its item's name, past the item's mark.
-    if matches!(row.kind, Kind::Todo { .. } | Kind::Note(_)) {
-        first.push_str("  ");
-        rest.push_str("  ");
-    }
-    (first, rest)
-}
-
-fn wrapped(row: &Row, width: usize, live: &Live) -> Vec<Line<'static>> {
-    match &row.kind {
-        // `plan.md` as written: its heading, then the rest, as markdown.
-        Kind::Title(title) => return rich::markdown(&format!("# {title}"), width).lines,
-        Kind::Goal(goal) => return rich::markdown(goal, width).lines,
-        _ => {}
-    }
-    let (first, rest) = guides(row);
-    let room = width.saturating_sub(first.width()).max(1);
-    let content = Line::from(spans(&row.kind, live));
-    rich::wrap(content, room)
+/// `kind` as rows behind a `bar` bar, `indent` columns in, its wrapped
+/// rest under its text, past its mark.
+fn wrapped(
+    kind: &Kind,
+    width: usize,
+    bar: Color,
+    indent: usize,
+    live: &Live,
+) -> Vec<Line<'static>> {
+    let mut spans = spans(kind, live);
+    let mark = match kind {
+        Kind::Note(_) => Span::raw(""),
+        _ => spans.remove(0),
+    };
+    let hang = " ".repeat(mark.width());
+    let room = width
+        .saturating_sub(usize::from(theme::BAR_WIDTH) + indent + mark.width())
+        .max(1);
+    rich::wrap(Line::from(spans), room)
         .into_iter()
         .enumerate()
         .map(|(i, mut line)| {
-            let guide = if i == 0 { first.clone() } else { rest.clone() };
-            line.spans.insert(0, Span::styled(guide, theme::dim()));
-            line
+            let lead = match i {
+                0 => mark.clone(),
+                _ => Span::raw(hang.clone()),
+            };
+            let mut row = vec![
+                Span::styled(theme::BAR, Style::new().fg(bar)),
+                Span::raw(" ".repeat(indent)),
+                lead,
+            ];
+            row.append(&mut line.spans);
+            Line::from(row)
         })
         .collect()
 }
@@ -290,19 +335,23 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
     let colour = |colour| Style::new().fg(colour);
     let icons = icons();
     let seen = seen(item, live);
-    let (icon, icon_style) = match (&item.status, seen) {
-        (_, Seen::Lost) => (icons.interrupted, colour(Color::Yellow)),
+    let icon = match (&item.status, seen) {
+        (_, Seen::Lost) => icons.interrupted,
         (
             _,
             Seen::Live(LiveTask {
                 since: Some(since), ..
             }),
-        ) => (spinner::dot(since.elapsed()), colour(Color::Yellow)),
-        (Status::Running, _) => (icons.dot, colour(Color::Yellow)),
-        (Status::Pending, _) => (icons.work.pending, dim),
-        (Status::Returned, _) => (icons.done, colour(Color::Magenta)),
-        (Status::Done, _) => (icons.ok, colour(Color::Green)),
-        (Status::Failed | Status::Broken(_), _) => (icons.fail, colour(Color::Red)),
+        ) => spinner::dot(since.elapsed()),
+        (Status::Running, _) => icons.dot,
+        (Status::Pending, _) => icons.work.pending,
+        (Status::Returned, _) => icons.done,
+        (Status::Done, _) => icons.ok,
+        (Status::Failed | Status::Broken(_), _) => icons.fail,
+    };
+    let icon_style = match item.status {
+        Status::Pending => dim,
+        _ => colour(item_colour(item, live)),
     };
     let name = match item.status {
         Status::Pending => dim,
@@ -464,27 +513,42 @@ mod tests {
         assert_eq!(
             text(&lines),
             [
-                ".nth/work/s1 · 1/4 done · 1 running · 1 returned",
+                "▎ .nth/work/s1 · 1/4 done · 1 running · 1 returned",
+                "▎ ",
+                "▎ Retry",
+                "▎ Add retries with jitter to every",
+                "▎ client call.",
                 "",
-                "Retry",
-                "Add retries with jitter to every client",
-                "call.",
+                "▎ ✓ 1 scaffold  1/1",
+                "▎   ✓ trait  1/1",
                 "",
-                "✓ 1 scaffold  1/1",
-                "└─ ✓ trait  1/1",
-                "▸ 2 build  0/2",
-                "├─ ● http-retry  1/2  @general #3",
-                "│    ☒ wrap idempotent requests",
-                "│    ☐ cap",
-                "└─ ∎ docs  1/1  @explore #4 · returned",
-                "   completed",
-                "     ☒ write",
-                "◇ 3 verify  0/1",
-                "└─ ○ test  0/1",
+                "▎ ▸ 2 build  0/2",
+                "▎   ● http-retry  1/2  @general #3",
+                "▎     ☒ wrap idempotent requests",
+                "▎     ☐ cap",
+                "▎   ∎ docs  1/1  @explore #4 · returned",
+                "▎     completed",
+                "▎     ☒ write",
+                "",
+                "▎ ◇ 3 verify  0/1",
+                "▎   ○ test  0/1",
             ]
         );
         assert_eq!(view.label(), "work 1/4");
         assert_eq!(view.state(&live), TabState::Working);
+
+        // Each row's bar is the state of what it belongs to.
+        let bar = |row: usize| lines[row].spans[0].style.fg;
+        let grey = Some(theme::SECTION_COLOUR);
+        assert_eq!(bar(0), grey, "the header");
+        assert_eq!(bar(6), Some(Color::Green), "a closed cycle");
+        assert_eq!(bar(7), Some(Color::Green), "a done item");
+        assert_eq!(bar(9), Some(Color::Blue), "the current cycle");
+        assert_eq!(bar(10), Some(Color::Yellow), "a running item");
+        assert_eq!(bar(12), Some(Color::Yellow), "and its todos");
+        assert_eq!(bar(13), Some(Color::Magenta), "a returned item");
+        assert_eq!(bar(17), grey, "an upcoming cycle");
+        assert_eq!(bar(18), grey, "a pending item");
     }
 
     #[test]
@@ -497,16 +561,15 @@ mod tests {
         let lines = view.lines("w", 40, &Live::new());
         let text = text(&lines);
 
-        assert_eq!(text[2], "Retry", "the title as a heading");
+        assert_eq!(text[2], "▎ Retry", "the title as a heading");
         assert!(
-            lines[2]
-                .spans
+            lines[2].spans[1..]
                 .iter()
                 .filter(|s| !s.content.is_empty())
                 .all(|s| s.style.add_modifier.contains(Modifier::BOLD))
         );
-        assert_eq!(text[3], "• step one");
-        assert_eq!(text[4], "• step two", "a list, its bold rendered");
+        assert_eq!(text[3], "▎ • step one");
+        assert_eq!(text[4], "▎ • step two", "a list, its bold rendered");
         assert_eq!(text[5], "", "a blank before the first cycle");
     }
 
@@ -525,8 +588,8 @@ mod tests {
 
         let lines = text(&view.lines("w", 60, &other));
 
-        assert_eq!(lines[0], "w · 1/4 done · 1 returned · 1 lost");
-        assert_eq!(lines[8], "├─ ⏹ http-retry  1/2  @general #3 · lost");
+        assert_eq!(lines[0], "▎ w · 1/4 done · 1 returned · 1 lost");
+        assert_eq!(lines[9], "▎   ⏹ http-retry  1/2  @general #3 · lost");
         assert_eq!(view.state(&other), TabState::NeedsYou);
         assert_eq!(view.state(&Live::new()), TabState::NeedsYou);
     }

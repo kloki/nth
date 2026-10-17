@@ -154,32 +154,35 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles of items worked on in parallel, one subagent an item. The model writes items with `work_item`, puts subagents on them with `work_assign`, and closes them with `work_close`; nothing moves on by itself. The tab opens without being shown once there is a plan, and stays while there is one.
 
 ```
-.nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+▎ .nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+▎
+▎ Retry for the fetch client
+▎ Add retries with jitter to every client call.
 
-Retry for the fetch client
-Add retries with jitter to every client call.
+▎ ✓ 1 scaffold  2/2
+▎   ✓ client-trait  3/3
+▎   ✓ retry-config  2/2
 
-✓ 1 scaffold  2/2
-├─ ✓ client-trait  3/3
-└─ ✓ retry-config  2/2
-▸ 2 implement  1/3
-├─ ✓ backoff  4/4
-├─ ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
-│    ☒ wrap idempotent requests
-│    ☐ cap at 5 tries
-└─ ∎ docs  3/3  @explore #4 · returned completed
-     ☒ write the section
-◇ 3 verify  0/2
-├─ ○ integration-test  0/4
-└─ ○ changelog  0/1
+▎ ▸ 2 implement  1/3
+▎   ✓ backoff  4/4
+▎   ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
+▎     ☒ wrap idempotent requests
+▎     ☐ cap at 5 tries
+▎   ∎ docs  3/3  @explore #4 · returned completed
+▎     ☒ write the section
+
+▎ ◇ 3 verify  0/2
+▎   ○ integration-test  0/4
+▎   ○ changelog  0/1
 ```
 
 - **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
+- **Bars.** Every row has the chat's `▎` bar, coloured by the state of what it belongs to, so the plan's progress reads down the left edge. The header and overview are one block with a grey (bright black) bar; then a block per cycle, a bare blank line between them. A cycle's row carries the cycle's colour, an item's row and its todos and note the item's.
 - **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
 - **Overview.** `plan.md` rendered as markdown — its first heading, then the rest — when the model wrote one.
-- **Cycles.** `✓` green once every item is closed, `▸` blue for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim for the ones after it. Closed items over all follow.
-- **Items.** Behind tree guides: `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
-- **Todos.** Under the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
+- **Cycles.** `✓` and a green bar once every item is closed, `▸` and a blue bar for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim with a grey bar for the ones after it. Closed items over all follow.
+- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
+- **Todos.** Under the item's name, behind its bar, for the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
 - **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
 - **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
@@ -188,7 +191,7 @@ Add retries with jitter to every client call.
 - **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
 - **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.
 - **The subagents.** Each has its usual tab, named `work <cycle>/<item>`. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (600) before the item returns failed or timed out.
-- **Outside the TUI.** `nth work [<session>]` prints the same tree for a saved session, `--json` for the plan as data.
+- **Outside the TUI.** `nth work [<session>]` prints the plan of a saved session as a tree, with guides in place of the bars, `--json` for the plan as data.
 
 ## Diagnostics
 
