@@ -14,7 +14,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/kloki/nth/releases/late
 
 ## Optional
 
-nth integrates with these tools, and uses them automatically when they are installed:
+`nth` integrates with these tools, and uses them automatically when they are installed:
 
 - [rtk](https://github.com/rtk-ai/rtk) compresses the output of common commands for the model.
 - [agent-browser](https://github.com/vercel-labs/agent-browser) drives a browser from the `browser` skill.
@@ -34,13 +34,15 @@ nth init
 
 Only Codex is supported.
 
-- run `/connect` in nth
+- run `/connect` in `nth`
 
 # Features
 
 ## Tabbed view
 
-nth supports a tabbed view for main chat, plan, subagents, etc. The agent is aware of this and can control it.
+- `nth` supports a tabbed view for main chat, plan, subagents, etc w
+- The agent is aware of this and can control it
+- automatically swap switch to split view if therre is room
 
 ## Plan view
 
@@ -50,14 +52,14 @@ nth supports a tabbed view for main chat, plan, subagents, etc. The agent is awa
 
 ## Worktree
 
-- nth will actually use worktrees when making features
-- `/setup-worktrees` to improve it for your project
+- `nth` will actually use worktrees when making features
+- `/setup-worktrees` to optimize it for your project
 
 ## Workplan
 
 - Complete a task in cycles
 - The model will dynamically update the plan based on its findings
-- nth will automatically use it when needed
+- `nth` will automatically use it when needed
 
 ## Profiles
 
