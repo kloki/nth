@@ -7,6 +7,7 @@ use nth_lsp::Lsp;
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -17,6 +18,10 @@ pub struct ReadConfig {
     /// Output stops before this many bytes, whatever the `limit`.
     pub max_bytes: usize,
 }
+
+/// The largest image file read: past it the file is refused before it is
+/// read whole, as no screenshot or photo comes near.
+const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
 
 /// Wraps an instruction file attached to what was read.
 const INSTRUCTION: &str = include_str!("instruction.md");
@@ -94,6 +99,14 @@ impl Tool for Read {
             let (mut content, dir) = if meta.is_dir() {
                 (list_dir(&path, offset, limit).await?, path)
             } else {
+                if meta.len() > MAX_IMAGE_FILE && image::sniff(&head(&path).await?).is_some() {
+                    return Err(format!(
+                        "cannot show {}: the image file is {} MiB, over the {} MiB the read tool shows",
+                        path.display(),
+                        meta.len() / (1024 * 1024),
+                        MAX_IMAGE_FILE / (1024 * 1024)
+                    ));
+                }
                 let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
                 // An image is shown, not read as text, and has no language
                 // server or instructions beside it to speak of.
@@ -134,6 +147,19 @@ impl Tool for Read {
         }
         .boxed()
     }
+}
+
+/// The first bytes of `path`, enough to tell an image by.
+async fn head(path: &Path) -> Result<Vec<u8>, String> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut head = Vec::with_capacity(16);
+    file.take(16)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(head)
 }
 
 async fn list_dir(path: &Path, offset: usize, limit: usize) -> ToolResult {
