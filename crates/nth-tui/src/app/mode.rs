@@ -108,14 +108,13 @@ impl App {
             .unwrap_or_else(|| self.subagent_llm())
     }
 
-    /// What `target` runs on now; for all, the current mode's.
+    /// What `target` runs on now.
     pub(super) fn llm_of(&self, target: Target) -> Llm {
         match target {
             Target::Plan => self.llm(Mode::Plan),
             Target::Act => self.llm(Mode::Act),
             Target::Subagent => self.subagent_llm(),
             Target::Clerk => self.clerk_llm(),
-            Target::All => self.llm(self.mode),
         }
     }
 
@@ -130,16 +129,6 @@ impl App {
             }
             Target::Clerk => {
                 self.mode_llms.clerk = Some(llm);
-                return;
-            }
-            Target::All => {
-                self.mode_llms = ModeLlms {
-                    plan: llm.clone(),
-                    act: llm.clone(),
-                    subagent: Some(llm.clone()),
-                    clerk: Some(llm),
-                };
-                self.load_llm();
                 return;
             }
         };
