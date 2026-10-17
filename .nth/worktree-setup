@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Seed a new worktree with the main checkout's compiled dependencies, so
+# cargo reuses them instead of rebuilding the world. Cargo's registry
+# sources live in the shared CARGO_HOME, so the copied fingerprints stay
+# valid: only the worktree's own crates need building.
+set -euo pipefail
+
+base=${NTH_WORKTREE_BASE:?NTH_WORKTREE_BASE is not set}
+worktree=${NTH_WORKTREE_PATH:?NTH_WORKTREE_PATH is not set}
+source_dir=$base/target
+
+# A checkout that was never built has nothing to share.
+if [ ! -d "$source_dir/debug/deps" ]; then
+    echo "no compiled target in $source_dir; nothing to seed"
+    exit 0
+fi
+
+# Never touch a target the worktree already has.
+if [ -e "$worktree/target/debug/deps" ]; then
+    echo "$worktree/target already exists; leaving it alone"
+    exit 0
+fi
+
+echo "seeding $worktree/target from $source_dir"
+mkdir -p "$worktree/target/debug"
+
+# -a preserves mtimes, which cargo's fingerprints compare; --reflink=auto
+# shares blocks where the filesystem supports it and copies elsewhere.
+copy() {
+    [ -e "$1" ] || return 0
+    cp -a --reflink=auto "$1" "$2" 2>/dev/null || cp -a "$1" "$2"
+}
+
+copy "$source_dir/CACHEDIR.TAG" "$worktree/target/"
+copy "$source_dir/.rustc_info.json" "$worktree/target/"
+copy "$source_dir/debug/deps" "$worktree/target/debug/"
+copy "$source_dir/debug/build" "$worktree/target/debug/"
+copy "$source_dir/debug/.fingerprint" "$worktree/target/debug/"
+
+echo "seeded $(du -sh "$worktree/target" | cut -f1) of compiled dependencies"
