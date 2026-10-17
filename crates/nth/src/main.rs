@@ -227,6 +227,39 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     Ok((session, providers))
 }
 
+/// Sizes the session's compaction to its model: the `[context]` policy,
+/// then the context window and output limit the provider's listing names
+/// for the session's model. Both front-ends call it once the model is
+/// final. A listing that fails changes no limits, so a fresh session keeps
+/// both unknown and nothing compacts on its own.
+pub(crate) async fn apply_context(session: &mut Session, config: &Config, provider: &dyn Provider) {
+    session.compaction = config.context;
+    set_model_limits(session, provider).await;
+}
+
+/// Sizes the session's compaction to its model: the context window and
+/// output limit the providers' listing names for it. A listing that fails
+/// changes nothing, so a fresh session keeps both limits unknown and
+/// nothing compacts on its own.
+pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
+    let Ok(listing) = provider.models().await else {
+        return;
+    };
+    if let Some((context_window, max_output)) = limits(&listing, &session.model) {
+        session.set_limits(context_window, max_output);
+    }
+}
+
+/// The context window and output limit the listing gives `model`; `None`
+/// when the listing does not name it.
+fn limits(listing: &Listing, model: &str) -> Option<(Option<u64>, Option<u64>)> {
+    listing
+        .models
+        .iter()
+        .find(|info| info.id == model)
+        .map(|info| (info.context, info.output))
+}
+
 /// Any one of the models the providers list.
 async fn random_model(providers: &Providers) -> Result<String> {
     let listing = providers
@@ -370,7 +403,8 @@ async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Failed, ModelInfo, Origin};
+    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{BoxError, Failed, ModelInfo, Origin, Request, StreamEvent};
 
     use super::*;
 
@@ -384,6 +418,129 @@ mod tests {
             origin: None,
             cost: None,
         }
+    }
+
+    #[test]
+    fn limits_come_from_the_listing_entry_of_the_model() {
+        let listed = |id: &str, context: Option<u64>, output: Option<u64>| ModelInfo {
+            context,
+            output,
+            ..model(id)
+        };
+        let listing = Listing::from(vec![
+            listed("zen/a", Some(200_000), Some(64_000)),
+            listed("go/c", Some(1_000_000), None),
+        ]);
+
+        assert_eq!(
+            limits(&listing, "zen/a"),
+            Some((Some(200_000), Some(64_000)))
+        );
+        assert_eq!(limits(&listing, "go/c"), Some((Some(1_000_000), None)));
+        assert_eq!(limits(&listing, "not/listed"), None);
+    }
+
+    /// A provider whose listing names `models`; its stream is never asked
+    /// for, as `set_model_limits` only lists.
+    struct Listed(Vec<ModelInfo>);
+
+    impl Provider for Listed {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async move { Ok(Listing::from(self.0.clone())) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    /// A provider whose listing fails, as an unreachable endpoint's does.
+    struct Unlistable;
+
+    impl Provider for Unlistable {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Err("no /models".into()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    fn listed(id: &str, context: Option<u64>, output: Option<u64>) -> ModelInfo {
+        ModelInfo {
+            context,
+            output,
+            ..model(id)
+        }
+    }
+
+    #[tokio::test]
+    async fn set_model_limits_puts_the_listed_window_and_output_on_the_session() {
+        let provider = Listed(vec![listed("zen/a", Some(200_000), Some(64_000))]);
+        let mut session = Session::new("zen/a", "/repo".into());
+
+        set_model_limits(&mut session, &provider).await;
+
+        assert_eq!(session.context_window, Some(200_000));
+        assert_eq!(session.max_output, Some(64_000));
+    }
+
+    #[tokio::test]
+    async fn set_model_limits_leaves_unknown_or_unlisted_models_alone() {
+        // Neither a model the listing does not name...
+        let unlisted = Listed(vec![listed("zen/b", Some(1_000), Some(100))]);
+        let mut session = Session::new("zen/a", "/repo".into());
+        set_model_limits(&mut session, &unlisted).await;
+        assert_eq!(session.context_window, None);
+        assert_eq!(session.max_output, None);
+
+        // ...nor a listing that fails changes what was already known: a
+        // fresh session keeps both unknown and nothing compacts on its own.
+        let mut resumed = Session::new("zen/a", "/repo".into());
+        resumed.set_limits(Some(100_000), Some(8_000));
+        set_model_limits(&mut resumed, &Unlistable).await;
+        assert_eq!(resumed.context_window, Some(100_000));
+        assert_eq!(resumed.max_output, Some(8_000));
+    }
+
+    #[tokio::test]
+    async fn a_context_config_reaches_a_session_with_the_listed_limits() {
+        // Through the helper both `chat::run` and `run::run` call, so the
+        // wiring they share is what this exercises.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+            model = "zen/a"
+
+            [context]
+            auto = false
+            reserved = 30000
+            preserve = 1000
+            "#,
+        )
+        .expect("writes");
+        let config = Config::load(Some(&path)).expect("parses");
+        let provider = Listed(vec![listed("zen/a", Some(200_000), Some(64_000))]);
+        let mut session = Session::new("zen/a", "/repo".into());
+
+        apply_context(&mut session, &config, &provider).await;
+
+        assert!(!session.compaction.auto);
+        assert_eq!(session.compaction.reserved, 30_000);
+        assert_eq!(session.compaction.preserve, 1_000);
+        assert_eq!(session.context_window, Some(200_000));
+        assert_eq!(session.max_output, Some(64_000));
     }
 
     #[test]

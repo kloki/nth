@@ -7,6 +7,21 @@ use crate::{Message, ToolCall, ToolSpec};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// A provider refused a request because the conversation no longer fits the
+/// model's context window. The loop downcasts a failed step's error to this
+/// to compact and replay the prompt instead of failing the turn; the wires
+/// produce it in a later change.
+#[derive(Debug)]
+pub struct ContextOverflow;
+
+impl std::fmt::Display for ContextOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the conversation exceeds the model's context window")
+    }
+}
+
+impl std::error::Error for ContextOverflow {}
+
 /// What a provider says about an error it produced: whether another attempt
 /// could work, and the server's `Retry-After` when it sent one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

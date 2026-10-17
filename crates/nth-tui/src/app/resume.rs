@@ -84,6 +84,7 @@ impl App {
     /// working directory, so the paths it already talked about still hold.
     pub(super) fn resume(&mut self, mut session: Session) {
         session.max_steps = self.max_steps;
+        session.compaction = self.compaction;
         self.context = session.context().clone();
         self.session_since = session.created_at;
         self.session_id = session.id;
@@ -137,6 +138,11 @@ mod tests {
         }));
         store.save(&saved).await.expect("saves");
         let mut app = app().with_store(store);
+        let configured = nth_protocol::Compaction {
+            auto: false,
+            ..nth_protocol::Compaction::default()
+        };
+        app.compaction = configured;
 
         app.prompt.insert_str("/resume");
         app.apply(Action::Submit);
@@ -152,6 +158,11 @@ mod tests {
         assert_eq!(app.cwd, std::path::Path::new("/elsewhere"));
         assert_eq!(app.place, "/elsewhere");
         assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/added")]);
+        assert_eq!(
+            app.session.as_ref().expect("idle").compaction,
+            configured,
+            "the resumed session follows today's [context]"
+        );
         let entries: Vec<_> = app.chat.transcript.entries().cloned().collect();
         assert_eq!(
             entries,

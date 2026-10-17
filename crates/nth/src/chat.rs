@@ -33,6 +33,10 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
             session.set_model(model);
         }
     }
+    // The configured compaction policy; the chat takes the limits from its
+    // own listing when a turn starts, so opening it waits on no endpoint.
+    // A resumed session keeps the limits it saved until then.
+    session.compaction = config.context;
     let llm = |(model, effort): (String, Effort)| Llm {
         model: provider.qualify(&model),
         effort,

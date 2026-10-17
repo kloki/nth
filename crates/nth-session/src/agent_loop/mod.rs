@@ -5,6 +5,7 @@
 //! the model what was sent while it worked `steer`.
 
 mod call;
+mod compact;
 mod doom_loop;
 mod repair;
 mod steer;
@@ -17,13 +18,14 @@ use std::{collections::HashMap, time::Duration};
 pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Message, Provider, Tool, ToolContext,
+    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
+    ToolContext, Usage,
 };
 use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::Spend;
+use crate::{Compaction, Spend};
 
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
@@ -61,10 +63,17 @@ pub enum Error {
     /// started.
     #[error("could not run the skill: {0}")]
     Skill(String),
+    /// The conversation cannot be shrunk below the window: the summary
+    /// request was refused as too long even with its oldest exchanges
+    /// dropped, a step overflowed again right after a compaction, or
+    /// compacting changed nothing while the session was still over.
+    #[error("cannot compact: the conversation cannot be shrunk below the context window")]
+    TooBigToCompact,
 }
 
 /// Where a turn's requests go: which model at what effort, on behalf of
-/// which session, and how many of them the turn may make.
+/// which session, how many of them the turn may make, and how it keeps
+/// itself inside the model's window.
 #[derive(Debug, Clone, Copy)]
 pub struct Route<'a> {
     pub model: &'a str,
@@ -73,6 +82,13 @@ pub struct Route<'a> {
     /// The session that started this one, for a subagent.
     pub parent_session_id: Option<&'a str>,
     pub max_steps: usize,
+    /// The model's context window, when the front-end knows it; without it
+    /// nothing compacts on its own.
+    pub context_window: Option<u64>,
+    /// The model's output limit, for the reserved buffer's default.
+    pub max_output: Option<u64>,
+    /// How the session compacts, from its own config.
+    pub compaction: Compaction,
 }
 
 /// One user turn: where its requests go, what runs its tool calls, and
@@ -89,6 +105,13 @@ pub struct Turn<'a> {
     /// What the requests used, counted as they report it, so a turn that
     /// fails or is interrupted still counts what it spent.
     pub spend: &'a mut Spend,
+    /// What the last finished reply reported it used, the automatic
+    /// compaction's trigger: seeded from the session's own, so a resumed
+    /// session compacting before its first request knows how full the
+    /// window was, and written back on every exit. It is one reply's
+    /// usage, not the turn's sum, whose input counts every step's whole
+    /// history over again.
+    pub last_usage: &'a mut Option<Usage>,
     /// Where progress goes.
     pub events: &'a mpsc::Sender<Event>,
     pub cancel: &'a CancellationToken,
@@ -100,8 +123,18 @@ impl Turn<'_> {
     ///
     /// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
     /// `messages` valid to continue from: partial text is kept, and every
-    /// tool call has a result.
+    /// tool call has a result. The last reply's usage is written back
+    /// whatever the outcome, so even a failed or interrupted turn leaves
+    /// the session knowing how full its window was.
     pub async fn run(mut self) -> Result<(), Error> {
+        let mut last_usage = *self.last_usage;
+        let result = self.step_loop(&mut last_usage).await;
+        *self.last_usage = last_usage;
+        result
+    }
+
+    /// The step loop [`Turn::run`] wraps, with the usage the trigger reads.
+    async fn step_loop(&mut self, last_usage: &mut Option<Usage>) -> Result<(), Error> {
         let specs: Vec<_> = self.tools.iter().map(|t| t.spec()).collect();
         // Looked up by name once per call; a spec is too costly to build for
         // every lookup.
@@ -114,9 +147,31 @@ impl Turn<'_> {
         // only calls made since the user last spoke.
         let start = self.messages.len();
         let max_steps = self.route.max_steps;
-        for step in 0..max_steps {
+        // A step is one request the model answers; compaction is
+        // maintenance for the next one, so it does not use a step and the
+        // last allowed step still gets its request.
+        let mut step = 0;
+        // One overflow per step is worth retrying under a summary; the
+        // same step overflowing again will not shrink. A later step may
+        // overflow afresh, as opencode's per-step recovery allows.
+        let mut replayed = false;
+        while step < max_steps {
+            // A conversation that reached the usable window is compacted
+            // before another request is sent — including one a resumed
+            // session left over it — and one compacting cannot get under
+            // the window stops the turn rather than summarizing every step.
+            if self.compaction_due(*last_usage) {
+                if !self.compact().await? {
+                    return Err(Error::TooBigToCompact);
+                }
+                *last_usage = None;
+                if self.still_over_the_window() {
+                    return Err(Error::TooBigToCompact);
+                }
+                continue;
+            }
             let last = step + 1 == max_steps;
-            let reply = match self.stream_step(last, &specs).await {
+            let reply = match self.stream_step(last, &specs, last_usage).await {
                 Ok(reply) => reply,
                 Err(Stop::Cancelled(partial)) => {
                     if !partial.text.is_empty() || !partial.reasoning.is_empty() {
@@ -124,8 +179,23 @@ impl Turn<'_> {
                     }
                     return Err(Error::Interrupted);
                 }
-                Err(Stop::Failed(error)) => return Err(Error::Provider(error)),
+                Err(Stop::Failed(error)) => {
+                    // The provider refused the conversation as too long:
+                    // summarize it and send the step again from the
+                    // checkpoint, which carries the latest exchange.
+                    if error.downcast_ref::<ContextOverflow>().is_some() {
+                        if replayed || !self.compact().await? {
+                            return Err(Error::TooBigToCompact);
+                        }
+                        replayed = true;
+                        *last_usage = None;
+                        continue;
+                    }
+                    return Err(Error::Provider(error));
+                }
             };
+            step += 1;
+            replayed = false;
 
             if reply.text.trim().is_empty() && reply.tool_calls.is_empty() {
                 // Reasoning alone is kept, as an interrupted reply's is; an

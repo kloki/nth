@@ -8,7 +8,7 @@ use std::{
 use nth_context::Context;
 use nth_protocol::{
     AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, Tool, ToolCall,
-    ToolContext, Workdir, Writable,
+    ToolContext, Usage, Workdir, Writable,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
+    Compaction, DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
     agent_loop::{failed, run_call},
     plan::{self, Approver},
     subagent, system_prompt, work,
@@ -69,6 +69,27 @@ pub struct Session {
     /// front-end hands them over. Sessions saved before it load with none.
     #[serde(default)]
     pub usage: Ledger,
+    /// The tokens the last reply reported it used, so a resumed session
+    /// still says how full the window was and compacts before its first
+    /// request when it is over; sessions saved before it load with none.
+    /// Cleared by a compaction, whose checkpoint is smaller than what it
+    /// replaced.
+    #[serde(default)]
+    pub last_usage: Option<Usage>,
+    /// How the session keeps itself inside the model's window. Comes from
+    /// the config's `[context]`, not the save, so a resumed session follows
+    /// today's config, as `max_steps` does.
+    #[serde(skip)]
+    pub compaction: Compaction,
+    /// The model's context window, when the front-end knows it; without it
+    /// nothing compacts on its own. Saved, so a resumed session keeps the
+    /// window its model was listed with.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// The model's maximum output tokens, for the reserved buffer's
+    /// default; `None` falls back to 20k.
+    #[serde(default)]
+    pub max_output: Option<u64>,
     /// Model requests a turn may make before it gives up. Comes from the
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
@@ -118,6 +139,10 @@ impl Session {
             messages,
             loaded_instructions: BTreeSet::new(),
             usage: Ledger::default(),
+            last_usage: None,
+            compaction: Compaction::default(),
+            context_window: None,
+            max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
             subagent: false,
             parent: None,
@@ -217,6 +242,14 @@ impl Session {
         self.rewrite_system_prompt();
     }
 
+    /// The limits the model was listed with: its context window and output
+    /// limit, which size the compaction trigger. The front-end sets them
+    /// whenever it knows them, so they follow a model switch.
+    pub fn set_limits(&mut self, context_window: Option<u64>, max_output: Option<u64>) {
+        self.context_window = context_window;
+        self.max_output = max_output;
+    }
+
     fn rewrite_system_prompt(&mut self) {
         let prompt = self.system_prompt();
         if let Some(first @ Message::System(_)) = self.messages.first_mut() {
@@ -300,43 +333,29 @@ impl Session {
             _ => self.messages.push(Message::User(text)),
         }
         self.updated_at = SystemTime::now();
-        // The system prompt's files count as loaded, so read never repeats them.
-        let mut loaded = self.loaded_instructions.clone();
-        loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
-        let ctx = ToolContext {
-            extra_dirs: self.extra_dirs.clone(),
-            instructions: Arc::new(Mutex::new(loaded)),
-            context: self.context.clone(),
-            asker: front_end.asker.clone(),
-            screen: front_end.screen.clone(),
-            monitors: front_end.monitors.clone(),
-            inbox: front_end.inbox.clone(),
-            writable: match self.mode {
-                Mode::Plan => Writable::Only(plan_path),
-                Mode::Act => Writable::Any,
-            },
-            llm: Llm {
-                model: self.model.clone(),
-                effort: self.effort,
-            },
-            workdir: Workdir::new(self.origin.clone()),
-            session: self.id.to_string(),
-            ..ToolContext::new(self.cwd.clone())
-        };
+        let ctx = self.tool_context(front_end);
         let mut spend = Spend::new(&self.model, None);
+        let session_id = self.id.to_string();
+        let parent_session_id = self.parent.map(|p| p.to_string());
         let result = Turn {
             provider,
             route: Route {
                 model: &self.model,
                 effort: self.effort,
-                session_id: &self.id.to_string(),
-                parent_session_id: self.parent.map(|p| p.to_string()).as_deref(),
+                session_id: &session_id,
+                parent_session_id: parent_session_id.as_deref(),
                 max_steps: self.max_steps,
+                // The window and the output limit are the front-end's to
+                // fill; without them nothing compacts on its own.
+                context_window: self.context_window,
+                max_output: self.max_output,
+                compaction: self.compaction,
             },
             tools,
             ctx: &ctx,
             messages: &mut self.messages,
             spend: &mut spend,
+            last_usage: &mut self.last_usage,
             events,
             cancel,
         }
@@ -354,6 +373,87 @@ impl Session {
             self.set_cwd(cwd, ctx.workdir.origin());
         }
         result
+    }
+
+    /// What the model's tools and the front-end reach this session through.
+    fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
+        // The system prompt's files count as loaded, so read never repeats them.
+        let mut loaded = self.loaded_instructions.clone();
+        loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
+        ToolContext {
+            extra_dirs: self.extra_dirs.clone(),
+            instructions: Arc::new(Mutex::new(loaded)),
+            context: self.context.clone(),
+            asker: front_end.asker.clone(),
+            screen: front_end.screen.clone(),
+            monitors: front_end.monitors.clone(),
+            inbox: front_end.inbox.clone(),
+            writable: match self.mode {
+                Mode::Plan => Writable::Only(self.plan_path()),
+                Mode::Act => Writable::Any,
+            },
+            llm: Llm {
+                model: self.model.clone(),
+                effort: self.effort,
+            },
+            context_window: self.context_window,
+            max_output: self.max_output,
+            compaction: self.compaction,
+            workdir: Workdir::new(self.origin.clone()),
+            session: self.id.to_string(),
+            ..ToolContext::new(self.cwd.clone())
+        }
+    }
+
+    /// Runs one compaction outside a turn: everything the requests would
+    /// not keep verbatim becomes a summary they start from. The `/compact`
+    /// command and the loop's overflow recovery share [`Turn::compact`];
+    /// this is the manual entry.
+    pub async fn compact(
+        &mut self,
+        provider: &dyn Provider,
+        tools: &[Box<dyn Tool>],
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        let ctx = self.tool_context(front_end);
+        let mut spend = Spend::new(&self.model, None);
+        let session_id = self.id.to_string();
+        let parent_session_id = self.parent.map(|p| p.to_string());
+        // A compaction is not a turn; its usage is the summary request's,
+        // not the conversation's size, so it is never the trigger's.
+        let mut last_usage = None;
+        let result = Turn {
+            provider,
+            route: Route {
+                model: &self.model,
+                effort: self.effort,
+                session_id: &session_id,
+                parent_session_id: parent_session_id.as_deref(),
+                max_steps: self.max_steps,
+                context_window: self.context_window,
+                max_output: self.max_output,
+                compaction: self.compaction,
+            },
+            tools,
+            ctx: &ctx,
+            messages: &mut self.messages,
+            spend: &mut spend,
+            last_usage: &mut last_usage,
+            events,
+            cancel,
+        }
+        .compact()
+        .await;
+        if matches!(result, Ok(true)) {
+            // The conversation the old usage described is gone; keeping it
+            // would fire the trigger again at once.
+            self.last_usage = None;
+        }
+        self.usage.record(spend);
+        self.updated_at = SystemTime::now();
+        result.map(|_| ())
     }
 }
 
@@ -425,7 +525,9 @@ fn default_max_steps() -> usize {
 #[cfg(test)]
 mod tests {
     use futures::{future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{AssistantMessage, BoxError, Listing, Request, StreamEvent, ToolCall};
+    use nth_protocol::{
+        AssistantMessage, BoxError, Listing, Request, StreamEvent, ToolCall, Usage,
+    };
 
     use super::*;
     use crate::agent_loop::INTERRUPTED;
@@ -946,12 +1048,143 @@ mod tests {
                 call_id: "1".into(),
                 content: "hi".into(),
             },
+            Message::Compaction {
+                summary: "so far".into(),
+                recent: "[User]: go".into(),
+            },
         ]);
+        session.compaction.auto = false;
+        session.compaction.reserved = 1_000;
+        session.compaction.preserve = 2_000;
+        session.last_usage = Some(Usage {
+            input: 10,
+            output: 2,
+            ..Usage::default()
+        });
+
+        let json = serde_json::to_string(&session).expect("serializes");
+        let mut back: Session = serde_json::from_str(&json).expect("deserializes");
+
+        assert_eq!(
+            back.compaction,
+            Compaction::default(),
+            "the policy is the config's, never the save's"
+        );
+        back.compaction = session.compaction;
+        assert_eq!(back, session);
+    }
+
+    #[test]
+    fn a_save_from_before_compaction_loads_with_the_defaults() {
+        let session = Session::new("glm-5.3", ".".into());
+        let mut json = serde_json::to_value(&session).expect("serializes");
+        let fields = json.as_object_mut().expect("an object");
+        fields.remove("last_usage");
+        fields.remove("compaction");
+        fields.remove("context_window");
+        fields.remove("max_output");
+
+        let old: Session = serde_json::from_value(json).expect("deserializes");
+
+        assert_eq!(old.last_usage, None);
+        assert_eq!(old.compaction, Compaction::default());
+        assert_eq!(old.context_window, None);
+        assert_eq!(old.max_output, None);
+    }
+
+    #[test]
+    fn limits_are_set_and_saved() {
+        let mut session = Session::new("glm-5.3", ".".into());
+
+        session.set_limits(Some(200_000), Some(64_000));
 
         let json = serde_json::to_string(&session).expect("serializes");
         let back: Session = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(back.context_window, Some(200_000));
+        assert_eq!(back.max_output, Some(64_000));
+    }
 
-        assert_eq!(back, session);
+    #[tokio::test]
+    async fn a_turn_records_the_usage_it_reported() {
+        use crate::agent_loop::tests::Scripted;
+
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        let provider = Scripted::new(vec![vec![
+            StreamEvent::TextDelta("ok".into()),
+            StreamEvent::Usage(Usage {
+                input: 100,
+                output: 10,
+                ..Usage::default()
+            }),
+        ]]);
+        let (tx, _rx) = mpsc::channel(64);
+
+        session
+            .prompt(
+                "go",
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+
+        assert_eq!(
+            session.last_usage,
+            Some(Usage {
+                input: 100,
+                output: 10,
+                ..Usage::default()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manual_compaction_summarizes_and_records_its_spend() {
+        use crate::agent_loop::tests::Scripted;
+
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        session.messages.push(Message::User("go".into()));
+        session.messages.push(Message::Assistant(AssistantMessage {
+            text: "done".into(),
+            ..AssistantMessage::default()
+        }));
+        let provider = Scripted::new(vec![vec![
+            StreamEvent::TextDelta("the summary".into()),
+            StreamEvent::Usage(Usage {
+                input: 50,
+                output: 5,
+                ..Usage::default()
+            }),
+        ]]);
+        let (tx, _rx) = mpsc::channel(64);
+
+        session
+            .compact(
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("compacts");
+
+        assert_eq!(
+            session.messages.last(),
+            Some(&Message::Compaction {
+                summary: "the summary".into(),
+                recent: "[Assistant]: done".into(),
+            })
+        );
+        assert_eq!(
+            session.last_usage, None,
+            "the summary request's own size is not the conversation's, and \
+             what was compacted is gone"
+        );
+        assert_eq!(session.usage.total().steps, 1, "the spend is still counted");
     }
 
     /// Says what it was asked to run, or never finishes on `hang`.

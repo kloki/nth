@@ -8,7 +8,21 @@ pub enum Message {
     System(String),
     User(String),
     Assistant(AssistantMessage),
-    ToolResult { call_id: String, content: String },
+    ToolResult {
+        call_id: String,
+        content: String,
+    },
+    /// A compaction, appended after the messages it covers: the summary of
+    /// the older ones and the newest kept as text. The history is marked,
+    /// never rewritten, so the transcript keeps the original messages; a
+    /// request starts at the last marker as one checkpoint user message
+    /// (see `nth-session`'s effective messages).
+    Compaction {
+        summary: String,
+        /// The newest messages it covers, kept verbatim as transcript
+        /// lines (tool results cut) rather than summarized; may be empty.
+        recent: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

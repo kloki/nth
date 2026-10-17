@@ -1,6 +1,7 @@
 //! Types every nth crate shares: messages, events and the traits that let a
 //! provider or tool be swapped without touching the session loop.
 
+mod compaction;
 mod event;
 mod inbox;
 mod message;
@@ -13,6 +14,7 @@ mod tool;
 mod workdir;
 mod writable;
 
+pub use compaction::Compaction;
 pub use event::{Event, retry_label};
 pub use inbox::{
     Inbox, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice,
@@ -25,8 +27,8 @@ pub use monitor::{
     log_dir as monitor_log_dir,
 };
 pub use provider::{
-    BoxError, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider, Request, Retry,
-    StreamEvent, Usage,
+    BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
+    Request, Retry, StreamEvent, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};

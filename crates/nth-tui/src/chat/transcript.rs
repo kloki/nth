@@ -19,6 +19,10 @@ use crate::{rich::Link, settings::ChatSettings};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
+    /// Where a compaction landed: the divider after what it covers. The
+    /// whole summary is kept; the chat draws its first line, and the model
+    /// and the clipboard take it whole.
+    Compacted(String),
     /// What a background monitor said, as the model got it.
     Notice(NoticeSummary),
     /// The plan as you edited it with ctrl+g.
@@ -129,6 +133,7 @@ impl Entry {
             Entry::User(text) | Entry::Answer(text) | Entry::TurnError(text) => Some(text.clone()),
             Entry::Reasoning { text, .. } => Some(text.clone()),
             Entry::Tool { output, .. } => Some(output.join("\n")),
+            Entry::Compacted(summary) => Some(summary.clone()),
             Entry::Notice(_)
             | Entry::PlanEdits(_)
             | Entry::Retry { .. }
@@ -163,6 +168,9 @@ impl Transcript {
                     Some((command, _)) => t.push_user(command.to_string()),
                     None => t.push_user(text.clone()),
                 },
+                Message::Compaction { summary, .. } => {
+                    t.push(Entry::Compacted(summary.clone()));
+                }
                 Message::Assistant(reply) => {
                     if !reply.reasoning.is_empty() {
                         t.push(Entry::Reasoning {
@@ -405,6 +413,10 @@ impl Transcript {
             Event::Notice(text) => {
                 self.close_reasoning();
                 self.push_user(text.clone());
+            }
+            Event::Compacted { summary } => {
+                self.close_reasoning();
+                self.push(Entry::Compacted(summary.clone()));
             }
         }
     }
@@ -875,6 +887,109 @@ pub(super) mod tests {
         assert!(
             matches!(&entries[..], [Entry::Tool { call, state: ToolState::Done, .. }] if call.name == "bash"),
             "{entries:?}"
+        );
+    }
+
+    #[test]
+    fn replay_shows_a_compaction_as_a_divider() {
+        let messages = [
+            Message::User("go".into()),
+            Message::Assistant(nth_protocol::AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            }),
+            Message::Compaction {
+                summary: "Objective: ship".into(),
+                recent: "[Assistant]: done".into(),
+            },
+            Message::User("next".into()),
+        ];
+
+        let t = Transcript::replay("/repo".into(), &messages);
+
+        assert_eq!(
+            t.entries().collect::<Vec<_>>(),
+            [
+                &Entry::User("go".into()),
+                &Entry::Answer("done".into()),
+                &Entry::Compacted("Objective: ship".into()),
+                &Entry::User("next".into()),
+            ],
+            "the divider follows what it covers"
+        );
+    }
+
+    #[tokio::test]
+    async fn replaying_a_saved_compacted_session_shows_the_divider_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = nth_session::Store::at(dir.path());
+        let mut session = nth_session::Session::new("glm", "/repo".into());
+        session.messages.push(Message::User("go".into()));
+        session
+            .messages
+            .push(Message::Assistant(nth_protocol::AssistantMessage {
+                text: "done".into(),
+                ..Default::default()
+            }));
+        session.messages.push(Message::Compaction {
+            // The model may open with blanks and answer in markdown.
+            summary: "\n\n## Findings\n\n- one\n- two".into(),
+            recent: String::new(),
+        });
+        session.messages.push(Message::User("next".into()));
+        store.save(&session).await.expect("saves");
+        let saved = store.load(session.id).await.expect("loads");
+
+        let mut t = Transcript::replay("/repo".into(), &saved.messages);
+
+        assert_eq!(
+            t.entries().nth(2),
+            Some(&Entry::Compacted("\n\n## Findings\n\n- one\n- two".into())),
+            "the save round-trips the marker and the replay shows it"
+        );
+        let total = t.layout(60, ChatSettings::default());
+        assert_eq!(
+            text(&t.visible(0, total)),
+            [
+                "▎ go",
+                "",
+                "▎ done",
+                "",
+                "  ◘ compacted · ## Findings",
+                "",
+                "▎ next",
+            ]
+        );
+        assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn a_markdown_summary_with_leading_blanks_is_still_one_row() {
+        let mut t = transcript();
+        t.apply(&Event::Compacted {
+            summary: "\n\n## Findings\n\n- one\n- two".into(),
+        });
+
+        // Whatever the pane width, the divider never wraps.
+        for width in [10, 60] {
+            let total = t.layout(width, ChatSettings::default());
+            assert_eq!(total, 1, "one row at {width} columns");
+            assert_eq!(
+                text(&t.visible(0, total)),
+                ["  ◘ compacted · ## Findings"],
+                "the first line with something on it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compaction_copies_the_whole_summary() {
+        let entry = Entry::Compacted("\n\n## Findings\n\n- one\n- two".into());
+
+        assert_eq!(
+            entry.clipboard().as_deref(),
+            Some("\n\n## Findings\n\n- one\n- two"),
+            "the model's whole summary, not only the divider's line"
         );
     }
 

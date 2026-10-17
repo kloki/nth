@@ -5,7 +5,6 @@ What opencode has that nth does not yet, plus nth's own review backlog. Each ite
 ### Commands
 
 - [ ] /init Set agent.md
-- [ ] /compact compact long lines
 
 ### Subagents and orchestrations
 

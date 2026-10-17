@@ -124,6 +124,12 @@ fn turns(messages: &[Message]) -> Vec<Value> {
                     .chain(reply.tool_calls.iter().map(tool_use))
                     .collect(),
             ),
+            // The session rewrites the history before it asks: requests
+            // start at the last marker's checkpoint message, never at the
+            // marker.
+            Message::Compaction { .. } => {
+                unreachable!("the session filters compaction markers")
+            }
         };
         if blocks.is_empty() {
             continue;

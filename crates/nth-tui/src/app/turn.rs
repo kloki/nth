@@ -22,6 +22,9 @@ pub(super) struct Ended {
     saved: Result<(), store::Error>,
     /// Ran a command you typed after `!`, not a model turn.
     shell: bool,
+    /// Ran `/compact`: a summary request, not a model turn; the divider
+    /// the event pushed says how it went.
+    compact: bool,
 }
 
 /// What is sent while a turn runs. A plain prompt is not held: it steers
@@ -36,6 +39,8 @@ pub enum Queued {
     Shell(String),
     /// `/approve`: the plan's approval.
     Approve,
+    /// `/compact`: one compaction of the session.
+    Compact,
     /// The plan as ctrl+g found it and as you left it.
     PlanEdits {
         original: String,
@@ -51,6 +56,7 @@ impl Queued {
             Queued::Prompt(text) => text.clone(),
             Queued::Shell(command) => format!("!{command}"),
             Queued::Approve => "/approve".into(),
+            Queued::Compact => "/compact".into(),
             Queued::PlanEdits { .. } => "plan edits".into(),
         }
     }
@@ -141,6 +147,7 @@ impl App {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
             Queued::Approve => self.start_turn(self.approval()),
+            Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
                 self.start_turn(plan::edits::render(&self.plan_path, &original, &edited))
             }
@@ -182,6 +189,66 @@ impl App {
                     result,
                     saved,
                     shell: true,
+                    compact: false,
+                }
+            })
+        });
+    }
+
+    /// `/compact`: summarizes the session now, or waits behind the running
+    /// turn like a queued command, since the session is in the turn task.
+    /// A compaction is always the main session's, even from a subagent's
+    /// tab, which is where a command typed there goes.
+    pub(super) fn compact(&mut self) {
+        match self.is_busy() {
+            true => self.queue.push_back(Queued::Compact),
+            false => self.start_compact(),
+        }
+    }
+
+    /// Runs one compaction as a turn does, so Esc stops it and what you
+    /// send meanwhile waits for it. The transcript shows the divider when
+    /// the summary lands; nothing answers.
+    pub(super) fn start_compact(&mut self) {
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        // As a turn does: the picker may have changed the model since the
+        // last turn, and the summary request must run the chosen one, its
+        // tail and reserved sized against the chosen model's window.
+        self.adopt_llm(&mut session);
+        self.chat.jump_bottom();
+        self.busy_since = Some(Instant::now());
+        // A compaction never picks a prompt up, so nothing steers into it.
+        self.steerable = None;
+        let provider = self.provider.clone();
+        let tools = self.tools.clone();
+        let events = self.events_tx.clone();
+        let store = self.store.clone();
+        let subagents = self.subagents.clone();
+        let front_end = FrontEnd {
+            asker: Asker::new(self.asks_tx.clone()),
+            screen: Screen::new(self.screen_tx.clone()),
+            monitors: self.monitors.clone(),
+            inbox: self.inbox.clone(),
+        };
+        self.turn.start(|token| {
+            tokio::spawn(async move {
+                let result = session
+                    .compact(provider.as_ref(), &tools, &front_end, &events, &token)
+                    .await;
+                // Subagents that finished while it ran spent on its behalf.
+                session.usage.extend(subagents.take_spent());
+                let saved = match &store {
+                    Some(store) => store.save(&session).await,
+                    None => Ok(()),
+                };
+                Ended {
+                    session,
+                    result,
+                    saved,
+                    shell: false,
+                    compact: true,
                 }
             })
         });
@@ -219,10 +286,7 @@ impl App {
             },
         };
         self.notices_due = None;
-        // Picked in the model picker since the last turn, maybe mid-turn.
-        if session.model != self.model {
-            session.set_model(self.model.clone());
-        }
+        self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
         if session.extra_dirs != self.extra_dirs {
@@ -231,7 +295,6 @@ impl App {
         self.llm_usage.count(&self.model);
         self.save_llm_usage();
         self.spent.turn_started(&self.model);
-        session.effort = self.effort;
         session.mode = self.mode;
         self.steerable = Some((self.mode, self.llm(self.mode)));
         if let Some(notices) = &notices {
@@ -290,9 +353,31 @@ impl App {
                     result,
                     saved,
                     shell: false,
+                    compact: false,
                 }
             })
         });
+    }
+
+    /// The model, effort and limits the next request runs with: the picker
+    /// may have changed them since the last turn, maybe mid-turn, and the
+    /// session is in its task while one runs, so a turn and a compaction
+    /// both take them from the app here. The limits follow the model in
+    /// use, so the compaction trigger sizes against it. Until the listing
+    /// names the model the session keeps the limits it has — a resumed
+    /// one's saved limits still fire its compaction — and a switch to a
+    /// model it does not name drops them rather than size against the old
+    /// one's window.
+    fn adopt_llm(&self, session: &mut Session) {
+        // Picked in the model picker since the last turn, maybe mid-turn.
+        if session.model != self.model {
+            session.set_model(self.model.clone());
+            session.set_limits(None, None);
+        }
+        if let Some((context_window, max_output)) = self.limits_of(&self.model) {
+            session.set_limits(context_window, max_output);
+        }
+        session.effort = self.effort;
     }
 
     /// Esc cancels the turn cooperatively so the session comes back;
@@ -311,6 +396,7 @@ impl App {
             result,
             saved,
             shell,
+            compact,
         }: Ended,
     ) {
         self.drain_events();
@@ -336,8 +422,9 @@ impl App {
         };
         match result {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
-            // The bash row says how a command went; no model answered.
-            Ok(()) if shell => {}
+            // The bash row says how a command went, and the divider the
+            // compaction pushed does for it; neither had the model answer.
+            Ok(()) if shell || compact => {}
             result => {
                 // The session's model ran the turn; `self.model` may have
                 // been switched since.
@@ -393,7 +480,8 @@ impl App {
         if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }
-        self.notify_turn_ended(shell, error, elapsed);
+        // A command of yours is not the model answering: nothing to say.
+        self.notify_turn_ended(shell || compact, error, elapsed);
     }
 
     /// A worktree tool moved the session: the place, git state and files
@@ -449,8 +537,8 @@ impl App {
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again. An
-    /// approval or plan edits have no text of yours to give back, so they
-    /// are dropped, and the status bar says so.
+    /// approval, a compaction or plan edits have no text of yours to give
+    /// back, so they are dropped, and the status bar says so.
     fn unqueue(&mut self) {
         let mut parts = Vec::new();
         let mut dropped = Vec::new();
@@ -462,6 +550,7 @@ impl App {
             match next {
                 Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
                 Queued::Approve => dropped.push("plan approval discarded"),
+                Queued::Compact => dropped.push("compaction discarded"),
                 Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
             }
         }
@@ -481,21 +570,110 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
     };
 
     use crossterm::event::{KeyCode, KeyEvent};
-    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Event, Listing, Message, MonitorEvent, Provider, Request, Stream, StreamEvent,
-        ToolCall, Usage,
+        BoxError, Event, Listing, Message, ModelInfo, MonitorEvent, Provider, Request, Stream,
+        StreamEvent, ToolCall, Usage,
     };
     use tokio::sync::Notify;
 
     use super::*;
     use crate::chat::Entry;
+
+    /// Answers each request with the next scripted reply, recording the
+    /// model and messages every request carried. Later requests get "ok".
+    #[derive(Default)]
+    struct Scripted {
+        replies: Mutex<VecDeque<Vec<StreamEvent>>>,
+        requests: Mutex<Vec<Vec<Message>>>,
+        models: Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new(replies: impl IntoIterator<Item = Vec<StreamEvent>>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().collect()),
+                requests: Mutex::new(Vec::new()),
+                models: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The messages of every request, in the order they were asked.
+        fn sent(&self) -> Vec<Vec<Message>> {
+            self.requests.lock().expect("lock").clone()
+        }
+
+        /// The model of every request, in the order they were asked.
+        fn asked(&self) -> Vec<String> {
+            self.models.lock().expect("lock").clone()
+        }
+    }
+
+    impl Provider for Scripted {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            self.requests
+                .lock()
+                .expect("lock")
+                .push(request.messages.to_vec());
+            self.models
+                .lock()
+                .expect("lock")
+                .push(request.model.to_string());
+            let reply = self
+                .replies
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .unwrap_or_else(|| vec![StreamEvent::TextDelta("ok".into())]);
+            let reply: Vec<Result<StreamEvent, BoxError>> = reply.into_iter().map(Ok).collect();
+            async move { Ok(futures::stream::iter(reply).boxed()) }.boxed()
+        }
+    }
+
+    /// Hangs on its first request until dropped, answers "ok" to later
+    /// ones: a compaction Esc cuts short, then a turn that still works.
+    #[derive(Default)]
+    struct HangFirst(AtomicUsize);
+
+    impl Provider for HangFirst {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+            async move {
+                if first {
+                    std::future::pending::<()>().await;
+                }
+                let reply: Vec<Result<StreamEvent, BoxError>> =
+                    vec![Ok(StreamEvent::TextDelta("ok".into()))];
+                Ok(futures::stream::iter(reply).boxed())
+            }
+            .boxed()
+        }
+    }
 
     /// A provider that never answers: it says when a request reaches it,
     /// and records when that request is dropped.
@@ -728,6 +906,19 @@ mod tests {
                 Entry::User(text) => Some(text.as_str()),
                 _ => None,
             })
+    }
+
+    /// A listing entry with the given context window and output limit.
+    fn listed(id: &str, context: u64, output: u64) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: None,
+            context: Some(context),
+            output: Some(output),
+            efforts: Vec::new(),
+            origin: None,
+            cost: None,
+        }
     }
 
     #[tokio::test]
@@ -1270,6 +1461,297 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_compaction_summarizes_the_session_and_shows_a_divider() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+
+        send(&mut app, "/compact");
+        assert!(app.is_busy(), "the compaction runs as a turn");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::Compaction { .. })),
+            "{:?}",
+            session.messages.last()
+        );
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted("ok".into())),
+            "the divider, with no footer under it"
+        );
+        let icon = nth_icons::icons().context;
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains(&format!("{icon} compacted · ok"))),
+            "drawn where the divider landed: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compaction_after_a_model_pick_asks_the_picked_model_and_limits() {
+        let provider = Arc::new(Scripted::new([vec![StreamEvent::TextDelta(
+            "the summary".into(),
+        )]]));
+        let mut session = Session::new("old", "/repo".into());
+        session.set_limits(Some(10_000), Some(2_000));
+        session.messages.push(Message::User("old history".into()));
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+        app.llms = Some(Listing::from(vec![listed("new", 3_000, 1_000)]));
+        app.model = "new".into();
+
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        assert_eq!(
+            provider.asked(),
+            ["new"],
+            "the summary runs on the model picked since the last turn"
+        );
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.model, "new");
+        assert_eq!(
+            (session.context_window, session.max_output),
+            (Some(3_000), Some(1_000)),
+            "the session carries the picked model's limits"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compaction_sent_while_busy_runs_after_the_turn() {
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, Arc::new(Answer), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        send(&mut app, "/compact");
+
+        assert_eq!(app.queue, [Queued::Compact], "it waits for the turn");
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the compaction runs next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Compacted(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn esc_interrupts_a_compaction_and_keeps_the_session() {
+        let hang = Arc::new(Hang::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, hang, Arc::new(Vec::new()));
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(Message::User("old".into()));
+
+        send(&mut app, "/compact");
+        tokio::task::yield_now().await;
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::User(text)) if text == "old"),
+            "nothing was summarized"
+        );
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_turn_discards_a_queued_compaction() {
+        let (mut app, _) = busy_app().await;
+        send(&mut app, "/compact");
+        assert_eq!(app.queue, [Queued::Compact]);
+
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(app.queue.is_empty());
+        assert!(app.prompt.is_empty(), "no text of yours to give back");
+        assert_eq!(app.hint.as_deref(), Some("compaction discarded"));
+    }
+
+    #[tokio::test]
+    async fn compacting_nothing_asks_nothing_and_says_nothing() {
+        let provider = Arc::new(Scripted::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+
+        send(&mut app, "/compact");
+        assert!(app.is_busy(), "a compaction runs as a turn");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert!(app.queue.is_empty());
+        assert!(
+            app.chat.transcript.entries().next().is_none(),
+            "no divider and no footer for a session with nothing to summarize"
+        );
+        assert!(provider.sent().is_empty(), "the model was never asked");
+        assert!(app.session.as_ref().expect("session came back").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_manual_compaction_shows_only_the_summarys_first_line() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("ok".into())],
+            vec![StreamEvent::TextDelta(
+                "Objective: ship\n\n## Details\nmore".into(),
+            )],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted(
+                "Objective: ship\n\n## Details\nmore".into()
+            )),
+            "the whole summary is kept for the clipboard and the model"
+        );
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("compacted · Objective: ship")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("## Details")),
+            "one row, whatever the summary holds: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_after_a_compaction_starts_at_the_checkpoint() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("first answer".into())],
+            vec![StreamEvent::TextDelta("the summary".into())],
+            vec![StreamEvent::TextDelta("second answer".into())],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider.clone(), Arc::new(Vec::new()));
+        send(&mut app, "go");
+        end(&mut app).await;
+        send(&mut app, "/compact");
+        end(&mut app).await;
+
+        send(&mut app, "next");
+        end(&mut app).await;
+
+        let sent = provider.sent();
+        assert_eq!(sent.len(), 3, "the turn, the summary, the turn after");
+        assert_eq!(sent[1].len(), 1, "the summary request is one user message");
+        let Message::User(head) = &sent[1][0] else {
+            panic!("the summary request: {:?}", sent[1]);
+        };
+        assert!(head.contains("[User]: go"), "{head}");
+
+        let after = &sent[2];
+        assert!(matches!(after.first(), Some(Message::System(_))));
+        let Message::User(checkpoint) = &after[1] else {
+            panic!("the checkpoint: {:?}", after[1]);
+        };
+        assert!(
+            checkpoint.starts_with("<conversation-checkpoint>")
+                && checkpoint.contains("<summary>\nthe summary\n</summary>")
+                && checkpoint.contains("[Assistant]: first answer"),
+            "the marker is read as one user message, the latest reply kept: {checkpoint}"
+        );
+        assert_eq!(after[2], Message::User("next".into()));
+        assert_eq!(after.len(), 3, "the summarized messages are not sent again");
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::TurnDone { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn esc_during_a_compaction_leaves_a_session_that_still_runs() {
+        let provider = Arc::new(HangFirst::default());
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        app.session
+            .as_mut()
+            .expect("idle")
+            .messages
+            .push(Message::User("old".into()));
+
+        send(&mut app, "/compact");
+        tokio::task::yield_now().await;
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(
+            matches!(session.messages.last(), Some(Message::User(text)) if text == "old"),
+            "nothing was summarized"
+        );
+        assert!(matches!(
+            app.chat.transcript.entries().last(),
+            Some(Entry::Interrupted { .. })
+        ));
+
+        // The session the interrupted compaction held is valid to go on.
+        send(&mut app, "next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        let session = app.session.as_ref().expect("session came back");
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::Assistant(reply)) if reply.text == "ok"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_queued_compaction_shows_its_label_until_the_turn_ends() {
+        let provider = Arc::new(Scripted::new([
+            vec![StreamEvent::TextDelta("ok".into())],
+            vec![StreamEvent::TextDelta("the summary".into())],
+        ]));
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(session, provider, Arc::new(Vec::new()));
+        send(&mut app, "go");
+        send(&mut app, "/compact");
+
+        let rows = crate::app::tests::rows(&mut app);
+        assert!(
+            rows[15].starts_with(" ⏵ 1 queued · /compact"),
+            "{:?}",
+            rows[15]
+        );
+
+        end(&mut app).await;
+        assert!(app.is_busy(), "the compaction runs next");
+        end(&mut app).await;
+
+        assert!(!app.is_busy());
+        assert_eq!(
+            app.chat.transcript.entries().last(),
+            Some(&Entry::Compacted("the summary".into()))
+        );
+    }
+
+    #[tokio::test]
     async fn a_turn_that_moved_the_session_moves_the_app() {
         let mut app = crate::app::tests::app();
         let mut session = app.session.take().expect("idle");
@@ -1281,6 +1763,7 @@ mod tests {
             result: Ok(()),
             saved: Ok(()),
             shell: false,
+            compact: false,
         });
 
         assert_eq!(app.cwd, worktree);

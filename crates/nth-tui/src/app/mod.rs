@@ -59,8 +59,8 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId, Monitors,
-    Provider, Show, Tool, Usage, monitor_log_dir,
+    Ask, BoxError, Compaction, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId,
+    Monitors, Provider, Show, Tool, Usage, monitor_log_dir,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, store,
@@ -251,6 +251,9 @@ pub struct App {
     /// The configured step limit, which every session the app moves on to
     /// keeps; a loaded one would otherwise fall back to the default.
     max_steps: usize,
+    /// The configured `[context]` policy, which every session the app moves
+    /// on to takes, as it does `max_steps`: a session never saves it.
+    compaction: Compaction,
     session_listing: Job<Result<Vec<Summary>, store::Error>>,
     /// The session chosen in the session picker, being read.
     session_loading: Job<Result<Session, store::Error>>,
@@ -505,6 +508,7 @@ impl App {
             paths: Paths::default(),
             context: session.context().clone(),
             max_steps: session.max_steps,
+            compaction: session.compaction,
             session_listing: Job::default(),
             session_loading: Job::default(),
             session_saving: Job::default(),
@@ -1036,6 +1040,7 @@ impl App {
             Command::Usage => self.open_content(Tab::Usage),
             Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(),
+            Command::Compact => self.compact(),
             Command::Close => self.close_content(),
             Command::CopyId => self.copy_session_id(),
             Command::Settings => {
@@ -1064,6 +1069,7 @@ impl App {
         session.effort = self.effort;
         session.mode = self.mode;
         session.max_steps = self.max_steps;
+        session.compaction = self.compaction;
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();

@@ -1502,6 +1502,7 @@ dependencies = [
  "anyhow",
  "clap",
  "fastrand",
+ "futures",
  "jiff",
  "nth-auth",
  "nth-context",

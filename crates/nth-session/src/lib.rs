@@ -1,4 +1,5 @@
 mod agent_loop;
+mod compaction;
 pub mod plan;
 mod session;
 pub mod store;
@@ -8,6 +9,7 @@ pub mod usage;
 pub mod work;
 
 pub use agent_loop::{DEFAULT_MAX_STEPS, Error, Route, Turn};
+pub use nth_protocol::Compaction;
 pub use session::{SHELL_PROMPT, Session};
 pub use store::{Spending, Store, Summary};
 pub use subagent::{SubagentEvent, SubagentId, Subagents, Task, TaskStop};

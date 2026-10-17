@@ -16,12 +16,18 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+mod compaction_e2e;
+
 pub(super) const ROUTE: Route = Route {
     model: "glm-5.3",
     effort: Effort::Default,
     session_id: "s1",
     parent_session_id: None,
     max_steps: DEFAULT_MAX_STEPS,
+    // The window is the front-ends' to fill; tests that compact set it.
+    context_window: None,
+    max_output: None,
+    compaction: crate::Compaction::DEFAULT,
 };
 
 /// Replays one scripted reply per request and records the model asked for.
@@ -31,6 +37,11 @@ pub(crate) struct Scripted {
     pub(super) routes: Mutex<Vec<(String, String)>>,
     /// The system prompt of every request, in order.
     pub(crate) systems: Mutex<Vec<String>>,
+    /// Every request's messages, in order.
+    pub(crate) sent: Mutex<Vec<Vec<Message>>>,
+    /// The tools every request offered, in order, so a request that must
+    /// carry none (a summary) can prove it.
+    pub(crate) tools: Mutex<Vec<Vec<String>>>,
 }
 
 impl Scripted {
@@ -39,6 +50,8 @@ impl Scripted {
             replies: Mutex::new(replies),
             routes: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
+            sent: Mutex::new(Vec::new()),
+            tools: Mutex::new(Vec::new()),
         }
     }
 }
@@ -62,6 +75,17 @@ impl Provider for Scripted {
                 .expect("not poisoned")
                 .push(system.clone());
         }
+        self.tools.lock().expect("not poisoned").push(
+            request
+                .tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        );
+        self.sent
+            .lock()
+            .expect("not poisoned")
+            .push(request.messages.to_vec());
         let reply = self.replies.lock().expect("not poisoned").remove(0);
         async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
     }
@@ -154,6 +178,7 @@ async fn runs_tools_until_the_model_answers() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     Turn {
         provider: &provider,
         route: ROUTE,
@@ -161,6 +186,7 @@ async fn runs_tools_until_the_model_answers() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -233,6 +259,7 @@ async fn the_last_step_tells_the_model_to_stop() {
     let (tx, _rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     Turn {
         provider: &provider,
         route: Route {
@@ -243,6 +270,7 @@ async fn the_last_step_tells_the_model_to_stop() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -281,6 +309,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
 
+    let mut last_usage = None;
     let result = Turn {
         provider: &provider,
         route: Route {
@@ -291,6 +320,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         ctx: &ctx,
         messages: &mut messages,
         spend: &mut spend(),
+        last_usage: &mut last_usage,
         events: &tx,
         cancel: &CancellationToken::new(),
     }
@@ -324,6 +354,7 @@ pub(super) async fn turn(
     let (tx, mut rx) = mpsc::channel(16);
     let run = async move {
         let cancel = CancellationToken::new();
+        let mut last_usage = None;
         Turn {
             provider,
             route: ROUTE,
@@ -331,6 +362,7 @@ pub(super) async fn turn(
             ctx,
             messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &cancel,
         }

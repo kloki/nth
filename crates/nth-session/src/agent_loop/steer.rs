@@ -137,6 +137,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: ROUTE,
@@ -144,6 +145,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }
@@ -183,6 +185,7 @@ mod tests {
         let mut messages = vec![Message::User("go".into())];
         assert!(inbox.post_prompt("never mind, just wave".into()));
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: ROUTE,
@@ -190,6 +193,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }
@@ -312,6 +316,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
+        let mut last_usage = None;
         Turn {
             provider: &provider,
             route: ROUTE,
@@ -319,6 +324,7 @@ mod tests {
             ctx: &ctx,
             messages: &mut messages,
             spend: &mut spend(),
+            last_usage: &mut last_usage,
             events: &tx,
             cancel: &CancellationToken::new(),
         }

@@ -33,6 +33,38 @@ pub(crate) fn runs_no_tools<E>(events: &[Result<StreamEvent, E>]) -> bool {
 pub(crate) async fn serve_once(
     body: &'static [u8],
 ) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
+    serve(200, "text/event-stream", body).await
+}
+
+/// As `serve_once`, but answering with a non-2xx `status` and a JSON body,
+/// as a refused request does.
+pub(crate) async fn serve_status(
+    status: u16,
+    body: &'static [u8],
+) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
+    serve(status, "application/json", body).await
+}
+
+/// The reason phrase for the statuses the tests serve; HTTP parsers ignore
+/// it, so whatever it says will do.
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        413 => "Payload Too Large",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        _ => "Error",
+    }
+}
+
+async fn serve(
+    status: u16,
+    content_type: &'static str,
+    body: &'static [u8],
+) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -69,7 +101,8 @@ pub(crate) async fn serve_once(
             request.extend_from_slice(&buf[..n]);
         }
         let reply = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            reason(status),
             body.len()
         );
         stream.write_all(reply.as_bytes()).await.expect("writable");
