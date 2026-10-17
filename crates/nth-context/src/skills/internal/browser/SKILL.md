@@ -14,7 +14,7 @@ Run `agent-browser --version` first. When it is not on PATH, tell the user and a
 
 An install that fails is reported to the user as it failed. Never work around it with another registry, mirror or route.
 
-A Chrome that exits with "No usable sandbox" is Ubuntu's rule against unprivileged user namespaces, not a broken install: pass `--args "--no-sandbox"` before the command (`agent-browser --args "--no-sandbox" open <url>`) for a local app, and tell the user, since it is their machine's rule you are stepping around.
+A Chrome that exits with "No usable sandbox" is Ubuntu's rule against unprivileged user namespaces, not a broken install: run `agent-browser close` (a daemon already running keeps the launch arguments it started with), then pass `--args "--no-sandbox"` before the command (`agent-browser --args "--no-sandbox" open <url>`) for a local app, and tell the user, since it is their machine's rule you are stepping around.
 
 ## Your browser is yours
 
