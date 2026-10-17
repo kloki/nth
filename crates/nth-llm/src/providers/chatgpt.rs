@@ -62,6 +62,8 @@ struct Listed {
     context_window: Option<u64>,
     #[serde(default)]
     supported_reasoning_levels: Vec<Level>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +115,7 @@ fn models(list: ModelList, catalog: Option<&Catalog>) -> Vec<ModelInfo> {
                 origin: None,
                 // Paid for by the subscription.
                 cost: Some(Cost::default()),
+                takes_images: m.input_modalities.iter().any(|i| i == "image"),
             }
         })
         .collect();
@@ -146,6 +149,7 @@ mod tests {
                 "visibility": "list",
                 "supported_in_api": true,
                 "context_window": 272_000,
+                "input_modalities": ["text", "image"],
                 "supported_reasoning_levels": [
                     {"effort": "high"}, {"effort": "low"}, {"effort": "ultra"},
                 ],
@@ -171,6 +175,8 @@ mod tests {
         );
         assert!(models.iter().all(|m| m.cost == Some(Cost::default())));
         assert_eq!(models[0].context, None, "nothing said, nothing assumed");
+        assert!(luna.takes_images);
+        assert!(!models[0].takes_images, "nothing said, no images");
     }
 
     #[test]

@@ -140,6 +140,13 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
         Some(subagent) => (&subagent.llm, subagent.context_window, subagent.max_output),
         None => (&ctx.llm, ctx.context_window, ctx.max_output),
     };
+    // An agent's own model is not listed here, so it counts as taking
+    // images, as an unknown one does.
+    let takes_images = match (&agent.model, ctx.subagent.as_ref()) {
+        (Some(_), _) => true,
+        (None, Some(subagent)) => subagent.takes_images.unwrap_or(true),
+        (None, None) => ctx.takes_images,
+    };
     let model = agent.model.clone().unwrap_or_else(|| llm.model.clone());
     let mut session = Session::new(model, ctx.cwd.clone())
         .with_extra_dirs(ctx.extra_dirs.clone())
@@ -151,6 +158,9 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.set_limits(context_window, max_output);
     session.compaction = ctx.compaction;
     session.parent = ctx.session.parse().ok();
+    session.takes_images = takes_images;
+    // Its images go with its parent's, so deleting the parent deletes them.
+    session.images = Some(ctx.images.clone());
     session
 }
 
@@ -511,10 +521,17 @@ pub(crate) mod tests {
                 },
                 context_window: Some(100_000),
                 max_output: Some(8_000),
+                takes_images: Some(false),
             }),
             ..ToolContext::new("/repo".into())
         };
         let child = child_session(&explore(), &ctx, 5);
+        assert!(!child.takes_images, "the subagent model takes none");
+        assert_eq!(
+            child.images,
+            Some(ctx.images.clone()),
+            "its parent's folder"
+        );
         assert_eq!(
             (child.model.as_str(), child.effort),
             ("minimax", nth_protocol::Effort::Low)

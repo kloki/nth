@@ -1,6 +1,6 @@
 //! Converts nth's messages and tools to the Anthropic messages JSON shape.
 
-use nth_protocol::{Effort, Message, ToolCall, ToolSpec};
+use nth_protocol::{Effort, Image, Message, ToolCall, ToolSpec};
 use serde_json::{Value, json};
 
 /// The smallest thinking budget the API takes.
@@ -108,9 +108,19 @@ fn turns(messages: &[Message]) -> Vec<Value> {
         let (role, blocks): (_, Vec<_>) = match message {
             Message::System(_) => continue,
             Message::User(text) => ("user", text_block(text).into_iter().collect()),
-            Message::ToolResult { call_id, content } => {
+            Message::ToolResult {
+                call_id,
+                content,
+                images,
+            } => {
                 let mut block = json!({ "type": "tool_result", "tool_use_id": tool_id(call_id) });
-                if !content.is_empty() {
+                if !images.is_empty() {
+                    let blocks: Vec<_> = text_block(content)
+                        .into_iter()
+                        .chain(images.iter().filter_map(image_block))
+                        .collect();
+                    block["content"] = json!(blocks);
+                } else if !content.is_empty() {
                     block["content"] = json!(content);
                 }
                 ("user", vec![block])
@@ -143,6 +153,16 @@ fn turns(messages: &[Message]) -> Vec<Value> {
         .into_iter()
         .map(|(role, content)| json!({ "role": role, "content": content }))
         .collect()
+}
+
+/// An image as a base64 source; one without its bytes was already turned
+/// into text before the request.
+fn image_block(image: &Image) -> Option<Value> {
+    let data = image.data.as_deref()?;
+    Some(json!({
+        "type": "image",
+        "source": { "type": "base64", "media_type": image.mime, "data": data },
+    }))
 }
 
 fn text_block(text: &str) -> Option<Value> {
@@ -229,10 +249,12 @@ mod tests {
             Message::ToolResult {
                 call_id: "toolu_a".into(),
                 content: "A".into(),
+                images: Vec::new(),
             },
             Message::ToolResult {
                 call_id: "functions.read:1".into(),
                 content: String::new(),
+                images: Vec::new(),
             },
             Message::User("<task>done</task>".into()),
             Message::Assistant(AssistantMessage::default()),
@@ -357,5 +379,36 @@ mod tests {
         );
         assert_eq!(left.get("thinking"), None);
         assert_eq!(left.get("output_config"), None);
+    }
+
+    /// A read that showed a PNG, its bytes `iVBO`.
+    fn read_an_image() -> Message {
+        Message::ToolResult {
+            call_id: "call_1".into(),
+            content: "Image read: shot.png".into(),
+            images: vec![nth_protocol::Image {
+                mime: "image/png".into(),
+                sha256: "ab".into(),
+                width: 2,
+                height: 1,
+                path: "/images/ab.png".into(),
+                data: Some("iVBO".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_tool_results_images_go_inside_it() {
+        let turns = turns(&[read_an_image()]);
+        assert_eq!(
+            turns[0]["content"][0]["content"],
+            json!([
+                { "type": "text", "text": "Image read: shot.png" },
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "iVBO" },
+                },
+            ])
+        );
     }
 }

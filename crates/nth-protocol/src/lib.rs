@@ -3,6 +3,7 @@
 
 mod compaction;
 mod event;
+mod image;
 mod inbox;
 mod message;
 mod mode;
@@ -16,6 +17,7 @@ mod writable;
 
 pub use compaction::Compaction;
 pub use event::{Event, retry_label};
+pub use image::{Attachments, Image, REMOVED as IMAGE_REMOVED, unsupported as image_unsupported};
 pub use inbox::{
     Inbox, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice,
     WorkOutcome, WorkState, one_line, quiet_text, split_notices, todo_counts, todo_lines,

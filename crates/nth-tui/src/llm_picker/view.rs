@@ -157,6 +157,8 @@ fn rows<'a>(
         .map(|m| limits_text(m, ctx_width, out_width).chars().count())
         .max()
         .unwrap_or(0);
+    // The image column only when some model takes images.
+    let images = models.iter().any(|m| m.takes_images);
     let pick = pick();
 
     let mut lines: Vec<Line<'a>> = shown
@@ -195,6 +197,14 @@ fn rows<'a>(
                 ),
                 dim(),
             ));
+            if images {
+                let mark = if model.takes_images {
+                    icons().image
+                } else {
+                    " "
+                };
+                spans.push(Span::styled(format!("  {mark}"), dim()));
+            }
             if let Some(effort) = here.then(|| picker.shown_effort()).flatten() {
                 // The name padded to the widest level the model can be shown
                 // at, so the arrows stay put while the effort changes.
@@ -272,6 +282,7 @@ mod tests {
                 name: origin.to_uppercase(),
             }),
             cost: None,
+            takes_images: false,
         }
     }
 
@@ -367,6 +378,24 @@ mod tests {
 
         picker.insert('z');
         assert_eq!(drawn(&picker, 0, 8), ["▎   no matches"]);
+    }
+
+    #[test]
+    fn models_that_take_images_are_marked_in_a_column_of_their_own() {
+        let seeing = ModelInfo {
+            takes_images: true,
+            ..listed("lyceum", "kimi", "Kimi", 200_000, 64_000, &[])
+        };
+        let blind = listed("lyceum", "glm", "GLM", 200_000, 64_000, &[]);
+        let picker = picker(vec![seeing, blind], "x");
+
+        assert_eq!(
+            drawn(&picker, 1, 8),
+            [
+                "▎   kimi   Kimi  200k ctx · 64k out  ◩",
+                "▎ → glm    GLM   200k ctx · 64k out",
+            ]
+        );
     }
 
     /// A model with limits and efforts, as `model` above but filled in.

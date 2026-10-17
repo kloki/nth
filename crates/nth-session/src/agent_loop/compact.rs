@@ -565,6 +565,7 @@ mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: huge.clone(),
+                images: Vec::new(),
             },
         ];
         let mut spent = spend();

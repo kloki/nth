@@ -42,6 +42,14 @@ pub(crate) struct Model {
     /// `provider/model` of the entry for the maker's own, as
     /// `zhipuai/glm-5.3` for openrouter's `z-ai/glm-5.3`.
     pub(crate) canonical_model_id: Option<String>,
+    /// What it takes and gives besides text.
+    pub(crate) modalities: Option<Modalities>,
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct Modalities {
+    #[serde(default)]
+    pub(crate) input: Vec<String>,
 }
 
 /// One way a model's reasoning can be steered.
@@ -66,6 +74,14 @@ pub(crate) enum ReasoningOption {
 pub(crate) const BUDGET_EFFORTS: [Effort; 3] = [Effort::Low, Effort::Medium, Effort::High];
 
 impl Model {
+    /// Whether it takes images. The catalogue's `attachment` flag disagrees
+    /// with its modalities for hundreds of models, so only these count.
+    pub(crate) fn takes_images(&self) -> bool {
+        self.modalities
+            .as_ref()
+            .is_some_and(|m| m.input.iter().any(|i| i == "image"))
+    }
+
     /// The efforts it takes, least first. A budget is steered by the levels
     /// nth has budgets for. A toggle alone, or no option, offers none, as
     /// does a model that does not reason; one the catalogue says reasons

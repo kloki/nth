@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     Compaction, DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
-    agent_loop::{failed, run_call},
+    agent_loop::run_call,
     plan::{self, Approver},
     subagent, system_prompt, work,
 };
@@ -94,6 +94,15 @@ pub struct Session {
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
     pub max_steps: usize,
+    /// Whether the model takes images, as the listing says; the front-end
+    /// sets it with the limits. Unknown counts as yes: the providers still
+    /// turn an image into a note for a model that takes none.
+    #[serde(skip, default = "yes")]
+    pub takes_images: bool,
+    /// The folder the read tool keeps image files in, which the front-end
+    /// sets from the store; a subagent's is its parent's. Not saved.
+    #[serde(skip)]
+    pub images: Option<PathBuf>,
     /// What the subagents this session starts run on; `None` runs them on
     /// its own model. Set by the front-end before each turn, not saved.
     #[serde(skip)]
@@ -148,6 +157,8 @@ impl Session {
             context_window: None,
             max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
+            takes_images: true,
+            images: None,
             subagent_llm: None,
             subagent: false,
             parent: None,
@@ -385,6 +396,11 @@ impl Session {
         // The system prompt's files count as loaded, so read never repeats them.
         let mut loaded = self.loaded_instructions.clone();
         loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
+        let base = ToolContext::new(self.cwd.clone());
+        let images = match &self.images {
+            Some(images) => images.clone(),
+            None => base.images.clone(),
+        };
         ToolContext {
             extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(loaded)),
@@ -407,7 +423,9 @@ impl Session {
             compaction: self.compaction,
             workdir: Workdir::new(self.origin.clone()),
             session: self.id.to_string(),
-            ..ToolContext::new(self.cwd.clone())
+            takes_images: self.takes_images,
+            images,
+            ..base
         }
     }
 
@@ -487,11 +505,8 @@ impl Session {
         }));
         self.updated_at = SystemTime::now();
         let ctx = ToolContext::new(self.cwd.clone());
-        let result = run_call(Some(shell), &ctx, &call, events, cancel).await;
-        self.messages.push(Message::ToolResult {
-            call_id: call.id,
-            content: result.unwrap_or_else(|reason| failed(&reason)),
-        });
+        let answer = run_call(Some(shell), &ctx, &call, events, cancel).await;
+        self.messages.push(answer);
         match cancel.is_cancelled() {
             true => Err(Error::Interrupted),
             false => Ok(()),
@@ -524,6 +539,10 @@ impl Session {
     }
 }
 
+fn yes() -> bool {
+    true
+}
+
 fn default_max_steps() -> usize {
     DEFAULT_MAX_STEPS
 }
@@ -536,7 +555,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::agent_loop::INTERRUPTED;
+    use crate::agent_loop::{INTERRUPTED, failed};
 
     #[test]
     fn starts_with_only_the_system_prompt() {
@@ -1053,6 +1072,7 @@ mod tests {
             Message::ToolResult {
                 call_id: "1".into(),
                 content: "hi".into(),
+                images: Vec::new(),
             },
             Message::Compaction {
                 summary: "so far".into(),
@@ -1237,7 +1257,9 @@ mod tests {
             _,
             Message::User(said),
             Message::Assistant(reply),
-            Message::ToolResult { call_id, content },
+            Message::ToolResult {
+                call_id, content, ..
+            },
         ] = &session.messages[..]
         else {
             panic!("unexpected messages: {:?}", session.messages);

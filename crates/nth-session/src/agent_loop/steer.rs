@@ -38,6 +38,7 @@ impl Turn<'_> {
             .extend(calls.iter().map(|call| Message::ToolResult {
                 call_id: call.id.clone(),
                 content: failed(INTERRUPTED),
+                images: Vec::new(),
             }));
         // The reminder hidden from the transcript, as the mention is.
         let text = steered(&prompts, self.ctx) + INTERRUPTED_REMINDER;
@@ -211,6 +212,7 @@ mod tests {
                 Message::ToolResult {
                     call_id: "1".into(),
                     content: failed(INTERRUPTED),
+                    images: Vec::new(),
                 },
                 Message::User(format!("never mind, just wave{INTERRUPTED_REMINDER}")),
                 Message::Assistant(AssistantMessage {
