@@ -180,11 +180,11 @@ mod tests {
         let shown = |row: &str| row.trim_end_matches([' ', '┃']).to_string();
         assert_eq!(shown(&top[4]), " ▎ ✓ 1 a  1/1");
         assert_eq!(shown(&top[5]), " ▎   ✓ store  1/2");
-        assert_eq!(shown(&top[7]), " ▎ ▸ 2 b  0/1");
+        assert_eq!(shown(&top[7]), " ▎ → 2 b  0/1");
         app.work.jump_bottom();
         let bottom = rows(&mut app);
         assert!(
-            bottom.iter().any(|r| shown(r) == " ▎   ○ tab  1/2"),
+            bottom.iter().any(|r| shown(r) == " ▎   ● tab  1/2"),
             "{bottom:?}"
         );
     }

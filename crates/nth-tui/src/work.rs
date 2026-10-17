@@ -522,7 +522,7 @@ mod tests {
                 "▎ ✓ 1 scaffold  1/1",
                 "▎   ✓ trait  1/1",
                 "",
-                "▎ ▸ 2 build  0/2",
+                "▎ → 2 build  0/2",
                 "▎   ● http-retry  1/2  @general #3",
                 "▎     ☒ wrap idempotent requests",
                 "▎     ☐ cap",
@@ -530,8 +530,8 @@ mod tests {
                 "▎     completed",
                 "▎     ☒ write",
                 "",
-                "▎ ◇ 3 verify  0/1",
-                "▎   ○ test  0/1",
+                "▎ ● 3 verify  0/1",
+                "▎   ● test  0/1",
             ]
         );
         assert_eq!(view.label(), "work 1/4");

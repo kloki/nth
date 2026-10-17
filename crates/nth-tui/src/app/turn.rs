@@ -1107,13 +1107,13 @@ mod tests {
         send(&mut app, "next");
 
         let rows = crate::app::tests::rows(&mut app);
-        assert!(rows[15].starts_with(" ⏵ 1 queued · next"), "{:?}", rows[15]);
+        assert!(rows[15].starts_with(" > 1 queued · next"), "{:?}", rows[15]);
 
         // A command waiting behind it keeps its place; the prompt on its
         // way in is still the next thing the model hears.
         command(&mut app, "make");
         let rows = crate::app::tests::rows(&mut app);
-        assert!(rows[15].starts_with(" ⏵ 2 queued · next"), "{:?}", rows[15]);
+        assert!(rows[15].starts_with(" > 2 queued · next"), "{:?}", rows[15]);
     }
 
     #[tokio::test]
@@ -1757,7 +1757,7 @@ mod tests {
 
         let rows = crate::app::tests::rows(&mut app);
         assert!(
-            rows[15].starts_with(" ⏵ 1 queued · /compact"),
+            rows[15].starts_with(" > 1 queued · /compact"),
             "{:?}",
             rows[15]
         );

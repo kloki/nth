@@ -163,7 +163,7 @@ The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles
 ▎   ✓ client-trait  3/3
 ▎   ✓ retry-config  2/2
 
-▎ ▸ 2 implement  1/3
+▎ → 2 implement  1/3
 ▎   ✓ backoff  4/4
 ▎   ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
 ▎     ☒ wrap idempotent requests
@@ -171,17 +171,17 @@ The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles
 ▎   ∎ docs  3/3  @explore #4 · returned completed
 ▎     ☒ write the section
 
-▎ ◇ 3 verify  0/2
-▎   ○ integration-test  0/4
-▎   ○ changelog  0/1
+▎ ● 3 verify  0/2
+▎   ● integration-test  0/4
+▎   ● changelog  0/1
 ```
 
 - **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
 - **Bars.** Every row has the chat's `▎` bar, coloured by the state of what it belongs to, so the plan's progress reads down the left edge. The header and overview are one block with a grey (bright black) bar; then a block per cycle, a bare blank line between them. A cycle's row carries the cycle's colour, an item's row and its todos and note the item's.
 - **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
 - **Overview.** `plan.md` rendered as markdown — its first heading, then the rest — when the model wrote one.
-- **Cycles.** `✓` and a green bar once every item is closed, `▸` and a blue bar for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `◇` dim with a grey bar for the ones after it. Closed items over all follow.
-- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `○` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
+- **Cycles.** `✓` and a green bar once every item is closed, `→` and a blue bar for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `●` dim with a grey bar for the ones after it. Closed items over all follow.
+- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `●` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
 - **Todos.** Under the item's name, behind its bar, for the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
 - **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
@@ -200,7 +200,7 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 ```
 ▎ model
 ▎     plan  kimi-k3 · high · 256k context
-▎   ▸ act   glm-5.3 · 128k context
+▎   → act   glm-5.3 · 128k context
 ▎   25 models served
 
 ▎ instructions
@@ -229,7 +229,7 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 
 - **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
 - **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
-- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `▸` marks the mode the next turn runs in; the other mode's name is dim.
+- **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `→` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
 - **Tools.** The programs the tools run through, each a green `✓` with its path in cyan when it is on PATH, or dim with a red `✗` and why: the `rtk` bash would rewrite the model's commands through ("not on PATH", or "disabled in the config" when `[tools.bash] rtk` is off), and the `agent-browser` the browser skill drives a browser with ("not on PATH, the browser skill installs it").
 - **Fresh on open.** Servers, formatters and the tools' programs are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
@@ -508,7 +508,7 @@ Fixed at 2 lines, always visible, below the input panel. It holds general state;
 
 ```
  ~/repos/nth 24m ◘ 42%                       git · fix-auth #123 +3 *4 󰊐 2
- ⏵ 2 queued · fix the failing test                  ● rust  ● typescript
+ > 2 queued · fix the failing test                  ● rust  ● typescript
 ```
 
 **Line 1: where you are**
@@ -557,7 +557,7 @@ Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHu
 
 A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in reversed, black on yellow, for 300ms so it catches the eye, and goes at the next key or after 2 seconds, whichever is first.
 
-Otherwise, while prompts wait — queued behind the turn, or on their way into it — `⏵ N queued · ` and the first line of the next one, in white. Blank otherwise.
+Otherwise, while prompts wait — queued behind the turn, or on their way into it — `> N queued · ` and the first line of the next one, in white. Blank otherwise.
 
 **Line 2, right: the language servers**
 
