@@ -186,7 +186,13 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
         skills.insert(skill);
     }
     for (root, source) in roots(cwd, paths) {
-        for file in find(&root) {
+        let synced = paths
+            .home
+            .as_ref()
+            .map(|home| home.join(".claude/skills"))
+            .filter(|claude| claude == &root)
+            .map(|claude| claude.join("synced"));
+        for file in find(&root, synced.as_deref()) {
             match read(&file, &root, source) {
                 Ok(skill) => skills.insert(skill),
                 Err(e) => warnings.push(format!("skipped skill {}: {e}", file.display())),
@@ -241,17 +247,22 @@ fn roots(cwd: &Path, paths: &Paths) -> Vec<(PathBuf, Source)> {
 
 /// Every `SKILL.md` under `root`, in path order so discovery is the same on
 /// every run. Ignore files are not applied: a skill folder that git ignores
-/// is still a skill. Hidden folders are skipped, so a `.trash` beside real
-/// skills does not list what was deleted.
-fn find(root: &Path) -> Vec<PathBuf> {
+/// is still a skill. Hidden folders and Claude's managed `synced` folder are
+/// skipped, so neither lists skills that are not user-managed.
+fn find(root: &Path, excluded: Option<&Path>) -> Vec<PathBuf> {
     if !root.is_dir() {
         return Vec::new();
     }
-    let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
-        .standard_filters(false)
+    let mut walk = ignore::WalkBuilder::new(root);
+    walk.standard_filters(false)
         .hidden(true)
         .follow_links(true)
-        .max_depth(Some(MAX_DEPTH))
+        .max_depth(Some(MAX_DEPTH));
+    if let Some(excluded) = excluded {
+        let excluded = excluded.to_path_buf();
+        walk.filter_entry(move |entry| entry.path() != excluded);
+    }
+    let mut files: Vec<PathBuf> = walk
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name() == FILE && entry.path().is_file())
@@ -398,6 +409,20 @@ mod tests {
         assert_eq!(
             tree.discover("home", &tree.paths()).0,
             found(&[("live", "here", "home/.claude/skills/live")])
+        );
+    }
+
+    #[test]
+    fn claude_synced_skills_are_not_searched() {
+        let tree = Tree::new();
+        tree.skill("home/.claude/skills/live", "name: live").skill(
+            "home/.claude/skills/synced/account/managed",
+            "name: managed",
+        );
+
+        assert_eq!(
+            tree.discover("home", &tree.paths()).0,
+            found(&[("live", "", "home/.claude/skills/live")])
         );
     }
 
