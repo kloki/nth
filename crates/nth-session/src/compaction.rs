@@ -12,7 +12,7 @@
 //! transcript both are written as, and the summary request; running one is
 //! `Turn::compact`.
 
-use nth_protocol::Message;
+use nth_protocol::{IMAGE_REMOVED, Message};
 
 /// Where the last compaction marker in `messages` is, if any: requests
 /// keep nothing before it but the system prompts.
@@ -193,7 +193,8 @@ fn entries(messages: &[Message]) -> Vec<Entry> {
 
 /// One message as transcript text: `[User]: …`, `[Assistant]: …`,
 /// `[Assistant tool call]: <name> <arguments>`, `[Tool result]: …` with
-/// results cut. `None` for what a transcript leaves out.
+/// results cut, and the removal note where a result showed images, which
+/// text cannot keep. `None` for what a transcript leaves out.
 fn entry(message: &Message) -> Option<String> {
     let text =
         match message {
@@ -212,8 +213,15 @@ fn entry(message: &Message) -> Option<String> {
                 }
                 lines.join("\n")
             }
-            Message::ToolResult { content, .. } => {
-                format!("[Tool result]: {}", cut(content, TOOL_RESULT_MAX_CHARS))
+            Message::ToolResult {
+                content, images, ..
+            } => {
+                let mut text = format!("[Tool result]: {}", cut(content, TOOL_RESULT_MAX_CHARS));
+                if !images.is_empty() {
+                    text.push('\n');
+                    text.push_str(IMAGE_REMOVED);
+                }
+                text
             }
         };
     Some(text)
@@ -409,6 +417,23 @@ mod tests {
         assert_eq!(
             cut,
             format!("[Tool result]: {}\n[truncated]", "x".repeat(1_250))
+        );
+        let shown = Message::ToolResult {
+            call_id: "2".into(),
+            content: "Image read".into(),
+            images: vec![nth_protocol::Image {
+                mime: "image/png".into(),
+                sha256: "ab".into(),
+                width: 1,
+                height: 1,
+                path: "/images/ab.png".into(),
+                data: None,
+            }],
+        };
+        assert_eq!(
+            entry(&shown),
+            Some(format!("[Tool result]: Image read\n{IMAGE_REMOVED}")),
+            "the image is gone once it is text"
         );
         assert_eq!(entry(&Message::System("p".into())), None);
         assert_eq!(
