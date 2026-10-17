@@ -2,17 +2,20 @@
 //! are not tied to the directory they ran in; the list is ordered by time.
 
 use std::{
+    collections::HashMap,
     io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 
 use base64::Engine;
-use nth_protocol::Message;
+use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{Ledger, Session};
+use crate::{Ledger, Session, compaction};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -131,8 +134,14 @@ impl Store {
         let json = tokio::fs::read(&path).await.map_err(io_at(&path))?;
         let mut session: Session =
             serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })?;
-        load_images(&mut session.messages).await;
+        load_images(&mut session.messages, &self.images()).await;
         Ok(session)
+    }
+
+    /// The folder every session's image files live under, one folder per
+    /// session; a subagent's go in its parent's.
+    pub fn images(&self) -> PathBuf {
+        self.dir.join("images")
     }
 
     /// Removes `id`'s save; one that was never saved is an error.
@@ -155,21 +164,52 @@ impl Store {
 }
 
 /// Reads the bytes of every image the tools showed, which the save leaves
-/// out, once, so the requests of a resumed session need not. An image
-/// whose file is gone stays without them, and its requests carry a note
+/// out, once, so the requests of a resumed session need not. Only images a
+/// request still carries are read, those after the last compaction, and an
+/// image shown twice is held once. An image whose file is gone, or is not
+/// one the store wrote, stays without them, and its requests carry a note
 /// in its place.
-async fn load_images(messages: &mut [Message]) {
-    for message in messages {
+async fn load_images(messages: &mut [Message], root: &Path) {
+    // No folder, no images to read.
+    let Ok(root) = tokio::fs::canonicalize(root).await else {
+        return;
+    };
+    let start = compaction::last_marker(messages).map_or(0, |at| at + 1);
+    let mut read: HashMap<String, Arc<str>> = HashMap::new();
+    for message in &mut messages[start..] {
         let Message::ToolResult { images, .. } = message else {
             continue;
         };
         for image in images {
-            if let Ok(bytes) = tokio::fs::read(&image.path).await {
-                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-                image.data = Some(data.into());
+            if let Some(data) = read.get(&image.sha256) {
+                image.data = Some(data.clone());
+            } else if let Some(bytes) = image_bytes(image, &root).await {
+                let data: Arc<str> = base64::engine::general_purpose::STANDARD
+                    .encode(bytes)
+                    .into();
+                read.insert(image.sha256.clone(), data.clone());
+                image.data = Some(data);
             }
         }
     }
+}
+
+/// The bytes of `image`'s file, when it is one the store wrote: a plain
+/// file under `root` (the session JSON names the path, and anything that
+/// edits it must not get another file sent to a provider), within the cap,
+/// and the bytes the image's hash names.
+async fn image_bytes(image: &Image, root: &Path) -> Option<Vec<u8>> {
+    let meta = tokio::fs::symlink_metadata(&image.path).await.ok()?;
+    if !meta.is_file() || meta.len() > MAX_IMAGE_BYTES as u64 {
+        return None;
+    }
+    let path = tokio::fs::canonicalize(&image.path).await.ok()?;
+    if !path.starts_with(root) {
+        return None;
+    }
+    let bytes = tokio::fs::read(&path).await.ok()?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    (sha256 == image.sha256 && bytes.len() <= MAX_IMAGE_BYTES).then_some(bytes)
 }
 
 fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
@@ -254,35 +294,126 @@ mod tests {
         session
     }
 
+    /// An image of `bytes` at `path`, written there, as the store's
+    /// session would show it.
+    fn shown(path: PathBuf, bytes: &[u8]) -> Image {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("creates");
+        std::fs::write(&path, bytes).expect("writes");
+        Image {
+            mime: "image/png".into(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            width: 1,
+            height: 1,
+            path,
+            data: None,
+        }
+    }
+
+    fn result(images: Vec<Image>) -> Message {
+        Message::ToolResult {
+            call_id: "1".into(),
+            content: "Image read".into(),
+            images,
+        }
+    }
+
+    /// The images of the tool results in `session` once saved and loaded.
+    async fn loaded(store: &Store, session: &Session) -> Vec<Image> {
+        store.save(session).await.expect("saves");
+        let loaded = store.load(session.id).await.expect("loads");
+        loaded
+            .messages
+            .into_iter()
+            .flat_map(|m| match m {
+                Message::ToolResult { images, .. } => images,
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    fn data(images: &[Image]) -> Vec<Option<&str>> {
+        images.iter().map(|i| i.data.as_deref()).collect()
+    }
+
     #[tokio::test]
     async fn loading_reads_the_images_the_save_left_out() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path().join("sessions"));
-        let kept = dir.path().join("kept.png");
-        std::fs::write(&kept, b"png").expect("writes");
-        let image = |path: PathBuf| nth_protocol::Image {
-            mime: "image/png".into(),
-            sha256: "ab".into(),
-            width: 1,
-            height: 1,
-            path,
-            data: Some("cG5n".into()),
+        let folder = store.images().join("parent");
+        let kept = shown(folder.join("kept.png"), b"png");
+        let gone = shown(folder.join("gone.png"), b"gif");
+        std::fs::remove_file(&gone.path).expect("removes");
+        let mut session = session("look", 1);
+        session.messages.push(result(vec![kept, gone]));
+
+        let images = loaded(&store, &session).await;
+        assert_eq!(
+            data(&images),
+            [Some("cG5n"), None],
+            "the gone file's stays empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_stores_own_image_files_are_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let folder = store.images().join("parent");
+        let outside = shown(dir.path().join("secret.png"), b"key");
+        let mut wrong_hash = shown(folder.join("edited.png"), b"png");
+        wrong_hash.sha256 = format!("{:x}", Sha256::digest(b"other"));
+        let mut link = shown(dir.path().join("target.png"), b"key");
+        let link_path = folder.join("link.png");
+        std::os::unix::fs::symlink(&link.path, &link_path).expect("links");
+        link.path = link_path;
+        let escape = Image {
+            path: folder.join("../../../secret.png"),
+            ..outside.clone()
         };
-        let mut shown = session("look", 1);
-        shown.messages.push(Message::ToolResult {
-            call_id: "1".into(),
-            content: "Image read".into(),
-            images: vec![image(kept), image(dir.path().join("gone.png"))],
+        let mut session = session("look", 1);
+        session
+            .messages
+            .push(result(vec![outside, wrong_hash, link, escape]));
+
+        let images = loaded(&store, &session).await;
+        assert_eq!(data(&images), [None, None, None, None]);
+    }
+
+    #[tokio::test]
+    async fn an_image_shown_twice_is_held_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let image = shown(store.images().join("parent/a.png"), b"png");
+        let mut session = session("look", 1);
+        session.messages.push(result(vec![image.clone()]));
+        session.messages.push(result(vec![image]));
+
+        let images = loaded(&store, &session).await;
+        let (Some(first), Some(second)) = (&images[0].data, &images[1].data) else {
+            panic!("both read: {images:?}");
+        };
+        assert!(Arc::ptr_eq(first, second));
+    }
+
+    #[tokio::test]
+    async fn images_before_the_last_compaction_are_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let folder = store.images().join("parent");
+        let mut session = session("look", 1);
+        session
+            .messages
+            .push(result(vec![shown(folder.join("old.png"), b"old")]));
+        session.messages.push(Message::Compaction {
+            summary: "looked".into(),
+            recent: String::new(),
         });
-        store.save(&shown).await.expect("saves");
+        session
+            .messages
+            .push(result(vec![shown(folder.join("new.png"), b"new")]));
 
-        let loaded = store.load(shown.id).await.expect("loads");
-
-        let Some(Message::ToolResult { images, .. }) = loaded.messages.last() else {
-            panic!("the tool result");
-        };
-        let data: Vec<_> = images.iter().map(|i| i.data.as_deref()).collect();
-        assert_eq!(data, [Some("cG5n"), None], "the gone file's stays empty");
+        let images = loaded(&store, &session).await;
+        assert_eq!(data(&images), [None, Some("bmV3")]);
     }
 
     #[tokio::test]
