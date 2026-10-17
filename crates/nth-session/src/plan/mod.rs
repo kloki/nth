@@ -123,7 +123,7 @@ mod tests {
         assert!(fresh.contains("enter_worktree"));
         assert!(fresh.contains("the `work-plan` skill"));
         assert!(fresh.contains("work plan in the plan file as a tree"));
-        assert!(fresh.contains("open a pull request with `gh`"));
+        assert!(fresh.contains("open a pull request with `gh` on GitHub or `tea` on Forgejo"));
         assert!(!fresh.contains('{'), "every placeholder filled");
 
         let again = plan_mode_reminder(plan, true, Approver::Nobody);

@@ -36,7 +36,7 @@ Goal: Design an implementation approach based on the user's intent and your expl
 - **Always plan to work in a worktree.** Worktree tools are refused in plan mode, so the plan's first execution step, once approved, is `enter_worktree` with a name for the branch, before any file is changed. The plan file itself stays in the main checkout.
 - **Use a work plan when the task is too big for one conversation.** Load the `work-plan` skill before writing its first item, and plan serial cycles of parallel items with `work_item`, `work_assign` and `work_close`.
 - **Include the work plan in the plan file as a tree.** Draw each cycle as a heading with its items indented under it, each item with what it does and how to verify it, so the whole shape of the work is visible before execution and act mode can turn it into items.
-- **End with a pull request.** The plan's final step is to push the worktree's branch and open a pull request with `gh`, with a description of what changed and how it was verified. Never merge it: the user reviews the pull request and merges it.
+- **End with a pull request.** The plan's final step is to push the worktree's branch and open a pull request with `gh` on GitHub or `tea` on Forgejo, with a description of what changed and how it was verified. Never merge it: the user reviews the pull request and merges it.
 
 ### Phase 3: Review
 
