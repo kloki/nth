@@ -622,12 +622,15 @@ mod tests {
 
         let text = text(&Diagnostics::default(), &facts);
 
+        // The built-in skills sort in among the others by name.
         let skills = section(&text, "skills");
         assert!(
-            text[skills + 1].starts_with("  ✦ deploy")
-                && text[skills + 1].ends_with("global  ~/.claude/skills/deploy"),
+            text[skills..]
+                .iter()
+                .any(|l| l.starts_with("  ✦ deploy")
+                    && l.ends_with("global  ~/.claude/skills/deploy")),
             "{:?}",
-            text[skills + 1]
+            &text[skills..]
         );
         let agents = section(&text, "agents");
         assert!(
