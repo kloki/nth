@@ -14,6 +14,14 @@
 
 use nth_protocol::Message;
 
+/// Where the last compaction marker in `messages` is, if any: requests
+/// keep nothing before it but the system prompts.
+pub(crate) fn last_marker(messages: &[Message]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| matches!(message, Message::Compaction { .. }))
+}
+
 /// The prompt the summary request carries, before the transcript.
 pub const SUMMARY_PROMPT: &str = include_str!("prompts/compaction/summary.md");
 
