@@ -158,6 +158,12 @@ impl Store {
         }
     }
 
+    /// Where the read tool keeps the images `id` and its subagents showed
+    /// the model: beside the saves, so a store in a test keeps its own.
+    pub fn images_dir(&self, id: Uuid) -> PathBuf {
+        self.dir.join("images").join(id.to_string())
+    }
+
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
