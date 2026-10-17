@@ -288,7 +288,7 @@ impl App {
         self.notices_due = None;
         self.adopt_llm(&mut session);
         // The read tool keeps images beside the save, so deleting the
-        // session deletes them; without a store, in a temporary folder.
+        // session deletes them; without a store the read tool shows none.
         if let Some(store) = &self.store {
             session.images = Some(store.images_dir(session.id));
         }
