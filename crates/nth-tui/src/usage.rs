@@ -1,13 +1,14 @@
 //! The usage tab: what the session spent, its subagents included, then the
-//! turns run on each model across runs. The spend is the totals, then per
-//! model and per turn: requests, tokens in, the share of them read from
-//! the provider's cache, tokens out and the price at the catalogue's
-//! rates; the `all time` bars graph the picker's turn counts.
+//! turns run on each model across runs and every tool call's totals. The
+//! spend is the totals, then per model and per turn: requests, tokens in,
+//! the share of them read from and written to the provider's cache, tokens
+//! out, the share spent thinking, and the price at the catalogue's rates;
+//! the `all time` bars graph the picker's turn counts.
 
 use nth_protocol::Cost;
 use nth_session::{
-    Ledger, Total,
-    usage::{self, row},
+    Ledger, ToolUse,
+    usage::{self, Row, row, short_duration},
 };
 use ratatui::{
     Frame,
@@ -62,16 +63,18 @@ impl UsageView {
     }
 
     /// `cost` is what each model costs, when the catalogue says; `turns`
-    /// is how many ran on each model, most first.
+    /// is how many ran on each model, most first, and `tools` every tool's
+    /// all-time totals, most called first.
     pub fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         ledger: &Ledger,
         turns: &[(&str, u64)],
+        tools: &[(String, ToolUse)],
         cost: &dyn Fn(&str) -> Option<Cost>,
     ) {
-        let lines = lines(ledger, turns, cost);
+        let lines = lines(ledger, turns, tools, cost);
         self.height = usize::from(area.height);
         self.max_top = lines.len().saturating_sub(self.height);
         self.top = self.top.min(self.max_top);
@@ -83,6 +86,7 @@ impl UsageView {
 fn lines(
     ledger: &Ledger,
     turns: &[(&str, u64)],
+    tool_totals: &[(String, ToolUse)],
     cost: &dyn Fn(&str) -> Option<Cost>,
 ) -> Vec<Line<'static>> {
     let mut session = vec![title("current session")];
@@ -92,23 +96,25 @@ fn lines(
         session.push(note("nothing spent yet in this session".into()));
         sections.push(session);
     } else {
-        let price = |model: &str, total: Total| usage::price([(model, total)], cost);
         let all = row("all", total, ledger.price(cost));
         session.extend(styled(&[all]));
+        if let Some(saved) = ledger.saved(cost) {
+            session.push(savings(saved));
+        }
         sections.push(session);
 
         let mut per_model = vec![title("per model")];
         let models: Vec<_> = ledger
             .by_model()
             .into_iter()
-            .map(|(model, total)| row(model, total, price(model, total)))
+            .map(|(model, total)| row(model, total, ledger.price_of(model, cost)))
             .collect();
         per_model.extend(styled(&models));
         sections.push(per_model);
 
         let mut per_turn = vec![title("per turn")];
         let turns: Vec<_> = usage::turns(ledger)
-            .map(|(who, spend)| row(&who, spend.into(), price(&spend.model, spend.into())))
+            .map(|(who, spend)| row(&who, spend.into(), spend.price(cost)))
             .collect();
         per_turn.extend(styled(&turns));
         // The caveat stays with the prices it is about.
@@ -122,7 +128,57 @@ fn lines(
     let mut all_time = vec![title("all time")];
     model_usage(&mut all_time, turns);
     sections.push(all_time);
+
+    let mut tools = vec![title("all time tools")];
+    tool_usage(&mut tools, tool_totals);
+    sections.push(tools);
     theme::sections(sections)
+}
+
+/// `$1.23 saved by caching`, green as the price it is against.
+fn savings(dollars: f64) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(theme::INDENT),
+        Span::styled(format!("${dollars:.2}"), Style::new().fg(Color::Green)),
+        Span::styled(" saved by caching", theme::dim()),
+    ])
+}
+
+/// One line per tool: its calls, failures, the mean time and the output it
+/// returned, all time; the busiest first.
+fn tool_usage(lines: &mut Vec<Line<'static>>, tools: &[(String, ToolUse)]) {
+    if tools.is_empty() {
+        lines.push(note("no tool calls yet".into()));
+        return;
+    }
+    let width = tools
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let digits = tools
+        .iter()
+        .map(|(_, use_of)| use_of.calls.to_string().len())
+        .max()
+        .unwrap_or(0);
+    for (name, use_of) in tools {
+        let mean = use_of
+            .duration
+            .checked_div(use_of.calls)
+            .unwrap_or_default();
+        let failed = match use_of.failed {
+            0 => theme::dim(),
+            _ => Style::new().fg(Color::Yellow),
+        };
+        lines.push(Line::from(vec![
+            Span::raw(theme::INDENT),
+            Span::styled(format!("{name:width$}  "), Style::new().fg(Color::Blue)),
+            Span::styled(format!("{:>digits$} calls  ", use_of.calls), theme::dim()),
+            Span::styled(format!("{} failed  ", use_of.failed), failed),
+            Span::styled(format!("{} avg  ", short_duration(mean)), theme::dim()),
+            Span::styled(format!("{} out", usage::short(use_of.output)), theme::dim()),
+        ]));
+    }
 }
 
 /// Cells the busiest model's bar fills.
@@ -166,10 +222,11 @@ fn bar(turns: u64, most: u64) -> String {
 /// Rows in columns, who left-aligned and the counts right, each cell in
 /// its colour: models blue, agents cyan as a subagent's prompt is, turn
 /// numbers and steps dim, the cache share green from half on and yellow
-/// under it, prices magenta. The totals row is bold.
-fn styled(rows: &[[String; 6]]) -> Vec<Line<'static>> {
+/// under it, the write and think shares plain, prices magenta. The totals
+/// row is bold.
+fn styled(rows: &[Row]) -> Vec<Line<'static>> {
     let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..6).map(width).collect();
+    let widths: Vec<usize> = (0..usage::COLUMNS).map(width).collect();
     rows.iter()
         .map(|row| {
             let mut spans = vec![Span::raw(theme::INDENT)];
@@ -213,7 +270,7 @@ fn count(i: usize, cell: &str) -> Style {
     match i {
         1 => theme::dim(),
         3 => cached(cell),
-        5 => Style::new().fg(Color::Magenta),
+        7 => Style::new().fg(Color::Magenta),
         _ => Style::new(),
     }
 }
@@ -249,6 +306,8 @@ fn note(text: String) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use nth_protocol::Usage;
     use nth_session::Spend;
 
@@ -257,9 +316,10 @@ mod tests {
     fn text(
         ledger: &Ledger,
         turns: &[(&str, u64)],
+        tools: &[(String, ToolUse)],
         cost: &dyn Fn(&str) -> Option<Cost>,
     ) -> Vec<String> {
-        lines(ledger, turns, cost)
+        lines(ledger, turns, tools, cost)
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -267,13 +327,15 @@ mod tests {
 
     #[test]
     fn cells_are_coloured_by_what_they_say() {
-        let rows = [
+        let rows: [Row; 2] = [
             [
                 "#2 @explore kimi".to_string(),
                 "3 steps".into(),
                 "40k in".into(),
                 "80% cached".into(),
+                "40% written".into(),
                 "900 out".into(),
+                "60% think".into(),
                 "$0.38".into(),
             ],
             [
@@ -281,7 +343,9 @@ mod tests {
                 "1 step".into(),
                 "1k in".into(),
                 "cache ?".into(),
+                "write ?".into(),
                 "9 out".into(),
+                "think ?".into(),
                 String::new(),
             ],
         ];
@@ -305,7 +369,7 @@ mod tests {
 
     #[test]
     fn sections_carry_the_grey_bar() {
-        let lines = lines(&Ledger::default(), &[], &|_| None);
+        let lines = lines(&Ledger::default(), &[], &[], &|_| None);
         let bar = &lines[0].spans[0];
         assert_eq!(bar.content, theme::BAR);
         assert_eq!(bar.style.fg, Some(Color::DarkGray));
@@ -315,13 +379,16 @@ mod tests {
     #[test]
     fn an_empty_session_says_so() {
         assert_eq!(
-            text(&Ledger::default(), &[], &|_| None),
+            text(&Ledger::default(), &[], &[], &|_| None),
             [
                 "▎ current session",
                 "▎   nothing spent yet in this session",
                 "",
                 "▎ all time",
                 "▎   no turns yet",
+                "",
+                "▎ all time tools",
+                "▎   no tool calls yet",
             ]
         );
     }
@@ -337,6 +404,7 @@ mod tests {
                 output: 20_000,
                 cache_read: Some(800_000),
                 cache_write: None,
+                reasoning: None,
             },
         );
         let mut theirs = Spend::new("kimi", Some("explore".into()));
@@ -357,23 +425,27 @@ mod tests {
         };
 
         assert_eq!(
-            text(&ledger, &[], &cost),
+            text(&ledger, &[], &[], &cost),
             [
                 "▎ current session",
-                "▎   all  4 steps  1.0M in  77% cached  20k out  $0.38+",
+                "▎   all  4 steps  1.0M in  77% cached  write ?  20k out  think ?  $0.38+",
+                "▎   $0.72 saved by caching",
                 "",
                 "▎ per model",
-                "▎   glm    1 step  1.0M in  80% cached  20k out  $0.38",
-                "▎   kimi  3 steps   40k in     cache ?  900 out",
+                "▎   glm    1 step  1.0M in  80% cached  write ?  20k out  think ?  $0.38",
+                "▎   kimi  3 steps   40k in     cache ?  write ?  900 out  think ?",
                 "",
                 "▎ per turn",
-                "▎   #1 glm             1 step  1.0M in  80% cached  20k out  $0.38",
-                "▎   #2 @explore kimi  3 steps   40k in     cache ?  900 out",
+                "▎   #1 glm             1 step  1.0M in  80% cached  write ?  20k out  think ?  $0.38",
+                "▎   #2 @explore kimi  3 steps   40k in     cache ?  write ?  900 out  think ?",
                 "▎ ",
                 "▎   prices are list-price estimates from models.dev, whatever your plan bills",
                 "",
                 "▎ all time",
                 "▎   no turns yet",
+                "",
+                "▎ all time tools",
+                "▎   no tool calls yet",
             ]
         );
     }
@@ -381,11 +453,46 @@ mod tests {
     #[test]
     fn graphs_the_turns_on_each_model() {
         let turns = [("glm", 120), ("kimi", 30), ("qwen", 1)];
-        let text = text(&Ledger::default(), &turns, &|_| None);
+        let text = text(&Ledger::default(), &turns, &[], &|_| None);
         assert_eq!(text[3], "▎ all time", "after the empty session's line");
         let row = |model: &str, bar: &str, turns: &str| format!("▎   {model}  {bar:30}  {turns}");
         assert_eq!(text[4], row("glm ", &"█".repeat(30), "120"));
         assert_eq!(text[5], row("kimi", "███████▌", " 30"));
         assert_eq!(text[6], row("qwen", "▎", "  1"), "every used model shows");
+    }
+
+    #[test]
+    fn tool_totals_are_graphed_all_time() {
+        let tools = [
+            (
+                "read".to_string(),
+                ToolUse {
+                    calls: 12,
+                    failed: 1,
+                    duration: Duration::from_secs(6),
+                    output: 40_000,
+                },
+            ),
+            (
+                "bash".to_string(),
+                ToolUse {
+                    calls: 3,
+                    failed: 0,
+                    duration: Duration::from_secs(3),
+                    output: 900,
+                },
+            ),
+        ];
+        let text = text(&Ledger::default(), &[], &tools, &|_| None);
+        let at = text
+            .iter()
+            .position(|line| line.contains("all time tools"))
+            .expect("a tools section");
+        let read = &text[at + 1];
+        assert!(read.contains("read"), "{read:?}");
+        assert!(read.contains("12 calls"), "{read:?}");
+        assert!(read.contains("1 failed"), "{read:?}");
+        assert!(read.contains("500ms avg"), "{read:?}");
+        assert!(read.contains("40k out"), "{read:?}");
     }
 }

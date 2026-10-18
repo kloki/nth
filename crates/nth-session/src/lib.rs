@@ -15,5 +15,5 @@ pub use store::{Spending, Store, Summary};
 pub use subagent::{SubagentEvent, SubagentId, Subagents, Task, TaskStop};
 pub use system_prompt::system_prompt;
 pub use tokio_util::sync::CancellationToken;
-pub use usage::{Ledger, Price, Spend, Total};
+pub use usage::{Ledger, Price, Spend, ToolUse, Total};
 pub use work::Work;

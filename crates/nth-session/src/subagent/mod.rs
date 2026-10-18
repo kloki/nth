@@ -164,6 +164,12 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.compaction = ctx.compaction;
     session.parent = ctx.session.parse().ok();
     session.takes_images = takes_images;
+    // An agent's own model is not listed, so it prices by the live listing,
+    // as it takes images by default.
+    session.cost = match &agent.model {
+        Some(_) => None,
+        None => picked.and_then(|subagent| subagent.cost),
+    };
     // Its images go with its parent's, so deleting the parent deletes them.
     session.images = ctx.images.clone();
     session
@@ -527,6 +533,7 @@ pub(crate) mod tests {
                 context_window: Some(100_000),
                 max_output: Some(8_000),
                 takes_images: Some(false),
+                cost: None,
             }),
             images: Some("/data/images/parent".into()),
             ..ToolContext::new("/repo".into())

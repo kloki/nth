@@ -3,13 +3,13 @@
 
 mod render;
 
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result, anyhow};
 use nth_icons::icons;
 use nth_protocol::{FrontEnd, Mode, Provider};
 use nth_session::{
-    CancellationToken, Price, Store, Subagents, Total,
+    CancellationToken, Price, Spend, Store, Subagents, Total,
     usage::{self, short, steps},
 };
 use owo_colors::OwoColorize;
@@ -85,11 +85,10 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
     turn?;
 
     let elapsed = started.elapsed();
-    let models = usage::by_model(session.usage.since(spends));
-    let spent: Total = models.values().sum();
+    let spent = usage::total(session.usage.since(spends));
     let price = match spent.steps {
         0 => None,
-        _ => price(provider.as_ref(), models).await,
+        _ => price(provider.as_ref(), session.usage.since(spends)).await,
     };
     eprintln!(
         "{} {}",
@@ -108,9 +107,9 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
 
 /// What the run cost at the catalogue's prices; `None` when the listing
 /// is slow or knows none of the models.
-async fn price(provider: &dyn Provider, models: BTreeMap<&str, Total>) -> Option<Price> {
+async fn price(provider: &dyn Provider, spends: &[Spend]) -> Option<Price> {
     let listing = crate::usage::listing(provider).await?;
-    usage::price(models, |model| listing.cost_of(model))
+    usage::price_spends(spends, &|model| listing.cost_of(model))
 }
 
 /// `12 steps · 1.2M in · 82% cached · 40k out · $3.10`; the cache share
@@ -141,6 +140,7 @@ mod tests {
                 output: 40_000,
                 cache_read: Some(984_000),
                 cache_write: None,
+                reasoning: None,
             },
         };
         let price = Price {

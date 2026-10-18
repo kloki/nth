@@ -7,8 +7,8 @@ use std::{
 
 use nth_context::Context;
 use nth_protocol::{
-    AssistantMessage, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm, Tool,
-    ToolCall, ToolContext, Usage, Workdir, Writable,
+    AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
+    Tool, ToolCall, ToolContext, Usage, Workdir, Writable,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -99,6 +99,10 @@ pub struct Session {
     /// turn an image into a note for a model that takes none.
     #[serde(skip, default = "yes")]
     pub takes_images: bool,
+    /// What the model costs, when the front-end's listing says; stamped onto
+    /// every spend it records so the price survives without a listing.
+    #[serde(skip)]
+    pub cost: Option<Cost>,
     /// The folder the read tool keeps image files in, which the front-end
     /// sets from the store; a subagent's is its parent's. Not saved.
     #[serde(skip)]
@@ -162,6 +166,7 @@ impl Session {
             max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
             takes_images: true,
+            cost: None,
             images: None,
             subagent_llm: None,
             clerk_llm: None,
@@ -356,6 +361,7 @@ impl Session {
         self.updated_at = SystemTime::now();
         let ctx = self.tool_context(front_end);
         let mut spend = Spend::new(&self.model, None);
+        spend.cost = self.cost;
         let session_id = self.id.to_string();
         let parent_session_id = self.parent.map(|p| p.to_string());
         let result = Turn {
@@ -444,6 +450,7 @@ impl Session {
     ) -> Result<(), Error> {
         let ctx = self.tool_context(front_end);
         let mut spend = Spend::new(&self.model, None);
+        spend.cost = self.cost;
         let session_id = self.id.to_string();
         let parent_session_id = self.parent.map(|p| p.to_string());
         // A compaction is not a turn; its usage is the summary request's,
