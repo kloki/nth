@@ -259,6 +259,7 @@ pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provi
         session.set_limits(context_window, max_output);
     }
     session.takes_images = takes_images(&listing, &session.model).unwrap_or(true);
+    session.cost = listing.cost_of(&session.model);
     for picked in [&mut session.subagent_llm, &mut session.clerk_llm]
         .into_iter()
         .flatten()
@@ -268,6 +269,7 @@ pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provi
             picked.max_output = max_output;
         }
         picked.takes_images = takes_images(&listing, &picked.llm.model);
+        picked.cost = listing.cost_of(&picked.llm.model);
     }
 }
 

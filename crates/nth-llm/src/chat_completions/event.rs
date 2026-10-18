@@ -25,6 +25,8 @@ pub struct Usage {
     pub completion_tokens: u64,
     /// OpenAI's place, which most compatible servers copy.
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// OpenAI's place for the output's breakdown, which some track.
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
     /// DeepSeek's.
     pub prompt_cache_hit_tokens: Option<u64>,
     /// Moonshot's, at the top level.
@@ -36,6 +38,12 @@ pub struct PromptTokensDetails {
     pub cached_tokens: Option<u64>,
 }
 
+#[derive(Debug, Default, PartialEq, Deserialize)]
+pub struct CompletionTokensDetails {
+    /// Of `completion_tokens`, what was spent thinking.
+    pub reasoning_tokens: Option<u64>,
+}
+
 impl Usage {
     /// What was read from the cache, wherever the server put it; `None`
     /// when it put it nowhere.
@@ -45,6 +53,14 @@ impl Usage {
             .and_then(|details| details.cached_tokens)
             .or(self.prompt_cache_hit_tokens)
             .or(self.cached_tokens)
+    }
+
+    /// What was spent thinking, when the server breaks `completion_tokens`
+    /// up; `None` when it did not say.
+    pub fn reasoning(&self) -> Option<u64> {
+        self.completion_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens)
     }
 }
 

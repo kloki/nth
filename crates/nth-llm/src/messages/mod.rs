@@ -305,6 +305,8 @@ impl<S> State<S> {
                     output: self.usage.output(),
                     cache_read: self.usage.cache_read_input_tokens,
                     cache_write: self.usage.cache_creation_input_tokens,
+                    // Anthropic folds thinking into the output count.
+                    reasoning: None,
                 })));
             }
             event::Event::MessageStop => return true,
@@ -390,6 +392,7 @@ mod tests {
                     output: 120,
                     cache_read: Some(600),
                     cache_write: Some(0),
+                    reasoning: None,
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "toolu_01A".into(),

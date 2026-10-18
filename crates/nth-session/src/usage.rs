@@ -2,9 +2,12 @@
 //! requests used as the provider reported them, kept in the session's
 //! [`Ledger`] and saved with it.
 
-use std::{collections::BTreeMap, time::SystemTime};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, SystemTime},
+};
 
-use nth_protocol::{Cost, Usage};
+use nth_protocol::{Cost, Message, Usage};
 use serde::{Deserialize, Serialize};
 
 /// One turn's requests: on which model, for whom, how many, and the tokens
@@ -20,6 +23,48 @@ pub struct Spend {
     pub tokens: Usage,
     /// When the turn started.
     pub at: SystemTime,
+    /// What the model's tokens cost, when the listing said; `None` prices
+    /// them by the front-end's live listing at display time.
+    #[serde(default)]
+    pub cost: Option<Cost>,
+    /// Every tool call the turn ran, by name, so a spend carries what it
+    /// did, not only what it cost.
+    #[serde(default)]
+    pub tools: BTreeMap<String, ToolUse>,
+}
+
+/// What the calls of one tool used: how many ran, how many failed, how long
+/// they took added up, and how much output they returned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolUse {
+    pub calls: u32,
+    pub failed: u32,
+    pub duration: Duration,
+    pub output: u64,
+}
+
+impl std::ops::AddAssign for ToolUse {
+    fn add_assign(&mut self, other: Self) {
+        self.calls += other.calls;
+        self.failed += other.failed;
+        self.duration += other.duration;
+        self.output += other.output;
+    }
+}
+
+/// `SystemTime` has none, so the epoch stands in for a spend with no turn.
+impl Default for Spend {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            agent: None,
+            steps: 0,
+            tokens: Usage::default(),
+            at: SystemTime::UNIX_EPOCH,
+            cost: None,
+            tools: BTreeMap::new(),
+        }
+    }
 }
 
 impl Spend {
@@ -27,10 +72,41 @@ impl Spend {
         Self {
             model: model.into(),
             agent,
-            steps: 0,
-            tokens: Usage::default(),
             at: SystemTime::now(),
+            ..Self::default()
         }
+    }
+
+    /// Tallies one finished call of `name`: whether it failed, the time it
+    /// took and the size of what it returned.
+    pub fn tool(&mut self, name: &str, result: &Message, took: Duration) {
+        let use_of = self.tools.entry(name.to_string()).or_default();
+        use_of.calls += 1;
+        use_of.duration += took;
+        if let Message::ToolResult { content, .. } = result {
+            use_of.output += content.len() as u64;
+            if content.starts_with("Error:") {
+                use_of.failed += 1;
+            }
+        }
+    }
+
+    /// What this spend cost at its stored rates, else at what `cost` knows
+    /// for its model; `None` when neither prices it.
+    pub fn price(&self, cost: &dyn Fn(&str) -> Option<Cost>) -> Option<Price> {
+        let rates = self.cost.or_else(|| cost(&self.model))?;
+        Some(Price {
+            dollars: rates.price(self.tokens),
+            partial: false,
+        })
+    }
+
+    /// What the cache saved this spend, at its stored rates else `cost`'s
+    /// for its model.
+    pub fn saved(&self, cost: &dyn Fn(&str) -> Option<Cost>) -> Option<f64> {
+        self.cost
+            .or_else(|| cost(&self.model))
+            .map(|rates| rates.saved(self.tokens))
     }
 }
 
@@ -113,10 +189,30 @@ impl Ledger {
 }
 
 impl Ledger {
-    /// What it all cost at the prices `cost` knows per model; `None` when
-    /// it knows none of the models spent on.
+    /// What it all cost at its spends' stored rates, else what `cost` knows
+    /// per model; `None` when none of it can be priced.
     pub fn price(&self, cost: impl Fn(&str) -> Option<Cost>) -> Option<Price> {
-        price(self.by_model(), cost)
+        price_spends(self.spends(), &cost)
+    }
+
+    /// What the spends on `model` cost, by the same rules.
+    pub fn price_of(&self, model: &str, cost: impl Fn(&str) -> Option<Cost>) -> Option<Price> {
+        price_spends(
+            self.spends().iter().filter(|spend| spend.model == model),
+            &cost,
+        )
+    }
+
+    /// What the cache saved it all, at the spends' stored rates else
+    /// `cost`'s; `None` when nothing could be priced.
+    pub fn saved(&self, cost: impl Fn(&str) -> Option<Cost>) -> Option<f64> {
+        let mut sum: Option<f64> = None;
+        for spend in self.spends().iter().filter(|spend| spend.steps > 0) {
+            if let Some(saved) = spend.saved(&cost) {
+                *sum.get_or_insert(0.0) += saved;
+            }
+        }
+        sum
     }
 }
 
@@ -129,20 +225,38 @@ pub fn by_model(spends: &[Spend]) -> BTreeMap<&str, Total> {
     models
 }
 
-/// What spends cost at the prices `cost` knows per model; `None` when it
-/// knows none of them.
-pub fn price<'a>(
-    totals: impl IntoIterator<Item = (&'a str, Total)>,
-    cost: impl Fn(&str) -> Option<Cost>,
+/// Steps and tokens of `spends` added up.
+pub fn total<'a>(spends: impl IntoIterator<Item = &'a Spend>) -> Total {
+    let mut total = Total::default();
+    spends.into_iter().for_each(|spend| total.add(spend));
+    total
+}
+
+/// The tools every spend called, added up across `spends`, by name.
+pub fn tools<'a>(spends: impl IntoIterator<Item = &'a Spend>) -> BTreeMap<&'a str, ToolUse> {
+    let mut tools = BTreeMap::<&str, ToolUse>::new();
+    for spend in spends {
+        for (name, use_of) in &spend.tools {
+            *tools.entry(name).or_default() += *use_of;
+        }
+    }
+    tools
+}
+
+/// What `spends` cost at their stored rates, else what `cost` knows per
+/// model; `None` when none of them can be priced.
+pub fn price_spends<'a>(
+    spends: impl IntoIterator<Item = &'a Spend>,
+    cost: &dyn Fn(&str) -> Option<Cost>,
 ) -> Option<Price> {
     let mut sum: Option<Price> = None;
     let mut unpriced = false;
-    for (model, total) in totals {
-        if total.steps == 0 {
+    for spend in spends {
+        if spend.steps == 0 {
             continue;
         }
-        match cost(model) {
-            Some(cost) => sum.get_or_insert_default().dollars += cost.price(total.tokens),
+        match spend.price(cost) {
+            Some(price) => sum.get_or_insert_default().dollars += price.dollars,
             None => unpriced = true,
         }
     }
@@ -176,25 +290,48 @@ impl Extend<Spend> for Ledger {
 }
 
 /// One row of a usage table: who spent it, its requests, tokens in, the
-/// share read from the cache, tokens out and its price when known.
-pub fn row(who: &str, total: Total, price: Option<Price>) -> [String; 6] {
+/// share read from the cache, the share written to it, tokens out, the
+/// share spent thinking, and its price when known.
+pub fn row(who: &str, total: Total, price: Option<Price>) -> Row {
     let tokens = total.tokens;
     let cached = match tokens.cached_share() {
         Some(share) => format!("{:.0}% cached", share * 100.0),
         None => "cache ?".into(),
+    };
+    let written = match tokens.cache_write {
+        Some(write) if tokens.input > 0 => {
+            format!(
+                "{:.0}% written",
+                (write as f64 / tokens.input as f64).min(1.0) * 100.0
+            )
+        }
+        Some(_) => "0% written".into(),
+        None => "write ?".into(),
+    };
+    let think = match tokens.reasoning_share() {
+        Some(share) => format!("{:.0}% think", share * 100.0),
+        None => "think ?".into(),
     };
     [
         who.to_string(),
         steps(total.steps),
         format!("{} in", short(tokens.input)),
         cached,
+        written,
         format!("{} out", short(tokens.output)),
+        think,
         price.map(|price| price.to_string()).unwrap_or_default(),
     ]
 }
 
+/// Cells a usage row has, matching [`row`].
+pub const COLUMNS: usize = 8;
+
+/// One cell of a usage row.
+pub type Row = [String; COLUMNS];
+
 /// Rows as text in columns: who left-aligned, the counts right.
-pub fn columns(rows: &[[String; 6]]) -> Vec<String> {
+pub fn columns(rows: &[Row]) -> Vec<String> {
     padded(rows)
         .iter()
         .map(|row| row.join("  ").trim_end().to_string())
@@ -203,9 +340,9 @@ pub fn columns(rows: &[[String; 6]]) -> Vec<String> {
 
 /// Each row's cells padded to their column's width, who left-aligned and
 /// the counts right, for a front-end that styles them one by one.
-pub fn padded(rows: &[[String; 6]]) -> Vec<[String; 6]> {
+pub fn padded(rows: &[Row]) -> Vec<Row> {
     let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
-    let widths: [usize; 6] = std::array::from_fn(width);
+    let widths: [usize; COLUMNS] = std::array::from_fn(width);
     rows.iter()
         .map(|row| {
             std::array::from_fn(|i| match i {
@@ -260,6 +397,16 @@ pub fn short(tokens: u64) -> String {
     }
 }
 
+/// A duration short enough for a table cell: `340ms`, `1.2s`, `2m4s`.
+pub fn short_duration(duration: Duration) -> String {
+    let secs = duration.as_secs_f64();
+    match secs {
+        s if s < 1.0 => format!("{}ms", duration.as_millis()),
+        s if s < 60.0 => format!("{s:.1}s"),
+        _ => format!("{}m{}s", duration.as_secs() / 60, duration.as_secs() % 60),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +417,7 @@ mod tests {
             output,
             cache_read,
             cache_write: None,
+            reasoning: None,
         }
     }
 
@@ -315,11 +463,41 @@ mod tests {
         let mut ledger = Ledger::default();
         let turn = ledger.begin("glm", Some("explore".into()));
         ledger.add(turn, usage(100, 10, Some(5)));
+        let mut spend = Spend::new("kimi", None);
+        spend.steps = 1;
+        spend.tokens = usage(50, 5, None);
+        spend.cost = Some(Cost {
+            input: 1.0,
+            ..Cost::default()
+        });
+        spend.tools.insert(
+            "read".into(),
+            ToolUse {
+                calls: 2,
+                failed: 1,
+                duration: Duration::from_millis(120),
+                output: 30,
+            },
+        );
+        ledger.record(spend);
+
         let json = serde_json::to_string(&ledger).expect("serializes");
         assert_eq!(
             serde_json::from_str::<Ledger>(&json).expect("loads"),
             ledger
         );
+    }
+
+    #[test]
+    fn an_old_spend_loads_without_cost_tools_or_reasoning() {
+        let json = r#"[{"model":"glm","agent":null,"steps":1,
+            "tokens":{"input":10,"output":2},
+            "at":{"secs_since_epoch":0,"nanos_since_epoch":0}}]"#;
+        let ledger: Ledger = serde_json::from_str(json).expect("loads");
+        let spend = &ledger.spends()[0];
+        assert!(spend.tools.is_empty());
+        assert_eq!(spend.cost, None);
+        assert_eq!(spend.tokens.reasoning, None);
     }
 
     #[test]
@@ -351,5 +529,101 @@ mod tests {
         assert_eq!(short(4_250), "4.2k");
         assert_eq!(short(40_000), "40k");
         assert_eq!(short(10_527_843), "10.5M");
+    }
+
+    #[test]
+    fn short_durations() {
+        assert_eq!(short_duration(Duration::from_millis(340)), "340ms");
+        assert_eq!(short_duration(Duration::from_millis(1_250)), "1.2s");
+        assert_eq!(short_duration(Duration::from_secs(124)), "2m4s");
+    }
+
+    #[test]
+    fn a_stored_price_wins_over_the_listing() {
+        let mut spend = Spend::new("glm", None);
+        spend.steps = 1;
+        spend.tokens = usage(1_000_000, 0, None);
+        spend.cost = Some(Cost {
+            input: 1.0,
+            ..Cost::default()
+        });
+        let mut ledger = Ledger::default();
+        ledger.record(spend);
+
+        let live = |_: &str| {
+            Some(Cost {
+                input: 9.0,
+                ..Cost::default()
+            })
+        };
+        assert_eq!(ledger.price(live).expect("priced").dollars, 1.0);
+        assert_eq!(
+            ledger.price(|_| None).expect("stored prices it").dollars,
+            1.0,
+            "no listing needed"
+        );
+    }
+
+    #[test]
+    fn saved_sums_the_cache_discount() {
+        let mut spend = Spend::new("glm", None);
+        spend.steps = 1;
+        spend.tokens = usage(1_000_000, 0, Some(500_000));
+        spend.cost = Some(Cost {
+            input: 2.0,
+            cache_read: Some(0.5),
+            ..Cost::default()
+        });
+        let mut ledger = Ledger::default();
+        ledger.record(spend);
+
+        let saved = ledger.saved(|_| None).expect("priced");
+        assert!((saved - 0.75).abs() < 1e-9, "{saved}");
+    }
+
+    #[test]
+    fn tools_add_up_across_spends() {
+        let result = |id: &str, content: &str| Message::ToolResult {
+            call_id: id.into(),
+            content: content.into(),
+            images: Vec::new(),
+        };
+        let mut a = Spend::new("glm", None);
+        a.steps = 1;
+        a.tool("read", &result("1", "hi"), Duration::from_millis(100));
+        a.tool(
+            "bash",
+            &result("2", "Error: nope"),
+            Duration::from_millis(300),
+        );
+        let mut b = Spend::new("glm", None);
+        b.steps = 1;
+        b.tool("read", &result("3", "yo"), Duration::from_millis(200));
+
+        let totals = tools([&a, &b]);
+        let read = totals["read"];
+        assert_eq!((read.calls, read.failed, read.output), (2, 0, 4));
+        assert_eq!(read.duration, Duration::from_millis(300));
+        let bash = totals["bash"];
+        assert_eq!((bash.calls, bash.failed), (1, 1));
+    }
+
+    #[test]
+    fn a_row_shows_the_written_and_think_shares() {
+        let total = Total {
+            steps: 1,
+            tokens: Usage {
+                input: 1_000,
+                output: 100,
+                cache_read: Some(800),
+                cache_write: Some(100),
+                reasoning: Some(60),
+            },
+        };
+        let row = row("all", total, None);
+        assert_eq!(row[3], "80% cached");
+        assert_eq!(row[4], "10% written");
+        assert_eq!(row[6], "60% think");
+        assert_eq!(row[7], "", "no price, no cell");
     }
 }

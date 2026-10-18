@@ -384,6 +384,7 @@ impl App {
             session.set_limits(context_window, max_output);
         }
         session.takes_images = self.takes_images_of(&self.model).unwrap_or(true);
+        session.cost = self.cost_of(&self.model);
         session.effort = self.effort;
         session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| self.picked(llm));
         session.clerk_llm = self.mode_llms.clerk.clone().map(|llm| self.picked(llm));
@@ -395,6 +396,7 @@ impl App {
         let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
         SubagentLlm {
             takes_images: self.takes_images_of(&llm.model),
+            cost: self.cost_of(&llm.model),
             llm,
             context_window,
             max_output,
@@ -503,6 +505,10 @@ impl App {
         }
         // A command of yours is not the model answering: nothing to say.
         self.notify_turn_ended(shell || compact, error, elapsed);
+        // The turn may have called tools; the all-time totals follow.
+        if matches!(self.content.active(), super::Tab::Usage) {
+            self.load_tools();
+        }
     }
 
     /// A worktree tool moved the session: the place, git state and files
