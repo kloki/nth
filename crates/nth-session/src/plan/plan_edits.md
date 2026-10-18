@@ -3,7 +3,7 @@ The user edited a copy of the plan in their editor. The diff above runs from the
 Treat these edits as review feedback on the plan, not as the new plan. The user rarely rewrites the plan themselves; mostly they leave comments in it. Comments can look like any of these:
 
 - an HTML comment: `<!-- why not reuse the Scrollable trait here? -->`
-- a line starting with `>>`: `>> this step is too big, split it`
+- a line starting with `> >`: `> > this step is too big, split it`
 - a bracketed note: `[user: which crate does this go in?]` or `[?]`, `[no]`, `TODO:`
 - a plain question or remark added on its own line, or after a step
 - a struck or deleted step, a reordered list, or a reworded line
