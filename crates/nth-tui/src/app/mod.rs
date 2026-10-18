@@ -63,7 +63,7 @@ use nth_protocol::{
     Monitors, Provider, Show, Tool, Usage, monitor_log_dir,
 };
 use nth_session::{
-    Session, Store, Subagents, Summary, store,
+    Session, Store, Subagents, Summary, ToolUse, store,
     subagent::{SubagentEvent, SubagentId},
 };
 pub use profiles::Profile;
@@ -169,6 +169,11 @@ pub struct App {
     content: Content,
     diagnostics: Diagnostics,
     usage_view: UsageView,
+    /// Every saved session's tool totals, most called first; empty until
+    /// the usage tab is opened.
+    all_time_tools: Vec<(String, ToolUse)>,
+    /// Reads every saved session's tool totals for the usage tab.
+    tools_lookup: Job<Result<Vec<(String, ToolUse)>, store::Error>>,
     /// What checks the tools' writes, for the diagnostics tab to look up;
     /// `None` when nothing does.
     checkers: Option<Checkers>,
@@ -412,6 +417,7 @@ enum Step {
     PlanRead(Result<Option<String>, JoinError>),
     WorkRead(Result<(PathBuf, Option<nth_session::work::Plan>), JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
+    ToolsFound(Result<Result<Vec<(String, ToolUse)>, store::Error>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     RtkFound(Result<Option<PathBuf>, JoinError>),
     BrowserFound(Result<Option<PathBuf>, JoinError>),
@@ -473,6 +479,8 @@ impl App {
             content: Content::default(),
             diagnostics: Diagnostics::default(),
             usage_view: UsageView::default(),
+            all_time_tools: Vec::new(),
+            tools_lookup: Job::default(),
             checkers: None,
             servers_lookup: Job::default(),
             formatters_lookup: Job::default(),
@@ -681,6 +689,7 @@ impl App {
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
                 plan = self.work_reading.join() => Step::WorkRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
+                tools = self.tools_lookup.join() => Step::ToolsFound(tools),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
                 browser = self.browser_lookup.join() => Step::BrowserFound(browser),
@@ -740,6 +749,9 @@ impl App {
                 }
                 Step::ServersFound(servers) => {
                     self.diagnostics.servers = Some(servers.context("finding servers failed")?)
+                }
+                Step::ToolsFound(tools) => {
+                    self.tools_found(tools.context("reading tool usage failed")?)
                 }
                 Step::FormattersFound(formatters) => {
                     self.diagnostics.formatters =
@@ -964,6 +976,7 @@ impl App {
                     area,
                     &self.spent.ledger,
                     &self.llm_usage.ranked(),
+                    &self.all_time_tools,
                     &cost,
                 );
                 if let Some(state) = self.usage_view.scrollbar() {
@@ -1110,8 +1123,47 @@ impl App {
     /// time it opens, since servers and formatters may have been installed
     /// since.
     pub(super) fn open_content(&mut self, tab: Tab) {
-        if self.content.open(tab) && tab == Tab::Diagnostics {
-            self.diagnose();
+        if self.content.open(tab) {
+            match tab {
+                Tab::Diagnostics => self.diagnose(),
+                Tab::Usage => self.load_tools(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Re-reads every saved session's tool totals, for the usage tab's
+    /// all-time section; the store's absence leaves what is shown.
+    fn load_tools(&mut self) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        if self.tools_lookup.is_running() {
+            return;
+        }
+        self.tools_lookup.start(|_| {
+            tokio::spawn(async move {
+                let spending = store.spending().await?;
+                let spends: Vec<&nth_session::Spend> = spending
+                    .iter()
+                    .flat_map(|session| session.usage.spends())
+                    .collect();
+                let mut tools: Vec<(String, ToolUse)> = nth_session::usage::tools(spends)
+                    .into_iter()
+                    .map(|(name, use_of)| (name.to_string(), use_of))
+                    .collect();
+                tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls).then_with(|| a.0.cmp(&b.0)));
+                Ok(tools)
+            })
+        });
+    }
+
+    /// The tool totals arrived; a failure keeps what was already shown and
+    /// says why.
+    fn tools_found(&mut self, tools: Result<Vec<(String, ToolUse)>, store::Error>) {
+        match tools {
+            Ok(tools) => self.all_time_tools = tools,
+            Err(e) => self.hint = Some(format!("tool usage: {e}").into()),
         }
     }
 }

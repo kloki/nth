@@ -291,6 +291,7 @@ impl<S> State<S> {
                 cache_write: usage
                     .input_tokens_details
                     .and_then(|d| d.cache_write_tokens),
+                reasoning: usage.output_tokens_details.and_then(|d| d.reasoning_tokens),
             })));
         }
     }
@@ -356,6 +357,7 @@ mod tests {
                     output: 225,
                     cache_read: Some(1152),
                     cache_write: Some(0),
+                    reasoning: Some(142),
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "call_y8Tp".into(),

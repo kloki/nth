@@ -54,13 +54,16 @@ pub struct Llm {
 
 /// What subagents run on when the front-end picked it apart from the
 /// parent's model, with that model's limits for their compaction trigger.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SubagentLlm {
     pub llm: Llm,
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
     /// Whether its model takes images; `None` when the listing does not say.
     pub takes_images: Option<bool>,
+    /// What its model costs, when the listing says; `None` prices it by the
+    /// front-end's live listing at display time.
+    pub cost: Option<Cost>,
 }
 
 /// How hard a reasoning model thinks before it answers. The levels are
@@ -164,6 +167,9 @@ pub struct Usage {
     /// Of `input`, what was written to the prompt cache; `None` when the
     /// provider did not say.
     pub cache_write: Option<u64>,
+    /// Of `output`, the tokens spent thinking; `None` when the provider did
+    /// not say, which is not the same as none.
+    pub reasoning: Option<u64>,
 }
 
 impl Usage {
@@ -179,6 +185,13 @@ impl Usage {
         let read = self.cache_read?;
         (self.input > 0).then(|| (read as f64 / self.input as f64).min(1.0))
     }
+
+    /// The share of `output` spent thinking, from 0 to 1; `None` when the
+    /// provider did not say or nothing was written.
+    pub fn reasoning_share(self) -> Option<f64> {
+        let reasoning = self.reasoning?;
+        (self.output > 0).then(|| (reasoning as f64 / self.output as f64).min(1.0))
+    }
 }
 
 /// A cache count the provider left out adds nothing, but a sum stays
@@ -193,6 +206,7 @@ impl std::ops::AddAssign for Usage {
         self.output += other.output;
         self.cache_read = add(self.cache_read, other.cache_read);
         self.cache_write = add(self.cache_write, other.cache_write);
+        self.reasoning = add(self.reasoning, other.reasoning);
     }
 }
 
@@ -219,6 +233,14 @@ impl Cost {
             + millions(read, self.cache_read.unwrap_or(self.input))
             + millions(write, self.cache_write.unwrap_or(self.input))
             + millions(usage.output, self.output)
+    }
+
+    /// What the cache read saved against billing it as plain input, in
+    /// dollars; `0` when the model has no cheaper cache price.
+    pub fn saved(&self, usage: Usage) -> f64 {
+        let read = usage.cache_read.unwrap_or(0);
+        let cached = self.cache_read.unwrap_or(self.input);
+        (read as f64 * (self.input - cached).max(0.0)) / 1e6
     }
 }
 
@@ -369,10 +391,69 @@ mod tests {
             output: 100_000,
             cache_read: Some(800_000),
             cache_write: Some(100_000),
+            reasoning: None,
         };
         // 100k fresh and 100k written at 2, 800k read at 0.2, 100k out at 10.
         let price = cost.price(usage);
         assert!((price - (0.2 + 0.2 + 0.16 + 1.0)).abs() < 1e-9, "{price}");
+    }
+
+    #[test]
+    fn a_cache_saving_is_the_read_billed_at_its_cheaper_rate() {
+        let cost = Cost {
+            input: 2.0,
+            output: 10.0,
+            cache_read: Some(0.2),
+            cache_write: None,
+        };
+        let usage = Usage {
+            input: 1_000_000,
+            cache_read: Some(800_000),
+            ..Usage::default()
+        };
+        // 800k read at 0.2 instead of 2.0.
+        assert!(
+            (cost.saved(usage) - 1.44).abs() < 1e-9,
+            "{}",
+            cost.saved(usage)
+        );
+
+        // A model with no cheaper cache price saves nothing.
+        let plain = Cost {
+            input: 2.0,
+            ..Cost::default()
+        };
+        assert_eq!(plain.saved(usage), 0.0);
+    }
+
+    #[test]
+    fn a_reasoning_count_stays_unknown_until_one_is_reported() {
+        let mut sum = Usage {
+            output: 10,
+            ..Usage::default()
+        };
+        sum += Usage {
+            output: 10,
+            ..Usage::default()
+        };
+        assert_eq!(sum.reasoning, None);
+        sum += Usage {
+            output: 10,
+            reasoning: Some(6),
+            ..Usage::default()
+        };
+        assert_eq!(sum.reasoning, Some(6));
+    }
+
+    #[test]
+    fn reasoning_is_a_share_of_output() {
+        let usage = Usage {
+            output: 100,
+            reasoning: Some(40),
+            ..Usage::default()
+        };
+        assert_eq!(usage.reasoning_share(), Some(0.4));
+        assert_eq!(Usage::default().reasoning_share(), None);
     }
 
     #[test]

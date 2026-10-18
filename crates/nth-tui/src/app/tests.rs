@@ -357,6 +357,7 @@ fn the_status_bar_shows_what_the_session_spent() {
         output: 10,
         cache_read: Some(1_000),
         cache_write: None,
+        reasoning: None,
     }));
     // 1000 fresh at 1000/M, 1000 read at 100/M, 20 out at 10000/M.
     assert!(
@@ -458,6 +459,7 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
         output: 30,
         cache_read: Some(1_500),
         cache_write: None,
+        reasoning: None,
     }));
     app.prompt.insert_str("/usage");
     app.submit();

@@ -268,6 +268,7 @@ where
                             cache_read: usage.cache_read(),
                             // No compatible server reports a cache write.
                             cache_write: None,
+                            reasoning: usage.reasoning(),
                         })))
                     }
                     event::Event::Done => {
@@ -388,6 +389,7 @@ mod tests {
                     output: 3,
                     cache_read: None,
                     cache_write: None,
+                    reasoning: None,
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "call_a".into(),
@@ -446,6 +448,7 @@ mod tests {
                     output: 58,
                     cache_read: Some(0),
                     cache_write: None,
+                    reasoning: None,
                 }),
                 StreamEvent::ToolCall(ToolCall {
                     id: "WeYavUuRu".into(),

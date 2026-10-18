@@ -13,7 +13,10 @@ mod stream;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
@@ -232,10 +235,19 @@ impl Turn<'_> {
             let (ctx, events, cancel) = (self.ctx, self.events, self.cancel);
             let answers = futures::future::join_all(calls.iter().map(|call| {
                 let tool = by_name.get(call.name.as_str()).copied();
-                run_call(tool, ctx, call, events, cancel)
+                async move {
+                    let began = Instant::now();
+                    let message = run_call(tool, ctx, call, events, cancel).await;
+                    (call, message, began.elapsed())
+                }
             }))
             .await;
-            self.messages.extend(answers);
+            // What each call did, before the results become history.
+            for (call, message, took) in &answers {
+                self.spend.tool(&call.name, message, *took);
+            }
+            self.messages
+                .extend(answers.into_iter().map(|(_, message, _)| message));
             if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
             }
