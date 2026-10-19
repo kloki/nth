@@ -26,6 +26,7 @@ pub enum Command {
     Diagnostics,
     Exit,
     Models,
+    Plan,
     Resume,
     Settings,
     Usage,
@@ -33,7 +34,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 14] = [
+    const ALL: [Command; 15] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
@@ -44,6 +45,7 @@ impl Command {
         Command::Diagnostics,
         Command::Exit,
         Command::Models,
+        Command::Plan,
         Command::Resume,
         Command::Settings,
         Command::Usage,
@@ -62,6 +64,7 @@ impl Command {
             Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
             Command::Models => "models",
+            Command::Plan => "plan",
             Command::Resume => "resume",
             Command::Settings => "settings",
             Command::Usage => "usage",
@@ -81,6 +84,7 @@ impl Command {
             Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
             Command::Models => "switch model and effort",
+            Command::Plan => "show the plan",
             Command::Resume => "reopen a past session",
             Command::Settings => "toggle thinking and tool output",
             Command::Usage => "show what the session spent",
@@ -283,6 +287,7 @@ mod tests {
                 "diagnostics",
                 "exit",
                 "models",
+                "plan",
                 "resume",
                 "settings",
                 "usage",

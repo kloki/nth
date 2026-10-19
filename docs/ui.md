@@ -60,7 +60,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 | ctrl+t           | Shows the next tab, from the last back to chat                                                              |
 | ctrl+shift+t     | Shows the previous tab, from chat back to the last                                                          |
 | ctrl+1 … ctrl+4  | Shows that tab; chat is always 1                                                                            |
-| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the plan while there is one    |
+| ctrl+q, `/close` | Closes the showing tab, unless it is chat, a monitor, a running subagent, or the work tab with a plan       |
 | ctrl+w           | On a monitor's tab: stops it, and the tab closes. On a subagent's: stops it, or closes the tab once stopped |
 | esc              | On a subagent's tab: stops its turn; elsewhere cancels the main session's turn                              |
 | ctrl+g           | Opens your editor on the plan while its tab shows, else the prompt; see [Plan](#plan)                       |
@@ -121,7 +121,7 @@ The `task` tool starts a subagent: an agent nth-context found (`nth agents` list
 
 ## Plan
 
-The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens and shows the moment the model writes the first plan, and stays while the plan exists. A revision only updates the tab and its label, so the chat keeps the focus and the model's reply stays in view; a plan already there when a session opens gets its tab without being shown.
+The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest change did marked in colour. The tab opens and shows the moment the model writes the first plan. ctrl+q and `/close` dismiss it, `/plan` shows it again, and the next revision brings it back. A revision only updates the tab and its label, so the chat keeps the focus and the model's reply stays in view; a plan already there when a session opens gets its tab without being shown.
 
 ```
 .nth/plans/6b2e….md · +3 -1 · ctrl+g edit · /approve
@@ -186,7 +186,7 @@ The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles
 - **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
 - **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
-- **Opening and closing.** `/work` shows it, and so does the model with the `panel` tool. ctrl+q and `/close` leave it open while there is a plan, as with the plan tab.
+- **Opening and closing.** `/work` shows it, and so does the model with the `panel` tool. ctrl+q and `/close` leave it open while there is a plan.
 - **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the tree is longer than the tab. The header and overview scroll with it.
 - **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
 - **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.

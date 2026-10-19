@@ -95,10 +95,6 @@ impl App {
     /// Closes the tab showing, unless it is a monitor or subagent still
     /// running, or the plan or the work plan, which show while there is one.
     pub(super) fn close_content(&mut self) {
-        if self.content.active() == Tab::Plan && self.plan.exists() {
-            self.hint = Some("the plan tab stays while there is a plan".into());
-            return;
-        }
         if self.content.active() == Tab::Work && self.work.exists() {
             self.hint = Some("the work tab stays while there is a plan".into());
             return;
