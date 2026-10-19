@@ -67,7 +67,7 @@ impl Tool for Monitor {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             if !ctx.monitors.reaches_front_end() {
                 return Err("there is no front-end to deliver monitor events to in this session; use bash and wait for the command instead".into());
             }
@@ -347,7 +347,7 @@ impl Tool for MonitorStop {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let StopArgs { id } = crate::parse_args(args)?;
+            let StopArgs { id } = nth_protocol::parse_args(args)?;
             if ctx.monitors.stop(id, StoppedBy::Model) {
                 Ok(format!("Stopped monitor {id}."))
             } else {

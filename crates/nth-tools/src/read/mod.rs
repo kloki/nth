@@ -82,7 +82,7 @@ impl Tool for Read {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             let offset = args.offset.unwrap_or(1).max(1);
             // A `limit` of 0 asks for nothing, which the model never means;

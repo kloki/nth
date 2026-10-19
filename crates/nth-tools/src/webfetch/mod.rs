@@ -123,7 +123,7 @@ impl Tool for WebFetch {
         _ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             if !args.url.starts_with("http://") && !args.url.starts_with("https://") {
                 return Err("URL must start with http:// or https://".into());
             }

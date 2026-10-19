@@ -44,7 +44,7 @@ impl Tool for TaskStop {
         _: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let id = args.task_id.parse()?;
             if self.subagents.cancel(id) {
                 return Ok(format!(

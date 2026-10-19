@@ -70,7 +70,3 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(ExitWorktree),
     ]
 }
-
-fn parse_args<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Result<T, String> {
-    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
-}

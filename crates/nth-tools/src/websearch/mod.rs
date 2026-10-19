@@ -118,7 +118,7 @@ impl Tool for Websearch {
         _ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             self.search(args).await
         }
         .boxed()

@@ -66,7 +66,7 @@ impl Tool for Question {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { questions } = crate::parse_args(args)?;
+            let Args { questions } = nth_protocol::parse_args(args)?;
             check(&questions)?;
             match ctx.asker.ask(questions.clone()).await {
                 Some(Reply::Answered(answers)) => Ok(format(&questions, &answers)),

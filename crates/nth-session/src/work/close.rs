@@ -56,7 +56,7 @@ impl Tool for WorkClose {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let store = Work::store(ctx)?;
             let live = self.work.files().0.lock().await;
             let mut plan = reconciled(&store, &live).await?;

@@ -33,7 +33,7 @@ impl Tool for Skill {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let skills = &ctx.context.skills;
             let Some(skill) = skills.get(&args.name) else {
                 let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();

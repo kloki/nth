@@ -55,7 +55,7 @@ impl Tool for WorkItem {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let store = Work::store(ctx)?;
             slug(&args.item)?;
             if let Some(name) = &args.cycle_name {

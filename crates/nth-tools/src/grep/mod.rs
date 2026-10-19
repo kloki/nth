@@ -48,7 +48,7 @@ impl Tool for Grep {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             if args.pattern.is_empty() {
                 return Err("pattern is required".into());
             }

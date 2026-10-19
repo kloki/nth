@@ -44,7 +44,7 @@ impl Tool for Glob {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let dir = match &args.path {
                 Some(path) => crate::path::resolve(&ctx.cwd, path),
                 None => ctx.cwd.clone(),

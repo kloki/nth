@@ -122,7 +122,7 @@ impl Tool for Bash {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             // The configured default is the user's to set as low as they
             // like; the model's `0` would kill the command before it ran.
             let timeout_ms = args

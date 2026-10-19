@@ -40,7 +40,7 @@ impl Tool for EnterWorktree {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { name } = crate::parse_args(args)?;
+            let Args { name } = nth_protocol::parse_args(args)?;
             refuse_in_plan_mode(ctx)?;
             // From one worktree into another, the new one still goes in the
             // main checkout.

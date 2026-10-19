@@ -9,14 +9,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::{emit, repair::repair};
 
-/// A tool's arguments as the struct it expects, or what was wrong with
-/// them for the model.
-pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
-    args: serde_json::Value,
-) -> Result<T, String> {
-    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
-}
-
 /// Runs `call` on `tool`, announcing it with [`Event::ToolStarted`] and
 /// [`Event::ToolFinished`] and streaming its output in between, and answers
 /// it: the tool's text, or why it failed, with the images it showed. No
@@ -116,7 +108,7 @@ mod tests {
     use futures::{FutureExt, future::BoxFuture};
     use nth_protocol::{
         Answer, Asker, Event, Message, Question, Reply, StreamEvent, Tool, ToolContext, ToolResult,
-        ToolSpec,
+        ToolSpec, parse_args,
     };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;

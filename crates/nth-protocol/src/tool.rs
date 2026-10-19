@@ -150,6 +150,12 @@ impl OutputSink {
 /// reads it and tries again.
 pub type ToolResult = Result<String, String>;
 
+/// A tool's arguments as the struct it expects, or what was wrong with
+/// them for the model.
+pub fn parse_args<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
+}
+
 /// Why a tool the user cut short failed; the model reads it after `Error: `.
 pub const INTERRUPTED: &str = "interrupted by the user";
 

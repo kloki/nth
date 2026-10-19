@@ -109,7 +109,7 @@ impl Tool for WorkAssign {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             if ctx.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());
             }

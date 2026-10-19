@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use call::{parse_args, run_call};
+pub(crate) use call::run_call;
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
