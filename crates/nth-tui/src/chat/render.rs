@@ -194,6 +194,17 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
                 Span::styled(said, dim),
             ])]
         }
+        Entry::Notice(NoticeSummary::Instructions { path, change }) => {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            vec![Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(
+                    format!("{} ", icons().instructions),
+                    Style::new().fg(Color::Magenta),
+                ),
+                Span::styled(format!("{name} {change}"), dim),
+            ])]
+        }
         Entry::Answer(text) => {
             return barred_markdown(text, width, Style::new().fg(Color::Blue));
         }

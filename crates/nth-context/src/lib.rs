@@ -87,6 +87,9 @@ pub struct Context {
     /// `CLAUDE.md`, once one was found: the files the read tool attaches
     /// later keep to it, so a project with both is not read twice.
     pub instruction_name: Option<&'static str>,
+    /// Where in the project an instruction file would have been read had
+    /// it been there, so a session hears of one created later.
+    pub absent_instructions: Vec<PathBuf>,
     pub skills: Skills,
     pub agents: Agents,
     /// Files that were found but could not be used, worth telling the user.
@@ -98,9 +101,10 @@ impl Context {
     /// [`Context::load`].
     pub fn discover(cwd: &Path, paths: &Paths) -> Self {
         let mut context = Self::default();
-        let (instructions, name) = instructions::discover(cwd, paths, &mut context.warnings);
-        context.instructions = instructions;
-        context.instruction_name = name;
+        let found = instructions::discover(cwd, paths, &mut context.warnings);
+        context.instructions = found.instructions;
+        context.instruction_name = found.name;
+        context.absent_instructions = found.absent;
         context.skills = skills::discover(cwd, paths, &mut context.warnings);
         context.agents = agents::discover(cwd, paths, &mut context.warnings);
         context

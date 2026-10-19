@@ -3,15 +3,19 @@
 //! the files from the working directory up to the home directory (or the
 //! project root, outside home) go into the system prompt; files deeper in
 //! the tree are attached when the model reads something next to them.
-//! Each brings the files it imports with `@path` (`imports`).
+//! Each brings the files it imports with `@path` (`imports`). `Watch`
+//! tells a session when one changes after it was read.
 
 mod imports;
+mod watch;
 
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+pub use watch::{Change, ChangeKind, Watch};
 
 use crate::{Paths, project_root};
 
@@ -24,15 +28,24 @@ pub struct Instruction {
     pub content: String,
 }
 
-/// The files for the system prompt, and the name the project's go by when
-/// it has any.
-pub(crate) fn discover(
-    cwd: &Path,
-    paths: &Paths,
-    warnings: &mut Vec<String>,
-) -> (Vec<Instruction>, Option<&'static str>) {
+/// What `discover` found for one working directory.
+pub(crate) struct Found {
+    pub instructions: Vec<Instruction>,
+    /// The name the project's files go by, when it has any.
+    pub name: Option<&'static str>,
+    /// Where in the project a file would be read had it been there, so one
+    /// created later is noticed.
+    pub absent: Vec<PathBuf>,
+}
+
+/// The files for the system prompt.
+pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) -> Found {
     let global = global(paths).into_iter().find(|path| path.is_file());
-    let (project, name) = project(cwd, paths.home.as_deref());
+    let Project {
+        files: project,
+        name,
+        absent,
+    } = project(cwd, paths.home.as_deref());
     // The walk reaches the global file too when `cwd` is in its folder.
     let project = project
         .into_iter()
@@ -54,7 +67,11 @@ pub(crate) fn discover(
         instructions.push(instruction);
         instructions.extend(imported);
     }
-    (instructions, name)
+    Found {
+        instructions,
+        name,
+        absent,
+    }
 }
 
 /// The global files, best first: nth's own, then opencode's, then Claude
@@ -71,14 +88,21 @@ fn global(paths: &Paths) -> Vec<PathBuf> {
     candidates
 }
 
-/// The files from the walk's top down to `cwd`, and the name the project's
-/// go by. The walk stops at `home` when `cwd` is under it, even inside a
+/// The files from the walk's top down to `cwd`, the name the project's go
+/// by, and where in the project one more could appear.
+struct Project {
+    files: Vec<PathBuf>,
+    name: Option<&'static str>,
+    absent: Vec<PathBuf>,
+}
+
+/// The walk behind [`Project`]. The walk stops at `home` when `cwd` is under it, even inside a
 /// repository, else at the project root, else looks at `cwd` alone. In the
 /// project (`cwd` alone outside a repository) the first name found anywhere
 /// wins, so a project that keeps both files in sync is not read twice;
 /// above it each directory gives its own first, so a `CLAUDE.md` project
 /// under a home with an `AGENTS.md` keeps its files.
-fn project(cwd: &Path, home: Option<&Path>) -> (Vec<PathBuf>, Option<&'static str>) {
+fn project(cwd: &Path, home: Option<&Path>) -> Project {
     let root = project_root(cwd);
     let stop = match home {
         Some(home) if cwd.starts_with(home) => Some(home),
@@ -113,9 +137,23 @@ fn project(cwd: &Path, home: Option<&Path>) -> (Vec<PathBuf>, Option<&'static st
             (!files.is_empty()).then_some((files, Some(*name)))
         })
         .unwrap_or_default();
+    // Only the name the project settled on would be read there.
+    let names: &[&str] = match &name {
+        Some(name) => std::slice::from_ref(name),
+        None => &NAMES,
+    };
+    let absent = inside
+        .iter()
+        .flat_map(|dir| names.iter().map(|name| dir.join(name)))
+        .filter(|path| !files.contains(path))
+        .collect();
     files.extend(above.filter_map(|dir| first(dir, &NAMES)));
     files.reverse();
-    (files, name)
+    Project {
+        files,
+        name,
+        absent,
+    }
 }
 
 /// The main checkout of the linked worktree at `root`, whose `.git` is a
@@ -257,9 +295,10 @@ mod tests {
 
         fn discover(&self, cwd: &str, paths: &Paths) -> Vec<(String, String)> {
             let mut warnings = Vec::new();
-            let (found, _) = discover(&self.path(cwd), paths, &mut warnings);
+            let found = discover(&self.path(cwd), paths, &mut warnings);
             assert_eq!(warnings, Vec::<String>::new());
             found
+                .instructions
                 .into_iter()
                 .map(|i| {
                     let rel = i.path.strip_prefix(self.0.path()).expect("inside");
@@ -534,7 +573,7 @@ mod tests {
             .file("repo/crates/a/b/x.rs", "");
         let loaded = loaded(&[tree.path("repo/AGENTS.md")]);
         let mut warnings = Vec::new();
-        let (_, name) = discover(&tree.path("repo/crates/a/b"), &no_globals(), &mut warnings);
+        let name = discover(&tree.path("repo/crates/a/b"), &no_globals(), &mut warnings).name;
         assert_eq!(name, Some("AGENTS.md"));
 
         assert_eq!(
@@ -697,6 +736,33 @@ mod tests {
 
         let shared = a.iter().chain(&b).filter(|(p, _)| p == "repo/shared.md");
         assert_eq!(shared.count(), 1, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn absent_files_are_where_the_project_name_would_be_read() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "root")
+            .file("repo/sub/x.rs", "");
+        let mut warnings = Vec::new();
+
+        let found = discover(&tree.path("repo/sub"), &no_globals(), &mut warnings);
+
+        assert_eq!(found.absent, [tree.path("repo/sub/AGENTS.md")]);
+    }
+
+    #[test]
+    fn without_a_name_either_could_appear() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "");
+        let mut warnings = Vec::new();
+
+        let found = discover(&tree.path("repo"), &no_globals(), &mut warnings);
+
+        assert_eq!(
+            found.absent,
+            [tree.path("repo/AGENTS.md"), tree.path("repo/CLAUDE.md")]
+        );
     }
 
     #[test]

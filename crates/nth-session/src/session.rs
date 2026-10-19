@@ -5,10 +5,10 @@ use std::{
     time::SystemTime,
 };
 
-use nth_context::Context;
+use nth_context::{Context, instructions::Watch};
 use nth_protocol::{
     AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
-    Tool, ToolCall, ToolContext, Usage, Workdir,
+    Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     Compaction, DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
-    agent_loop::run_call,
+    agent_loop::{emit, run_call},
     plan::{self, Approver},
     subagent, system_prompt, work,
 };
@@ -131,6 +131,10 @@ pub struct Session {
     /// session sees the instruction files as they are now.
     #[serde(skip)]
     context: Arc<Context>,
+    /// What the model last saw of the instruction files, from `context`
+    /// on; a change reaches it at its next step.
+    #[serde(skip)]
+    watch: Watch,
 }
 
 impl Session {
@@ -174,6 +178,7 @@ impl Session {
             parent: None,
             persona: None,
             context,
+            watch: Watch::default(),
         }
     }
 
@@ -195,6 +200,7 @@ impl Session {
     /// Puts `context` into the system prompt. A loaded session has none
     /// until this is called.
     pub fn set_context(&mut self, context: Arc<Context>) {
+        self.watch = Watch::new(&context);
         self.context = context;
         self.rewrite_system_prompt();
     }
@@ -352,6 +358,13 @@ impl Session {
             // user messages in a row are not something every endpoint takes.
             text = format!("{text}\n\n{reminder}");
         }
+        // An instruction file edited since the last turn, in front of the
+        // prompt as the front-end's notices are.
+        let changes = self.watch.changes(self.loaded()).await;
+        if let Some(changed) = instructions_notice(&changes) {
+            text = format!("{changed}\n{text}");
+            emit(events, Event::Notice(changed)).await;
+        }
         self.last_turn_mode = Some(self.mode);
         self.refresh_system_prompt();
         match self.messages.last_mut() {
@@ -432,12 +445,10 @@ impl Session {
 
     /// What the model's tools and the front-end reach this session through.
     fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
-        // The system prompt's files count as loaded, so read never repeats them.
-        let mut loaded = self.loaded_instructions.clone();
-        loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
         ToolContext {
             extra_dirs: self.extra_dirs.clone(),
-            instructions: Arc::new(Mutex::new(loaded)),
+            instructions: Arc::new(Mutex::new(self.loaded())),
+            watch: self.watch.clone(),
             context: self.context.clone(),
             asker: front_end.asker.clone(),
             screen: front_end.screen.clone(),
@@ -459,6 +470,14 @@ impl Session {
             images: self.images.clone(),
             ..ToolContext::new(self.cwd.clone())
         }
+    }
+
+    /// The instruction files in the conversation: the system prompt's, so
+    /// read never repeats them, and those tools attached.
+    fn loaded(&self) -> BTreeSet<PathBuf> {
+        let mut loaded = self.loaded_instructions.clone();
+        loaded.extend(self.context.instructions.iter().map(|i| i.path.clone()));
+        loaded
     }
 
     /// Runs one compaction outside a turn: everything the requests would
@@ -831,6 +850,97 @@ pub(crate) mod tests {
                 _ => None,
             })
             .expect("sent")
+    }
+
+    fn with_agents_md(dir: &std::path::Path, text: &str) -> Session {
+        std::fs::write(dir.join("AGENTS.md"), text).expect("writes");
+        let context = Context::discover(dir, &nth_context::Paths::default());
+        Session::new("glm-5.3", dir.to_path_buf()).with_context(Arc::new(context))
+    }
+
+    #[tokio::test]
+    async fn an_instruction_file_edited_between_turns_comes_before_the_next_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = with_agents_md(dir.path(), "old");
+        assert_eq!(send(&mut session, "first").await, "first");
+
+        std::fs::write(dir.path().join("AGENTS.md"), "new").expect("writes");
+        let path = dir.path().join("AGENTS.md").display().to_string();
+        assert_eq!(
+            send(&mut session, "second").await,
+            format!(
+                "<instructions path=\"{path}\" change=\"edited\" content=\"whole\">\nnew\n</instructions>\nsecond"
+            )
+        );
+        assert_eq!(send(&mut session, "third").await, "third", "told once");
+    }
+
+    /// Rewrites the working directory's `AGENTS.md`, as the model would.
+    struct Rewrite;
+
+    impl Tool for Rewrite {
+        fn spec(&self) -> nth_protocol::ToolSpec {
+            nth_protocol::ToolSpec {
+                name: "rewrite",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
+            let path = ctx.cwd.join("AGENTS.md");
+            Box::pin(async move {
+                tokio::fs::write(path, "rewritten")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok("written".into())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_instruction_file_a_tool_edits_reaches_the_next_step() {
+        use crate::agent_loop::tests::{Scripted, call};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = with_agents_md(dir.path(), "original");
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "rewrite", ""))],
+            vec![StreamEvent::TextDelta("noted".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Rewrite)];
+        let (tx, mut rx) = mpsc::channel(64);
+
+        session
+            .prompt(
+                "go",
+                &provider,
+                &tools,
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+
+        let Some(Message::User(after)) = session.messages.get(4) else {
+            panic!("a message after the result: {:?}", session.messages);
+        };
+        assert!(
+            after.starts_with("<instructions ") && after.contains("change=\"edited\""),
+            "{after}"
+        );
+        assert!(after.contains("rewritten"), "{after}");
+        drop(tx);
+        let mut shown = false;
+        while let Some(event) = rx.recv().await {
+            shown |= matches!(event, Event::Notice(text) if text == *after);
+        }
+        assert!(shown, "the front-end hears it");
     }
 
     #[test]

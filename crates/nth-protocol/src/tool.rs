@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use nth_context::Context;
+use nth_context::{Context, instructions::Watch};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -34,6 +34,9 @@ pub struct ToolContext {
     /// Instruction files already in the conversation. Shared by the calls
     /// of a turn, which run in parallel, so each file is attached once.
     pub instructions: LoadedInstructions,
+    /// What the model last saw of the instruction files, so a change
+    /// reaches it at the next step.
+    pub watch: Watch,
     /// What the session knows about its project, such as its skills.
     pub context: Arc<Context>,
     /// Where a tool asks you questions while it runs.
@@ -104,6 +107,7 @@ impl ToolContext {
             extra_dirs: Vec::new(),
             output: OutputSink::default(),
             instructions: LoadedInstructions::default(),
+            watch: Watch::default(),
             context: Arc::default(),
             asker: Asker::default(),
             screen: Screen::default(),
@@ -133,6 +137,7 @@ impl ToolContext {
             extra_dirs: self.extra_dirs.clone(),
             output,
             instructions: self.instructions.clone(),
+            watch: self.watch.clone(),
             context: self.context.clone(),
             asker: self.asker.for_call(call_id),
             screen: self.screen.clone(),

@@ -23,7 +23,8 @@ pub use image::{
 };
 pub use inbox::{
     Inbox, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice,
-    WorkOutcome, WorkState, one_line, quiet_text, split_notices, todo_counts, todo_lines,
+    WorkOutcome, WorkState, instructions_notice, one_line, quiet_text, split_notices, todo_counts,
+    todo_lines,
 };
 pub use message::{AssistantMessage, Message, ToolCall};
 pub use mode::Mode;
