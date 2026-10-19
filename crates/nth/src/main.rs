@@ -12,6 +12,7 @@ mod notify;
 mod run;
 mod session;
 mod skills;
+mod text;
 mod usage;
 mod work;
 
@@ -432,7 +433,7 @@ fn post_write(config: &Config) -> nth_tools::PostWrite {
 async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
     let context = nth_context::Context::load(cwd, paths.clone()).await;
     for warning in &context.warnings {
-        eprintln!("{} {warning}", "!".yellow().bold());
+        eprintln!("{} {warning}", icons().warn.yellow().bold());
     }
     Arc::new(context)
 }

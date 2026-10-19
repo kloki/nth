@@ -6,7 +6,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use base64::Engine;
@@ -44,6 +44,18 @@ pub struct Summary {
     pub origin: Option<PathBuf>,
     pub model: String,
     pub updated_at: SystemTime,
+}
+
+/// How long ago `then` was, in its largest whole unit, as the resume
+/// picker and `nth session list` say it: `now`, `5m`, `3h`, `2d`.
+pub fn age(now: SystemTime, then: SystemTime) -> String {
+    let secs = now.duration_since(then).unwrap_or(Duration::ZERO).as_secs();
+    match secs {
+        0..60 => "now".into(),
+        60..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
 }
 
 /// What [`list`] reads of a save: the fields the picker shows, which skips
@@ -283,8 +295,6 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use nth_protocol::Message;
 
     use super::*;
@@ -518,5 +528,16 @@ mod tests {
         let store = Store::at(dir.path().join("nope"));
 
         assert_eq!(store.list().await.expect("lists"), []);
+    }
+
+    #[test]
+    fn ages_round_down_to_the_largest_unit() {
+        let now = SystemTime::now();
+        let ago = |secs| age(now, now - Duration::from_secs(secs));
+
+        assert_eq!(ago(5), "now");
+        assert_eq!(ago(5 * 60 + 59), "5m");
+        assert_eq!(ago(3 * 3_600), "3h");
+        assert_eq!(ago(2 * 86_400 + 1), "2d");
     }
 }

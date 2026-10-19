@@ -79,7 +79,7 @@ pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
         Err(e) => Err(e),
     };
     if let Err(e) = saved {
-        eprintln!("{} session not saved: {e}", "!".yellow().bold());
+        eprintln!("{} session not saved: {e}", icons().warn.yellow().bold());
     }
     lsp.shutdown().await;
     turn?;
