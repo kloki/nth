@@ -21,12 +21,10 @@ use crate::{
     PostWrite,
     bom::BOM,
     edit::{
-        EDITS,
         matcher::{self, MatchError},
         with_line_endings,
     },
-    post_write,
-    write::write_with_dirs,
+    post_write::{self, write_with_dirs},
 };
 
 pub struct ApplyPatch {
@@ -69,7 +67,7 @@ impl Tool for ApplyPatch {
             let args: Args = crate::parse_args(args)?;
             let sections =
                 parse::parse(&args.patch_text).map_err(|e| format!("invalid patch: {e}"))?;
-            let edits = EDITS.lock().await;
+            let writing = self.post_write.lock().await;
             let mut plan = Plan {
                 cwd: &ctx.cwd,
                 files: BTreeMap::new(),
@@ -91,15 +89,13 @@ impl Tool for ApplyPatch {
             }
             let changed = plan.changed();
             plan.write().await?;
-            // The formatters rewrite the files, so they run under the lock;
-            // waiting on the language servers need not.
             let mut notes = Vec::new();
             for path in &changed {
                 let name = relative(path, &ctx.cwd);
-                let ran = self.post_write.format(path, &ctx.cwd).await;
+                let ran = writing.format(path, &ctx.cwd).await;
                 notes.extend(ran.lines().map(|note| format!("{name}: {note}")));
             }
-            drop(edits);
+            drop(writing);
             let diagnostics =
                 join_all(changed.iter().map(|p| self.post_write.diagnostics(p))).await;
             let errors: Vec<String> = changed
