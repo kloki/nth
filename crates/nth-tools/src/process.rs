@@ -1,14 +1,18 @@
 //! Running shell commands so that everything they start can be killed:
-//! shared by bash, which waits for its command, and monitor, which leaves
-//! its command running.
+//! shared by bash and the worktree setup script, which wait for their
+//! command, and monitor, which leaves its command running.
 
-use std::{path::Path, process::Stdio};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use tokio::process::{Child, Command};
 
 /// The shortest timeout bash and monitor accept from the model. A `0` is
 /// a mistake, not a wish to kill the command before it starts.
 pub(crate) const MIN_TIMEOUT_MS: u64 = 1_000;
+
+/// How long to keep reading after the command exits, for output still in
+/// its pipes.
+pub(crate) const DRAIN: Duration = Duration::from_millis(100);
 
 /// `bash -c script` in `cwd`, with no stdin, in its own process group so a
 /// timeout or a stop can kill everything the script started, not just bash.

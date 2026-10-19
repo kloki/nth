@@ -19,7 +19,7 @@ use tokio::{
     process::Child,
 };
 
-use crate::process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group};
+use crate::process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group};
 
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
@@ -28,10 +28,6 @@ const MAX_TIMEOUT_MS: u64 = 1_800_000;
 /// the model could not take them in.
 const FLOOD_LINES: usize = 100;
 const FLOOD_WINDOW: Duration = Duration::from_secs(10);
-
-/// How long to keep reading after the command exits, for output still in
-/// its pipes.
-const DRAIN: Duration = Duration::from_millis(100);
 
 /// Leaves a command running in the background and hands its stdout lines to
 /// the model as they come.
