@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::SystemTime,
 };
@@ -8,7 +8,7 @@ use std::{
 use nth_context::Context;
 use nth_protocol::{
     AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
-    Tool, ToolCall, ToolContext, Usage, Workdir, Writable,
+    Tool, ToolCall, ToolContext, Usage, Workdir,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -341,7 +341,13 @@ impl Session {
             // files out of git, is ready before the model writes the plan.
             let _ = plan::ensure_dir(&self.cwd).await;
         }
-        if let Some(reminder) = self.reminder(&plan_path, front_end).await {
+        let approver = match front_end.asker.reaches_someone() {
+            true => Approver::User,
+            false => Approver::Nobody,
+        };
+        if let Some(reminder) =
+            plan::reminder(self.mode, self.last_turn_mode, &plan_path, approver).await
+        {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
             text = format!("{text}\n\n{reminder}");
@@ -415,10 +421,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: match self.mode {
-                Mode::Plan => Writable::Only(self.plan_path()),
-                Mode::Act => Writable::Any,
-            },
+            writable: plan::writable(self.mode, self.plan_path()),
             llm: Llm {
                 model: self.model.clone(),
                 effort: self.effort,
@@ -522,31 +525,6 @@ impl Session {
     }
 }
 
-impl Session {
-    /// What the model needs to hear about the mode before this turn: that
-    /// plan mode starts, or that it ended. Nothing while the mode stays.
-    async fn reminder(&self, plan_path: &Path, front_end: &FrontEnd) -> Option<String> {
-        let entering = self.mode == Mode::Plan && self.last_turn_mode != Some(Mode::Plan);
-        let leaving = self.mode == Mode::Act && self.last_turn_mode == Some(Mode::Plan);
-        if !entering && !leaving {
-            return None;
-        }
-        // A check that fails reads as no plan yet, which only changes the
-        // wording of the reminder.
-        let exists = tokio::fs::try_exists(plan_path).await.unwrap_or(false);
-        Some(match self.mode {
-            Mode::Plan => {
-                let approver = match front_end.asker.reaches_someone() {
-                    true => Approver::User,
-                    false => Approver::Nobody,
-                };
-                plan::plan_mode_reminder(plan_path, exists, approver)
-            }
-            Mode::Act => plan::build_switch_reminder(plan_path, exists),
-        })
-    }
-}
-
 fn yes() -> bool {
     true
 }
@@ -556,7 +534,9 @@ fn default_max_steps() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::path::Path;
+
     use futures::{future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
         AssistantMessage, BoxError, INTERRUPTED, Listing, Request, StreamEvent, ToolCall, Usage,
@@ -820,32 +800,9 @@ mod tests {
         assert_eq!(back.origin, session.origin);
     }
 
-    /// Says whether the file it is asked about may be written.
-    struct Probe;
-
-    impl Tool for Probe {
-        fn spec(&self) -> nth_protocol::ToolSpec {
-            nth_protocol::ToolSpec {
-                name: "probe",
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        fn call<'a>(
-            &'a self,
-            args: serde_json::Value,
-            ctx: &'a ToolContext,
-        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
-            let path = ctx.cwd.join(args["path"].as_str().unwrap_or_default());
-            let checked = ctx.writable.check(&path).map(|()| "writable".to_string());
-            Box::pin(async move { checked })
-        }
-    }
-
     /// Sends `text` in `session`'s mode with a model that just answers,
     /// and returns the user message the model got.
-    async fn send(session: &mut Session, text: &str) -> String {
+    pub(crate) async fn send(session: &mut Session, text: &str) -> String {
         let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
             "ok".into(),
         )]]);
@@ -872,40 +829,6 @@ mod tests {
             .expect("sent")
     }
 
-    #[tokio::test]
-    async fn plan_mode_is_announced_once_and_its_end_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-        let plan = session.plan_path();
-
-        let first = send(&mut session, "plan it").await;
-        assert!(
-            first.starts_with("plan it\n\n<system-reminder>\nPlan mode is active."),
-            "{first}"
-        );
-        assert!(first.contains(&format!("create your plan at {}", plan.display())));
-        assert!(first.contains("Nobody can approve it"), "headless: {first}");
-        assert_eq!(send(&mut session, "more").await, "more");
-        assert_eq!(session.title().as_deref(), Some("plan it"));
-
-        std::fs::create_dir_all(plan.parent().expect("dir")).expect("dirs");
-        std::fs::write(&plan, "# Plan").expect("writes");
-        session.mode = Mode::Act;
-        let switched = send(&mut session, "go").await;
-        assert!(
-            switched.starts_with(
-                "go\n\n<system-reminder>\nYour operational mode has changed from plan to act."
-            ),
-            "{switched}"
-        );
-        assert!(switched.ends_with(&format!(
-            "A plan file exists at {}. You should execute on the plan defined within it",
-            plan.display()
-        )));
-        assert_eq!(send(&mut session, "next").await, "next");
-    }
-
     #[test]
     fn the_work_plan_stays_in_the_main_checkout() {
         let mut session = Session::new("glm", "/repo".into());
@@ -915,20 +838,6 @@ mod tests {
 
         assert_eq!(session.work_dir(), before);
         assert!(before.starts_with("/repo/.nth/work/"));
-    }
-
-    #[tokio::test]
-    async fn plan_mode_keeps_a_gitignore_in_the_project_nth() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-
-        send(&mut session, "plan it").await;
-
-        let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
-        assert!(gitignore.contains("plans/"), "{gitignore}");
-        assert!(gitignore.contains("work/"), "{gitignore}");
-        assert!(gitignore.contains(".gitignore"), "{gitignore}");
     }
 
     /// Fails every request, as a provider that is down does.
@@ -993,58 +902,6 @@ mod tests {
         send(&mut session, "go").await;
 
         assert_eq!(session.messages[0], current);
-    }
-
-    #[tokio::test]
-    async fn act_mode_from_the_start_says_nothing() {
-        let mut session = Session::new("glm-5.3", "/repo".into());
-        assert_eq!(send(&mut session, "go").await, "go");
-    }
-
-    #[tokio::test]
-    async fn plan_mode_lets_tools_write_only_the_plan() {
-        use crate::agent_loop::tests::{Scripted, call};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-        let plan = format!(".nth/plans/{}.md", session.id);
-        let provider = Scripted::new(vec![
-            vec![
-                StreamEvent::ToolCall(call("1", "probe", r#"{"path":"src/main.rs"}"#)),
-                StreamEvent::ToolCall(call("2", "probe", &format!(r#"{{"path":"{plan}"}}"#))),
-            ],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
-        let (tx, _rx) = mpsc::channel(64);
-
-        session
-            .prompt(
-                "plan",
-                &provider,
-                &tools,
-                &FrontEnd::default(),
-                &tx,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("turn completes");
-
-        let results: Vec<&str> = session
-            .messages
-            .iter()
-            .filter_map(|m| match m {
-                Message::ToolResult { content, .. } => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            results[0].starts_with("Error: plan mode is active"),
-            "{}",
-            results[0]
-        );
-        assert_eq!(results[1], "writable");
     }
 
     #[test]
