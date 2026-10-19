@@ -8,6 +8,7 @@
 
 mod actor;
 mod mention;
+mod spawn;
 mod stop;
 mod task;
 
@@ -22,6 +23,7 @@ use nth_context::Agent;
 use nth_protocol::{
     Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable, tool_names,
 };
+pub(crate) use spawn::{Spawner, find_agent};
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
 pub use task::{Limits, Task};
@@ -77,6 +79,15 @@ pub enum State {
 
 /// How a turn ended: the answer, or why there is none.
 pub type Turn = Result<String, Error>;
+
+/// How a turn ended, as the model and the tab hear it.
+pub(crate) fn task_outcome(turn: &Turn) -> TaskOutcome {
+    match turn {
+        Ok(text) => TaskOutcome::Completed(text.clone()),
+        Err(Error::Interrupted) => TaskOutcome::Interrupted,
+        Err(e) => TaskOutcome::Failed(e.to_string()),
+    }
+}
 
 /// Who hears how a job ended.
 pub enum Done {

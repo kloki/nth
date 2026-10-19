@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Assignment, ItemRef, Status, Work, open_items, outcome, reconciled, returned, todo::WorkTodo,
 };
-use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, child_session, tools_for};
+use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, find_agent};
 
 const ASSIGNED: &str = include_str!("assigned.md");
 
@@ -115,15 +115,8 @@ impl Tool for WorkAssign {
             }
             let store = Work::store(ctx)?;
             let shared = &self.work.0;
-            let agents = &ctx.context.agents;
-            let Some(agent) = agents.get(&args.subagent_type) else {
-                let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-                return Err(format!(
-                    "Agent \"{}\" not found. Available agents: {}",
-                    args.subagent_type,
-                    names.join(", ")
-                ));
-            };
+            let subagents = shared.spawner.subagents();
+            let agent = find_agent(ctx, &args.subagent_type)?;
             let planning = matches!(ctx.writable, Writable::Only(_));
             let continued = args.task_id.as_ref().map(TaskIdArg::parse).transpose()?;
             // Held from reading the plan until the file says running and
@@ -175,7 +168,7 @@ impl Tool for WorkAssign {
                             "subagent {id} did not work on {at} in this run of nth; leave task_id out to start a fresh one"
                         ));
                     }
-                    match shared.subagents.describe(id) {
+                    match subagents.describe(id) {
                         None => {
                             return Err(format!(
                                 "subagent {id} has ended; leave task_id out to start a fresh one"
@@ -189,28 +182,18 @@ impl Tool for WorkAssign {
                         }
                         Some(_) => {}
                     }
-                    if shared.subagents.is_running(id) || shared.subagents.queued(id) > 0 {
+                    if subagents.is_running(id) || subagents.queued(id) > 0 {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
-                    if planning && shared.subagents.writes(id) {
-                        return Err(format!(
-                            "subagent {id} can change files, which is not allowed while planning; leave task_id out to start a read-only one"
-                        ));
-                    }
+                    shared.spawner.read_only(id, planning)?;
                     id
                 }
                 None => {
                     let cell = Arc::new(OnceLock::new());
-                    let mut tools = tools_for(&shared.tools, agent, &ctx.writable);
-                    tools.push(Box::new(WorkTodo::new(cell.clone())));
-                    let session = child_session(agent, ctx, shared.limits.max_steps);
-                    let id = shared.subagents.spawn(
-                        agent,
-                        &format!("work {at}"),
-                        session,
-                        shared.provider.clone(),
-                        tools,
-                    );
+                    let todo: Box<dyn Tool> = Box::new(WorkTodo::new(cell.clone()));
+                    let id = shared
+                        .spawner
+                        .spawn(agent, &format!("work {at}"), ctx, vec![todo]);
                     // Set before the subagent's first prompt is sent, so
                     // its tool never finds it empty.
                     let _ = cell.set(Assignment {
@@ -220,7 +203,7 @@ impl Tool for WorkAssign {
                         task: id,
                         agent: agent.name.clone(),
                         inbox: ctx.inbox.clone(),
-                        closed: shared.subagents.closed(id).unwrap_or_default(),
+                        closed: subagents.closed(id).unwrap_or_default(),
                     });
                     id
                 }
@@ -230,7 +213,7 @@ impl Tool for WorkAssign {
             let timeout = match args.timeout_secs {
                 Some(0) => None,
                 Some(secs) => Some(Duration::from_secs(secs)),
-                None => shared.limits.timeout,
+                None => shared.spawner.limits().timeout,
             };
             let limit = match timeout {
                 Some(timeout) => format!(
@@ -274,10 +257,10 @@ impl Tool for WorkAssign {
                     task: id,
                     agent: agent.name.clone(),
                     inbox: ctx.inbox.clone(),
-                    closed: shared.subagents.closed(id).unwrap_or_default(),
+                    closed: subagents.closed(id).unwrap_or_default(),
                 },
                 // Headless nobody wakes for a stall.
-                stall: shared.limits.stall.filter(|_| !headless),
+                stall: shared.stall.filter(|_| !headless),
                 reply,
             };
             let cancel = CancellationToken::new();
@@ -293,7 +276,7 @@ impl Tool for WorkAssign {
             // the actor, which sees the file only once it is written.
             live.running.insert(path.clone(), id);
             live.worked.insert(path.clone(), id);
-            if !shared.subagents.prompt(id, job) {
+            if !subagents.prompt(id, job) {
                 live.running.remove(&path);
                 return Err(format!(
                     "subagent {id} has ended; leave task_id out to start a fresh one"
@@ -301,7 +284,7 @@ impl Tool for WorkAssign {
             }
             if let Err(e) = store.write(&running).await {
                 live.running.remove(&path);
-                shared.subagents.cancel(id);
+                subagents.cancel(id);
                 return Err(format!("writing {at} failed: {e}"));
             }
             let Some(waiting) = waiting else {

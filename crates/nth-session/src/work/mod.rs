@@ -25,7 +25,10 @@ use nth_protocol::{
 use status::WorkStatus;
 pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir};
 
-use crate::{Error, SubagentId, Subagents};
+use crate::{
+    Error, SubagentId, Subagents,
+    subagent::{self, Spawner},
+};
 
 /// The tools that write and read the plan, which no subagent gets: the one
 /// on an item sees that item only.
@@ -71,11 +74,9 @@ pub struct Limits {
 pub struct Work(Arc<Shared>);
 
 struct Shared {
-    provider: Arc<dyn Provider>,
-    /// Every tool the model has; each assigned subagent gets its share.
-    tools: Vec<Arc<dyn Tool>>,
-    subagents: Subagents,
-    limits: Limits,
+    spawner: Spawner,
+    /// How long an assigned subagent may say nothing; see [`Limits`].
+    stall: Option<Duration>,
     files: Arc<Files>,
 }
 
@@ -86,11 +87,15 @@ impl Work {
         subagents: Subagents,
         limits: Limits,
     ) -> Self {
+        let Limits {
+            max_steps,
+            timeout,
+            stall,
+        } = limits;
+        let limits = subagent::Limits { max_steps, timeout };
         Self(Arc::new(Shared {
-            provider,
-            tools,
-            subagents,
-            limits,
+            spawner: Spawner::new(provider, tools, subagents, limits),
+            stall,
             files: Arc::default(),
         }))
     }
