@@ -19,6 +19,7 @@ pinned to an older SHA keep their own SHA in their header.
 | 02  | [Providers and models](02-providers.md) | `03e6717` |
 | 03  | [Context management & token use](03-context-management.md) | `03e6717` |
 | 04  | [Images](04-images.md)                | `80fb31e` |
+| 05  | [Memory](05-memory.md)                | `80fb31e` |
 
 ## Change reviews
 
