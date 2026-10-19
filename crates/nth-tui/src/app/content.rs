@@ -11,13 +11,10 @@ use nth_session::subagent::SubagentId;
 use super::{App, input::Input};
 use crate::{
     chat::Chat,
-    diagnostics::Diagnostics,
     file::{FileId, FileView},
     monitor::MonitorView,
-    plan::PlanView,
+    pager::Pager,
     subagent::SubagentView,
-    usage::UsageView,
-    work::WorkView,
 };
 
 /// A view the content panel can show. Each view's state lives on the app,
@@ -410,185 +407,29 @@ impl Scrollable for Chat {
     }
 }
 
-impl Scrollable for Diagnostics {
+impl Scrollable for Pager {
     fn scroll_up(&mut self, lines: usize) {
-        Diagnostics::scroll_up(self, lines);
+        Pager::scroll_up(self, lines);
     }
 
     fn scroll_down(&mut self, lines: usize) {
-        Diagnostics::scroll_down(self, lines);
+        Pager::scroll_down(self, lines);
     }
 
     fn page_up(&mut self) {
-        Diagnostics::page_up(self);
+        Pager::page_up(self);
     }
 
     fn page_down(&mut self) {
-        Diagnostics::page_down(self);
+        Pager::page_down(self);
     }
 
     fn jump_top(&mut self) {
-        Diagnostics::jump_top(self);
+        Pager::jump_top(self);
     }
 
     fn jump_bottom(&mut self) {
-        Diagnostics::jump_bottom(self);
-    }
-}
-
-impl Scrollable for UsageView {
-    fn scroll_up(&mut self, lines: usize) {
-        UsageView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        UsageView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        UsageView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        UsageView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        UsageView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        UsageView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for MonitorView {
-    fn scroll_up(&mut self, lines: usize) {
-        MonitorView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        MonitorView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        MonitorView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        MonitorView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        MonitorView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        MonitorView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for SubagentView {
-    fn scroll_up(&mut self, lines: usize) {
-        SubagentView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        SubagentView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        SubagentView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        SubagentView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        SubagentView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        SubagentView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for PlanView {
-    fn scroll_up(&mut self, lines: usize) {
-        PlanView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        PlanView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        PlanView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        PlanView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        PlanView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        PlanView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for WorkView {
-    fn scroll_up(&mut self, lines: usize) {
-        WorkView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        WorkView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        WorkView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        WorkView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        WorkView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        WorkView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for FileView {
-    fn scroll_up(&mut self, lines: usize) {
-        FileView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        FileView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        FileView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        FileView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        FileView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        FileView::jump_bottom(self);
+        Pager::jump_bottom(self);
     }
 }
 
@@ -603,13 +444,13 @@ impl App {
     pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
         Some(match tab {
             Tab::Chat => &mut self.chat,
-            Tab::Diagnostics => &mut self.diagnostics,
-            Tab::Usage => &mut self.usage_view,
-            Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
-            Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
-            Tab::Plan => &mut self.plan,
-            Tab::Work => &mut self.work,
-            Tab::File(id) => self.file_views.get_mut(&id)?,
+            Tab::Diagnostics => &mut self.diagnostics.pager,
+            Tab::Usage => &mut self.usage_view.pager,
+            Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
+            Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
+            Tab::Plan => &mut self.plan.pager,
+            Tab::Work => &mut self.work.pager,
+            Tab::File(id) => &mut self.file_views.get_mut(&id)?.pager,
         })
     }
 }

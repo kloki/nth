@@ -131,30 +131,6 @@ impl SubagentView {
         }
     }
 
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.chat.scroll_up(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.chat.scroll_down(lines);
-    }
-
-    pub fn page_up(&mut self) {
-        self.chat.page_up();
-    }
-
-    pub fn page_down(&mut self) {
-        self.chat.page_down();
-    }
-
-    pub fn jump_top(&mut self) {
-        self.chat.jump_top();
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.chat.jump_bottom();
-    }
-
     /// Draws the header and the chat, and returns where the chat went, for
     /// its scrollbar.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, settings: ChatSettings) -> Rect {

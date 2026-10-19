@@ -196,7 +196,7 @@ async fn diagnostics_that_overflow_have_a_scrollbar() {
     let bar = scrollbar(&rows(&mut app));
     assert!(bar.starts_with('┃'), "at the top: {bar:?}");
 
-    app.diagnostics.jump_bottom();
+    app.diagnostics.pager.jump_bottom();
     let bar = scrollbar(&rows(&mut app));
     assert!(
         bar.ends_with('┃') && !bar.starts_with('┃'),

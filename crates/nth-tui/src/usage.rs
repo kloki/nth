@@ -15,53 +15,17 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, ScrollbarState},
 };
 
-use crate::theme;
+use crate::{pager::Pager, theme};
 
 /// Where the tab is scrolled, as of the last draw.
 #[derive(Debug, Default)]
 pub struct UsageView {
-    top: usize,
-    max_top: usize,
-    height: usize,
+    pub pager: Pager,
 }
 
 impl UsageView {
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.top = self.top.saturating_sub(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.top = (self.top + lines).min(self.max_top);
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.height.max(1));
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.height.max(1));
-    }
-
-    pub fn jump_top(&mut self) {
-        self.top = 0;
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.top = self.max_top;
-    }
-
-    /// Where the view sits in the tab, while it doesn't all fit.
-    pub fn scrollbar(&self) -> Option<ScrollbarState> {
-        (self.max_top > 0).then(|| {
-            ScrollbarState::new(self.max_top + 1)
-                .position(self.top)
-                .viewport_content_length(self.height)
-        })
-    }
-
     /// `cost` is what each model costs, when the catalogue says; `turns`
     /// is how many ran on each model, most first, and `tools` every tool's
     /// all-time totals, most called first.
@@ -75,11 +39,7 @@ impl UsageView {
         cost: &dyn Fn(&str) -> Option<Cost>,
     ) {
         let lines = lines(ledger, turns, tools, cost);
-        self.height = usize::from(area.height);
-        self.max_top = lines.len().saturating_sub(self.height);
-        self.top = self.top.min(self.max_top);
-        let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines).scroll((top, 0)), area);
+        self.pager.render(frame, area, lines);
     }
 }
 

@@ -908,7 +908,7 @@ impl App {
             Tab::Plan => {
                 let place = self.plan_place();
                 self.plan.draw(frame, area, &place);
-                if let Some(state) = self.plan.scrollbar() {
+                if let Some(state) = self.plan.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -916,7 +916,7 @@ impl App {
                 let place = self.work_place();
                 let live = self.live_work();
                 self.work.draw(frame, area, &place, &live);
-                if let Some(state) = self.work.scrollbar() {
+                if let Some(state) = self.work.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -924,7 +924,7 @@ impl App {
                 let place = self.file_place(id);
                 if let Some(view) = self.file_views.get_mut(&id) {
                     view.draw(frame, area, &place);
-                    if let Some(state) = view.scrollbar() {
+                    if let Some(state) = view.pager.scrollbar() {
                         draw_scrollbar(frame, area, state);
                     }
                 }
@@ -964,7 +964,7 @@ impl App {
                     home: self.home.as_deref(),
                 };
                 self.diagnostics.draw(frame, area, &facts);
-                if let Some(state) = self.diagnostics.scrollbar() {
+                if let Some(state) = self.diagnostics.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -980,7 +980,7 @@ impl App {
                     &self.all_time_tools,
                     &cost,
                 );
-                if let Some(state) = self.usage_view.scrollbar() {
+                if let Some(state) = self.usage_view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
