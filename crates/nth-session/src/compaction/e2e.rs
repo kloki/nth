@@ -628,6 +628,10 @@ async fn a_second_compaction_folds_in_the_first_and_reads_nothing_before_it() {
         "the first summary is folded into the second: {second_prompt}"
     );
     assert!(
+        second_prompt.contains(compaction::UPDATE_PROMPT.trim_end()),
+        "the update template asks to fold it in: {second_prompt}"
+    );
+    assert!(
         second_prompt.contains("[User]: recent\n\n[Assistant]: recent answer"),
         "with the text it kept: {second_prompt}"
     );
