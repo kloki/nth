@@ -26,6 +26,7 @@ mod notify;
 mod plan;
 mod profiles;
 mod question;
+mod quit;
 mod session_picker;
 mod subagent;
 #[cfg(test)]

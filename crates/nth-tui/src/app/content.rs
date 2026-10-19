@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use nth_icons::icons;
-use nth_protocol::{MonitorId, Panel};
+use nth_protocol::{MonitorId, Panel, StoppedBy};
 use nth_session::subagent::SubagentId;
 
 use super::{App, input::Input};
@@ -298,6 +298,46 @@ impl App {
                 .get(&id)
                 .map_or_else(|| format!("subagent {id}"), SubagentView::label),
         }
+    }
+
+    /// ctrl+w: stops the monitor showing, whose tab then closes, or the
+    /// subagent showing, or closes its tab once stopped.
+    pub(super) fn stop_content(&mut self) {
+        match self.content.active() {
+            Tab::Monitor(id) => {
+                self.monitors.stop(id, StoppedBy::User);
+            }
+            Tab::Subagent(id) => match self.subagent_views.get(&id) {
+                Some(view) if view.is_running() => self.interrupt_subagent(id),
+                _ => self.close_content(),
+            },
+            _ => {}
+        }
+    }
+
+    /// Closes the tab showing, unless it is a monitor or subagent still
+    /// running, or the plan or the work plan, which show while there is one.
+    pub(super) fn close_content(&mut self) {
+        if self.content.active() == Tab::Work && self.work.exists() {
+            self.hint = Some("the work tab stays while there is a plan".into());
+            return;
+        }
+        let running = match self.content.active() {
+            Tab::Monitor(id) => self.monitor_views.contains_key(&id),
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .is_some_and(SubagentView::is_running),
+            _ => false,
+        };
+        if running {
+            self.hint = Some("still running · ctrl+w stops it first".into());
+            return;
+        }
+        // A monitor's tab is only here while it runs, and a subagent's view
+        // stays: continued, it opens again with its turns.
+        self.content.close();
+        self.forget_closed_files();
     }
 
     /// In front of the tab's name: what kind it is, or a subagent's

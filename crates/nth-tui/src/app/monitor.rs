@@ -3,15 +3,10 @@
 //! A monitor's tab closes by itself once its process has stopped, and only
 //! then, so nothing keeps running out of sight; the log keeps its output.
 
-use std::time::Duration;
-
-use nth_protocol::{Message, MonitorEvent, StoppedBy, monitor_log_dir};
+use nth_protocol::{MonitorEvent, monitor_log_dir};
 
 use super::{App, NOTICE_DELAY, Tab};
-use crate::{monitor::MonitorView, subagent::SubagentView};
-
-/// How long quitting waits for the stopped monitors to report back.
-const EXIT_WAIT: Duration = Duration::from_secs(2);
+use crate::monitor::MonitorView;
 
 impl App {
     pub(super) fn on_monitor(&mut self, event: MonitorEvent) {
@@ -83,101 +78,6 @@ impl App {
     pub(crate) fn running_monitors(&self) -> usize {
         self.monitor_views.len()
     }
-
-    /// ctrl+w: stops the monitor showing, whose tab then closes, or the
-    /// subagent showing, or closes its tab once stopped.
-    pub(super) fn stop_content(&mut self) {
-        match self.content.active() {
-            Tab::Monitor(id) => {
-                self.monitors.stop(id, StoppedBy::User);
-            }
-            Tab::Subagent(id) => match self.subagent_views.get(&id) {
-                Some(view) if view.is_running() => self.interrupt_subagent(id),
-                _ => self.close_content(),
-            },
-            _ => {}
-        }
-    }
-
-    /// Closes the tab showing, unless it is a monitor or subagent still
-    /// running, or the plan or the work plan, which show while there is one.
-    pub(super) fn close_content(&mut self) {
-        if self.content.active() == Tab::Work && self.work.exists() {
-            self.hint = Some("the work tab stays while there is a plan".into());
-            return;
-        }
-        let running = match self.content.active() {
-            Tab::Monitor(id) => self.monitor_views.contains_key(&id),
-            Tab::Subagent(id) => self
-                .subagent_views
-                .get(&id)
-                .is_some_and(SubagentView::is_running),
-            _ => false,
-        };
-        if running {
-            self.hint = Some("still running · ctrl+w stops it first".into());
-            return;
-        }
-        // A monitor's tab is only here while it runs, and a subagent's view
-        // stays: continued, it opens again with its turns.
-        self.content.close();
-        self.forget_closed_files();
-    }
-
-    /// Quits, but with monitors or subagents running only on the second
-    /// ask in a row.
-    pub(super) fn ask_quit(&mut self) {
-        let monitors = self.monitors.running();
-        let subagents = self.running_subagents();
-        if monitors + subagents == 0 || self.quit_armed {
-            self.quit = true;
-            return;
-        }
-        self.quit_armed = true;
-        let mut running = Vec::new();
-        if monitors > 0 {
-            let noun = if monitors == 1 { "monitor" } else { "monitors" };
-            running.push(format!("{monitors} {noun}"));
-        }
-        if subagents > 0 {
-            let noun = if subagents == 1 {
-                "subagent"
-            } else {
-                "subagents"
-            };
-            running.push(format!("{subagents} {noun}"));
-        }
-        self.hint = Some(format!("{} running · ctrl+c again to quit", running.join(" · ")).into());
-    }
-
-    /// Stops every monitor and subagent as nth quits, and saves how they
-    /// ended in the session, so the model knows they are gone when it is
-    /// resumed.
-    pub(super) async fn stop_background_for_exit(&mut self) {
-        self.stop_subagents_for_exit().await;
-        if self.monitors.running() > 0 {
-            self.monitors.stop_all(StoppedBy::Exit);
-            let monitors = self.monitors.clone();
-            let rx = &mut self.monitor_rx;
-            let ended = async { while monitors.running() > 0 && rx.recv().await.is_some() {} };
-            let _ = tokio::time::timeout(EXIT_WAIT, ended).await;
-        }
-        // Mid-turn the session is in the turn task, which quitting drops.
-        let Some(session) = &mut self.session else {
-            return;
-        };
-        let spent = self.subagents.take_spent();
-        let notices = self.inbox.take_notices();
-        if spent.is_empty() && notices.is_none() {
-            return;
-        }
-        session.usage.extend(spent);
-        session.messages.extend(notices.map(Message::User));
-        if let Some(store) = &self.store {
-            // Nowhere left to show a failure.
-            let _ = store.save(session).await;
-        }
-    }
 }
 
 /// Resolves at `at`, or never without one, so the loop's arm sleeps.
@@ -189,8 +89,8 @@ pub(super) async fn due(at: Option<tokio::time::Instant>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use nth_protocol::{MonitorEnd, MonitorId, Registered, Stream};
+pub(super) mod tests {
+    use nth_protocol::{MonitorEnd, MonitorId, Registered, StoppedBy, Stream};
     use ratatui::style::Color;
 
     use super::*;
@@ -200,7 +100,7 @@ mod tests {
     };
 
     /// Starts a monitor as the tool would, and lets the app hear of it.
-    async fn start(app: &mut App, description: &str) -> Registered {
+    pub(in crate::app) async fn start(app: &mut App, description: &str) -> Registered {
         let m = app
             .monitors
             .register(description, "watch")
@@ -323,53 +223,5 @@ mod tests {
         ended(&mut app, running.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(!app.inbox.has_notices(), "not for the new session");
-    }
-
-    #[tokio::test]
-    async fn quitting_with_monitors_running_asks_twice() {
-        let mut app = app();
-        start(&mut app, "ci").await;
-
-        app.apply(Action::ClearOrQuit);
-        assert!(!app.quit);
-        let rows = rows(&mut app);
-        assert!(
-            rows[15].starts_with(" 1 monitor running · ctrl+c again"),
-            "{}",
-            rows[15]
-        );
-        app.apply(Action::Insert('x'));
-        app.apply(Action::ClearOrQuit);
-        app.apply(Action::ClearOrQuit);
-        assert!(!app.quit, "another key in between starts over");
-        app.apply(Action::ClearOrQuit);
-        assert!(app.quit);
-    }
-
-    #[tokio::test]
-    async fn quitting_stops_the_monitors_and_tells_the_session() {
-        let mut app = app();
-        let m = start(&mut app, "ci").await;
-        // The monitor's task, which reports once stopped.
-        let monitors = app.monitors.clone();
-        tokio::spawn(async move {
-            m.stop.cancelled().await;
-            let end = MonitorEnd::Stopped(monitors.stopped_by(m.id));
-            monitors
-                .event(MonitorEvent::Ended {
-                    id: m.id,
-                    end,
-                    events: 0,
-                })
-                .await;
-        });
-
-        app.stop_background_for_exit().await;
-
-        let session = app.session.as_ref().expect("idle");
-        let Some(Message::User(notice)) = session.messages.last() else {
-            panic!("no notice saved");
-        };
-        assert!(notice.contains("ended=\"stopped: nth exited\""), "{notice}");
     }
 }
