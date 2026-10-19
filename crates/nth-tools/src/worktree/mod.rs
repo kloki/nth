@@ -113,7 +113,7 @@ impl Tool for ExitWorktree {
 /// it.
 fn refuse_in_plan_mode(ctx: &ToolContext) -> Result<(), String> {
     match ctx.writable {
-        Writable::Only(_) => Err(
+        Writable::Plan { .. } => Err(
             "the working directory cannot change in plan mode; it can once the plan is approved"
                 .into(),
         ),
@@ -306,7 +306,7 @@ mod tests {
     async fn refuses_in_plan_mode() {
         let (_dir, root) = repo();
         let ctx = ToolContext {
-            writable: Writable::Only(root.join("plan.md")),
+            writable: Writable::plan(root.join("plan.md")),
             ..ToolContext::new(root)
         };
 

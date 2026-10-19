@@ -245,7 +245,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let plan = dir.path().join("plan.md");
         let ctx = ToolContext {
-            writable: nth_protocol::Writable::Only(plan.clone()),
+            writable: nth_protocol::Writable::plan(plan.clone()),
             ..ToolContext::new(dir.path().to_path_buf())
         };
         let text = "*** Begin Patch\n*** Add File: plan.md\n+# Plan\n*** Add File: b.txt\n+b\n*** End Patch";

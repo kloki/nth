@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     Compaction, DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
     agent_loop::{emit, run_call},
+    memory,
     plan::{self, Approver},
     subagent, system_prompt, work,
 };
@@ -347,12 +348,22 @@ impl Session {
             // files out of git, is ready before the model writes the plan.
             let _ = plan::ensure_dir(&self.cwd).await;
         }
+        if let Some(dir) = self.memory_dir() {
+            // Kept out of git before the model first saves to it.
+            let _ = memory::ensure_dir(&dir, &self.cwd).await;
+        }
         let approver = match front_end.asker.reaches_someone() {
             true => Approver::User,
             false => Approver::Nobody,
         };
-        if let Some(reminder) =
-            plan::reminder(self.mode, self.last_turn_mode, &plan_path, approver).await
+        if let Some(reminder) = plan::reminder(
+            self.mode,
+            self.last_turn_mode,
+            &plan_path,
+            self.memory_dir().as_deref(),
+            approver,
+        )
+        .await
         {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
@@ -454,7 +465,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: plan::writable(self.mode, self.plan_path()),
+            writable: plan::writable(self.mode, self.plan_path(), self.memory_dir()),
             llm: Llm {
                 model: self.model.clone(),
                 effort: self.effort,
@@ -470,6 +481,13 @@ impl Session {
             images: self.images.clone(),
             ..ToolContext::new(self.cwd.clone())
         }
+    }
+
+    /// The memory folder this session keeps, when it keeps one: a subagent
+    /// works for another model, which keeps it.
+    fn memory_dir(&self) -> Option<PathBuf> {
+        let memory = self.context.memory.as_ref().filter(|_| !self.subagent)?;
+        Some(memory.dir.clone())
     }
 
     /// The instruction files in the conversation: the system prompt's, so
@@ -941,6 +959,33 @@ pub(crate) mod tests {
             shown |= matches!(event, Event::Notice(text) if text == *after);
         }
         assert!(shown, "the front-end hears it");
+    }
+
+    #[tokio::test]
+    async fn a_session_keeps_its_memory_out_of_git_and_writable_while_planning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join(".git")).expect("dir");
+        let paths = nth_context::Paths {
+            memory: true,
+            ..nth_context::Paths::default()
+        };
+        let context = Arc::new(Context::discover(dir.path(), &paths));
+        let mut session =
+            Session::new("glm-5.3", dir.path().to_path_buf()).with_context(context.clone());
+        session.mode = Mode::Plan;
+
+        send(&mut session, "plan it").await;
+
+        let memory = dir.path().join(".nth/memory");
+        assert!(memory.join(".gitignore").is_file());
+        let ctx = session.tool_context(&FrontEnd::default());
+        assert_eq!(ctx.writable.check(&memory.join("terse.md")), Ok(()));
+        assert!(ctx.writable.check(&dir.path().join("src/main.rs")).is_err());
+
+        let subagent = Session::new("glm-5.3", dir.path().to_path_buf())
+            .with_context(context)
+            .as_subagent(None);
+        assert_eq!(subagent.memory_dir(), None, "the parent keeps it");
     }
 
     #[test]

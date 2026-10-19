@@ -4,7 +4,7 @@
 | -------------- | ---------------------------------------------------------------- |
 | **Researched** | 2026-10-19                                                       |
 | **Question**   | What Claude Code and opencode keep for the model across sessions |
-| **Decision**   | Open; a proposal is at the end                                   |
+| **Decision**   | nth's own `.nth/memory/`, ignored by git, main session only      |
 
 ## Summary
 

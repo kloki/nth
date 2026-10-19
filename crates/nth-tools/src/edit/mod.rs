@@ -162,7 +162,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a = 1");
         let ctx = ToolContext {
-            writable: nth_protocol::Writable::Only(dir.path().join("plan.md")),
+            writable: nth_protocol::Writable::plan(dir.path().join("plan.md")),
             ..ToolContext::new(dir.path().to_path_buf())
         };
 

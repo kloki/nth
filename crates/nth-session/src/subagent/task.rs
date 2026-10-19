@@ -5,9 +5,7 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{
-    Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec, Writable,
-};
+use nth_protocol::{Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -126,7 +124,7 @@ impl Tool for Task {
             let agent = find_agent(ctx, &args.subagent_type)?;
             let subagents = self.spawner.subagents();
             let limits = self.spawner.limits();
-            let planning = matches!(ctx.writable, Writable::Only(_));
+            let planning = ctx.writable.planning();
             let (id, started) = match &args.task_id {
                 Some(id) => {
                     let id = id.parse()?;
@@ -212,7 +210,7 @@ impl Tool for Task {
 #[cfg(test)]
 mod tests {
     use nth_context::{Context, Paths};
-    use nth_protocol::{Inbox, Llm, StreamEvent, ToolSpec};
+    use nth_protocol::{Inbox, Llm, StreamEvent, ToolSpec, Writable};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -321,7 +319,7 @@ mod tests {
             names(
                 &task
                     .spawner
-                    .tools_for(general, &Writable::Only("/repo/.nth/plans/x.md".into()))
+                    .tools_for(general, &Writable::plan("/repo/.nth/plans/x.md".into()))
             ),
             ["read", "grep"],
             "a planning parent's child may not write"
@@ -466,7 +464,7 @@ mod tests {
             |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent });
         let again = |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent, "task_id": 1 });
         let planning = ToolContext {
-            writable: Writable::Only("/repo/.nth/plans/x.md".into()),
+            writable: Writable::plan("/repo/.nth/plans/x.md".into()),
             ..ctx()
         };
 

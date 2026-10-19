@@ -389,7 +389,7 @@ async fn a_planning_orchestrators_subagent_gets_no_writers() {
     let provider = Arc::new(Scripted::new(vec![says("planned")]));
     let work = Work::new(provider, tools, subagents.clone(), LIMITS);
     let ctx = ToolContext {
-        writable: Writable::Only(dir.path().join(".nth/plans/x.md")),
+        writable: Writable::plan(dir.path().join(".nth/plans/x.md")),
         ..ctx(dir.path(), Inbox::new())
     };
     write(&work, &ctx, 1, "a").await;

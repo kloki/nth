@@ -33,6 +33,7 @@ pub struct Config {
     pub context: nth_protocol::Compaction,
     pub task: TaskConfig,
     pub work: WorkConfig,
+    pub memory: MemoryConfig,
     pub mode: ModeConfig,
     /// Named presets of a plan, an act and a subagent LLM, cycled with
     /// ctrl+p. The
@@ -223,6 +224,22 @@ impl ProfileConfig {
     }
 }
 
+/// The project's memory: what the model saves in `.nth/memory/` about the
+/// project and you, and reads back in later sessions.
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// The index goes into the system prompt and the model is told how to
+    /// save; off, it is neither.
+    pub enabled: bool,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// How the chat shows what the model did. `/settings` still flips these for
 /// the run; this only sets where they start.
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -351,7 +368,7 @@ impl Config {
     }
 
     /// Where nth looks for files about a project, with the configured skill
-    /// folders added.
+    /// folders added and the memory read when it is on.
     pub fn paths(&self) -> Paths {
         let mut paths = Paths::from_env();
         paths.skill_paths = self
@@ -360,6 +377,7 @@ impl Config {
             .iter()
             .map(|path| skill_path(path, paths.home.as_deref()))
             .collect();
+        paths.memory = self.memory.enabled;
         paths
     }
 
