@@ -14,6 +14,9 @@ use nth_protocol::{Mode, Writable};
 use uuid::Uuid;
 
 const PLAN_MODE: &str = include_str!("plan_mode.md");
+/// Added to the plan mode reminder when the session keeps a memory, which
+/// plan mode may write too.
+const PLAN_MODE_MEMORY: &str = include_str!("plan_mode_memory.md");
 const BUILD_SWITCH: &str = include_str!("build_switch.md");
 const APPROVED: &str = include_str!("approved.md");
 
@@ -53,7 +56,12 @@ pub enum Approver {
 }
 
 /// Appended to the first prompt in plan mode.
-pub fn plan_mode_reminder(plan: &Path, exists: bool, approver: Approver) -> String {
+pub fn plan_mode_reminder(
+    plan: &Path,
+    exists: bool,
+    approver: Approver,
+    memory: Option<&Path>,
+) -> String {
     let info = if exists {
         format!(
             "A plan file already exists at {}. You can read it and make incremental edits using the edit tool.",
@@ -71,8 +79,16 @@ pub fn plan_mode_reminder(plan: &Path, exists: bool, approver: Approver) -> Stri
         }
         Approver::Nobody => "Nobody can approve it in this run, so stop once the plan is written.",
     };
+    let memory = match memory {
+        Some(dir) => {
+            let dir = dir.display().to_string();
+            format!(" {}", PLAN_MODE_MEMORY.replace("{dir}", &dir).trim_end())
+        }
+        None => String::new(),
+    };
     PLAN_MODE
         .replace("{approve}", approve)
+        .replace("{memory}", &memory)
         // Last, so a `{approve}` in the path is left alone.
         .replace("{plan_info}", &info)
 }
@@ -96,6 +112,7 @@ pub(crate) async fn reminder(
     mode: Mode,
     last: Option<Mode>,
     plan: &Path,
+    memory: Option<&Path>,
     approver: Approver,
 ) -> Option<String> {
     let entering = mode == Mode::Plan && last != Some(Mode::Plan);
@@ -107,15 +124,16 @@ pub(crate) async fn reminder(
     // wording of the reminder.
     let exists = tokio::fs::try_exists(plan).await.unwrap_or(false);
     Some(match mode {
-        Mode::Plan => plan_mode_reminder(plan, exists, approver),
+        Mode::Plan => plan_mode_reminder(plan, exists, approver, memory),
         Mode::Act => build_switch_reminder(plan, exists),
     })
 }
 
-/// What tools may write in `mode`: in plan mode only the plan file.
-pub(crate) fn writable(mode: Mode, plan: PathBuf) -> Writable {
+/// What tools may write in `mode`: in plan mode only the plan file and
+/// the `memory` folder, when the session keeps one.
+pub(crate) fn writable(mode: Mode, plan: PathBuf, memory: Option<PathBuf>) -> Writable {
     match mode {
-        Mode::Plan => Writable::Only(plan),
+        Mode::Plan => Writable::Plan { file: plan, memory },
         Mode::Act => Writable::Any,
     }
 }

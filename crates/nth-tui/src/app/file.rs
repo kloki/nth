@@ -85,6 +85,23 @@ impl App {
         self.content.open(Tab::File(id));
     }
 
+    /// `/memory`: the project's memory index in a file tab, which follows
+    /// it as the model saves; until there is one, where it will be.
+    pub(super) fn show_memory(&mut self) {
+        let Some(memory) = &self.context.memory else {
+            self.hint = Some("memory is off: [memory] enabled = false".into());
+            return;
+        };
+        let index = memory.dir.join(nth_context::memory::INDEX);
+        match index.is_file() {
+            true => self.show_file(index),
+            false => {
+                let dir = memory.dir.display();
+                self.hint = Some(format!("no memories yet; they go in {dir}").into());
+            }
+        }
+    }
+
     /// A file tab's watcher read its file.
     pub(super) fn file_read(&mut self, id: FileId, text: Option<String>) {
         self.file_tabs.read(id, text);
@@ -163,5 +180,54 @@ mod tests {
 
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.file_tabs.views.is_empty());
+    }
+
+    fn with_memory(app: &mut App, dir: &std::path::Path) {
+        app.context = std::sync::Arc::new(nth_context::Context {
+            memory: Some(nth_context::Memory {
+                dir: dir.to_path_buf(),
+                index: String::new(),
+                truncated: false,
+            }),
+            ..nth_context::Context::default()
+        });
+    }
+
+    #[tokio::test]
+    async fn memory_opens_the_index_once_there_is_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = app();
+        with_memory(&mut app, dir.path());
+
+        app.run_command(crate::command::Command::Memory);
+        assert_eq!(app.content.tabs(), [Tab::Chat]);
+        let hint = app
+            .hint
+            .as_deref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(hint.starts_with("no memories yet"), "{hint}");
+
+        std::fs::write(dir.path().join("MEMORY.md"), "- [A](a.md) — a\n").expect("writes");
+        app.run_command(crate::command::Command::Memory);
+        read(&mut app).await;
+
+        assert_eq!(app.content.active(), Tab::File(0));
+        let shown = rows(&mut app);
+        assert!(shown[0].contains("MEMORY.md"), "{shown:#?}");
+    }
+
+    #[tokio::test]
+    async fn memory_says_when_it_is_off() {
+        let mut app = app();
+
+        app.run_command(crate::command::Command::Memory);
+
+        let hint = app
+            .hint
+            .as_deref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(hint.starts_with("memory is off"), "{hint}");
     }
 }

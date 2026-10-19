@@ -1047,6 +1047,7 @@ impl App {
             Command::Close => self.close_content(),
             Command::CopyId => self.copy_session_id(),
             Command::Settings => self.open_settings(),
+            Command::Memory => self.show_memory(),
         }
     }
 

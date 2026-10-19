@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
-use nth_context::{Context, project_root};
+use nth_context::{Context, Memory, memory, project_root};
 use uuid::Uuid;
 
 /// The default system prompt, opencode's `default.txt`.
@@ -21,6 +21,13 @@ const DIRS: &str = include_str!("prompts/system/dirs.md");
 /// no task tool, so it is not told of them.
 const AGENTS: &str = include_str!("prompts/system/agents.md");
 const AGENT: &str = include_str!("prompts/system/agent.md");
+/// The project's memory, after the instructions; your own session's only.
+const MEMORY: &str = include_str!("prompts/system/memory.md");
+/// What the memory section ends with: the index, or that there is none.
+const MEMORY_INDEX: &str = include_str!("prompts/system/memory_index.md");
+const MEMORY_EMPTY: &str = include_str!("prompts/system/memory_empty.md");
+/// After an index cut to fit.
+const MEMORY_TRUNCATED: &str = include_str!("prompts/system/memory_truncated.md");
 
 /// Model-id substring → its own persona, first match wins, in opencode's
 /// `provider()` order; a model matching none gets the default. Drop a new file
@@ -132,6 +139,13 @@ fn render(
                 .replace("{content}", instruction.content.trim_end()),
         );
     }
+    // A subagent works for another model, which keeps the memory.
+    if role.is_none()
+        && let Some(memory) = &context.memory
+    {
+        prompt.push('\n');
+        prompt.push_str(&memory_section(memory));
+    }
     // A skill without a description gives the model nothing to choose by.
     let skills: Vec<String> = context
         .skills
@@ -166,6 +180,31 @@ fn render(
         prompt.push_str(&AGENTS.replace("{agents}", agents.concat().trim_end()));
     }
     prompt
+}
+
+/// How the model keeps the project's memory, then its index as it is now.
+fn memory_section(memory: &Memory) -> String {
+    let index = memory.dir.join(memory::INDEX).display().to_string();
+    let contents = match memory.index.trim().is_empty() {
+        true => MEMORY_EMPTY.replace("{index}", &index),
+        false => {
+            let mut text = MEMORY_INDEX
+                .replace("{index}", &index)
+                .replace("{contents}", memory.index.trim_end())
+                .trim_end()
+                .to_string();
+            if memory.truncated {
+                text.push_str("\n\n");
+                text.push_str(MEMORY_TRUNCATED.replace("{index}", &index).trim());
+            }
+            text
+        }
+    };
+    // Contents last, so a `{dir}` in the index is left alone.
+    MEMORY
+        .replace("{dir}", &memory.dir.display().to_string())
+        .replace("{index}", &index)
+        .replace("{contents}", contents.trim_end())
 }
 
 /// Keeps a description from closing the tags around it.
@@ -230,6 +269,83 @@ mod tests {
             "\nInstructions from: /home/k/.config/nth/AGENTS.md\nBe brief.\n\
              \nInstructions from: /repo/AGENTS.md\nUse {path} literally.\n"
         );
+    }
+
+    fn with_memory(index: &str, truncated: bool) -> Context {
+        Context {
+            memory: Some(Memory {
+                dir: "/repo/.nth/memory".into(),
+                index: index.into(),
+                truncated,
+            }),
+            ..Context::default()
+        }
+    }
+
+    #[test]
+    fn the_memory_index_follows_the_instructions() {
+        let context = with_memory("- [Terse](terse.md) — short commits\n", false);
+
+        let prompt = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+
+        assert!(
+            prompt.contains("persistent memory for this project at `/repo/.nth/memory`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.ends_with(
+                "Contents of `/repo/.nth/memory/MEMORY.md`:\n\n- [Terse](terse.md) — short commits\n"
+            ),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn an_empty_memory_says_so() {
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &[],
+            &with_memory("", false),
+        );
+
+        assert!(
+            prompt.ends_with(
+                "`/repo/.nth/memory/MEMORY.md` does not exist yet: there are no memories so far.\n"
+            ),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn a_cut_index_asks_to_be_shortened() {
+        let prompt = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &[],
+            &with_memory("- a\n", true),
+        );
+
+        assert!(prompt.contains("- a\n\nOnly the first part"), "{prompt}");
+    }
+
+    #[test]
+    fn a_subagent_and_a_context_without_memory_get_none() {
+        let context = with_memory("- a\n", false);
+        let subagent =
+            subagent_system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+        let without = system_prompt(
+            Uuid::nil(),
+            "glm",
+            "/repo".as_ref(),
+            &[],
+            &Context::default(),
+        );
+
+        assert!(!subagent.contains("# Memory"), "{subagent}");
+        assert!(!without.contains("# Memory"), "{without}");
     }
 
     #[test]

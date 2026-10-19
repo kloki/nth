@@ -229,6 +229,13 @@ timeout_secs = 600
 stall_secs = 120       # report silence this long; 0 never
 ```
 
+### Memory
+
+```toml
+[memory]
+enabled = true         # the model saves what it learns in .nth/memory/; false turns it off
+```
+
 ## Reference
 
 Every key with its default, in the order of `nth init`'s template.
@@ -274,6 +281,12 @@ Every key with its default, in the order of `nth init`'s template.
 | `max_steps`    | `100`   | Model requests before the item fails.        |
 | `timeout_secs` | `600`   | Seconds before it times out; 0 for no limit. |
 | `stall_secs`   | `120`   | Report a subagent silent this long; 0 never. |
+
+**`[memory]`** — what the model learns, kept in `.nth/memory/` in the main checkout, out of git.
+
+| Key       | Default | Meaning                                                                 |
+| --------- | ------- | ----------------------------------------------------------------------- |
+| `enabled` | `true`  | Load the `MEMORY.md` index and tell the model how to save; false is off. |
 
 **`[mode]`**
 

@@ -25,6 +25,7 @@ pub enum Command {
     CopyId,
     Diagnostics,
     Exit,
+    Memory,
     Models,
     Plan,
     Resume,
@@ -34,7 +35,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 15] = [
+    const ALL: [Command; 16] = [
         Command::AddDir,
         Command::Approve,
         Command::Clear,
@@ -44,6 +45,7 @@ impl Command {
         Command::CopyId,
         Command::Diagnostics,
         Command::Exit,
+        Command::Memory,
         Command::Models,
         Command::Plan,
         Command::Resume,
@@ -63,6 +65,7 @@ impl Command {
             Command::CopyId => "copy-id",
             Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
+            Command::Memory => "memory",
             Command::Models => "models",
             Command::Plan => "plan",
             Command::Resume => "resume",
@@ -83,6 +86,7 @@ impl Command {
             Command::CopyId => "copy the session id",
             Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
+            Command::Memory => "show what the model remembers",
             Command::Models => "switch model and effort",
             Command::Plan => "show the plan",
             Command::Resume => "reopen a past session",
@@ -257,7 +261,10 @@ mod tests {
             Entry::matching("/d", &none),
             builtins(&[Command::Diagnostics])
         );
-        assert_eq!(Entry::matching("/m", &none), builtins(&[Command::Models]));
+        assert_eq!(
+            Entry::matching("/m", &none),
+            builtins(&[Command::Memory, Command::Models])
+        );
         assert_eq!(Entry::matching("/r", &none), builtins(&[Command::Resume]));
         assert_eq!(Entry::matching("/x", &none), []);
         assert_eq!(Entry::matching("/c x", &none), []);
@@ -286,6 +293,7 @@ mod tests {
                 "copy-id",
                 "diagnostics",
                 "exit",
+                "memory",
                 "models",
                 "plan",
                 "resume",

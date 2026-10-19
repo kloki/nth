@@ -17,7 +17,7 @@ use std::{
 
 pub use watch::{Change, ChangeKind, Watch};
 
-use crate::{Paths, project_root};
+use crate::{Paths, main_checkout, project_root};
 
 /// Tried in order in every directory.
 const NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
@@ -156,17 +156,6 @@ fn project(cwd: &Path, home: Option<&Path>) -> Project {
     }
 }
 
-/// The main checkout of the linked worktree at `root`, whose `.git` is a
-/// file naming `<main>/.git/worktrees/<name>`.
-fn main_checkout(root: &Path) -> Option<PathBuf> {
-    let link = std::fs::read_to_string(root.join(".git")).ok()?;
-    let gitdir = normalize(&root.join(link.strip_prefix("gitdir:")?.trim()));
-    let worktrees = gitdir.parent()?;
-    let git = worktrees.parent()?;
-    let linked = worktrees.file_name()? == "worktrees" && git.file_name()? == ".git";
-    linked.then(|| git.parent().map(Path::to_path_buf))?
-}
-
 /// The first of `names` that is a file in `dir`.
 fn first(dir: &Path, names: &[&str]) -> Option<PathBuf> {
     names
@@ -242,7 +231,7 @@ fn claim(loaded: &Mutex<BTreeSet<PathBuf>>, path: &Path) -> bool {
 
 /// Resolves `.` and `..` without touching the file system, so paths the
 /// model writes compare equal to the ones found by walking directories.
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

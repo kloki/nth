@@ -126,7 +126,7 @@ pub(crate) fn tools_for(
     agent: &Agent,
     writable: &Writable,
 ) -> Vec<Box<dyn Tool>> {
-    let planning = matches!(writable, Writable::Only(_));
+    let planning = writable.planning();
     all.iter()
         .filter(|tool| {
             let name = tool.spec().name;

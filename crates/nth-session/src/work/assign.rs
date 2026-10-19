@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState, Writable};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -115,7 +115,7 @@ impl Tool for WorkAssign {
             let shared = &self.work.0;
             let subagents = shared.spawner.subagents();
             let agent = find_agent(ctx, &args.subagent_type)?;
-            let planning = matches!(ctx.writable, Writable::Only(_));
+            let planning = ctx.writable.planning();
             let continued = args.task_id.as_ref().map(TaskIdArg::parse).transpose()?;
             // Held from reading the plan until the file says running and
             // `Live` knows it, so two calls cannot both take one item.
