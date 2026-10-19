@@ -1,7 +1,6 @@
 //! The keymap: which key does what, kept apart from what doing it means.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nth_protocol::Reply;
 
 use super::{App, input::Input};
 
@@ -131,123 +130,13 @@ impl App {
             }
             _ => {}
         }
-        if let Input::LlmPicker(picker) = &mut self.input {
-            match action {
-                Action::SelectNext => picker.next(),
-                Action::SelectPrev => picker.prev(),
-                Action::Right => picker.more(),
-                Action::Left => picker.less(),
-                Action::NextTab => self.cycle_llm_target(false),
-                Action::PrevTab => self.cycle_llm_target(true),
-                Action::Insert(c) => picker.insert(c),
-                Action::Backspace => picker.backspace(),
-                Action::Submit => self.choose_llm(),
-                // As on the prompt, ctrl+c clears the query before closing.
-                Action::ClearOrQuit if picker.clear_query() => {}
-                // Closing the picker must not also interrupt a running turn.
-                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
-                    self.input = Input::Prompt
-                }
-                _ => {}
-            }
-            return;
-        }
-        if let Input::SessionPicker(picker) = &mut self.input {
-            match action {
-                Action::SelectNext => picker.next(),
-                Action::SelectPrev => picker.prev(),
-                Action::Insert(c) => picker.insert(c),
-                Action::Backspace => picker.backspace(),
-                Action::Submit => self.choose_session(),
-                Action::ClearOrQuit if picker.clear_query() => {}
-                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
-                    self.input = Input::Prompt
-                }
-                _ => {}
-            }
-            return;
-        }
-        if let Input::Settings(panel) = &mut self.input {
-            match action {
-                Action::SelectNext => panel.next(),
-                Action::SelectPrev => panel.prev(),
-                Action::Submit | Action::Insert(' ') => panel.selected().flip(&mut self.settings),
-                Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
-                    self.input = Input::Prompt
-                }
-                _ => {}
-            }
-            return;
-        }
-        if let Input::Connect(panel) = &mut self.input {
-            let waiting = panel.waiting().is_some();
-            match action {
-                Action::SelectNext if !waiting => panel.next(),
-                Action::SelectPrev if !waiting => panel.prev(),
-                Action::Submit if !waiting => self.start_login(),
-                Action::Insert('c') if waiting => self.copy_login_url(),
-                // Stops the login too, never a running turn.
-                Action::Interrupt | Action::ClearOrQuit => self.close_connect(),
-                _ => {}
-            }
-            return;
-        }
-        if let Input::Question(panel) = &mut self.input {
-            let editing = panel.editing();
-            let answers = match action {
-                Action::SelectNext => {
-                    panel.next();
-                    None
-                }
-                Action::SelectPrev => {
-                    panel.prev();
-                    None
-                }
-                Action::NextTab => {
-                    panel.next_tab();
-                    None
-                }
-                Action::PrevTab => {
-                    panel.prev_tab();
-                    None
-                }
-                Action::Insert(c) => panel.insert(c),
-                Action::Submit => panel.enter(),
-                // Esc declines the questions; the turn runs on, and a
-                // second Esc at the prompt cancels it as usual.
-                Action::Interrupt | Action::ClearOrQuit => {
-                    self.reply(Reply::Declined);
-                    return;
-                }
-                // ←→ edit the open field while it is highlighted, and move
-                // between questions anywhere else.
-                Action::Right if !editing => {
-                    panel.next_tab();
-                    None
-                }
-                Action::Left if !editing => {
-                    panel.prev_tab();
-                    None
-                }
-                action => {
-                    if let Some(open) = panel.open_mut() {
-                        match action {
-                            Action::Backspace => open.backspace(),
-                            Action::Delete => open.delete(),
-                            Action::Left => open.left(),
-                            Action::Right => open.right(),
-                            Action::LineStart => open.home(),
-                            Action::LineEnd => open.end(),
-                            _ => {}
-                        }
-                    }
-                    None
-                }
-            };
-            if let Some(answers) = answers {
-                self.reply(Reply::Answered(answers));
-            }
-            return;
+        match &self.input {
+            Input::LlmPicker(_) => return self.key_llm_picker(action),
+            Input::SessionPicker(_) => return self.key_session_picker(action),
+            Input::Settings(_) => return self.key_settings(action),
+            Input::Connect(_) => return self.key_connect(action),
+            Input::Question(_) => return self.key_question(action),
+            Input::Prompt => {}
         }
         if let Some(completion) = &mut self.completion {
             match action {

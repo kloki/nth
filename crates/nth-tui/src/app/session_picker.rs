@@ -6,10 +6,29 @@ use std::sync::Arc;
 use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
-use super::{App, TabState, input::Input, usage::Spent};
+use super::{App, TabState, input::Input, keys::Action, usage::Spent};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
 impl App {
+    /// A key while the session picker is open.
+    pub(super) fn key_session_picker(&mut self, action: Action) {
+        let Input::SessionPicker(picker) = &mut self.input else {
+            return;
+        };
+        match action {
+            Action::SelectNext => picker.next(),
+            Action::SelectPrev => picker.prev(),
+            Action::Insert(c) => picker.insert(c),
+            Action::Backspace => picker.backspace(),
+            Action::Submit => self.choose_session(),
+            Action::ClearOrQuit if picker.clear_query() => {}
+            Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
+                self.input = Input::Prompt
+            }
+            _ => {}
+        }
+    }
+
     /// Opens the picker and lists the saved sessions afresh, since every
     /// turn may have saved one.
     pub(super) fn open_session_picker(&mut self) {

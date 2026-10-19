@@ -28,6 +28,7 @@ mod profiles;
 mod question;
 mod quit;
 mod session_picker;
+mod settings;
 mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -96,7 +97,7 @@ use crate::{
     monitor::MonitorView,
     plan::PlanView,
     prompt::{self, Prompt},
-    settings::{self, ChatSettings, SettingsPanel},
+    settings::ChatSettings,
     spinner, status,
     subagent::SubagentView,
     usage::UsageView,
@@ -882,7 +883,7 @@ impl App {
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
             Input::Question(panel) => crate::question::draw(frame, input, panel),
-            Input::Settings(panel) => settings::draw(frame, input, panel, self.settings),
+            Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
                 self.areas.login_url = crate::connect::draw(frame, input, panel)
             }
@@ -1080,10 +1081,7 @@ impl App {
             Command::Compact => self.compact(),
             Command::Close => self.close_content(),
             Command::CopyId => self.copy_session_id(),
-            Command::Settings => {
-                self.completion = None;
-                self.input = Input::Settings(SettingsPanel::default());
-            }
+            Command::Settings => self.open_settings(),
         }
     }
 

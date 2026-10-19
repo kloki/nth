@@ -2,10 +2,71 @@
 
 use nth_protocol::{Ask, Reply};
 
-use super::{App, input::Input};
+use super::{App, input::Input, keys::Action};
 use crate::question::QuestionPanel;
 
 impl App {
+    /// A key while questions are open.
+    pub(super) fn key_question(&mut self, action: Action) {
+        let Input::Question(panel) = &mut self.input else {
+            return;
+        };
+        let editing = panel.editing();
+        let answers = match action {
+            Action::SelectNext => {
+                panel.next();
+                None
+            }
+            Action::SelectPrev => {
+                panel.prev();
+                None
+            }
+            Action::NextTab => {
+                panel.next_tab();
+                None
+            }
+            Action::PrevTab => {
+                panel.prev_tab();
+                None
+            }
+            Action::Insert(c) => panel.insert(c),
+            Action::Submit => panel.enter(),
+            // Esc declines the questions; the turn runs on, and a
+            // second Esc at the prompt cancels it as usual.
+            Action::Interrupt | Action::ClearOrQuit => {
+                self.reply(Reply::Declined);
+                return;
+            }
+            // ←→ edit the open field while it is highlighted, and move
+            // between questions anywhere else.
+            Action::Right if !editing => {
+                panel.next_tab();
+                None
+            }
+            Action::Left if !editing => {
+                panel.prev_tab();
+                None
+            }
+            action => {
+                if let Some(open) = panel.open_mut() {
+                    match action {
+                        Action::Backspace => open.backspace(),
+                        Action::Delete => open.delete(),
+                        Action::Left => open.left(),
+                        Action::Right => open.right(),
+                        Action::LineStart => open.home(),
+                        Action::LineEnd => open.end(),
+                        _ => {}
+                    }
+                }
+                None
+            }
+        };
+        if let Some(answers) = answers {
+            self.reply(Reply::Answered(answers));
+        }
+    }
+
     /// Shows a tool's questions, or queues them behind the ones showing:
     /// calls run in parallel, so several can ask at once.
     pub(super) fn on_ask(&mut self, ask: Ask) {

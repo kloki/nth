@@ -5,7 +5,7 @@
 use nth_auth::{Account, ChatGpt};
 use tokio::sync::oneshot;
 
-use super::{App, Job, input::Input};
+use super::{App, Job, input::Input, keys::Action};
 use crate::{
     connect::{ConnectPanel, Connectable},
     terminal,
@@ -15,6 +15,23 @@ use crate::{
 pub(super) type Login = Job<Result<Account, nth_auth::Error>>;
 
 impl App {
+    /// A key while the connect panel is open.
+    pub(super) fn key_connect(&mut self, action: Action) {
+        let Input::Connect(panel) = &mut self.input else {
+            return;
+        };
+        let waiting = panel.waiting().is_some();
+        match action {
+            Action::SelectNext if !waiting => panel.next(),
+            Action::SelectPrev if !waiting => panel.prev(),
+            Action::Submit if !waiting => self.start_login(),
+            Action::Insert('c') if waiting => self.copy_login_url(),
+            // Stops the login too, never a running turn.
+            Action::Interrupt | Action::ClearOrQuit => self.close_connect(),
+            _ => {}
+        }
+    }
+
     /// The account handle sign-ins go through, from the config's store.
     pub fn with_chatgpt(mut self, chatgpt: ChatGpt) -> Self {
         self.chatgpt = Some(chatgpt);
