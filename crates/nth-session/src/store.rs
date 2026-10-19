@@ -6,10 +6,11 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use base64::Engine;
+use nth_context::Paths;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -45,6 +46,18 @@ pub struct Summary {
     pub updated_at: SystemTime,
 }
 
+/// How long ago `then` was, in its largest whole unit, as the resume
+/// picker and `nth session list` say it: `now`, `5m`, `3h`, `2d`.
+pub fn age(now: SystemTime, then: SystemTime) -> String {
+    let secs = now.duration_since(then).unwrap_or(Duration::ZERO).as_secs();
+    match secs {
+        0..60 => "now".into(),
+        60..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
 /// What [`list`] reads of a save: the fields the picker shows, which skips
 /// the history. The title is saved beside the session so the list never
 /// parses one; saves from before it carry none and are parsed whole.
@@ -62,13 +75,7 @@ struct Head {
 /// Where nth keeps what it saves: `$XDG_DATA_HOME/nth`, or
 /// `~/.local/share/nth` when that is unset.
 pub fn data_dir() -> Result<PathBuf, Error> {
-    let data = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-        Some(data) => PathBuf::from(data),
-        None => {
-            PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoDataDir)?).join(".local/share")
-        }
-    };
-    Ok(data.join("nth"))
+    Paths::from_env().nth_data().ok_or(Error::NoDataDir)
 }
 
 #[derive(Debug, Clone)]
@@ -219,19 +226,25 @@ async fn image_bytes(image: &Image, root: &Path) -> Option<Vec<u8>> {
     (sha256 == image.sha256 && bytes.len() <= MAX_IMAGE_BYTES).then_some(bytes)
 }
 
-fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
+/// What `parse` reads out of every saved session in `dir`; one it cannot
+/// read is left out.
+fn scan<T>(dir: &Path, parse: impl Fn(&[u8]) -> Option<T>) -> Result<Vec<T>, Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // Nothing saved yet.
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(io_at(dir)(e)),
     };
-    let mut sessions: Vec<Summary> = entries
+    Ok(entries
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .filter_map(|path| std::fs::read(&path).ok())
-        .filter_map(|json| summary(&json))
-        .collect();
+        .filter_map(|json| parse(&json))
+        .collect())
+}
+
+fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
+    let mut sessions = scan(dir, summary)?;
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
 }
@@ -246,17 +259,7 @@ pub struct Spending {
 }
 
 fn spending(dir: &Path) -> Result<Vec<Spending>, Error> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io_at(dir)(e)),
-    };
-    let mut sessions: Vec<Spending> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|path| std::fs::read(&path).ok())
-        .filter_map(|json| serde_json::from_slice(&json).ok())
-        .collect();
+    let mut sessions: Vec<Spending> = scan(dir, |json| serde_json::from_slice(json).ok())?;
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
 }
@@ -288,8 +291,6 @@ fn io_at(path: &Path) -> impl FnOnce(io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use nth_protocol::Message;
 
     use super::*;
@@ -523,5 +524,16 @@ mod tests {
         let store = Store::at(dir.path().join("nope"));
 
         assert_eq!(store.list().await.expect("lists"), []);
+    }
+
+    #[test]
+    fn ages_round_down_to_the_largest_unit() {
+        let now = SystemTime::now();
+        let ago = |secs| age(now, now - Duration::from_secs(secs));
+
+        assert_eq!(ago(5), "now");
+        assert_eq!(ago(5 * 60 + 59), "5m");
+        assert_eq!(ago(3 * 3_600), "3h");
+        assert_eq!(ago(2 * 86_400 + 1), "2d");
     }
 }

@@ -122,6 +122,35 @@ impl ToolContext {
             images: None,
         }
     }
+
+    /// The context one call of a turn runs in: where an earlier step moved
+    /// the session, with its questions and `output` tagged for `call_id`
+    /// and attachments of its own; the rest is shared with the turn.
+    pub fn for_call(&self, call_id: String, output: OutputSink) -> Self {
+        Self {
+            cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
+            workdir: self.workdir.clone(),
+            extra_dirs: self.extra_dirs.clone(),
+            output,
+            instructions: self.instructions.clone(),
+            context: self.context.clone(),
+            asker: self.asker.for_call(call_id),
+            screen: self.screen.clone(),
+            monitors: self.monitors.clone(),
+            inbox: self.inbox.clone(),
+            writable: self.writable.clone(),
+            llm: self.llm.clone(),
+            subagent: self.subagent.clone(),
+            clerk: self.clerk.clone(),
+            context_window: self.context_window,
+            max_output: self.max_output,
+            compaction: self.compaction,
+            session: self.session.clone(),
+            attachments: Attachments::default(),
+            takes_images: self.takes_images,
+            images: self.images.clone(),
+        }
+    }
 }
 
 /// Sends a tool's output as `Event::ToolOutput` for the call it belongs to,
@@ -149,6 +178,29 @@ impl OutputSink {
 /// `Err` is not a failure of nth: its text goes back to the model, which
 /// reads it and tries again.
 pub type ToolResult = Result<String, String>;
+
+/// A tool's arguments as the struct it expects, or what was wrong with
+/// them for the model.
+pub fn parse_args<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
+}
+
+/// Why a tool the user cut short failed; the model reads it after `Error: `.
+pub const INTERRUPTED: &str = "interrupted by the user";
+
+/// The text the model reads, and the session saves, before why a call failed.
+const FAILED: &str = "Error: ";
+
+/// A tool result's content when the tool failed for `reason`: the shape
+/// [`failure_reason`] reads the reason back out of.
+pub fn failed(reason: &str) -> String {
+    format!("{FAILED}{reason}")
+}
+
+/// Why the call failed, when `content` is a result [`failed`] wrote.
+pub fn failure_reason(content: &str) -> Option<&str> {
+    content.strip_prefix(FAILED)
+}
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;

@@ -34,7 +34,7 @@ impl Tool for ShowUser {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { file_path } = crate::parse_args(args)?;
+            let Args { file_path } = nth_protocol::parse_args(args)?;
             let path = crate::path::resolve(&ctx.cwd, &file_path);
             match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_file() => {}

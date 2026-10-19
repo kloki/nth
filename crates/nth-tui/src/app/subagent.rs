@@ -5,13 +5,13 @@
 
 use std::time::Duration;
 
-use nth_protocol::Event;
+use nth_protocol::{Event, tool_names};
 use nth_session::{
     CancellationToken,
     subagent::{Done, Job, SubagentEvent, SubagentId},
 };
 
-use super::{App, NOTICE_DELAY, Tab, TabState};
+use super::{App, Tab, TabState};
 use crate::subagent::SubagentView;
 
 /// How long quitting waits for the stopped subagents to report back.
@@ -61,9 +61,9 @@ impl App {
                 }
                 // A subagent on a work item ticked its todo.
                 if let Event::ToolFinished { call, .. } = &event
-                    && call.name == "work_todo"
+                    && call.name == tool_names::WORK_TODO
                 {
-                    self.read_work();
+                    self.work.read();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
@@ -79,8 +79,8 @@ impl App {
             } => {
                 self.spent.subagent_ended(id);
                 // A work item's subagent returned it.
-                if self.work.exists() {
-                    self.read_work();
+                if self.work.view.exists() {
+                    self.work.read();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.ended(&outcome, elapsed, &model);
@@ -93,9 +93,7 @@ impl App {
             }
         }
         // A task's answer waits in the inbox with the monitors' notices.
-        if self.notices_due.is_none() && self.inbox.wakes() {
-            self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
-        }
+        self.arm_notices();
     }
 
     /// What the subagents' finished turns spent goes into the session
@@ -226,7 +224,7 @@ mod tests {
     use crate::{
         app::{
             keys::Action,
-            tests::{Idle, app, rows, tab_colour},
+            tests::{Scripted, app, rows, tab_colour},
         },
         chat::Entry,
     };
@@ -280,8 +278,13 @@ mod tests {
         .agents;
         let explore = agents.get("explore").expect("built in");
         let session = Session::new("glm", "/repo".into()).as_subagent(None);
-        app.subagents
-            .spawn(explore, "find tabs", session, Arc::new(Idle), Vec::new())
+        app.subagents.spawn(
+            explore,
+            "find tabs",
+            session,
+            Arc::new(Scripted::idle()),
+            Vec::new(),
+        )
     }
 
     #[test]

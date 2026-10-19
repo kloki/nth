@@ -4,7 +4,7 @@
 use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use anyhow::{Context, Result, bail};
@@ -12,7 +12,10 @@ use clap::Subcommand;
 use jiff::Timestamp;
 use nth_icons::icons;
 use nth_protocol::monitor_log_dir;
-use nth_session::{Session, Store, Summary, plan, store};
+use nth_session::{
+    Session, Store, Summary, plan,
+    store::{self, age},
+};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -201,20 +204,10 @@ fn list_json(sessions: &[&Summary]) -> Value {
     Value::Array(sessions)
 }
 
-/// How long ago `then` was, in its largest whole unit, as the resume
-/// picker says it: `now`, `5m`, `3h`, `2d`.
-fn age(now: SystemTime, then: SystemTime) -> String {
-    let secs = now.duration_since(then).unwrap_or(Duration::ZERO).as_secs();
-    match secs {
-        0..60 => "now".into(),
-        60..3_600 => format!("{}m", secs / 60),
-        3_600..86_400 => format!("{}h", secs / 3_600),
-        _ => format!("{}d", secs / 86_400),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use nth_protocol::Message;
 
     use super::*;

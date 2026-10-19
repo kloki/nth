@@ -10,7 +10,7 @@ use nth_icons::icons;
 use owo_colors::OwoColorize;
 
 pub async fn run(status: bool, logout: bool, json: bool) -> Result<()> {
-    let chatgpt = crate::chatgpt()?;
+    let chatgpt = crate::chatgpt(&nth_context::Paths::from_env())?;
     if status {
         let mut out = std::io::stdout().lock();
         let json = json || !out.is_terminal();

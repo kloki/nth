@@ -60,7 +60,7 @@ impl Tool for ApplyPatch {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let sections =
                 parse::parse(&args.patch_text).map_err(|e| format!("invalid patch: {e}"))?;
             let writing = self.post_write.lock().await;

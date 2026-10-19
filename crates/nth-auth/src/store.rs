@@ -47,15 +47,10 @@ pub struct Store {
 }
 
 impl Store {
-    /// `auth.json` in `$XDG_DATA_HOME/nth`, or `~/.local/share/nth` when
-    /// that is unset, beside the saved sessions.
-    pub fn new() -> Result<Self, Error> {
-        let data = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-            Some(data) => PathBuf::from(data),
-            None => PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoDataDir)?)
-                .join(".local/share"),
-        };
-        Ok(Self::at(data.join("nth/auth.json")))
+    /// `auth.json` in `dir`, nth's data directory, beside the saved
+    /// sessions.
+    pub fn new(dir: &Path) -> Self {
+        Self::at(dir.join("auth.json"))
     }
 
     pub fn at(path: impl Into<PathBuf>) -> Self {

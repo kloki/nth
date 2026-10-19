@@ -9,10 +9,9 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
 };
 
-use crate::theme;
+use crate::{pager::Pager, theme};
 
 /// The most lines a tab keeps; the log has all of them.
 const KEPT_LINES: usize = 2000;
@@ -30,11 +29,8 @@ pub struct MonitorView {
     lines: VecDeque<(Stream, String)>,
     /// Lines dropped from the front to keep at most [`KEPT_LINES`].
     dropped: usize,
-    top: usize,
-    max_top: usize,
-    height: usize,
     /// Keeps the newest line in view as lines come.
-    follow: bool,
+    pub pager: Pager,
 }
 
 impl MonitorView {
@@ -47,10 +43,7 @@ impl MonitorView {
             events: 0,
             lines: VecDeque::new(),
             dropped: 0,
-            top: 0,
-            max_top: 0,
-            height: 0,
-            follow: true,
+            pager: Pager::following(),
         }
     }
 
@@ -74,44 +67,9 @@ impl MonitorView {
         description
     }
 
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.top = self.top.saturating_sub(lines);
-        self.follow = false;
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.top = (self.top + lines).min(self.max_top);
-        self.follow = self.top == self.max_top;
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.height.max(1));
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.height.max(1));
-    }
-
-    pub fn jump_top(&mut self) {
-        self.scroll_up(self.top);
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.top = self.max_top;
-        self.follow = true;
-    }
-
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, home: Option<&str>) {
         let lines = self.render(home);
-        self.height = usize::from(area.height);
-        self.max_top = lines.len().saturating_sub(self.height);
-        self.top = if self.follow {
-            self.max_top
-        } else {
-            self.top.min(self.max_top)
-        };
-        let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines).scroll((top, 0)), area);
+        self.pager.render(frame, area, lines);
     }
 
     fn render(&self, home: Option<&str>) -> Vec<Line<'static>> {

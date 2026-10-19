@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::SystemTime,
 };
@@ -8,7 +8,7 @@ use std::{
 use nth_context::Context;
 use nth_protocol::{
     AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
-    Tool, ToolCall, ToolContext, Usage, Workdir, Writable,
+    Tool, ToolCall, ToolContext, Usage, Workdir,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -257,8 +257,8 @@ impl Session {
     /// Where this session's orchestration keeps its work items: under the
     /// main checkout, wherever a worktree tool moved the session.
     pub fn work_dir(&self) -> PathBuf {
-        let root = self.origin.as_ref().unwrap_or(&self.cwd);
-        work::work_dir(root, &self.id.to_string())
+        let root = work::root(self.origin.as_deref(), &self.cwd);
+        work::work_dir(&root, &self.id.to_string())
     }
 
     /// Later turns go to `model`. The history is kept; only the system
@@ -341,7 +341,13 @@ impl Session {
             // files out of git, is ready before the model writes the plan.
             let _ = plan::ensure_dir(&self.cwd).await;
         }
-        if let Some(reminder) = self.reminder(&plan_path, front_end).await {
+        let approver = match front_end.asker.reaches_someone() {
+            true => Approver::User,
+            false => Approver::Nobody,
+        };
+        if let Some(reminder) =
+            plan::reminder(self.mode, self.last_turn_mode, &plan_path, approver).await
+        {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
             text = format!("{text}\n\n{reminder}");
@@ -359,35 +365,12 @@ impl Session {
             _ => self.messages.push(Message::User(text)),
         }
         self.updated_at = SystemTime::now();
-        let ctx = self.tool_context(front_end);
-        let mut spend = Spend::new(&self.model, None);
-        spend.cost = self.cost;
-        let session_id = self.id.to_string();
-        let parent_session_id = self.parent.map(|p| p.to_string());
-        let result = Turn {
-            provider,
-            route: Route {
-                model: &self.model,
-                effort: self.effort,
-                session_id: &session_id,
-                parent_session_id: parent_session_id.as_deref(),
-                max_steps: self.max_steps,
-                // The window and the output limit are the front-end's to
-                // fill; without them nothing compacts on its own.
-                context_window: self.context_window,
-                max_output: self.max_output,
-                compaction: self.compaction,
-            },
-            tools,
-            ctx: &ctx,
-            messages: &mut self.messages,
-            spend: &mut spend,
-            last_usage: &mut self.last_usage,
-            events,
-            cancel,
-        }
-        .run()
-        .await;
+        let mut held = self.held(front_end);
+        let result = self
+            .turn(&mut held, provider, tools, events, cancel)
+            .run()
+            .await;
+        let Held { ctx, spend, .. } = held;
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
@@ -400,6 +383,51 @@ impl Session {
             self.set_cwd(cwd, ctx.workdir.origin());
         }
         result
+    }
+
+    /// What a turn of this session needs held for as long as it runs.
+    fn held(&self, front_end: &FrontEnd) -> Held {
+        let mut spend = Spend::new(&self.model, None);
+        spend.cost = self.cost;
+        Held {
+            ctx: self.tool_context(front_end),
+            spend,
+            session_id: self.id.to_string(),
+            parent_session_id: self.parent.map(|p| p.to_string()),
+        }
+    }
+
+    /// A turn on this session's history and route, with what `held` holds.
+    fn turn<'a>(
+        &'a mut self,
+        held: &'a mut Held,
+        provider: &'a dyn Provider,
+        tools: &'a [Box<dyn Tool>],
+        events: &'a mpsc::Sender<Event>,
+        cancel: &'a CancellationToken,
+    ) -> Turn<'a> {
+        Turn {
+            provider,
+            route: Route {
+                model: &self.model,
+                effort: self.effort,
+                session_id: &held.session_id,
+                parent_session_id: held.parent_session_id.as_deref(),
+                max_steps: self.max_steps,
+                // The window and the output limit are the front-end's to
+                // fill; without them nothing compacts on its own.
+                context_window: self.context_window,
+                max_output: self.max_output,
+                compaction: self.compaction,
+            },
+            tools,
+            ctx: &held.ctx,
+            messages: &mut self.messages,
+            spend: &mut held.spend,
+            last_usage: &mut self.last_usage,
+            events,
+            cancel,
+        }
     }
 
     /// What the model's tools and the front-end reach this session through.
@@ -415,10 +443,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: match self.mode {
-                Mode::Plan => Writable::Only(self.plan_path()),
-                Mode::Act => Writable::Any,
-            },
+            writable: plan::writable(self.mode, self.plan_path()),
             llm: Llm {
                 model: self.model.clone(),
                 effort: self.effort,
@@ -438,7 +463,7 @@ impl Session {
 
     /// Runs one compaction outside a turn: everything the requests would
     /// not keep verbatim becomes a summary they start from. The `/compact`
-    /// command and the loop's overflow recovery share [`Turn::compact`];
+    /// command and the loop's overflow recovery share `Turn::compact`;
     /// this is the manual entry.
     pub async fn compact(
         &mut self,
@@ -448,36 +473,14 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        let ctx = self.tool_context(front_end);
-        let mut spend = Spend::new(&self.model, None);
-        spend.cost = self.cost;
-        let session_id = self.id.to_string();
-        let parent_session_id = self.parent.map(|p| p.to_string());
-        // A compaction is not a turn; its usage is the summary request's,
-        // not the conversation's size, so it is never the trigger's.
-        let mut last_usage = None;
-        let result = Turn {
-            provider,
-            route: Route {
-                model: &self.model,
-                effort: self.effort,
-                session_id: &session_id,
-                parent_session_id: parent_session_id.as_deref(),
-                max_steps: self.max_steps,
-                context_window: self.context_window,
-                max_output: self.max_output,
-                compaction: self.compaction,
-            },
-            tools,
-            ctx: &ctx,
-            messages: &mut self.messages,
-            spend: &mut spend,
-            last_usage: &mut last_usage,
-            events,
-            cancel,
-        }
-        .compact()
-        .await;
+        let mut held = self.held(front_end);
+        // Only `Turn::run` writes the trigger's usage: a compaction's is the
+        // summary request's, not the conversation's size.
+        let result = self
+            .turn(&mut held, provider, tools, events, cancel)
+            .compact()
+            .await;
+        let spend = held.spend;
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.
@@ -487,6 +490,14 @@ impl Session {
         self.updated_at = SystemTime::now();
         result.map(|_| ())
     }
+}
+
+/// What a turn borrows that the session does not hold.
+struct Held {
+    ctx: ToolContext,
+    spend: Spend,
+    session_id: String,
+    parent_session_id: Option<String>,
 }
 
 impl Session {
@@ -522,31 +533,6 @@ impl Session {
     }
 }
 
-impl Session {
-    /// What the model needs to hear about the mode before this turn: that
-    /// plan mode starts, or that it ended. Nothing while the mode stays.
-    async fn reminder(&self, plan_path: &Path, front_end: &FrontEnd) -> Option<String> {
-        let entering = self.mode == Mode::Plan && self.last_turn_mode != Some(Mode::Plan);
-        let leaving = self.mode == Mode::Act && self.last_turn_mode == Some(Mode::Plan);
-        if !entering && !leaving {
-            return None;
-        }
-        // A check that fails reads as no plan yet, which only changes the
-        // wording of the reminder.
-        let exists = tokio::fs::try_exists(plan_path).await.unwrap_or(false);
-        Some(match self.mode {
-            Mode::Plan => {
-                let approver = match front_end.asker.reaches_someone() {
-                    true => Approver::User,
-                    false => Approver::Nobody,
-                };
-                plan::plan_mode_reminder(plan_path, exists, approver)
-            }
-            Mode::Act => plan::build_switch_reminder(plan_path, exists),
-        })
-    }
-}
-
 fn yes() -> bool {
     true
 }
@@ -556,14 +542,12 @@ fn default_max_steps() -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use futures::{future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{
-        AssistantMessage, BoxError, Listing, Request, StreamEvent, ToolCall, Usage,
-    };
+pub(crate) mod tests {
+    use std::path::Path;
+
+    use nth_protocol::{AssistantMessage, INTERRUPTED, StreamEvent, ToolCall, Usage, failed};
 
     use super::*;
-    use crate::agent_loop::{INTERRUPTED, failed};
 
     #[test]
     fn starts_with_only_the_system_prompt() {
@@ -820,32 +804,9 @@ mod tests {
         assert_eq!(back.origin, session.origin);
     }
 
-    /// Says whether the file it is asked about may be written.
-    struct Probe;
-
-    impl Tool for Probe {
-        fn spec(&self) -> nth_protocol::ToolSpec {
-            nth_protocol::ToolSpec {
-                name: "probe",
-                description: String::new(),
-                parameters: serde_json::json!({}),
-            }
-        }
-
-        fn call<'a>(
-            &'a self,
-            args: serde_json::Value,
-            ctx: &'a ToolContext,
-        ) -> futures::future::BoxFuture<'a, nth_protocol::ToolResult> {
-            let path = ctx.cwd.join(args["path"].as_str().unwrap_or_default());
-            let checked = ctx.writable.check(&path).map(|()| "writable".to_string());
-            Box::pin(async move { checked })
-        }
-    }
-
     /// Sends `text` in `session`'s mode with a model that just answers,
     /// and returns the user message the model got.
-    async fn send(session: &mut Session, text: &str) -> String {
+    pub(crate) async fn send(session: &mut Session, text: &str) -> String {
         let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
             "ok".into(),
         )]]);
@@ -872,40 +833,6 @@ mod tests {
             .expect("sent")
     }
 
-    #[tokio::test]
-    async fn plan_mode_is_announced_once_and_its_end_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-        let plan = session.plan_path();
-
-        let first = send(&mut session, "plan it").await;
-        assert!(
-            first.starts_with("plan it\n\n<system-reminder>\nPlan mode is active."),
-            "{first}"
-        );
-        assert!(first.contains(&format!("create your plan at {}", plan.display())));
-        assert!(first.contains("Nobody can approve it"), "headless: {first}");
-        assert_eq!(send(&mut session, "more").await, "more");
-        assert_eq!(session.title().as_deref(), Some("plan it"));
-
-        std::fs::create_dir_all(plan.parent().expect("dir")).expect("dirs");
-        std::fs::write(&plan, "# Plan").expect("writes");
-        session.mode = Mode::Act;
-        let switched = send(&mut session, "go").await;
-        assert!(
-            switched.starts_with(
-                "go\n\n<system-reminder>\nYour operational mode has changed from plan to act."
-            ),
-            "{switched}"
-        );
-        assert!(switched.ends_with(&format!(
-            "A plan file exists at {}. You should execute on the plan defined within it",
-            plan.display()
-        )));
-        assert_eq!(send(&mut session, "next").await, "next");
-    }
-
     #[test]
     fn the_work_plan_stays_in_the_main_checkout() {
         let mut session = Session::new("glm", "/repo".into());
@@ -918,45 +845,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_mode_keeps_a_gitignore_in_the_project_nth() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-
-        send(&mut session, "plan it").await;
-
-        let gitignore = std::fs::read_to_string(dir.path().join(".nth/.gitignore")).expect("reads");
-        assert!(gitignore.contains("plans/"), "{gitignore}");
-        assert!(gitignore.contains("work/"), "{gitignore}");
-        assert!(gitignore.contains(".gitignore"), "{gitignore}");
-    }
-
-    /// Fails every request, as a provider that is down does.
-    struct Down;
-
-    impl Provider for Down {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            Box::pin(async { Ok(Listing::default()) })
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            Box::pin(async { Err("connection refused".into()) })
-        }
-    }
-
-    #[tokio::test]
     async fn a_prompt_after_a_failed_turn_joins_the_unanswered_one() {
+        use crate::agent_loop::tests::{Failure, Reply, Scripted};
+
         let mut session = Session::new("glm-5.3", "/repo".into());
         let (tx, _rx) = mpsc::channel(64);
 
         let failed = session
             .prompt(
                 "first",
-                &Down,
+                &Scripted::always(Reply::Refused(Failure::Down)),
                 &[],
                 &FrontEnd::default(),
                 &tx,
@@ -993,58 +891,6 @@ mod tests {
         send(&mut session, "go").await;
 
         assert_eq!(session.messages[0], current);
-    }
-
-    #[tokio::test]
-    async fn act_mode_from_the_start_says_nothing() {
-        let mut session = Session::new("glm-5.3", "/repo".into());
-        assert_eq!(send(&mut session, "go").await, "go");
-    }
-
-    #[tokio::test]
-    async fn plan_mode_lets_tools_write_only_the_plan() {
-        use crate::agent_loop::tests::{Scripted, call};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut session = Session::new("glm-5.3", dir.path().to_path_buf());
-        session.mode = Mode::Plan;
-        let plan = format!(".nth/plans/{}.md", session.id);
-        let provider = Scripted::new(vec![
-            vec![
-                StreamEvent::ToolCall(call("1", "probe", r#"{"path":"src/main.rs"}"#)),
-                StreamEvent::ToolCall(call("2", "probe", &format!(r#"{{"path":"{plan}"}}"#))),
-            ],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
-        let (tx, _rx) = mpsc::channel(64);
-
-        session
-            .prompt(
-                "plan",
-                &provider,
-                &tools,
-                &FrontEnd::default(),
-                &tx,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("turn completes");
-
-        let results: Vec<&str> = session
-            .messages
-            .iter()
-            .filter_map(|m| match m {
-                Message::ToolResult { content, .. } => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            results[0].starts_with("Error: plan mode is active"),
-            "{}",
-            results[0]
-        );
-        assert_eq!(results[1], "writable");
     }
 
     #[test]

@@ -31,12 +31,16 @@ pub use monitor::{
     MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream,
     log_dir as monitor_log_dir,
 };
+pub use nth_context::agents::tool_names;
 pub use provider::{
     BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
     Request, Retry, StreamEvent, SubagentLlm, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
-pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
+pub use tool::{
+    FrontEnd, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
+    failed, failure_reason, parse_args,
+};
 pub use workdir::Workdir;
 pub use writable::Writable;

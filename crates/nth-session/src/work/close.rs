@@ -5,7 +5,7 @@ use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, one_line};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ItemRef, Plan, Status, Work, open_items, reconciled};
+use super::{ItemRef, Plan, Status, Work, open_items};
 
 pub(super) struct WorkClose {
     work: Work,
@@ -56,10 +56,9 @@ impl Tool for WorkClose {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let store = Work::store(ctx)?;
-            let live = self.work.files().0.lock().await;
-            let mut plan = reconciled(&store, &live).await?;
+            let (_live, mut plan) = self.work.locked_plan(&store).await?;
             let Some(cycle) = plan.cycle(args.cycle) else {
                 return Err(format!("there is no cycle {}", args.cycle));
             };

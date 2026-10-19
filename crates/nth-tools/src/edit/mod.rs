@@ -59,7 +59,7 @@ impl Tool for Edit {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             if args.old_string == args.new_string {
                 return Err("no changes to apply: oldString and newString are identical".into());
             }

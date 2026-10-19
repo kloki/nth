@@ -12,10 +12,7 @@ use nth_context::skills::{Skill, Skills, Source};
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, context};
-
-/// Longest description shown in the terminal listing.
-const DESCRIPTION_CHARS: usize = 72;
+use crate::{config::Config, context, text::shorten};
 
 pub async fn run(json: bool, config: &Config) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;
@@ -125,14 +122,5 @@ fn place(path: &Path, home: Option<&Path>) -> String {
             Err(_) => path.display().to_string(),
         },
         _ => path.display().to_string(),
-    }
-}
-
-/// The first line of `text`, cut to fit one terminal row.
-fn shorten(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    match line.char_indices().nth(DESCRIPTION_CHARS) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_string(),
     }
 }

@@ -9,6 +9,8 @@ pub struct Icons {
     pub ok: &'static str,
     /// Something failed.
     pub fail: &'static str,
+    /// Something went wrong that did not stop the run.
+    pub warn: &'static str,
     /// The highlighted row in a list.
     pub pick: &'static str,
     /// Where something leads: a project root, a moved working directory.
@@ -123,6 +125,7 @@ pub struct GitIcons {
 pub static PLAIN: Icons = Icons {
     ok: "✓",
     fail: "✗",
+    warn: "!",
     pick: "→",
     to: "→",
     current: "→",
@@ -225,6 +228,7 @@ impl Icons {
         let Icons {
             ok,
             fail,
+            warn,
             pick,
             to,
             current,
@@ -252,6 +256,7 @@ impl Icons {
         let mut all = vec![
             *ok,
             *fail,
+            *warn,
             *pick,
             *to,
             *current,

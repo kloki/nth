@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
+use nth_protocol::{
+    Event, Message, NoticeSummary, ToolCall, failure_reason, split_notices,
+    tool_names::writes_files,
+};
 use nth_session::{
     SHELL_PROMPT,
     plan::edits::{self, PlanEdits},
@@ -195,8 +198,7 @@ impl Transcript {
                         continue;
                     };
                     let call = call.clone();
-                    // The agent loop saves a failed call's error this way.
-                    let result = match content.strip_prefix("Error: ") {
+                    let result = match failure_reason(content) {
                         Some(error) => Err(error.to_string()),
                         // A write streamed nothing; its start showed its content.
                         None if call.name == "write" => Ok(content.clone()),
@@ -511,11 +513,6 @@ impl Transcript {
             .filter(|entry| matches!(entry, Entry::Tool { .. }))
             .count()
     }
-}
-
-/// The tools whose results end with format notes and LSP errors.
-fn writes_files(tool: &str) -> bool {
-    matches!(tool, "write" | "edit" | "apply_patch")
 }
 
 /// Adds `text` to a call's output, keeping the lines worth seeing: the end

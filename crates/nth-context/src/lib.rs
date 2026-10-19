@@ -25,6 +25,9 @@ pub struct Paths {
     /// `$XDG_CONFIG_HOME`, or `~/.config` when that is unset. nth's own
     /// files are under `nth/` in it, opencode's under `opencode/`.
     pub config_home: Option<PathBuf>,
+    /// `$XDG_DATA_HOME`, or `~/.local/share` when that is unset. nth keeps
+    /// what it saves under `nth/` in it.
+    pub data_home: Option<PathBuf>,
     /// Extra skill folders from the config. Relative ones are resolved
     /// against the working directory.
     pub skill_paths: Vec<PathBuf>,
@@ -39,9 +42,14 @@ impl Paths {
             .filter(|c| !c.is_empty())
             .map(PathBuf::from)
             .or_else(|| home.as_ref().map(|h| h.join(".config")));
+        let data_home = std::env::var_os("XDG_DATA_HOME")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(".local/share")));
         Self {
             home,
             config_home,
+            data_home,
             skill_paths: Vec::new(),
         }
     }
@@ -50,6 +58,23 @@ impl Paths {
     pub fn config_dir(&self) -> Option<PathBuf> {
         self.config_home.as_ref().map(|c| c.join("nth"))
     }
+
+    /// Where nth keeps what it saves: sessions, credentials, history.
+    pub fn nth_data(&self) -> Option<PathBuf> {
+        self.data_home.as_ref().map(|d| d.join("nth"))
+    }
+}
+
+/// `path` in `home` when it is exactly `~` or starts with `~/`, as a shell
+/// reads it; `None` for any other path, which the caller resolves as it
+/// resolves paths. `~user` and a `~` further in are names like any other,
+/// and with no home `~` stays one too.
+pub fn expand_home(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    if path == "~" {
+        return Some(home.to_path_buf());
+    }
+    path.strip_prefix("~/").map(|rest| home.join(rest))
 }
 
 /// Everything found for one working directory.
@@ -157,6 +182,20 @@ pub fn extension_keys(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_leading_tilde_alone_or_before_a_slash_is_home() {
+        let home = Some(Path::new("/home/me"));
+        assert_eq!(expand_home("~", home), Some(PathBuf::from("/home/me")));
+        assert_eq!(
+            expand_home("~/a/b", home),
+            Some(PathBuf::from("/home/me/a/b"))
+        );
+        assert_eq!(expand_home("~user/x", home), None);
+        assert_eq!(expand_home("a/~", home), None);
+        assert_eq!(expand_home("/abs", home), None);
+        assert_eq!(expand_home("~", None), None);
+    }
 
     #[test]
     fn project_root_is_the_nearest_git_directory() {

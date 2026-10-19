@@ -50,7 +50,7 @@ impl Tool for Write {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             ctx.writable.check(&path)?;
             // Under the same lock as edit and apply_patch: a write that lands

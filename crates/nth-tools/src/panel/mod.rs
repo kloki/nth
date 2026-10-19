@@ -33,7 +33,7 @@ impl Tool for Panel {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { panel } = crate::parse_args(args)?;
+            let Args { panel } = nth_protocol::parse_args(args)?;
             if ctx.screen.show(panel).await {
                 Ok(format!("The user now sees the {} panel.", panel.name()))
             } else {

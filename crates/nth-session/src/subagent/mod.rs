@@ -8,11 +8,9 @@
 
 mod actor;
 mod mention;
+mod spawn;
 mod stop;
 mod task;
-
-/// Tools that change files, kept from a subagent while its parent plans.
-pub(crate) const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -23,8 +21,9 @@ use std::{
 pub use mention::resolve;
 use nth_context::Agent;
 use nth_protocol::{
-    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable,
+    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable, tool_names,
 };
+pub(crate) use spawn::{Spawner, find_agent};
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
 pub use task::{Limits, Task};
@@ -79,12 +78,21 @@ pub enum State {
 }
 
 /// How a turn ended: the answer, or why there is none.
-pub type Turn = Result<String, Error>;
+pub type Answer = Result<String, Error>;
+
+/// How a turn ended, as the model and the tab hear it.
+pub(crate) fn task_outcome(turn: &Answer) -> TaskOutcome {
+    match turn {
+        Ok(text) => TaskOutcome::Completed(text.clone()),
+        Err(Error::Interrupted) => TaskOutcome::Interrupted,
+        Err(e) => TaskOutcome::Failed(e.to_string()),
+    }
+}
 
 /// Who hears how a job ended.
 pub enum Done {
     /// The task tool, waiting inline in a headless run.
-    Reply(oneshot::Sender<Turn>),
+    Reply(oneshot::Sender<Answer>),
     /// The model, through its inbox, as a `<task>` notice.
     Notify(Inbox),
     /// The work item it was assigned: its file returns with the outcome,
@@ -123,7 +131,7 @@ pub(crate) fn tools_for(
         .filter(|tool| {
             let name = tool.spec().name;
             !task::WITHHELD.contains(&name)
-                && !(planning && WRITERS.contains(&name))
+                && !(planning && tool_names::writes_files(name))
                 && agent.allows(name)
         })
         .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
@@ -250,7 +258,9 @@ impl Subagents {
     ) -> SubagentId {
         let (inbox, jobs) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(ChildState::default()));
-        let writes = tools.iter().any(|tool| WRITERS.contains(&tool.spec().name));
+        let writes = tools
+            .iter()
+            .any(|tool| tool_names::writes_files(tool.spec().name));
         let closed = CancellationToken::new();
         let mut registry = self.0.lock();
         registry.next += 1;
@@ -438,29 +448,11 @@ impl Drop for Inner {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_context::{Context, Paths};
-    use nth_protocol::{BoxError, Listing, Request, StreamEvent};
+    use nth_protocol::StreamEvent;
 
     use super::*;
     use crate::agent_loop::tests::Scripted;
-
-    /// A model whose reply never arrives.
-    pub(crate) struct Stalled;
-
-    impl Provider for Stalled {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            async { Ok(futures::stream::pending().boxed()) }.boxed()
-        }
-    }
 
     fn explore() -> Agent {
         Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
@@ -854,7 +846,13 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
-        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let id = subagents.spawn(
+            &explore(),
+            "slow",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
         let (mut slow, _) = job("go", Done::Notify(inbox.clone()));
         slow.timeout = Some(Duration::from_millis(20));
         subagents.prompt(id, slow);
@@ -889,7 +887,13 @@ pub(crate) mod tests {
     async fn a_job_without_a_budget_runs_until_stopped() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let id = subagents.spawn(
+            &explore(),
+            "slow",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         subagents.prompt(id, job("go", Done::Reply(reply_tx)).0);
 

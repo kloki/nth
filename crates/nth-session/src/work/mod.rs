@@ -13,7 +13,12 @@ mod status;
 pub mod store;
 mod todo;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 pub use assign::Assigned;
 use assign::WorkAssign;
@@ -25,7 +30,10 @@ use nth_protocol::{
 use status::WorkStatus;
 pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir};
 
-use crate::{Error, SubagentId, Subagents};
+use crate::{
+    Error, SubagentId, Subagents,
+    subagent::{self, Spawner},
+};
 
 /// The tools that write and read the plan, which no subagent gets: the one
 /// on an item sees that item only.
@@ -54,11 +62,9 @@ pub(crate) struct Files(tokio::sync::Mutex<Live>);
 /// What an assigned item's subagent may spend.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Steps its turn may take.
-    pub max_steps: usize,
-    /// How long its turn may run before it returns as timed out; `None`
-    /// leaves it to its steps.
-    pub timeout: Option<Duration>,
+    /// Its steps, and how long its turn may run before the item returns
+    /// as timed out.
+    pub subagent: subagent::Limits,
     /// How long it may say nothing before the orchestrator hears it
     /// stalled; `None` never.
     pub stall: Option<Duration>,
@@ -71,11 +77,9 @@ pub struct Limits {
 pub struct Work(Arc<Shared>);
 
 struct Shared {
-    provider: Arc<dyn Provider>,
-    /// Every tool the model has; each assigned subagent gets its share.
-    tools: Vec<Arc<dyn Tool>>,
-    subagents: Subagents,
-    limits: Limits,
+    spawner: Spawner,
+    /// How long an assigned subagent may say nothing; see [`Limits`].
+    stall: Option<Duration>,
     files: Arc<Files>,
 }
 
@@ -87,10 +91,8 @@ impl Work {
         limits: Limits,
     ) -> Self {
         Self(Arc::new(Shared {
-            provider,
-            tools,
-            subagents,
-            limits,
+            spawner: Spawner::new(provider, tools, subagents, limits.subagent),
+            stall: limits.stall,
             files: Arc::default(),
         }))
     }
@@ -109,23 +111,34 @@ impl Work {
         &self.0.files
     }
 
+    /// The lock every change to an item file is made under, and the plan
+    /// in `store` read under it.
+    async fn locked_plan(
+        &self,
+        store: &Store,
+    ) -> Result<(tokio::sync::MutexGuard<'_, Live>, Plan), String> {
+        let live = self.files().0.lock().await;
+        let plan = reconciled(store, &live).await?;
+        Ok((live, plan))
+    }
+
     /// The store of the session the call runs for.
     fn store(ctx: &ToolContext) -> Result<Store, String> {
         if ctx.session.is_empty() {
             return Err("this call runs outside a session, which has no work plan".into());
         }
-        Ok(Store::new(work_dir(&root(ctx), &ctx.session)))
+        let root = root(ctx.workdir.origin().as_deref(), &ctx.cwd);
+        Ok(Store::new(work_dir(&root, &ctx.session)))
     }
 }
 
-/// Where the session keeps its work: the main checkout, even after a
-/// worktree tool moved the session, so the plan stays one plan and the
-/// subagents still on it keep writing where the model reads.
-pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
-    ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone())
+/// Where a session in `cwd` that left `origin` for a worktree keeps its
+/// work: the main checkout, even after a worktree tool moved the session,
+/// so the plan stays one plan and the subagents still on it keep writing
+/// where the model reads.
+pub(crate) fn root(origin: Option<&Path>, cwd: &Path) -> PathBuf {
+    origin.unwrap_or(cwd).to_path_buf()
 }
-
-impl Work {}
 
 /// The plan, with every item a gone run of nth left running settled as
 /// interrupted: no subagent of this process is on it. Subagent ids start
@@ -152,7 +165,7 @@ async fn reconciled(store: &Store, live: &Live) -> Result<Plan, String> {
 }
 
 /// How a turn ended, as a work item keeps it.
-fn outcome(turn: &crate::subagent::Turn) -> WorkOutcome {
+fn outcome(turn: &crate::subagent::Answer) -> WorkOutcome {
     match turn {
         Ok(answer) => WorkOutcome::Completed(answer.clone()),
         Err(Error::Interrupted) => WorkOutcome::Interrupted,
@@ -277,8 +290,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) const LIMITS: Limits = Limits {
-        max_steps: 10,
-        timeout: None,
+        subagent: subagent::Limits {
+            max_steps: 10,
+            timeout: None,
+        },
         stall: None,
     };
 

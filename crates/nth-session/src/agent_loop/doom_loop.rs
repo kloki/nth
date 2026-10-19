@@ -2,9 +2,11 @@
 //! input: it asks before running the call again, or stops the turn when
 //! there is nobody to ask.
 
-use nth_protocol::{Message, Question, QuestionOption, Reply, ToolCall, ToolContext};
+use nth_protocol::{
+    INTERRUPTED, Message, Question, QuestionOption, Reply, ToolCall, ToolContext, failed,
+};
 
-use super::{Error, INTERRUPTED, Turn, failed};
+use super::{Error, Turn};
 
 /// How many times the same call in a row trips the doom-loop guard.
 pub(super) const DOOM_LOOP_THRESHOLD: usize = 3;

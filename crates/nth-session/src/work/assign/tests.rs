@@ -11,7 +11,7 @@ use super::*;
 use crate::{
     SubagentEvent, Subagents,
     agent_loop::tests::{Scripted, call},
-    subagent::tests::{Stalled, says},
+    subagent::tests::says,
     work::{
         Item, Limits, Store,
         item::WorkItem,
@@ -253,7 +253,12 @@ async fn a_quiet_subagent_is_reported_stalled_once_and_stopping_it_returns_the_i
         stall: Some(Duration::from_millis(20)),
         ..LIMITS
     };
-    let work = Work::new(Arc::new(Stalled), Vec::new(), subagents.clone(), limits);
+    let work = Work::new(
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+        subagents.clone(),
+        limits,
+    );
     let inbox = Inbox::new();
     let ctx = ctx(dir.path(), inbox.clone());
     write(&work, &ctx, 1, "a").await;
@@ -303,7 +308,12 @@ async fn a_left_session_still_returns_its_items_but_tells_no_model() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
-    let work = Work::new(Arc::new(Stalled), Vec::new(), subagents.clone(), LIMITS);
+    let work = Work::new(
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+        subagents.clone(),
+        LIMITS,
+    );
     let inbox = Inbox::new();
     let ctx = ctx(dir.path(), inbox.clone());
     write(&work, &ctx, 1, "a").await;
@@ -419,7 +429,12 @@ async fn a_headless_call_dropped_while_it_waits_still_returns_the_item() {
     let dir = tempfile::tempdir().unwrap();
     // The receiver stays, so the actor's events always have room.
     let (tx, _rx) = mpsc::channel(64);
-    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::new(tx), LIMITS);
+    let work = Work::new(
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+        Subagents::new(tx),
+        LIMITS,
+    );
     // No inbox, so the call waits as `nth run`'s does.
     let ctx = ctx(dir.path(), Inbox::default());
     write(&work, &ctx, 1, "a").await;
@@ -447,7 +462,12 @@ async fn a_front_end_gone_still_returns_the_items_queued_for_it() {
         text: "filler".into(),
     })
     .unwrap();
-    let work = Work::new(Arc::new(Stalled), Vec::new(), Subagents::new(tx), LIMITS);
+    let work = Work::new(
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+        Subagents::new(tx),
+        LIMITS,
+    );
     let ctx = ctx(dir.path(), Inbox::new());
     write(&work, &ctx, 1, "a").await;
     WorkAssign::new(work.clone())

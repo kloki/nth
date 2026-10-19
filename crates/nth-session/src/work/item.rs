@@ -5,7 +5,7 @@ use nth_protocol::{Todo, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Item, ItemRef, Status, Work, cycle_name, reconciled, slug, store::splits_sections};
+use super::{Item, ItemRef, Status, Work, cycle_name, slug, store::splits_sections};
 use crate::plan;
 
 pub(super) struct WorkItem {
@@ -55,7 +55,7 @@ impl Tool for WorkItem {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let store = Work::store(ctx)?;
             slug(&args.item)?;
             if let Some(name) = &args.cycle_name {
@@ -70,8 +70,7 @@ impl Tool for WorkItem {
             if splits_sections(&args.instruction) {
                 return Err("the instruction may not have a line \"## Todo\" or \"## Result\": the item file has those sections of its own".into());
             }
-            let live = self.work.files().0.lock().await;
-            let plan = reconciled(&store, &live).await?;
+            let (_live, plan) = self.work.locked_plan(&store).await?;
             let cycle = plan.cycle(args.cycle);
             let folder = match (cycle, &args.cycle_name) {
                 (Some(cycle), Some(name)) if *name != cycle.slug => {
@@ -128,7 +127,7 @@ impl Tool for WorkItem {
                 result: before.and_then(|b| b.result.clone()),
                 ..Item::pending(at.clone(), &args.title, &args.instruction, todos)
             };
-            let _ = plan::ensure_dir(&super::root(ctx)).await;
+            let _ = plan::ensure_dir(&super::root(ctx.workdir.origin().as_deref(), &ctx.cwd)).await;
             store
                 .write(&item)
                 .await

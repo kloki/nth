@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{
     Todo, Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState, one_line, todo_counts,
+    tool_names,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -37,7 +38,7 @@ struct Step {
 impl Tool for WorkTodo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "work_todo",
+            name: tool_names::WORK_TODO,
             description: include_str!("todo.md").into(),
             parameters: json!({
                 "type": "object",
@@ -66,7 +67,7 @@ impl Tool for WorkTodo {
         _: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let args: Args = crate::agent_loop::parse_args(args)?;
+            let args: Args = nth_protocol::parse_args(args)?;
             let Some(a) = self.0.get() else {
                 return Err("you have no work item yet".into());
             };

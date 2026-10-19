@@ -6,38 +6,22 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod provider;
+
 use crossterm::event::Event as TermEvent;
-use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_context::{Context as ProjectContext, Paths};
-use nth_protocol::{
-    BoxError, Effort, Event, Listing, Message, Panel, Provider, Request, Screen, StreamEvent,
-    ToolCall, Usage,
-};
+use nth_protocol::{Effort, Event, Message, Panel, Screen, ToolCall, Usage};
 use nth_session::Session;
+pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
 use super::{App, Panes, Queued, Tab, input::Input, keys::Action};
 use crate::llm_picker::tests::model;
 
-pub(crate) struct Idle;
-
-impl Provider for Idle {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async { Ok(Listing::default()) }.boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        _: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        async { Err("unused".into()) }.boxed()
-    }
-}
-
 /// An idle app whose provider must never be asked for anything.
 pub(crate) fn app() -> App {
     let session = Session::new("glm", "/repo".into());
-    App::new(session, Arc::new(Idle), Arc::new(Vec::new()))
+    App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
 }
 
 /// The context of a project in `dir` with one skill, `fix`, whose body
@@ -196,7 +180,7 @@ async fn diagnostics_that_overflow_have_a_scrollbar() {
     let bar = scrollbar(&rows(&mut app));
     assert!(bar.starts_with('┃'), "at the top: {bar:?}");
 
-    app.diagnostics.jump_bottom();
+    app.diagnostics.pager.jump_bottom();
     let bar = scrollbar(&rows(&mut app));
     assert!(
         bar.ends_with('┃') && !bar.starts_with('┃'),
@@ -439,7 +423,7 @@ async fn a_fresh_session_takes_the_configured_compaction() {
     };
     let mut session = Session::new("glm", "/repo".into());
     session.compaction = configured;
-    let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+    let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/clear");
     app.submit();

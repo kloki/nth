@@ -3,9 +3,7 @@
 
 mod view;
 
-use std::time::{Duration, SystemTime};
-
-use nth_session::Summary;
+use nth_session::{Summary, store::age};
 use uuid::Uuid;
 pub use view::draw;
 
@@ -139,19 +137,10 @@ fn haystack(session: &Summary, home: Option<&str>) -> String {
     format!("{} {}", session.title, status::place(&session.cwd, home))
 }
 
-/// How long ago `then` was, in its largest whole unit: `now`, `5m`, `3h`, `2d`.
-fn age(now: SystemTime, then: SystemTime) -> String {
-    let secs = now.duration_since(then).unwrap_or(Duration::ZERO).as_secs();
-    match secs {
-        0..60 => "now".into(),
-        60..3_600 => format!("{}m", secs / 60),
-        3_600..86_400 => format!("{}h", secs / 3_600),
-        _ => format!("{}d", secs / 86_400),
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::time::{Duration, SystemTime};
+
     use super::*;
 
     pub(crate) fn summary(title: &str, secs_ago: u64) -> Summary {
@@ -205,16 +194,5 @@ pub(crate) mod tests {
         picker.next();
 
         assert_eq!(picker.chosen(), None);
-    }
-
-    #[test]
-    fn ages_round_down_to_the_largest_unit() {
-        let now = SystemTime::now();
-        let ago = |secs| age(now, now - Duration::from_secs(secs));
-
-        assert_eq!(ago(5), "now");
-        assert_eq!(ago(5 * 60 + 59), "5m");
-        assert_eq!(ago(3 * 3_600), "3h");
-        assert_eq!(ago(2 * 86_400 + 1), "2d");
     }
 }

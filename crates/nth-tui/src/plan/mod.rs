@@ -10,10 +10,13 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Paragraph, ScrollbarState},
 };
 
-use crate::{app::TabState, rich, theme};
+use crate::{
+    app::TabState,
+    pager::{Cache, Pager},
+    rich, theme,
+};
 
 /// The plan as last read, and the version its diff is against.
 #[derive(Debug, Default)]
@@ -29,17 +32,12 @@ pub struct PlanView {
     /// The running turn wrote the first plan. Everything in it would be
     /// marked new, which says nothing, so it is shown unmarked.
     created_this_turn: bool,
-    /// The first line in view, and how far it can go, as of the last draw.
-    top: usize,
-    max_top: usize,
-    height: usize,
+    pub pager: Pager,
     /// Lines added and removed since the baseline.
     counts: (usize, usize),
     /// `/approve` took the plan as it reads now.
     approved: bool,
-    /// The plan as drawn last, and the width it was wrapped for, so a frame
-    /// renders it only after it or the width changed.
-    rendered: Option<(usize, Vec<Line<'static>>)>,
+    cache: Cache,
 }
 
 impl PlanView {
@@ -106,7 +104,7 @@ impl PlanView {
     /// it again when next drawn.
     fn changed(&mut self) {
         self.counts = diff::counts(&self.baseline, self.current.as_deref().unwrap_or_default());
-        self.rendered = None;
+        self.cache.invalidate();
     }
 
     /// A turn starts, so the next change to the plan starts a new diff.
@@ -127,53 +125,15 @@ impl PlanView {
         }
     }
 
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.top = self.top.saturating_sub(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.top = (self.top + lines).min(self.max_top);
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.height.max(1));
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.height.max(1));
-    }
-
-    pub fn jump_top(&mut self) {
-        self.top = 0;
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.top = self.max_top;
-    }
-
-    /// Where the view sits in the plan, while the plan is longer than the
-    /// tab; `None` while it all fits.
-    pub fn scrollbar(&self) -> Option<ScrollbarState> {
-        (self.max_top > 0).then(|| {
-            ScrollbarState::new(self.max_top + 1)
-                .position(self.top)
-                .viewport_content_length(self.height)
-        })
-    }
-
     /// `path` is the plan file as the header names it.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, path: &str) {
         let width = usize::from(area.width);
-        let lines = match self.rendered.take() {
-            Some((drawn, lines)) if drawn == width => lines,
-            _ => self.lines(path, width),
+        let lines = match self.cache.take(width) {
+            Some(lines) => lines,
+            None => self.lines(path, width),
         };
-        self.height = usize::from(area.height);
-        self.max_top = lines.len().saturating_sub(self.height);
-        self.top = self.top.min(self.max_top);
-        let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines.clone()).scroll((top, 0)), area);
-        self.rendered = Some((width, lines));
+        self.pager.render(frame, area, lines.clone());
+        self.cache.keep(width, lines);
     }
 
     /// A header naming the file and what changed, then the plan wrapped to
@@ -288,13 +248,13 @@ mod tests {
         terminal
             .draw(|frame| view.draw(frame, frame.area(), "p.md"))
             .expect("draws");
-        assert!(view.scrollbar().is_none());
+        assert!(view.pager.scrollbar().is_none());
 
         view.settle(Some("line\n".repeat(30)));
         terminal
             .draw(|frame| view.draw(frame, frame.area(), "p.md"))
             .expect("draws");
-        assert!(view.scrollbar().is_some());
+        assert!(view.pager.scrollbar().is_some());
     }
 
     #[test]
