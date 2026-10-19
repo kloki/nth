@@ -559,11 +559,11 @@ fn default_max_steps() -> usize {
 mod tests {
     use futures::{future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        AssistantMessage, BoxError, Listing, Request, StreamEvent, ToolCall, Usage,
+        AssistantMessage, BoxError, INTERRUPTED, Listing, Request, StreamEvent, ToolCall, Usage,
+        failed,
     };
 
     use super::*;
-    use crate::agent_loop::{INTERRUPTED, failed};
 
     #[test]
     fn starts_with_only_the_system_prompt() {

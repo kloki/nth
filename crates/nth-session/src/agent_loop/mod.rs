@@ -18,11 +18,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use call::{INTERRUPTED, failed, parse_args, run_call};
+pub(crate) use call::{parse_args, run_call};
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
-    ToolContext, Usage,
+    ToolContext, Usage, failed,
 };
 use stream::Stop;
 use tokio::sync::mpsc;

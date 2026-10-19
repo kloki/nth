@@ -6,7 +6,8 @@ use std::{
 };
 
 use nth_protocol::{
-    Event, Message, NoticeSummary, ToolCall, split_notices, tool_names::writes_files,
+    Event, Message, NoticeSummary, ToolCall, failure_reason, split_notices,
+    tool_names::writes_files,
 };
 use nth_session::{
     SHELL_PROMPT,
@@ -197,8 +198,7 @@ impl Transcript {
                         continue;
                     };
                     let call = call.clone();
-                    // The agent loop saves a failed call's error this way.
-                    let result = match content.strip_prefix("Error: ") {
+                    let result = match failure_reason(content) {
                         Some(error) => Err(error.to_string()),
                         // A write streamed nothing; its start showed its content.
                         None if call.name == "write" => Ok(content.clone()),

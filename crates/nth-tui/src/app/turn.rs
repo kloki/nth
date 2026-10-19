@@ -608,8 +608,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent};
     use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_protocol::{
-        BoxError, Event, Listing, Message, ModelInfo, MonitorEvent, Provider, Request, Stream,
-        StreamEvent, ToolCall, Usage,
+        BoxError, Event, INTERRUPTED, Listing, Message, ModelInfo, MonitorEvent, Provider, Request,
+        Stream, StreamEvent, ToolCall, Usage, failed,
     };
     use tokio::sync::Notify;
 
@@ -1014,7 +1014,7 @@ mod tests {
         assert!(matches!(
             &session.messages[3],
             Message::ToolResult { content, .. }
-                if content == "Error: interrupted by the user"
+                if *content == failed(INTERRUPTED)
         ));
         let Message::User(steered) = &session.messages[4] else {
             panic!("the prompt was steered in: {:?}", session.messages[4]);

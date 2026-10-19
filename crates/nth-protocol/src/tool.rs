@@ -150,6 +150,23 @@ impl OutputSink {
 /// reads it and tries again.
 pub type ToolResult = Result<String, String>;
 
+/// Why a tool the user cut short failed; the model reads it after `Error: `.
+pub const INTERRUPTED: &str = "interrupted by the user";
+
+/// The text the model reads, and the session saves, before why a call failed.
+const FAILED: &str = "Error: ";
+
+/// A tool result's content when the tool failed for `reason`: the shape
+/// [`failure_reason`] reads the reason back out of.
+pub fn failed(reason: &str) -> String {
+    format!("{FAILED}{reason}")
+}
+
+/// Why the call failed, when `content` is a result [`failed`] wrote.
+pub fn failure_reason(content: &str) -> Option<&str> {
+    content.strip_prefix(FAILED)
+}
+
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 

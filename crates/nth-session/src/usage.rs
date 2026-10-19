@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use nth_protocol::{Cost, Message, Usage};
+use nth_protocol::{Cost, Message, Usage, failure_reason};
 use serde::{Deserialize, Serialize};
 
 /// One turn's requests: on which model, for whom, how many, and the tokens
@@ -85,7 +85,7 @@ impl Spend {
         use_of.duration += took;
         if let Message::ToolResult { content, .. } = result {
             use_of.output += content.len() as u64;
-            if content.starts_with("Error:") {
+            if failure_reason(content).is_some() {
                 use_of.failed += 1;
             }
         }

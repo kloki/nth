@@ -38,6 +38,9 @@ pub use provider::{
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
-pub use tool::{FrontEnd, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
+pub use tool::{
+    FrontEnd, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
+    failed, failure_reason,
+};
 pub use workdir::Workdir;
 pub use writable::Writable;

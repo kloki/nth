@@ -1,14 +1,13 @@
 //! Running one tool call: its arguments parsed and repaired, its output
 //! streamed, and its result or why it failed.
 
-use nth_protocol::{Attachments, Event, Message, OutputSink, Tool, ToolCall, ToolContext};
+use nth_protocol::{
+    Attachments, Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{emit, repair::repair};
-
-/// Why a tool the user cut short failed; the model reads it after `Error: `.
-pub(crate) const INTERRUPTED: &str = "interrupted by the user";
 
 /// A tool's arguments as the struct it expects, or what was wrong with
 /// them for the model.
@@ -16,12 +15,6 @@ pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
     args: serde_json::Value,
 ) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
-}
-
-/// A tool result's content when the tool failed for `reason`: the shape
-/// front-ends read the reason back out of.
-pub(crate) fn failed(reason: &str) -> String {
-    format!("Error: {reason}")
 }
 
 /// Runs `call` on `tool`, announcing it with [`Event::ToolStarted`] and

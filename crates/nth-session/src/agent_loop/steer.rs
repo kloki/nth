@@ -3,9 +3,9 @@
 //! calls, and what monitors said and you sent while the tools ran
 //! follows their results.
 
-use nth_protocol::{Event, Message, ToolCall, ToolContext};
+use nth_protocol::{Event, INTERRUPTED, Message, ToolCall, ToolContext, failed};
 
-use super::{INTERRUPTED, Turn, emit, failed};
+use super::{Turn, emit};
 
 /// Appended to a prompt that pre-empted a reply's tool calls, so the model
 /// knows why they did not run and may run them itself. Appended, never

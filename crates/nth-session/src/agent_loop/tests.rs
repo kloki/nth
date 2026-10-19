@@ -9,7 +9,7 @@ use futures::{
 };
 use nth_protocol::{
     AssistantMessage, BoxError, Effort, Event, Listing, Message, Provider, Request, StreamEvent,
-    Tool, ToolCall, ToolContext, ToolResult, ToolSpec,
+    Tool, ToolCall, ToolContext, ToolResult, ToolSpec, failed,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
