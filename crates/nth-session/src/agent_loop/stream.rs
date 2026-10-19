@@ -79,15 +79,7 @@ impl Turn<'_> {
         } else {
             effective
         };
-        let request = Request {
-            model: self.route.model,
-            session_id: self.route.session_id,
-            parent_session_id: self.route.parent_session_id,
-            effort: self.route.effort,
-            messages: &sent,
-            tools: specs,
-        };
-        let mut stream = self.open_once(request).await?;
+        let mut stream = self.open_once(self.route.request(&sent, specs)).await?;
         let mut reply = AssistantMessage::default();
         loop {
             let event = tokio::select! {

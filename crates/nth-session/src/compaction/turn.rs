@@ -124,14 +124,7 @@ impl Turn<'_> {
     /// the front-end hears of it as [`Event::Compacted`].
     async fn request_summary(&mut self, prompt: &str) -> Result<String, Error> {
         let messages = [Message::User(prompt.to_string())];
-        let request = Request {
-            model: self.route.model,
-            session_id: self.route.session_id,
-            parent_session_id: self.route.parent_session_id,
-            effort: self.route.effort,
-            messages: &messages,
-            tools: &[],
-        };
+        let request = self.route.request(&messages, &[]);
         let mut attempt = 0;
         loop {
             attempt += 1;

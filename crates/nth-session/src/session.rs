@@ -365,35 +365,12 @@ impl Session {
             _ => self.messages.push(Message::User(text)),
         }
         self.updated_at = SystemTime::now();
-        let ctx = self.tool_context(front_end);
-        let mut spend = Spend::new(&self.model, None);
-        spend.cost = self.cost;
-        let session_id = self.id.to_string();
-        let parent_session_id = self.parent.map(|p| p.to_string());
-        let result = Turn {
-            provider,
-            route: Route {
-                model: &self.model,
-                effort: self.effort,
-                session_id: &session_id,
-                parent_session_id: parent_session_id.as_deref(),
-                max_steps: self.max_steps,
-                // The window and the output limit are the front-end's to
-                // fill; without them nothing compacts on its own.
-                context_window: self.context_window,
-                max_output: self.max_output,
-                compaction: self.compaction,
-            },
-            tools,
-            ctx: &ctx,
-            messages: &mut self.messages,
-            spend: &mut spend,
-            last_usage: &mut self.last_usage,
-            events,
-            cancel,
-        }
-        .run()
-        .await;
+        let mut held = self.held(front_end);
+        let result = self
+            .turn(&mut held, provider, tools, events, cancel)
+            .run()
+            .await;
+        let Held { ctx, spend, .. } = held;
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
@@ -406,6 +383,51 @@ impl Session {
             self.set_cwd(cwd, ctx.workdir.origin());
         }
         result
+    }
+
+    /// What a turn of this session needs held for as long as it runs.
+    fn held(&self, front_end: &FrontEnd) -> Held {
+        let mut spend = Spend::new(&self.model, None);
+        spend.cost = self.cost;
+        Held {
+            ctx: self.tool_context(front_end),
+            spend,
+            session_id: self.id.to_string(),
+            parent_session_id: self.parent.map(|p| p.to_string()),
+        }
+    }
+
+    /// A turn on this session's history and route, with what `held` holds.
+    fn turn<'a>(
+        &'a mut self,
+        held: &'a mut Held,
+        provider: &'a dyn Provider,
+        tools: &'a [Box<dyn Tool>],
+        events: &'a mpsc::Sender<Event>,
+        cancel: &'a CancellationToken,
+    ) -> Turn<'a> {
+        Turn {
+            provider,
+            route: Route {
+                model: &self.model,
+                effort: self.effort,
+                session_id: &held.session_id,
+                parent_session_id: held.parent_session_id.as_deref(),
+                max_steps: self.max_steps,
+                // The window and the output limit are the front-end's to
+                // fill; without them nothing compacts on its own.
+                context_window: self.context_window,
+                max_output: self.max_output,
+                compaction: self.compaction,
+            },
+            tools,
+            ctx: &held.ctx,
+            messages: &mut self.messages,
+            spend: &mut held.spend,
+            last_usage: &mut self.last_usage,
+            events,
+            cancel,
+        }
     }
 
     /// What the model's tools and the front-end reach this session through.
@@ -451,36 +473,14 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        let ctx = self.tool_context(front_end);
-        let mut spend = Spend::new(&self.model, None);
-        spend.cost = self.cost;
-        let session_id = self.id.to_string();
-        let parent_session_id = self.parent.map(|p| p.to_string());
-        // A compaction is not a turn; its usage is the summary request's,
-        // not the conversation's size, so it is never the trigger's.
-        let mut last_usage = None;
-        let result = Turn {
-            provider,
-            route: Route {
-                model: &self.model,
-                effort: self.effort,
-                session_id: &session_id,
-                parent_session_id: parent_session_id.as_deref(),
-                max_steps: self.max_steps,
-                context_window: self.context_window,
-                max_output: self.max_output,
-                compaction: self.compaction,
-            },
-            tools,
-            ctx: &ctx,
-            messages: &mut self.messages,
-            spend: &mut spend,
-            last_usage: &mut last_usage,
-            events,
-            cancel,
-        }
-        .compact()
-        .await;
+        let mut held = self.held(front_end);
+        // Only `Turn::run` writes the trigger's usage: a compaction's is the
+        // summary request's, not the conversation's size.
+        let result = self
+            .turn(&mut held, provider, tools, events, cancel)
+            .compact()
+            .await;
+        let spend = held.spend;
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.
@@ -490,6 +490,14 @@ impl Session {
         self.updated_at = SystemTime::now();
         result.map(|_| ())
     }
+}
+
+/// What a turn borrows that the session does not hold.
+struct Held {
+    ctx: ToolContext,
+    spend: Spend,
+    session_id: String,
+    parent_session_id: Option<String>,
 }
 
 impl Session {

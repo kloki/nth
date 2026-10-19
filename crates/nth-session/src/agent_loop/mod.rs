@@ -20,8 +20,8 @@ use std::{
 pub(crate) use call::run_call;
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
-    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
-    ToolContext, Usage, failed,
+    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Request, Tool,
+    ToolContext, ToolSpec, Usage, failed,
 };
 pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
@@ -91,6 +91,20 @@ pub struct Route<'a> {
     pub max_output: Option<u64>,
     /// How the session compacts, from its own config.
     pub compaction: Compaction,
+}
+
+impl<'a> Route<'a> {
+    /// A request on this route carrying `messages` and offering `tools`.
+    pub(crate) fn request(&self, messages: &'a [Message], tools: &'a [ToolSpec]) -> Request<'a> {
+        Request {
+            model: self.model,
+            session_id: self.session_id,
+            parent_session_id: self.parent_session_id,
+            effort: self.effort,
+            messages,
+            tools,
+        }
+    }
 }
 
 /// One user turn: where its requests go, what runs its tool calls, and
