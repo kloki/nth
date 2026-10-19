@@ -4,6 +4,8 @@
 //! either works here too. The frontmatter names and describes the agent
 //! and may pick its model and tools; the body is its system prompt.
 
+pub mod tool_names;
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -356,7 +358,7 @@ fn permission_denied(value: Option<&Value>) -> Vec<String> {
 fn opencode_tool(name: &str) -> Vec<String> {
     match name.to_lowercase().as_str() {
         "write" | "edit" | "patch" | "apply_patch" => {
-            ["write", "edit", "apply_patch"].map(String::from).to_vec()
+            tool_names::WRITERS.map(String::from).to_vec()
         }
         other => vec![other.to_string()],
     }
@@ -598,7 +600,7 @@ mod tests {
         let triage = agents.get("triage").expect("triage");
         assert_eq!(triage.tools, None, "a map only changes the defaults");
         assert!(triage.allows("read") && triage.allows("bash"));
-        for writer in ["write", "edit", "apply_patch"] {
+        for writer in tool_names::WRITERS {
             assert!(!triage.allows(writer), "{writer}");
         }
     }

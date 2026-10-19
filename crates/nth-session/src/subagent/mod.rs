@@ -11,9 +11,6 @@ mod mention;
 mod stop;
 mod task;
 
-/// Tools that change files, kept from a subagent while its parent plans.
-pub(crate) const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
-
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
@@ -23,7 +20,7 @@ use std::{
 pub use mention::resolve;
 use nth_context::Agent;
 use nth_protocol::{
-    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable,
+    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable, tool_names,
 };
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
@@ -123,7 +120,7 @@ pub(crate) fn tools_for(
         .filter(|tool| {
             let name = tool.spec().name;
             !task::WITHHELD.contains(&name)
-                && !(planning && WRITERS.contains(&name))
+                && !(planning && tool_names::writes_files(name))
                 && agent.allows(name)
         })
         .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
@@ -250,7 +247,9 @@ impl Subagents {
     ) -> SubagentId {
         let (inbox, jobs) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(ChildState::default()));
-        let writes = tools.iter().any(|tool| WRITERS.contains(&tool.spec().name));
+        let writes = tools
+            .iter()
+            .any(|tool| tool_names::writes_files(tool.spec().name));
         let closed = CancellationToken::new();
         let mut registry = self.0.lock();
         registry.next += 1;

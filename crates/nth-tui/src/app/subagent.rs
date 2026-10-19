@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use nth_protocol::Event;
+use nth_protocol::{Event, tool_names};
 use nth_session::{
     CancellationToken,
     subagent::{Done, Job, SubagentEvent, SubagentId},
@@ -61,7 +61,7 @@ impl App {
                 }
                 // A subagent on a work item ticked its todo.
                 if let Event::ToolFinished { call, .. } = &event
-                    && call.name == "work_todo"
+                    && call.name == tool_names::WORK_TODO
                 {
                     self.read_work();
                 }

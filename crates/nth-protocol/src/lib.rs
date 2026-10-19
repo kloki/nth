@@ -31,6 +31,7 @@ pub use monitor::{
     MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream,
     log_dir as monitor_log_dir,
 };
+pub use nth_context::agents::tool_names;
 pub use provider::{
     BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
     Request, Retry, StreamEvent, SubagentLlm, Usage,

@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nth_protocol::{Event, Message, NoticeSummary, ToolCall, split_notices};
+use nth_protocol::{
+    Event, Message, NoticeSummary, ToolCall, split_notices, tool_names::writes_files,
+};
 use nth_session::{
     SHELL_PROMPT,
     plan::edits::{self, PlanEdits},
@@ -511,11 +513,6 @@ impl Transcript {
             .filter(|entry| matches!(entry, Entry::Tool { .. }))
             .count()
     }
-}
-
-/// The tools whose results end with format notes and LSP errors.
-fn writes_files(tool: &str) -> bool {
-    matches!(tool, "write" | "edit" | "apply_patch")
 }
 
 /// Adds `text` to a call's output, keeping the lines worth seeing: the end

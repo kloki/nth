@@ -60,7 +60,7 @@ use nth_lsp::{ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
     Ask, BoxError, Compaction, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId,
-    Monitors, Provider, Show, Tool, Usage, monitor_log_dir,
+    Monitors, Provider, Show, Tool, Usage, monitor_log_dir, tool_names,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, ToolUse, store,
@@ -1034,17 +1034,16 @@ impl App {
         // A write or a command may have changed the tree.
         match &event {
             Event::ToolFinished { call, .. }
-                if matches!(
-                    call.name.as_str(),
-                    "write" | "edit" | "apply_patch" | "bash"
-                ) =>
+                if tool_names::writes_files(&call.name) || call.name == "bash" =>
             {
                 self.load_git();
                 if call.name != "bash" {
                     self.read_plan();
                 }
             }
-            Event::ToolFinished { call, .. } if call.name.starts_with("work_") => self.read_work(),
+            Event::ToolFinished { call, .. } if tool_names::touches_work(&call.name) => {
+                self.read_work()
+            }
             Event::Usage(usage) => {
                 self.usage = Some(*usage);
                 self.spent.usage(&self.model, *usage);

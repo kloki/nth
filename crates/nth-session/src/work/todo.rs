@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{
     Todo, Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState, one_line, todo_counts,
+    tool_names,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -37,7 +38,7 @@ struct Step {
 impl Tool for WorkTodo {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "work_todo",
+            name: tool_names::WORK_TODO,
             description: include_str!("todo.md").into(),
             parameters: json!({
                 "type": "object",
