@@ -41,7 +41,7 @@ impl App {
             return;
         }
         let target = if self.content.active() == Tab::Plan {
-            if !self.plan.exists() {
+            if !self.plan.view.exists() {
                 self.hint = Some("no plan yet".into());
                 return;
             }
@@ -64,7 +64,7 @@ impl App {
             return;
         };
         let original = match target {
-            Target::Plan => match self.plan.text() {
+            Target::Plan => match self.plan.view.text() {
                 Some(text) => text.to_string(),
                 None => return,
             },
@@ -73,9 +73,9 @@ impl App {
         // The plan is named after its session, so the prompt copy is too,
         // and two nth instances never share one temp file.
         let name = match target {
-            Target::Plan => self.plan_path.file_name().unwrap_or_default().to_owned(),
+            Target::Plan => self.plan.path().file_name().unwrap_or_default().to_owned(),
             Target::Prompt => {
-                let mut name = self.plan_path.file_stem().unwrap_or_default().to_owned();
+                let mut name = self.plan.path().file_stem().unwrap_or_default().to_owned();
                 name.push("-prompt.md");
                 name
             }
@@ -230,10 +230,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let session = Session::new("glm", dir.path().to_path_buf());
         let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
-        std::fs::create_dir_all(app.plan_path.parent().expect("dir")).expect("dirs");
-        std::fs::write(&app.plan_path, "# Plan\n").expect("writes");
-        app.read_plan();
-        let text = app.plan_reading.join().await.expect("read");
+        std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");
+        std::fs::write(app.plan.path(), "# Plan\n").expect("writes");
+        app.plan.read();
+        let text = app.plan.reading.join().await.expect("read");
         app.plan_read(text);
         app.content.open(Tab::Plan);
         (app, dir)

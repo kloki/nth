@@ -280,7 +280,7 @@ impl App {
             Tab::Chat => "chat".into(),
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
-            Tab::Plan => self.plan.label(),
+            Tab::Plan => self.plan.view.label(),
             Tab::Work => self.work.view.label(),
             Tab::File(id) => self
                 .file_tabs
@@ -359,7 +359,7 @@ impl App {
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
             Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
-            Tab::Plan => self.plan.state(),
+            Tab::Plan => self.plan.view.state(),
             Tab::Work => self.work.view.state(&self.live_work()),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
@@ -476,7 +476,7 @@ impl App {
             Tab::Usage => &mut self.usage_view.pager,
             Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
             Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
-            Tab::Plan => &mut self.plan.pager,
+            Tab::Plan => &mut self.plan.view.pager,
             Tab::Work => &mut self.work.view.pager,
             Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,
         })

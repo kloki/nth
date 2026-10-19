@@ -123,7 +123,7 @@ impl App {
         self.usage = None;
         self.spent = Spent::new(session.usage.clone());
         self.files.clear();
-        self.plan_for_session(session.plan_path());
+        self.plan.for_session(session.plan_path());
         self.work.for_session(session.work_dir());
         self.session = Some(session);
         self.left_session();

@@ -185,10 +185,10 @@ impl App {
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
-            Queued::Approve => self.start_turn(self.approval()),
+            Queued::Approve => self.start_turn(self.plan.approval()),
             Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
-                self.start_turn(plan::edits::render(&self.plan_path, &original, &edited))
+                self.start_turn(plan::edits::render(self.plan.path(), &original, &edited))
             }
         }
     }
@@ -320,7 +320,7 @@ impl App {
             self.chat.transcript.push_user(text.clone());
         }
         self.chat.jump_bottom();
-        self.plan.turn_started();
+        self.plan.view.turn_started();
         self.busy_since = Some(Instant::now());
 
         let provider = self.provider.clone();
@@ -471,9 +471,9 @@ impl App {
         self.load_git();
         self.load_pr();
         // The plan lives under the working directory, so a move moves it.
-        match plan_path != self.plan_path {
-            true => self.plan_for_session(plan_path),
-            false => self.read_plan(),
+        match plan_path != self.plan.path() {
+            true => self.plan.for_session(plan_path),
+            false => self.plan.read(),
         }
         match work_dir != self.work.dir {
             true => self.work.for_session(work_dir),
@@ -1799,7 +1799,7 @@ mod tests {
         assert!(app.place.ends_with(".nth/worktrees/x"), "{}", app.place);
         let plan = app.session.as_ref().expect("back").plan_path();
         assert!(plan.starts_with(&worktree), "{}", plan.display());
-        assert_eq!(app.plan_path, plan);
+        assert_eq!(app.plan.path(), plan);
     }
 
     #[tokio::test]

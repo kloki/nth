@@ -2,55 +2,114 @@
 //! after anything that may have written it, shown in a tab while it
 //! exists, and approved with `/approve`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nth_protocol::Mode;
 use nth_session::plan;
+use tokio::task::JoinError;
 
-use super::{App, Queued, Tab, flash::Flash};
+use super::{App, Queued, Tab, content::Change, job::Job};
+use crate::plan::PlanView;
 
-impl App {
-    /// Points the plan tab at the plan of the session the app is on, and
-    /// reads it with nothing marked as changed.
-    pub(super) fn plan_for_session(&mut self, path: PathBuf) {
-        self.plan_path = path;
-        self.plan_settle = true;
-        self.read_plan();
+/// The session's plan file and what the plan tab shows of it.
+pub(super) struct PlanTab {
+    pub(super) view: PlanView,
+    path: PathBuf,
+    pub(super) reading: Job<Option<String>>,
+    /// The next read is of a session just opened, so it marks nothing as
+    /// changed.
+    settle: bool,
+    /// A turn that ended in plan mode, waiting for the plan to be read to
+    /// say whether it left a plan to approve.
+    pub(super) notice: Option<nth_notify::Context>,
+}
+
+impl PlanTab {
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self {
+            view: PlanView::default(),
+            path,
+            reading: Job::default(),
+            settle: true,
+            notice: None,
+        }
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Points the tab at the plan of the session the app is on, and reads
+    /// it with nothing marked as changed.
+    pub(super) fn for_session(&mut self, path: PathBuf) {
+        self.path = path;
+        self.settle = true;
+        self.read();
     }
 
     /// Reads the plan file in the background; the tools may just have
     /// written it.
-    pub(super) fn read_plan(&mut self) {
-        let path = self.plan_path.clone();
-        self.plan_reading.start_or_queue(|_| {
+    pub(super) fn read(&mut self) {
+        let path = self.path.clone();
+        self.reading.start_or_queue(|_| {
             // A plan that can't be read shows as none, rather than as an
             // error on every turn.
             tokio::spawn(async move { tokio::fs::read_to_string(path).await.ok() })
         });
     }
 
-    pub(super) fn plan_read(&mut self, text: Option<String>) {
-        let settle = std::mem::take(&mut self.plan_settle);
-        let created = !settle && !self.plan.exists() && text.is_some();
+    /// The read running, once it is back; never while none runs.
+    pub(super) async fn next(&mut self) -> Result<Option<String>, JoinError> {
+        self.reading.join().await
+    }
+
+    /// Takes in the plan as read, and says what that did to it and
+    /// whether another read was asked for meanwhile.
+    fn took(&mut self, text: Option<String>) -> (Change, bool) {
+        let settle = std::mem::take(&mut self.settle);
+        let created = !settle && !self.view.exists() && text.is_some();
         if settle {
-            self.plan.settle(text);
+            self.view.settle(text);
         } else {
-            self.plan.update(text);
+            self.view.update(text);
         }
-        if created {
-            // The first plan is what you will want to read, and it comes
-            // in after a blank like a tab the model shows you.
-            self.content.open(Tab::Plan);
-            self.flash = Some(Flash::new());
-        } else if self.plan.exists() {
-            // A revision opens the tab unfocused, so the reply the model is
-            // writing stays in view; the tab's label says what changed.
-            self.content.add(Tab::Plan);
+        let change = if created {
+            Change::Created
+        } else if self.view.exists() {
+            Change::Present
         } else {
-            self.content.remove(Tab::Plan);
-        }
-        if self.plan_reading.take_again() {
-            self.read_plan();
+            Change::Gone
+        };
+        (change, self.reading.take_again())
+    }
+
+    /// The plan file as the tab names it: relative to `cwd`.
+    fn place(&self, cwd: &Path) -> String {
+        self.path
+            .strip_prefix(cwd)
+            .unwrap_or(&self.path)
+            .display()
+            .to_string()
+    }
+
+    /// What the model gets for `/approve`.
+    pub(super) fn approval(&self) -> String {
+        format!(
+            "/approve{}{}\n</system-reminder>",
+            REMINDER_OPEN,
+            plan::approved(&self.path)
+        )
+    }
+}
+
+impl App {
+    /// The plan as read: its tab shows while the file exists, and the
+    /// label says what the latest turn changed.
+    pub(super) fn plan_read(&mut self, text: Option<String>) {
+        let (change, again) = self.plan.took(text);
+        self.tab_read(Tab::Plan, change);
+        if again {
+            self.plan.read();
         } else {
             // Only once the read that came after the turn is back.
             self.notify_plan_read();
@@ -60,35 +119,22 @@ impl App {
     /// The plan file as the tab names it: relative to the working
     /// directory.
     pub(super) fn plan_place(&self) -> String {
-        self.plan_path
-            .strip_prefix(&self.cwd)
-            .unwrap_or(&self.plan_path)
-            .display()
-            .to_string()
+        self.plan.place(&self.cwd)
     }
 
     /// `/approve`: act on the plan. The mode switches now and the chat
     /// shows; the approval runs as its own turn, queued behind one that is
     /// running.
     pub(super) fn approve(&mut self) {
-        if !self.plan.exists() {
+        if !self.plan.view.exists() {
             self.hint = Some("no plan to approve".into());
             return;
         }
         self.set_mode(Mode::Act);
-        self.plan.approve();
+        self.plan.view.approve();
         // Acting happens in the chat.
         self.content.select(0);
         self.send(Queued::Approve);
-    }
-
-    /// What the model gets for `/approve`.
-    pub(super) fn approval(&self) -> String {
-        format!(
-            "/approve{}{}\n</system-reminder>",
-            REMINDER_OPEN,
-            plan::approved(&self.plan_path)
-        )
     }
 }
 
@@ -123,24 +169,24 @@ mod tests {
     }
 
     async fn read(app: &mut App) {
-        let text = app.plan_reading.join().await.expect("read");
+        let text = app.plan.reading.join().await.expect("read");
         app.plan_read(text);
     }
 
     fn write_plan(app: &App, text: &str) {
-        std::fs::create_dir_all(app.plan_path.parent().expect("dir")).expect("dirs");
-        std::fs::write(&app.plan_path, text).expect("writes");
+        std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");
+        std::fs::write(app.plan.path(), text).expect("writes");
     }
 
     #[tokio::test]
     async fn the_first_plan_shows_and_a_revision_only_opens_the_tab() {
         let (mut app, _dir) = app_with_plan_dir();
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
 
         write_plan(&app, "# Plan\nstep\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
         assert_eq!(app.content.active(), Tab::Plan, "the first plan shows");
@@ -152,9 +198,9 @@ mod tests {
         );
 
         app.content.select(0);
-        app.plan.turn_started();
+        app.plan.view.turn_started();
         write_plan(&app, "# Plan\nstep 1\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(
             app.content.active(),
@@ -168,7 +214,7 @@ mod tests {
     async fn a_plan_there_on_start_opens_its_tab_unfocused() {
         let (mut app, _dir) = app_with_plan_dir();
         write_plan(&app, "# Plan\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
@@ -178,10 +224,10 @@ mod tests {
     #[tokio::test]
     async fn the_tab_closes_and_plan_or_a_revision_brings_it_back() {
         let (mut app, _dir) = app_with_plan_dir();
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         write_plan(&app, "# Plan\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(app.content.active(), Tab::Plan);
 
@@ -194,7 +240,7 @@ mod tests {
 
         app.close_content();
         write_plan(&app, "# Plan\nstep\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
         assert_eq!(app.content.active(), Tab::Chat, "a revision, unfocused");
@@ -203,14 +249,14 @@ mod tests {
     #[tokio::test]
     async fn the_tab_shows_the_plan_with_its_changes() {
         let (mut app, _dir) = app_with_plan_dir();
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         write_plan(&app, "# Plan\nstep\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
-        app.plan.turn_started();
+        app.plan.view.turn_started();
         write_plan(&app, "# Plan\nstep 1\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         // The plan as drawn, not the blank it comes in after.
         app.flash = None;
@@ -228,7 +274,7 @@ mod tests {
     async fn a_plan_there_on_resume_shows_no_changes() {
         let (mut app, _dir) = app_with_plan_dir();
         write_plan(&app, "# Plan\n");
-        app.plan_for_session(app.plan_path.clone());
+        app.plan.for_session(app.plan.path().to_path_buf());
         read(&mut app).await;
 
         assert_eq!(app.tab_label(Tab::Plan), "plan");
@@ -248,10 +294,10 @@ mod tests {
     async fn approve_acts_on_the_plan_and_clears_its_marks() {
         let (mut app, _dir) = app_with_plan_dir();
         app.set_mode(Mode::Plan);
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         write_plan(&app, "# Plan\n");
-        app.read_plan();
+        app.plan.read();
         read(&mut app).await;
         assert_eq!(app.content.active(), Tab::Plan);
 
@@ -273,7 +319,7 @@ mod tests {
         assert!(
             sent.starts_with(&format!(
                 "/approve\n\n<system-reminder>\nThe plan at {} has been approved",
-                app.plan_path.display()
+                app.plan.path().display()
             )),
             "{sent}"
         );

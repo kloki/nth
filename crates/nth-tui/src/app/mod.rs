@@ -95,7 +95,6 @@ use crate::{
     history::History,
     llm_picker::usage::LlmUsage,
     monitor::MonitorView,
-    plan::PlanView,
     prompt::{self, Prompt},
     settings::ChatSettings,
     spinner, status,
@@ -298,13 +297,7 @@ pub struct App {
     /// Each subagent's tab, open from its start until you close it.
     subagent_views: BTreeMap<SubagentId, SubagentView>,
     file_tabs: file::FileTabs,
-    /// The session's plan file and what the plan tab shows of it.
-    plan: PlanView,
-    plan_path: PathBuf,
-    plan_reading: Job<Option<String>>,
-    /// The next read is of a session just opened, so it marks nothing as
-    /// changed.
-    plan_settle: bool,
+    plan: plan::PlanTab,
     work: work::WorkTab,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
@@ -331,9 +324,6 @@ pub struct App {
     editor: Job<std::io::Result<std::process::ExitStatus>>,
     notifier: Notifier,
     notify_errors: watch::Receiver<Option<String>>,
-    /// A turn that ended in plan mode, waiting for the plan to be read to
-    /// say whether it left a plan to approve.
-    plan_notice: Option<nth_notify::Context>,
     /// Whether the terminal has focus, as it last reported; nth starts
     /// focused because you just started it. Notifications go out only
     /// without it.
@@ -530,10 +520,7 @@ impl App {
             subagent_rx,
             subagent_views: BTreeMap::new(),
             file_tabs: file::FileTabs::new(),
-            plan: PlanView::default(),
-            plan_path,
-            plan_reading: Job::default(),
-            plan_settle: true,
+            plan: plan::PlanTab::new(plan_path),
             work: work::WorkTab::new(work_dir),
             monitor_root,
             notices_due: None,
@@ -547,7 +534,6 @@ impl App {
             editor: Job::default(),
             notify_errors: notifier.errors(),
             notifier,
-            plan_notice: None,
             focused: true,
             quit_armed: false,
             quit: false,
@@ -620,7 +606,7 @@ impl App {
         self.load_git();
         self.load_pr();
         self.list_llms();
-        self.read_plan();
+        self.plan.read();
         self.work.read();
 
         while !self.quit {
@@ -667,7 +653,7 @@ impl App {
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
                 saved = self.session_saving.join() => Step::SessionSaved(saved),
                 saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
-                plan = self.plan_reading.join() => Step::PlanRead(plan),
+                plan = self.plan.next() => Step::PlanRead(plan),
                 plan = self.work.next() => Step::WorkRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 tools = self.tools_lookup.join() => Step::ToolsFound(tools),
@@ -887,8 +873,8 @@ impl App {
             }
             Tab::Plan => {
                 let place = self.plan_place();
-                self.plan.draw(frame, area, &place);
-                if let Some(state) = self.plan.pager.scrollbar() {
+                self.plan.view.draw(frame, area, &place);
+                if let Some(state) = self.plan.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -1019,7 +1005,7 @@ impl App {
             {
                 self.load_git();
                 if call.name != "bash" {
-                    self.read_plan();
+                    self.plan.read();
                 }
             }
             Event::ToolFinished { call, .. } if tool_names::touches_work(&call.name) => {
@@ -1092,7 +1078,7 @@ impl App {
         self.session = Some(session);
         self.usage = None;
         self.spent = Spent::default();
-        self.plan_for_session(plan_path);
+        self.plan.for_session(plan_path);
         self.work.for_session(work_dir);
         self.left_session();
     }

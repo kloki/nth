@@ -35,7 +35,7 @@ impl App {
             // Whether there is a plan is known once the read `end_turn`
             // started is back; `plan_read` sends it then.
             None if self.last_turn == TabState::Done && self.mode == Mode::Plan => {
-                self.plan_notice = Some(cx)
+                self.plan.notice = Some(cx)
             }
             None if self.last_turn == TabState::Done => self.notify(Event::Done, &cx),
             // Stopped with Esc: you are here.
@@ -45,8 +45,8 @@ impl App {
 
     /// After the plan is read for a turn that ended in plan mode.
     pub(super) fn notify_plan_read(&mut self) {
-        if let Some(cx) = self.plan_notice.take() {
-            let event = match self.plan.exists() {
+        if let Some(cx) = self.plan.notice.take() {
+            let event = match self.plan.view.exists() {
                 true => Event::PlanReady,
                 false => Event::Done,
             };
@@ -272,14 +272,14 @@ mod tests {
             },
         );
         app.set_mode(Mode::Plan);
-        std::fs::create_dir_all(app.plan_path.parent().expect("dir")).expect("dirs");
-        std::fs::write(&app.plan_path, "# Plan\n").expect("writes");
+        std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");
+        std::fs::write(app.plan.path(), "# Plan\n").expect("writes");
         send(&mut app, "plan it");
         end(&mut app).await;
         none(&mut rx).await;
 
-        while app.plan_reading.is_running() {
-            let text = app.plan_reading.join().await.expect("read");
+        while app.plan.reading.is_running() {
+            let text = app.plan.reading.join().await.expect("read");
             app.plan_read(text);
         }
         let n = next(&mut rx).await;
