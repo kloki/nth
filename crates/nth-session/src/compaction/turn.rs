@@ -188,24 +188,16 @@ impl Turn<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Mutex, time::Duration};
+    use std::time::Duration;
 
-    use futures::{
-        FutureExt, StreamExt,
-        future::BoxFuture,
-        stream::{self, BoxStream},
-    };
-    use nth_protocol::{
-        AssistantMessage, BoxError, Listing, Provider, Request, Retry, StreamEvent, Tool,
-        ToolContext, Usage,
-    };
+    use nth_protocol::{AssistantMessage, StreamEvent, Tool, ToolContext, Usage};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
         Compaction, Route,
-        agent_loop::tests::{Echo, ROUTE, Scripted, call, spend},
+        agent_loop::tests::{Echo, Failure, ROUTE, Reply, Scripted, call, spend},
         compaction::{self, SUMMARY_PROMPT},
     };
 
@@ -224,11 +216,6 @@ mod tests {
         }
     }
 
-    /// A retryable provider failure that is not an overflow.
-    #[derive(Debug, thiserror::Error)]
-    #[error("temporary failure")]
-    struct Temporary;
-
     /// A route with the model's window and an explicit tail budget, so the
     /// tests do not depend on estimated sizes. Usable is 10k − 2k.
     fn route(preserve: u64) -> Route<'static> {
@@ -242,6 +229,12 @@ mod tests {
             },
             ..ROUTE
         }
+    }
+
+    /// The summary requests `provider` was sent: the ones offering no tools.
+    fn summaries(provider: &Scripted) -> usize {
+        let tools = provider.tools.lock().expect("not poisoned");
+        tools.iter().filter(|offered| offered.is_empty()).count()
     }
 
     /// The summary of the newest compaction in `messages`.
@@ -333,127 +326,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn usage_at_the_window_compacts_before_the_next_step() {
-        let provider = Scripted::new(vec![
-            vec![
-                StreamEvent::TextDelta("first".into()),
-                StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
-                StreamEvent::Usage(usage(9_000, 1_500)),
-            ],
-            vec![StreamEvent::TextDelta("the summary".into())],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut messages = vec![
-            Message::System("sys".into()),
-            Message::User("old question".into()),
-            assistant(&"x".repeat(400)),
-            Message::User("go".into()),
-        ];
-        let mut spent = spend();
-
-        let mut last_usage = None;
-        Turn {
-            provider: &provider,
-            route: route(100),
-            tools: &tools,
-            ctx: &ctx,
-            messages: &mut messages,
-            spend: &mut spent,
-            last_usage: &mut last_usage,
-            events: &tx,
-            cancel: &cancel,
-        }
-        .run()
-        .await
-        .expect("turn completes");
-
-        let recent = "[User]: go\n\n[Assistant]: first\n[Assistant tool call]: echo \
-                      {\"say\":\"hi\"}\n\n[Tool result]: hi";
-        assert_eq!(
-            messages[6],
-            Message::Compaction {
-                summary: "the summary".into(),
-                recent: recent.into(),
-            },
-            "after the step's tool results"
-        );
-        assert_eq!(
-            messages.last(),
-            Some(&assistant("done")),
-            "the turn goes on after the compaction"
-        );
-
-        let sent = provider.sent.lock().expect("not poisoned").clone();
-        assert_eq!(sent.len(), 3, "the step, the summary, then the step after");
-        assert_eq!(
-            sent[1],
-            [Message::User(format!(
-                "{}\n\n[User]: old question\n[Assistant]: {}",
-                SUMMARY_PROMPT.trim_end(),
-                "x".repeat(400)
-            ))],
-            "the summary request carries the template and the older part"
-        );
-        assert_eq!(
-            sent[2],
-            [
-                Message::System("sys".into()),
-                Message::User(compaction::checkpoint("the summary", recent)),
-            ],
-            "the step after starts at the checkpoint, a user message"
-        );
-        drop(tx);
-        let mut compacted = 0;
-        while let Some(event) = rx.recv().await {
-            compacted += usize::from(matches!(event, Event::Compacted { .. }));
-        }
-        assert_eq!(compacted, 1);
-    }
-
-    /// Fails the requests numbered in `overflow` (1-based) with a context
-    /// overflow, as a wire does once it recognizes its provider's overflow
-    /// error, and answers the rest with `replies` in order.
-    struct Overflows {
-        overflow: Vec<usize>,
-        replies: Mutex<Vec<Vec<StreamEvent>>>,
-        sent: Mutex<Vec<Vec<Message>>>,
-    }
-
-    impl Overflows {
-        fn new(overflow: Vec<usize>, replies: Vec<Vec<StreamEvent>>) -> Self {
-            Self {
-                overflow,
-                replies: Mutex::new(replies),
-                sent: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Provider for Overflows {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            request: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let mut sent = self.sent.lock().expect("not poisoned");
-            sent.push(request.messages.to_vec());
-            if self.overflow.contains(&sent.len()) {
-                return async { Err(Box::new(ContextOverflow) as BoxError) }.boxed();
-            }
-            let reply = self.replies.lock().expect("not poisoned").remove(0);
-            async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-        }
-    }
-
     fn overflowing_conversation() -> Vec<Message> {
         vec![
             Message::System("sys".into()),
@@ -464,134 +336,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_overflowing_step_compacts_and_goes_on_from_the_checkpoint() {
-        let provider = Overflows::new(
-            vec![1],
-            vec![
-                vec![StreamEvent::TextDelta("the summary".into())],
-                vec![StreamEvent::TextDelta("done".into())],
-            ],
-        );
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, _rx) = mpsc::channel(64);
-        let mut messages = overflowing_conversation();
-        let mut spent = spend();
-
-        let mut last_usage = None;
-        Turn {
-            provider: &provider,
-            route: route(40),
-            tools: &[],
-            ctx: &ctx,
-            messages: &mut messages,
-            spend: &mut spent,
-            last_usage: &mut last_usage,
-            events: &tx,
-            cancel: &cancel,
-        }
-        .run()
-        .await
-        .expect("the turn recovers");
-
-        assert_eq!(
-            messages[4..],
-            [
-                Message::Compaction {
-                    summary: "the summary".into(),
-                    recent: "[User]: the failed prompt".into(),
-                },
-                assistant("done")
-            ],
-        );
-
-        let sent = provider.sent.lock().expect("not poisoned").clone();
-        assert_eq!(sent.len(), 3, "the overflow, the summary, the step again");
-        let [Message::User(prompt)] = &sent[1][..] else {
-            panic!("one user message: {:?}", sent[1]);
-        };
-        assert!(prompt.contains("old question"), "{prompt}");
-        assert!(
-            !prompt.contains("the failed prompt"),
-            "the prompt rides in the checkpoint, not the summary"
-        );
-        assert_eq!(
-            sent[2],
-            [
-                Message::System("sys".into()),
-                Message::User(compaction::checkpoint(
-                    "the summary",
-                    "[User]: the failed prompt"
-                )),
-            ]
-        );
-    }
-
-    /// The overflow that shows the fix for a turn whose own tool results
-    /// overflowed: they ride in the checkpoint cut, not verbatim.
-    #[tokio::test]
-    async fn an_overflow_from_the_turns_own_tool_results_keeps_them_cut() {
-        let huge = "y".repeat(40_000);
-        let provider = Overflows::new(
-            vec![1],
-            vec![
-                vec![StreamEvent::TextDelta("the summary".into())],
-                vec![StreamEvent::TextDelta("done".into())],
-            ],
-        );
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, _rx) = mpsc::channel(64);
-        let mut messages = vec![
-            Message::System("sys".into()),
-            Message::User("read it".into()),
-            Message::Assistant(AssistantMessage {
-                tool_calls: vec![call("1", "read", "{}")],
-                ..AssistantMessage::default()
-            }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: huge.clone(),
-                images: Vec::new(),
-            },
-        ];
-        let mut spent = spend();
-
-        let mut last_usage = None;
-        Turn {
-            provider: &provider,
-            route: route(2_000),
-            tools: &[],
-            ctx: &ctx,
-            messages: &mut messages,
-            spend: &mut spent,
-            last_usage: &mut last_usage,
-            events: &tx,
-            cancel: &cancel,
-        }
-        .run()
-        .await
-        .expect("the turn recovers");
-
-        let sent = provider.sent.lock().expect("not poisoned").clone();
-        let retried = compaction::estimate(&sent[2]);
-        assert!(
-            retried < 1_000,
-            "the step after is a fraction of the 10k it overflowed with: {retried}"
-        );
-        let Message::User(checkpoint) = &sent[2][1] else {
-            panic!("a checkpoint: {:?}", sent[2]);
-        };
-        assert!(checkpoint.contains("[truncated]"), "{checkpoint}");
-        assert!(!checkpoint.contains(&huge));
-    }
-
-    #[tokio::test]
     async fn a_second_overflow_in_the_same_step_gives_up() {
-        let provider = Overflows::new(
-            vec![1, 3],
-            vec![vec![StreamEvent::TextDelta("the summary".into())]],
-        );
+        let provider = Scripted::script(vec![
+            Reply::Refused(Failure::Overflow),
+            Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+            Reply::Refused(Failure::Overflow),
+        ]);
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, _rx) = mpsc::channel(64);
@@ -614,20 +364,23 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(Error::TooBigToCompact)), "{result:?}");
-        assert_eq!(provider.sent.lock().expect("not poisoned").len(), 3);
+        assert_eq!(provider.requests(), 3);
     }
 
     #[tokio::test]
     async fn an_overflow_in_a_later_step_compacts_again() {
-        let provider = Overflows::new(
-            vec![1, 4],
-            vec![
-                vec![StreamEvent::TextDelta("first summary".into())],
-                vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
-                vec![StreamEvent::TextDelta("second summary".into())],
-                vec![StreamEvent::TextDelta("done".into())],
-            ],
-        );
+        let provider = Scripted::script(vec![
+            Reply::Refused(Failure::Overflow),
+            Reply::Events(vec![StreamEvent::TextDelta("first summary".into())]),
+            Reply::Events(vec![StreamEvent::ToolCall(call(
+                "1",
+                "echo",
+                r#"{"say":"hi"}"#,
+            ))]),
+            Reply::Refused(Failure::Overflow),
+            Reply::Events(vec![StreamEvent::TextDelta("second summary".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
@@ -658,85 +411,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_compaction_reads_nothing_before_the_first() {
-        let provider = Scripted::new(vec![
-            vec![StreamEvent::TextDelta("second summary".into())],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]);
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, _rx) = mpsc::channel(64);
-        let mut messages = vec![
-            Message::System("sys".into()),
-            Message::User("ancient history".into()),
-            Message::Compaction {
-                summary: "first summary".into(),
-                recent: "[User]: kept before".into(),
-            },
-            Message::User("old question".into()),
-            assistant(&"x".repeat(400)),
-            Message::User("go".into()),
-        ];
-        let mut spent = spend();
-        let mut last_usage = None;
-        let mut turn = Turn {
-            provider: &provider,
-            route: route(40),
-            tools: &[],
-            ctx: &ctx,
-            messages: &mut messages,
-            spend: &mut spent,
-            last_usage: &mut last_usage,
-            events: &tx,
-            cancel: &cancel,
-        };
-
-        turn.compact().await.expect("compacts");
-        assert!(turn.stream_step(false, &[], &mut None).await.is_ok());
-
-        assert_eq!(
-            messages[6],
-            Message::Compaction {
-                summary: "second summary".into(),
-                recent: "[User]: go".into(),
-            },
-            "the new checkpoint is appended"
-        );
-        let sent = provider.sent.lock().expect("not poisoned").clone();
-        let [Message::User(prompt)] = &sent[0][..] else {
-            panic!("one user message: {:?}", sent[0]);
-        };
-        assert!(
-            prompt.contains("<summary>\nfirst summary\n</summary>"),
-            "the earlier summary is folded in: {prompt}"
-        );
-        assert!(prompt.contains(compaction::UPDATE_PROMPT.trim_end()));
-        assert!(
-            prompt.contains("[User]: kept before"),
-            "its kept text is the oldest of the transcript"
-        );
-        assert!(prompt.contains("[User]: old question"));
-        assert!(
-            !prompt.contains("ancient history"),
-            "nothing before the earlier checkpoint is read again"
-        );
-        assert_eq!(
-            sent[1],
-            [
-                Message::System("sys".into()),
-                Message::User(compaction::checkpoint("second summary", "[User]: go")),
-            ],
-            "the request starts at the newest checkpoint"
-        );
-    }
-
-    #[tokio::test]
     async fn a_refused_summary_request_is_sent_again_without_its_oldest_exchanges() {
         // The summary request is refused once, then answered.
-        let provider = Overflows::new(
-            vec![1],
-            vec![vec![StreamEvent::TextDelta("the summary".into())]],
-        );
+        let provider = Scripted::script(vec![
+            Reply::Refused(Failure::Overflow),
+            Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+        ]);
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, _rx) = mpsc::channel(64);
@@ -782,104 +462,11 @@ mod tests {
         assert!(retried.contains("[User]: three"), "the newest stays");
     }
 
-    #[tokio::test]
-    async fn a_summary_request_that_overflows_gives_up() {
-        /// Refuses every request as too long.
-        struct Always;
-
-        impl Provider for Always {
-            fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-                async { Ok(Listing::default()) }.boxed()
-            }
-
-            fn stream<'a>(
-                &'a self,
-                _: Request<'a>,
-            ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-            {
-                async { Err(Box::new(ContextOverflow) as BoxError) }.boxed()
-            }
-        }
-
-        let ctx = ToolContext::new(".".into());
-        let cancel = CancellationToken::new();
-        let (tx, _rx) = mpsc::channel(64);
-        let mut messages = vec![
-            Message::System("sys".into()),
-            Message::User("old question".into()),
-            assistant(&"x".repeat(400)),
-            Message::User("the failed prompt".into()),
-        ];
-        let mut spent = spend();
-
-        let mut last_usage = None;
-        let result = Turn {
-            provider: &Always,
-            route: route(40),
-            tools: &[],
-            ctx: &ctx,
-            messages: &mut messages,
-            spend: &mut spent,
-            last_usage: &mut last_usage,
-            events: &tx,
-            cancel: &cancel,
-        }
-        .run()
-        .await;
-
-        assert!(matches!(result, Err(Error::TooBigToCompact)));
-    }
-
-    /// A conversation with a floor compacting cannot lift: every step's
-    /// reply reports the request's own size as used, and the system prompt
-    /// alone fills more than the usable window. The review's reproduction.
-    #[derive(Default)]
-    struct FullWindow {
-        requests: Mutex<usize>,
-        summaries: Mutex<usize>,
-    }
-
-    impl Provider for FullWindow {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            request: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let n = {
-                let mut requests = self.requests.lock().expect("not poisoned");
-                *requests += 1;
-                *requests
-            };
-            if request.tools.is_empty() {
-                *self.summaries.lock().expect("not poisoned") += 1;
-                let reply = vec![StreamEvent::TextDelta("# Objective\nstill over".into())];
-                return async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed();
-            }
-            let input = compaction::estimate(request.messages);
-            // A different call each step, so the doom-loop guard does not
-            // end the turn before the compaction churn shows.
-            let reply = vec![
-                StreamEvent::ToolCall(call(
-                    &n.to_string(),
-                    "echo",
-                    &format!(r#"{{"say":"hi-{n}"}}"#),
-                )),
-                StreamEvent::Usage(usage(input, 10)),
-            ];
-            async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-        }
-    }
-
     /// Compacting cannot shrink a conversation whose system prompt alone
     /// fills the window: the turn must stop at once rather than ask for a
     /// summary before every one of its steps.
     #[tokio::test]
     async fn a_floor_over_the_window_stops_the_turn_instead_of_compacting_every_step() {
-        let provider = FullWindow::default();
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
@@ -889,6 +476,18 @@ mod tests {
             Message::System("s".repeat(60_000)),
             Message::User("go".into()),
         ];
+        // The step reports the request's own size as used; the summary
+        // cannot shrink the system prompt, so a turn that compacted before
+        // every step would ask for more than these two.
+        let provider = Scripted::script(vec![
+            Reply::Events(vec![
+                StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi-1"}"#)),
+                StreamEvent::Usage(usage(compaction::estimate(&messages), 10)),
+            ]),
+            Reply::Events(vec![StreamEvent::TextDelta(
+                "# Objective\nstill over".into(),
+            )]),
+        ]);
         let mut spent = spend();
         let mut last_usage = None;
 
@@ -911,7 +510,7 @@ mod tests {
 
         assert!(matches!(result, Err(Error::TooBigToCompact)), "{result:?}");
         assert_eq!(
-            *provider.summaries.lock().expect("not poisoned"),
+            summaries(&provider),
             1,
             "one summary, not one before each of the four steps"
         );
@@ -922,7 +521,19 @@ mod tests {
     /// fires.
     #[tokio::test]
     async fn a_window_with_no_usable_room_never_compacts() {
-        let provider = FullWindow::default();
+        // Each step's usage fills the window; a different call each step,
+        // so the doom-loop guard does not end the turn first.
+        let full = usage(1_000, 10);
+        let provider = Scripted::script(vec![
+            Reply::Events(vec![
+                StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi-1"}"#)),
+                StreamEvent::Usage(full),
+            ]),
+            Reply::Events(vec![
+                StreamEvent::ToolCall(call("2", "echo", r#"{"say":"hi-2"}"#)),
+                StreamEvent::Usage(full),
+            ]),
+        ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
@@ -953,69 +564,28 @@ mod tests {
 
         assert!(matches!(result, Err(Error::TooManySteps(2))), "{result:?}");
         assert_eq!(
-            *provider.summaries.lock().expect("not poisoned"),
+            summaries(&provider),
             0,
             "nothing fires with no room to compact into"
         );
-        assert_eq!(
-            *provider.requests.lock().expect("not poisoned"),
-            2,
-            "just the two steps"
-        );
+        assert_eq!(provider.requests(), 2, "just the two steps");
     }
 
     /// A transient failure on the summary request is retried exactly as a
     /// step's opening is, so the compaction still lands.
     #[tokio::test]
     async fn a_retryable_summary_failure_is_retried() {
-        /// Fails the request named in `fail` (1-based) and answers the rest
-        /// with `replies` in order, retrying at once.
-        struct FlakySummary {
-            fail: usize,
-            attempts: Mutex<usize>,
-            replies: Mutex<Vec<Vec<StreamEvent>>>,
-        }
-
-        impl Provider for FlakySummary {
-            fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-                async { Ok(Listing::default()) }.boxed()
-            }
-
-            fn stream<'a>(
-                &'a self,
-                _: Request<'a>,
-            ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-            {
-                let mut attempts = self.attempts.lock().expect("not poisoned");
-                *attempts += 1;
-                if *attempts == self.fail {
-                    return async { Err(Box::new(Temporary) as BoxError) }.boxed();
-                }
-                let reply = self.replies.lock().expect("not poisoned").remove(0);
-                async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-            }
-
-            fn retry(&self, error: &BoxError) -> Option<Retry> {
-                error.downcast_ref::<Temporary>().map(|_| Retry {
-                    // A retry that waits in a test would only slow it down.
-                    after: Some(Duration::ZERO),
-                })
-            }
-        }
-
-        let provider = FlakySummary {
-            // The step, then the summary; the retried summary answers.
-            fail: 2,
-            attempts: Mutex::new(0),
-            replies: Mutex::new(vec![
-                vec![
-                    StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
-                    StreamEvent::Usage(usage(9_000, 1_500)),
-                ],
-                vec![StreamEvent::TextDelta("the summary".into())],
-                vec![StreamEvent::TextDelta("done".into())],
+        // The step, then the summary, which fails; the retried summary
+        // answers.
+        let provider = Scripted::script(vec![
+            Reply::Events(vec![
+                StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+                StreamEvent::Usage(usage(9_000, 1_500)),
             ]),
-        };
+            Reply::Refused(Failure::Temporary),
+            Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
@@ -1050,7 +620,7 @@ mod tests {
             "the second summary attempt's text is the marker"
         );
         assert_eq!(
-            *provider.attempts.lock().expect("not poisoned"),
+            provider.requests(),
             4,
             "the step, the failed summary, the retried summary, then the step"
         );
@@ -1064,67 +634,21 @@ mod tests {
         assert_eq!(retries, [(1, Duration::ZERO)], "announced like a step's");
     }
 
-    /// Streams a partial summary and then fails, like a dropped connection;
-    /// the second summary attempt answers whole.
-    struct DropsMidwaySummary {
-        steps: Mutex<usize>,
-        summaries: Mutex<usize>,
-    }
-
-    impl Provider for DropsMidwaySummary {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            request: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            if request.tools.is_empty() {
-                let mut summaries = self.summaries.lock().expect("not poisoned");
-                *summaries += 1;
-                let first = *summaries == 1;
-                return async move {
-                    let events: Vec<Result<StreamEvent, BoxError>> = match first {
-                        true => vec![
-                            Ok(StreamEvent::TextDelta("half a summary".into())),
-                            Err(Box::new(Temporary) as BoxError),
-                        ],
-                        false => vec![Ok(StreamEvent::TextDelta("the summary".into()))],
-                    };
-                    Ok(stream::iter(events).boxed())
-                }
-                .boxed();
-            }
-            let mut steps = self.steps.lock().expect("not poisoned");
-            *steps += 1;
-            let reply = match *steps {
-                1 => vec![
-                    StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
-                    StreamEvent::Usage(usage(9_000, 1_500)),
-                ],
-                _ => vec![StreamEvent::TextDelta("done".into())],
-            };
-            async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-        }
-
-        fn retry(&self, error: &BoxError) -> Option<Retry> {
-            error.downcast_ref::<Temporary>().map(|_| Retry {
-                // A retry that waits in a test would only slow it down.
-                after: Some(Duration::ZERO),
-            })
-        }
-    }
-
     /// A failure in the middle of the summary stream restarts it from
     /// scratch: only the complete second attempt becomes the summary.
     #[tokio::test]
     async fn a_mid_stream_summary_failure_restarts_the_summary() {
-        let provider = DropsMidwaySummary {
-            steps: Mutex::new(0),
-            summaries: Mutex::new(0),
-        };
+        // Streams a partial summary and then fails, like a dropped
+        // connection; the second summary attempt answers whole.
+        let provider = Scripted::script(vec![
+            Reply::Events(vec![
+                StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+                StreamEvent::Usage(usage(9_000, 1_500)),
+            ]),
+            Reply::Breaks(vec![StreamEvent::TextDelta("half a summary".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
@@ -1158,11 +682,7 @@ mod tests {
             Some("the summary"),
             "the complete second attempt's text, never the partial first"
         );
-        assert_eq!(
-            *provider.summaries.lock().expect("not poisoned"),
-            2,
-            "the summary streamed twice"
-        );
+        assert_eq!(summaries(&provider), 2, "the summary streamed twice");
         drop(tx);
         let mut retries = 0;
         while let Some(event) = rx.recv().await {

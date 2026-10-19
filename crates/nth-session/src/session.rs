@@ -545,11 +545,7 @@ fn default_max_steps() -> usize {
 pub(crate) mod tests {
     use std::path::Path;
 
-    use futures::{future::BoxFuture, stream::BoxStream};
-    use nth_protocol::{
-        AssistantMessage, BoxError, INTERRUPTED, Listing, Request, StreamEvent, ToolCall, Usage,
-        failed,
-    };
+    use nth_protocol::{AssistantMessage, INTERRUPTED, StreamEvent, ToolCall, Usage, failed};
 
     use super::*;
 
@@ -848,32 +844,17 @@ pub(crate) mod tests {
         assert!(before.starts_with("/repo/.nth/work/"));
     }
 
-    /// Fails every request, as a provider that is down does.
-    struct Down;
-
-    impl Provider for Down {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            Box::pin(async { Ok(Listing::default()) })
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            Box::pin(async { Err("connection refused".into()) })
-        }
-    }
-
     #[tokio::test]
     async fn a_prompt_after_a_failed_turn_joins_the_unanswered_one() {
+        use crate::agent_loop::tests::{Failure, Reply, Scripted};
+
         let mut session = Session::new("glm-5.3", "/repo".into());
         let (tx, _rx) = mpsc::channel(64);
 
         let failed = session
             .prompt(
                 "first",
-                &Down,
+                &Scripted::always(Reply::Refused(Failure::Down)),
                 &[],
                 &FrontEnd::default(),
                 &tx,

@@ -2,24 +2,17 @@
 //! the saved history keeps, and how a resumed session carries on. The policy
 //! itself is tested in `tests`; these go through the agent loop.
 
-use std::sync::Mutex;
-
-use futures::{
-    FutureExt, StreamExt,
-    future::BoxFuture,
-    stream::{self, BoxStream},
-};
+use futures::{FutureExt, future::BoxFuture};
 use nth_context::{Context, Paths};
 use nth_protocol::{
-    AssistantMessage, BoxError, ContextOverflow, FrontEnd, Listing, Llm, Message, Provider,
-    Request, StreamEvent, Tool, ToolContext, Usage,
+    AssistantMessage, FrontEnd, Llm, Message, Provider, StreamEvent, Tool, ToolContext, Usage,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     Compaction, DEFAULT_MAX_STEPS, Error, Session, Store,
-    agent_loop::tests::{Echo, Scripted, call},
+    agent_loop::tests::{Echo, Failure, Reply, Scripted, call},
     compaction,
     subagent::child_session,
 };
@@ -181,29 +174,14 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpo
 }
 
 /// Fails its first request as a context overflow, as a wire does once it
-/// recognizes its provider's too-long error, and answers the rest.
-struct OverflowThen {
-    replies: Mutex<Vec<Vec<StreamEvent>>>,
-    sent: Mutex<Vec<Vec<Message>>>,
-}
-
-impl Provider for OverflowThen {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async { Ok(Listing::default()) }.boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        request: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        let mut sent = self.sent.lock().expect("not poisoned");
-        sent.push(request.messages.to_vec());
-        if sent.len() == 1 {
-            return async { Err(Box::new(ContextOverflow) as BoxError) }.boxed();
-        }
-        let reply = self.replies.lock().expect("not poisoned").remove(0);
-        async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-    }
+/// recognizes its provider's too-long error, and answers the summary and
+/// the step after.
+fn overflow_then() -> Scripted {
+    Scripted::script(vec![
+        Reply::Refused(Failure::Overflow),
+        Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+        Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+    ])
 }
 
 #[tokio::test]
@@ -216,13 +194,7 @@ async fn an_overflowing_request_compacts_and_goes_on_from_the_checkpoint() {
         assistant(&"x".repeat(400)),
     ]);
     let system = session.messages[0].clone();
-    let provider = OverflowThen {
-        replies: Mutex::new(vec![
-            vec![StreamEvent::TextDelta("the summary".into())],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]),
-        sent: Mutex::new(Vec::new()),
-    };
+    let provider = overflow_then();
 
     prompt(&mut session, "the failed prompt", &provider, &[])
         .await
@@ -282,13 +254,7 @@ async fn a_fresh_session_that_overflows_recovers_through_a_summary_of_the_prompt
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
     let system = session.messages[0].clone();
-    let provider = OverflowThen {
-        replies: Mutex::new(vec![
-            vec![StreamEvent::TextDelta("the summary".into())],
-            vec![StreamEvent::TextDelta("done".into())],
-        ]),
-        sent: Mutex::new(Vec::new()),
-    };
+    let provider = overflow_then();
 
     prompt(&mut session, "doomed", &provider, &[])
         .await
@@ -742,25 +708,6 @@ async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
     );
 }
 
-/// Refuses every request as too long, recording how many it refused.
-struct AlwaysOverflow {
-    requests: Mutex<usize>,
-}
-
-impl Provider for AlwaysOverflow {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async { Ok(Listing::default()) }.boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        _: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        *self.requests.lock().expect("not poisoned") += 1;
-        async { Err(Box::new(ContextOverflow) as BoxError) }.boxed()
-    }
-}
-
 #[tokio::test]
 async fn a_summary_request_that_overflows_stops_as_too_big_to_compact() {
     let mut session = Session::new("glm-5.3", "/repo".into());
@@ -770,9 +717,7 @@ async fn a_summary_request_that_overflows_stops_as_too_big_to_compact() {
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
     ]);
-    let provider = AlwaysOverflow {
-        requests: Mutex::new(0),
-    };
+    let provider = Scripted::always(Reply::Refused(Failure::Overflow));
     let mut before = session.messages.clone();
     before.push(Message::User("doomed".into()));
 
@@ -780,7 +725,7 @@ async fn a_summary_request_that_overflows_stops_as_too_big_to_compact() {
 
     assert!(matches!(&result, Err(Error::TooBigToCompact)), "{result:?}");
     assert_eq!(
-        *provider.requests.lock().expect("not poisoned"),
+        provider.requests(),
         2,
         "the refused step and the refused summary, no retry loop"
     );
@@ -791,14 +736,12 @@ async fn a_summary_request_that_overflows_stops_as_too_big_to_compact() {
 async fn an_overflow_with_nothing_but_the_prompt_to_summarize_gives_up_too() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    let provider = AlwaysOverflow {
-        requests: Mutex::new(0),
-    };
+    let provider = Scripted::always(Reply::Refused(Failure::Overflow));
 
     let result = prompt(&mut session, "doomed", &provider, &[]).await;
 
     assert!(matches!(&result, Err(Error::TooBigToCompact)), "{result:?}");
-    assert_eq!(*provider.requests.lock().expect("not poisoned"), 2);
+    assert_eq!(provider.requests(), 2);
     assert!(
         !session
             .messages
@@ -844,48 +787,6 @@ async fn the_last_allowed_step_still_asks_the_model_after_compacting() {
     assert_eq!(session.messages.last(), Some(&assistant("done")));
 }
 
-/// Answers the first request with the tool call whose result is over the
-/// window; refuses any request carrying it whole; answers summaries. Auto
-/// is off, so the only compactions are the overflow recoveries.
-struct RefusesHugeResults {
-    requests: Mutex<usize>,
-    summaries: Mutex<usize>,
-}
-
-impl Provider for RefusesHugeResults {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async { Ok(Listing::default()) }.boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        request: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        let n = {
-            let mut requests = self.requests.lock().expect("not poisoned");
-            *requests += 1;
-            *requests
-        };
-        if request.messages.len() == 1 {
-            *self.summaries.lock().expect("not poisoned") += 1;
-            let reply = vec![StreamEvent::TextDelta("a summary".into())];
-            return async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed();
-        }
-        let huge = request
-            .messages
-            .iter()
-            .any(|m| matches!(m, Message::ToolResult { content, .. } if content.len() > 1_000));
-        if huge {
-            return async { Err(Box::new(ContextOverflow) as BoxError) }.boxed();
-        }
-        let reply = match n {
-            1 => vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
-            _ => vec![StreamEvent::TextDelta("done".into())],
-        };
-        async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
-    }
-}
-
 /// The overflow came from the turn's own tool result: the checkpoint keeps
 /// the turn, but with the result cut, so the step sent again fits.
 #[tokio::test]
@@ -918,17 +819,29 @@ async fn a_turn_whose_own_tool_result_overflows_goes_on_with_it_cut() {
         Message::User("old question".into()),
         assistant(&"x".repeat(100_000)),
     ]);
-    let provider = RefusesHugeResults {
-        requests: Mutex::new(0),
-        summaries: Mutex::new(0),
-    };
+    // The step that calls the tool; the step carrying its result whole,
+    // refused; the summary; the step from the checkpoint, with it cut.
+    let provider = Scripted::script(vec![
+        Reply::Events(vec![StreamEvent::ToolCall(call(
+            "1",
+            "echo",
+            r#"{"say":"hi"}"#,
+        ))]),
+        Reply::Refused(Failure::Overflow),
+        Reply::Events(vec![StreamEvent::TextDelta("a summary".into())]),
+        Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+    ]);
     let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoHuge)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
         .expect("the turn recovers");
 
-    assert_eq!(*provider.summaries.lock().expect("not poisoned"), 1);
+    let summaries = requests(&provider)
+        .iter()
+        .filter(|sent| sent.len() == 1)
+        .count();
+    assert_eq!(summaries, 1);
     assert_eq!(session.messages.last(), Some(&assistant("done")));
     let Message::User(checkpoint) = opening(&session.messages) else {
         unreachable!("a user message");

@@ -39,7 +39,7 @@ impl Turn<'_> {
     /// wait ends the step. A failure — opening the stream or in the middle
     /// of it — retries the whole attempt, so the reply starts over and the
     /// partial one is never saved.
-    pub(crate) async fn stream_step(
+    pub(super) async fn stream_step(
         &mut self,
         last: bool,
         specs: &[ToolSpec],
@@ -159,49 +159,17 @@ fn backoff(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
 
-    use futures::{
-        FutureExt, StreamExt,
-        future::BoxFuture,
-        stream::{self, BoxStream},
-    };
-    use nth_protocol::{
-        AssistantMessage, BoxError, Event, Listing, Message, Provider, Request, Retry, StreamEvent,
-        ToolContext, Usage,
-    };
+    use nth_protocol::{AssistantMessage, Event, Message, StreamEvent, ToolContext, Usage};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::agent_loop::{Error, Turn, tests::*};
 
-    /// Streams `events` and then stays open, like a reply cut off mid-way.
-    struct Unfinished(Vec<StreamEvent>);
-
-    impl Provider for Unfinished {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let events = self.0.clone();
-            async move {
-                Ok(stream::iter(events.into_iter().map(Ok))
-                    .chain(stream::pending())
-                    .boxed())
-            }
-            .boxed()
-        }
-    }
-
     #[tokio::test]
     async fn interrupting_a_reply_keeps_its_text_but_not_its_calls() {
-        let provider = Unfinished(vec![
+        let provider = Scripted::script(vec![Reply::Hangs(vec![
             StreamEvent::Usage(Usage {
                 input: 40,
                 output: 2,
@@ -209,7 +177,7 @@ mod tests {
             }),
             StreamEvent::TextDelta("partial".into()),
             StreamEvent::ToolCall(call("1", "echo", "")),
-        ]);
+        ])]);
         let cancel = CancellationToken::new();
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
@@ -246,64 +214,18 @@ mod tests {
         assert_eq!((spent.steps, spent.tokens.input), (1, 40), "still counted");
     }
 
-    /// A transient provider failure, retried by [`Flaky`].
-    #[derive(Debug, thiserror::Error)]
-    #[error("temporary failure")]
-    struct Temporary;
-
-    /// Fails the requests named in `fail` (1-based) and answers the rest.
-    struct Flaky {
-        fail: Vec<usize>,
-        attempts: Mutex<usize>,
-        reply: Vec<StreamEvent>,
-        retry_after: Option<Duration>,
-    }
-
-    impl Flaky {
-        fn new(fail: Vec<usize>) -> Self {
-            Self {
-                fail,
-                attempts: Mutex::new(0),
-                // A retry that waits in a test would only slow it down.
-                reply: vec![StreamEvent::TextDelta("done".into())],
-                retry_after: Some(Duration::ZERO),
-            }
-        }
-    }
-
-    impl Provider for Flaky {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let mut attempts = self.attempts.lock().expect("not poisoned");
-            *attempts += 1;
-            let fails = self.fail.contains(&*attempts);
-            let reply = self.reply.clone();
-            async move {
-                match fails {
-                    true => Err(Box::new(Temporary) as BoxError),
-                    false => Ok(stream::iter(reply.into_iter().map(Ok)).boxed()),
-                }
-            }
-            .boxed()
-        }
-
-        fn retry(&self, error: &BoxError) -> Option<Retry> {
-            error.downcast_ref::<Temporary>().map(|_| Retry {
-                after: self.retry_after,
-            })
-        }
+    /// Fails the first request with a transient error and answers the
+    /// retry.
+    fn flaky() -> Scripted {
+        Scripted::script(vec![
+            Reply::Refused(Failure::Temporary),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ])
     }
 
     #[tokio::test]
     async fn retries_a_transient_error_then_answers() {
-        let provider = Flaky::new(vec![1]);
+        let provider = flaky();
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -331,7 +253,7 @@ mod tests {
                 ..Default::default()
             })]
         );
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        assert_eq!(provider.requests(), 2);
         drop(tx);
         let mut retries = Vec::new();
         while let Some(event) = rx.recv().await {
@@ -342,54 +264,15 @@ mod tests {
         assert_eq!(retries, [(1, Duration::ZERO)]);
     }
 
-    /// Streams a text delta and then fails, like a dropped connection; a
-    /// retried request answers whole.
-    struct DropsMidway {
-        attempts: Mutex<usize>,
-    }
-
-    impl Provider for DropsMidway {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let mut attempts = self.attempts.lock().expect("not poisoned");
-            *attempts += 1;
-            let first = *attempts == 1;
-            async move {
-                let events: Vec<Result<StreamEvent, BoxError>> = match first {
-                    true => vec![
-                        Ok(StreamEvent::TextDelta("partial".into())),
-                        Err(Box::new(Temporary) as BoxError),
-                    ],
-                    false => vec![Ok(StreamEvent::TextDelta("the whole answer".into()))],
-                };
-                Ok(stream::iter(events).boxed())
-            }
-            .boxed()
-        }
-
-        fn retry(&self, error: &BoxError) -> Option<Retry> {
-            error.downcast_ref::<Temporary>().map(|_| Retry {
-                // A retry that waits in a test would only slow it down.
-                after: Some(Duration::ZERO),
-            })
-        }
-    }
-
     /// A failure in the middle of a reply retries the whole attempt: what
     /// was already streamed is not saved, and the second attempt replaces
     /// it, as `Event::Retry` promises.
     #[tokio::test]
     async fn a_mid_stream_failure_restarts_the_step_from_scratch() {
-        let provider = DropsMidway {
-            attempts: Mutex::new(0),
-        };
+        let provider = Scripted::script(vec![
+            Reply::Breaks(vec![StreamEvent::TextDelta("partial".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("the whole answer".into())]),
+        ]);
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -418,7 +301,7 @@ mod tests {
             })],
             "the second, complete attempt is what is saved"
         );
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        assert_eq!(provider.requests(), 2);
         drop(tx);
         let mut deltas = Vec::new();
         let mut retries = Vec::new();
@@ -439,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn gives_up_after_the_retry_budget() {
-        let provider = Flaky::new((1..=20).collect());
+        let provider = Scripted::always(Reply::Refused(Failure::Temporary));
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -461,7 +344,7 @@ mod tests {
 
         assert!(matches!(result, Err(Error::Provider(_))));
         assert_eq!(
-            *provider.attempts.lock().expect("not poisoned"),
+            provider.requests(),
             RETRY_MAX_ATTEMPTS as usize + 1,
             "the first try plus the retries"
         );
@@ -475,9 +358,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_long_retry_after_fails_at_once() {
-        let provider = Flaky {
+        let provider = Scripted {
             retry_after: Some(RETRY_MAX_AFTER + Duration::from_secs(1)),
-            ..Flaky::new(vec![1])
+            ..flaky()
         };
         let ctx = ToolContext::new(".".into());
         let mut messages = vec![Message::User("go".into())];
@@ -485,6 +368,6 @@ mod tests {
         let (result, _) = turn(&provider, &[], &ctx, &mut messages).await;
 
         assert!(matches!(result, Err(Error::Provider(_))));
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 1);
+        assert_eq!(provider.requests(), 1);
     }
 }

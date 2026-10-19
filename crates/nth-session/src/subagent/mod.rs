@@ -448,29 +448,11 @@ impl Drop for Inner {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
     use nth_context::{Context, Paths};
-    use nth_protocol::{BoxError, Listing, Request, StreamEvent};
+    use nth_protocol::StreamEvent;
 
     use super::*;
     use crate::agent_loop::tests::Scripted;
-
-    /// A model whose reply never arrives.
-    pub(crate) struct Stalled;
-
-    impl Provider for Stalled {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            async { Ok(futures::stream::pending().boxed()) }.boxed()
-        }
-    }
 
     fn explore() -> Agent {
         Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
@@ -864,7 +846,13 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
-        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let id = subagents.spawn(
+            &explore(),
+            "slow",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
         let (mut slow, _) = job("go", Done::Notify(inbox.clone()));
         slow.timeout = Some(Duration::from_millis(20));
         subagents.prompt(id, slow);
@@ -899,7 +887,13 @@ pub(crate) mod tests {
     async fn a_job_without_a_budget_runs_until_stopped() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
-        let id = subagents.spawn(&explore(), "slow", session(), Arc::new(Stalled), Vec::new());
+        let id = subagents.spawn(
+            &explore(),
+            "slow",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         subagents.prompt(id, job("go", Done::Reply(reply_tx)).0);
 

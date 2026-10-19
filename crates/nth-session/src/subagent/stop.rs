@@ -69,9 +69,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::subagent::{
-        Limits, SubagentEvent, Task,
-        tests::{Stalled, says},
+    use crate::{
+        agent_loop::tests::Scripted,
+        subagent::{Limits, SubagentEvent, Task, tests::says},
     };
 
     fn ctx(inbox: Inbox) -> ToolContext {
@@ -99,7 +99,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
-        let task = Task::new(Arc::new(Stalled), Vec::new(), subagents.clone(), LIMITS);
+        let task = Task::new(
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+            subagents.clone(),
+            LIMITS,
+        );
         let stop = TaskStop::new(subagents.clone());
         let start = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
         task.call(start, &ctx(inbox.clone())).await.unwrap();

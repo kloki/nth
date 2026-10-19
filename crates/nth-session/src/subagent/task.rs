@@ -218,10 +218,7 @@ mod tests {
     use super::*;
     use crate::{
         agent_loop::tests::Scripted,
-        subagent::{
-            SubagentEvent,
-            tests::{Stalled, says},
-        },
+        subagent::{SubagentEvent, tests::says},
     };
 
     /// Ten steps and no clock, as the tests here need.
@@ -384,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn headless_a_task_past_its_budget_fails_and_says_so() {
         let task = Task::new(
-            Arc::new(Stalled),
+            Arc::new(Scripted::stalled()),
             Vec::new(),
             Subagents::default(),
             Limits {

@@ -1,6 +1,6 @@
 //! What the agent loop's tests share, and the tests of a turn as a whole.
 
-use std::sync::Mutex;
+use std::{sync::Mutex, time::Duration};
 
 use futures::{
     FutureExt, StreamExt,
@@ -8,8 +8,8 @@ use futures::{
     stream::{self, BoxStream},
 };
 use nth_protocol::{
-    AssistantMessage, BoxError, Effort, Event, Listing, Message, Provider, Request, StreamEvent,
-    Tool, ToolCall, ToolContext, ToolResult, ToolSpec, failed,
+    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Listing, Message, Provider,
+    Request, Retry, StreamEvent, Tool, ToolCall, ToolContext, ToolResult, ToolSpec, failed,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -28,9 +28,54 @@ pub(crate) const ROUTE: Route = Route {
     compaction: crate::Compaction::DEFAULT,
 };
 
-/// Replays one scripted reply per request and records the model asked for.
+/// How a scripted request fails.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Failure {
+    /// Refused as too long, as a wire reports its provider's overflow.
+    Overflow,
+    /// A transient failure, retried after [`Scripted::retry_after`].
+    Temporary,
+    /// A failure no retry helps, as from a provider that is down.
+    Down,
+}
+
+impl Failure {
+    fn error(self) -> BoxError {
+        match self {
+            Failure::Overflow => Box::new(ContextOverflow),
+            Failure::Temporary => Box::new(Temporary),
+            Failure::Down => "connection refused".into(),
+        }
+    }
+}
+
+/// A retryable provider failure that is not an overflow.
+#[derive(Debug, thiserror::Error)]
+#[error("temporary failure")]
+pub(crate) struct Temporary;
+
+/// What a [`Scripted`] provider answers one request with.
+#[derive(Debug, Clone)]
+pub(crate) enum Reply {
+    /// Streams these events, then ends.
+    Events(Vec<StreamEvent>),
+    /// Fails the request before anything streams.
+    Refused(Failure),
+    /// Streams these events, then fails as a dropped connection does.
+    Breaks(Vec<StreamEvent>),
+    /// Streams these events, then stays open: a reply that never ends.
+    Hangs(Vec<StreamEvent>),
+}
+
+/// Answers each request with the next scripted reply and records what it
+/// was asked.
 pub(crate) struct Scripted {
-    pub(crate) replies: Mutex<Vec<Vec<StreamEvent>>>,
+    pub(crate) replies: Mutex<Vec<Reply>>,
+    /// What every request after the script gets; without it, a request
+    /// past the script is a test bug and panics.
+    pub(crate) then: Option<Reply>,
+    /// How long a [`Failure::Temporary`] asks to wait before the retry.
+    pub(crate) retry_after: Option<Duration>,
     /// The model and session id of every request, in order.
     pub(crate) routes: Mutex<Vec<(String, String)>>,
     /// The system prompt of every request, in order.
@@ -43,14 +88,40 @@ pub(crate) struct Scripted {
 }
 
 impl Scripted {
+    /// Streams `replies`, one per request.
     pub(crate) fn new(replies: Vec<Vec<StreamEvent>>) -> Self {
+        Self::script(replies.into_iter().map(Reply::Events).collect())
+    }
+
+    pub(crate) fn script(replies: Vec<Reply>) -> Self {
         Self {
             replies: Mutex::new(replies),
+            then: None,
+            // A retry that waits in a test would only slow it down.
+            retry_after: Some(Duration::ZERO),
             routes: Mutex::new(Vec::new()),
             systems: Mutex::new(Vec::new()),
             sent: Mutex::new(Vec::new()),
             tools: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Answers every request with `reply`.
+    pub(crate) fn always(reply: Reply) -> Self {
+        Self {
+            then: Some(reply),
+            ..Self::script(Vec::new())
+        }
+    }
+
+    /// A model whose reply never arrives.
+    pub(crate) fn stalled() -> Self {
+        Self::always(Reply::Hangs(Vec::new()))
+    }
+
+    /// How many requests it was sent.
+    pub(crate) fn requests(&self) -> usize {
+        self.sent.lock().expect("not poisoned").len()
     }
 }
 
@@ -84,8 +155,31 @@ impl Provider for Scripted {
             .lock()
             .expect("not poisoned")
             .push(request.messages.to_vec());
-        let reply = self.replies.lock().expect("not poisoned").remove(0);
-        async move { Ok(stream::iter(reply.into_iter().map(Ok)).boxed()) }.boxed()
+        let reply = {
+            let mut replies = self.replies.lock().expect("not poisoned");
+            match (replies.is_empty(), &self.then) {
+                (true, Some(then)) => then.clone(),
+                _ => replies.remove(0),
+            }
+        };
+        let ok = |events: Vec<StreamEvent>| events.into_iter().map(Ok);
+        async move {
+            Ok(match reply {
+                Reply::Events(events) => stream::iter(ok(events)).boxed(),
+                Reply::Refused(failure) => return Err(failure.error()),
+                Reply::Breaks(events) => stream::iter(ok(events))
+                    .chain(stream::iter([Err(Failure::Temporary.error())]))
+                    .boxed(),
+                Reply::Hangs(events) => stream::iter(ok(events)).chain(stream::pending()).boxed(),
+            })
+        }
+        .boxed()
+    }
+
+    fn retry(&self, error: &BoxError) -> Option<Retry> {
+        error.downcast_ref::<Temporary>().map(|_| Retry {
+            after: self.retry_after,
+        })
     }
 }
 
@@ -235,26 +329,9 @@ async fn runs_tools_until_the_model_answers() {
     );
 }
 
-/// Answers with one text reply and remembers the request it was sent.
-struct Recorder(Mutex<Vec<Message>>);
-
-impl Provider for Recorder {
-    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-        async { Ok(Listing::default()) }.boxed()
-    }
-
-    fn stream<'a>(
-        &'a self,
-        request: Request<'a>,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
-        *self.0.lock().expect("not poisoned") = request.messages.to_vec();
-        async { Ok(stream::iter([Ok(StreamEvent::TextDelta("done".into()))]).boxed()) }.boxed()
-    }
-}
-
 #[tokio::test]
 async fn the_last_step_tells_the_model_to_stop() {
-    let provider = Recorder(Mutex::new(Vec::new()));
+    let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("done".into())]]);
     let ctx = ToolContext::new(".".into());
     let (tx, _rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
@@ -278,7 +355,7 @@ async fn the_last_step_tells_the_model_to_stop() {
     .await
     .expect("turn completes");
 
-    let sent = provider.0.lock().expect("not poisoned").clone();
+    let sent = provider.sent.lock().expect("not poisoned")[0].clone();
     assert_eq!(
         sent.last(),
         Some(&Message::Assistant(AssistantMessage {
