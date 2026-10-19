@@ -4,8 +4,8 @@
 
 use serde::Deserialize;
 
-use super::Error;
-use crate::sse::{self, data, excerpt};
+use super::{Error, Provider};
+use crate::sse::{data, excerpt};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -169,11 +169,13 @@ pub struct FunctionDelta {
     pub arguments: Option<String>,
 }
 
-/// Turns raw response bytes into events.
-pub(super) type Parser = sse::Parser<fn(&str) -> Result<Vec<Event>, Error>>;
+/// Turns raw response bytes into events, as the stream does.
+#[cfg(test)]
+pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Vec<Event>, Error>>;
 
+#[cfg(test)]
 pub(super) fn parser() -> Parser {
-    sse::Parser::new(parse_line)
+    crate::sse::Parser::new(parse_line)
 }
 
 #[derive(Deserialize)]
@@ -192,7 +194,7 @@ struct Choice {
     finish_reason: Option<String>,
 }
 
-fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
+pub(super) fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
     let mut events = Vec::new();
     let Some(data) = data(line) else {
         return Ok(events);
@@ -210,10 +212,10 @@ fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
             Some(message) => message.to_string(),
             None => error.to_string(),
         };
-        return Err(Error::Provider {
+        return Err(Error::Provider(Provider {
             message,
             status: error_status(&error),
-        });
+        }));
     }
     events.extend(chunk.usage.map(Event::Usage));
     let Some(choice) = chunk.choices.into_iter().flatten().next() else {
@@ -341,7 +343,7 @@ mod tests {
     #[test]
     fn in_stream_error_carries_its_status() {
         let status = |chunk: &[u8]| match parser().push(chunk) {
-            Err(Error::Provider { status, .. }) => status,
+            Err(Error::Provider(Provider { status, .. })) => status,
             other => panic!("expected a provider error, got {other:?}"),
         };
         assert_eq!(

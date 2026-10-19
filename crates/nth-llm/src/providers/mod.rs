@@ -17,10 +17,7 @@ use nth_protocol::{BoxError, Listing, Provider, Request, Retry, StreamEvent};
 use tokio::task::JoinHandle;
 
 use self::endpoint::Endpoint;
-use crate::{
-    catalog::{Snapshot, Wire},
-    chat_completions, messages, responses,
-};
+use crate::{catalog::Snapshot, chat_completions, messages, responses, stream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -165,58 +162,18 @@ impl Provider for Providers {
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
         async move {
             let (i, model) = self.route(request.model)?;
-            let request = Request { model, ..request };
-            let endpoint = &self.endpoints[i];
-            // A ChatGPT login that cannot refresh fails here, for good.
-            let auth = endpoint.auth().await?;
-            let catalog = self.catalog.get().await;
-            let (wire, known) = endpoint.wire(catalog, model);
-            // Whatever picked the effort (the config, a resumed session, a
-            // model switch), a known model is sent only a level it takes:
-            // one the endpoint listed, which the picker showed, else one
-            // the catalogue says.
-            let listed = endpoint.listed_efforts(model);
-            let efforts = listed.clone().or_else(|| known.map(|k| k.efforts()));
-            let request = match efforts {
-                Some(efforts) => Request {
-                    effort: request.effort.nearest(&efforts),
-                    ..request
-                },
-                None => request,
-            };
-            let prepared = images::prepare(request.messages, known.map(|k| k.takes_images()));
-            let request = match &prepared {
-                Some(messages) => Request {
-                    messages,
-                    ..request
-                },
-                None => request,
-            };
-            Ok(match wire {
-                Wire::ChatCompletions => {
-                    let cache_key = endpoint
-                        .takes_cache_key(catalog)
-                        .then_some(request.session_id);
-                    endpoint.chat.stream(request, cache_key, &auth).await?
-                }
-                Wire::Messages => endpoint.messages.stream(request, known, &auth).await?,
-                Wire::Responses => {
-                    // A model listed with efforts reasons, whatever the
-                    // catalogue says, or whether it knows the model at all.
-                    let reasons = listed.is_some_and(|e| !e.is_empty())
-                        || known.and_then(|m| m.reasoning).unwrap_or(false);
-                    endpoint.responses.stream(request, reasons, &auth).await?
-                }
-            })
+            self.endpoints[i]
+                .stream(Request { model, ..request }, &self.catalog)
+                .await
         }
         .boxed()
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
         // Each protocol recognises only its own errors.
-        chat_completions::retry(error)
-            .or_else(|| messages::retry(error))
-            .or_else(|| responses::retry(error))
+        stream::retry::<chat_completions::Provider>(error)
+            .or_else(|| stream::retry::<messages::Provider>(error))
+            .or_else(|| stream::retry::<responses::Provider>(error))
     }
 }
 
@@ -226,7 +183,7 @@ mod tests {
     use nth_protocol::Effort;
 
     use super::*;
-    use crate::Credentials;
+    use crate::{Credentials, catalog::Wire};
 
     fn endpoint(id: &str) -> EndpointConfig {
         EndpointConfig {
@@ -592,7 +549,7 @@ mod tests {
         )
         .expect("connected");
         providers.endpoints[0]
-            .listed
+            .listed()
             .lock()
             .expect("listed lock poisoned")
             .insert(model.into(), listed.to_vec());

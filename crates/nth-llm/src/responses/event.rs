@@ -5,8 +5,8 @@
 
 use serde::Deserialize;
 
-use super::Error;
-use crate::sse::{self, data, excerpt};
+use super::{Error, Provider};
+use crate::sse::{data, excerpt};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
@@ -105,10 +105,10 @@ pub struct ErrorBody {
 
 impl ErrorBody {
     fn into_error(self) -> Error {
-        Error::Provider {
+        Error::Provider(Provider {
             kind: self.code.or(self.kind).unwrap_or_default(),
             message: self.message,
-        }
+        })
     }
 }
 
@@ -127,14 +127,16 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-/// Turns raw response bytes into events.
-pub(super) type Parser = sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
+/// Turns raw response bytes into events, as the stream does.
+#[cfg(test)]
+pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
 
+#[cfg(test)]
 pub(super) fn parser() -> Parser {
-    sse::Parser::new(parse_line)
+    crate::sse::Parser::new(parse_line)
 }
 
-fn parse_line(line: &str) -> Result<Option<Event>, Error> {
+pub(super) fn parse_line(line: &str) -> Result<Option<Event>, Error> {
     let Some(data) = data(line) else {
         return Ok(None);
     };
@@ -142,16 +144,16 @@ fn parse_line(line: &str) -> Result<Option<Event>, Error> {
         Ok(Event::Error(ErrorEvent {
             error: Some(error), ..
         })) => Err(error.into_error()),
-        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(Error::Provider {
+        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(Error::Provider(Provider {
             kind: code.unwrap_or_default(),
             message: message.unwrap_or_default(),
-        }),
+        })),
         Ok(Event::Failed { response }) => Err(match response.error {
             Some(error) => error.into_error(),
-            None => Error::Provider {
+            None => Error::Provider(Provider {
                 kind: String::new(),
                 message: "response failed".into(),
-            },
+            }),
         }),
         Ok(event) => Ok(Some(event)),
         Err(source) => Err(Error::Parse {

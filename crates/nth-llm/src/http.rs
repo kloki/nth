@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nth_protocol::Request;
 
-pub(crate) const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 /// A server that does not answer the handshake this fast is down or
 /// unreachable; waiting longer only delays the retry.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -17,9 +17,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// connection would otherwise hang the turn forever.
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How every endpoint is reached; `Providers` shares one between them.
+/// How every endpoint is reached; `Providers` shares one between them, and
+/// every request nth makes goes through it, so it names nth once here.
 pub(crate) fn client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
 }

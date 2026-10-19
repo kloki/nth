@@ -6,6 +6,7 @@ mod messages;
 pub mod providers;
 mod responses;
 mod sse;
+mod stream;
 #[cfg(test)]
 mod testing;
 
