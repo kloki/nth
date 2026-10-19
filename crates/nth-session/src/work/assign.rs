@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{Assignment, ItemRef, Status, Work, open_items, outcome, returned, todo::WorkTodo};
-use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, find_agent};
+use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent};
 
 const ASSIGNED: &str = include_str!("assigned.md");
 
@@ -53,7 +53,7 @@ impl Assigned {
     }
 
     /// The subagent's turn ended: the item returns and the model hears.
-    pub(crate) async fn settle(self, turn: Turn) {
+    pub(crate) async fn settle(self, turn: Answer) {
         let notice = returned(&self.assignment, outcome(&turn)).await;
         self.assignment.inbox.post_work(notice.clone());
         // A dropped receiver is a call that stopped waiting, which is fine.

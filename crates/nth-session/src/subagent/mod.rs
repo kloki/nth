@@ -78,10 +78,10 @@ pub enum State {
 }
 
 /// How a turn ended: the answer, or why there is none.
-pub type Turn = Result<String, Error>;
+pub type Answer = Result<String, Error>;
 
 /// How a turn ended, as the model and the tab hear it.
-pub(crate) fn task_outcome(turn: &Turn) -> TaskOutcome {
+pub(crate) fn task_outcome(turn: &Answer) -> TaskOutcome {
     match turn {
         Ok(text) => TaskOutcome::Completed(text.clone()),
         Err(Error::Interrupted) => TaskOutcome::Interrupted,
@@ -92,7 +92,7 @@ pub(crate) fn task_outcome(turn: &Turn) -> TaskOutcome {
 /// Who hears how a job ended.
 pub enum Done {
     /// The task tool, waiting inline in a headless run.
-    Reply(oneshot::Sender<Turn>),
+    Reply(oneshot::Sender<Answer>),
     /// The model, through its inbox, as a `<task>` notice.
     Notify(Inbox),
     /// The work item it was assigned: its file returns with the outcome,

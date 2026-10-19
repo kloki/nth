@@ -165,7 +165,7 @@ async fn reconciled(store: &Store, live: &Live) -> Result<Plan, String> {
 }
 
 /// How a turn ended, as a work item keeps it.
-fn outcome(turn: &crate::subagent::Turn) -> WorkOutcome {
+fn outcome(turn: &crate::subagent::Answer) -> WorkOutcome {
     match turn {
         Ok(answer) => WorkOutcome::Completed(answer.clone()),
         Err(Error::Interrupted) => WorkOutcome::Interrupted,

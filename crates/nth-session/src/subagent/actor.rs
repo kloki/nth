@@ -257,7 +257,7 @@ fn told(done: Done, closed: &CancellationToken) -> Done {
 }
 
 /// Tells whoever waits on the job how it ended.
-async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Turn) {
+async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Answer) {
     match done {
         // A dropped receiver is a parent that stopped waiting, which is fine.
         Done::Reply(reply) => {
