@@ -8,7 +8,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     output::{self, tail},
-    process::{self, KillGroupOnDrop, kill_group},
+    process::{self, DRAIN, KillGroupOnDrop, kill_group},
 };
 
 /// Where the script lives, relative to the main checkout.
@@ -17,10 +17,6 @@ pub(super) const SCRIPT: &str = ".nth/worktree-setup";
 /// Long enough for a dependency install, short enough that a script
 /// waiting for input does not hold the turn forever.
 const TIMEOUT: Duration = Duration::from_secs(600);
-
-/// How long to keep reading after the script exits, for output still in
-/// the pipe.
-const DRAIN: Duration = Duration::from_millis(100);
 
 /// Runs `<root>/.nth/worktree-setup` with bash in `worktree`, if the
 /// project has one, and says how it went for the tool result.

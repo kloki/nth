@@ -1,4 +1,4 @@
-use std::{io::ErrorKind, path::Path};
+use std::io::ErrorKind;
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
@@ -8,8 +8,7 @@ use serde_json::json;
 use crate::{
     PostWrite,
     bom::{BOM, has_bom},
-    edit::EDITS,
-    post_write,
+    post_write::{self, write_with_dirs},
 };
 
 pub struct Write {
@@ -56,7 +55,7 @@ impl Tool for Write {
             ctx.writable.check(&path)?;
             // Under the same lock as edit and apply_patch: a write that lands
             // while an edit's formatter rewrites the file would be undone.
-            let edits = EDITS.lock().await;
+            let writing = self.post_write.lock().await;
             let existing = match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_dir() => {
                     return Err(format!("cannot write {}: is a directory", path.display()));
@@ -85,10 +84,8 @@ impl Tool for Write {
                 "Created"
             };
             let wrote = format!("{verb} file: {}", path.display());
-            // The formatter rewrites the file, so it runs under the lock;
-            // waiting on the language servers need not.
-            let notes = self.post_write.format(&path, &ctx.cwd).await;
-            drop(edits);
+            let notes = writing.format(&path, &ctx.cwd).await;
+            drop(writing);
             let errors = self.post_write.check(&path).await;
             Ok(post_write::append(wrote, &[&notes, &errors]))
         }
@@ -96,20 +93,10 @@ impl Tool for Write {
     }
 }
 
-pub(crate) async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    match tokio::fs::write(path, content).await {
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::write(path, content).await
-        }
-        result => result,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     async fn write(dir: &Path, args: serde_json::Value) -> ToolResult {
