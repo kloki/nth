@@ -7,7 +7,7 @@ use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde_json::json;
 
-use super::{Cycle, Item, Plan, Status, Work, reconciled};
+use super::{Cycle, Item, Plan, Status, Work};
 
 pub(super) struct WorkStatus {
     work: Work,
@@ -31,10 +31,7 @@ impl Tool for WorkStatus {
     fn call<'a>(&'a self, _: serde_json::Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
             let store = Work::store(ctx)?;
-            let plan = {
-                let live = self.work.files().0.lock().await;
-                reconciled(&store, &live).await?
-            };
+            let (_, plan) = self.work.locked_plan(&store).await?;
             if plan.cycles.is_empty() && plan.ignored.is_empty() {
                 return Ok(
                     "There is no work plan yet: write its first items with work_item.".into(),

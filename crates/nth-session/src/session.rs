@@ -257,8 +257,8 @@ impl Session {
     /// Where this session's orchestration keeps its work items: under the
     /// main checkout, wherever a worktree tool moved the session.
     pub fn work_dir(&self) -> PathBuf {
-        let root = self.origin.as_ref().unwrap_or(&self.cwd);
-        work::work_dir(root, &self.id.to_string())
+        let root = work::root(self.origin.as_deref(), &self.cwd);
+        work::work_dir(&root, &self.id.to_string())
     }
 
     /// Later turns go to `model`. The history is kept; only the system

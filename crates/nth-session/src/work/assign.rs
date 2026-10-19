@@ -14,9 +14,7 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Assignment, ItemRef, Status, Work, open_items, outcome, reconciled, returned, todo::WorkTodo,
-};
+use super::{Assignment, ItemRef, Status, Work, open_items, outcome, returned, todo::WorkTodo};
 use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, find_agent};
 
 const ASSIGNED: &str = include_str!("assigned.md");
@@ -121,8 +119,7 @@ impl Tool for WorkAssign {
             let continued = args.task_id.as_ref().map(TaskIdArg::parse).transpose()?;
             // Held from reading the plan until the file says running and
             // `Live` knows it, so two calls cannot both take one item.
-            let mut live = self.work.files().0.lock().await;
-            let plan = reconciled(&store, &live).await?;
+            let (mut live, plan) = self.work.locked_plan(&store).await?;
             let Some(cycle) = plan.cycle(args.cycle) else {
                 return Err(format!("there is no cycle {}", args.cycle));
             };
@@ -161,7 +158,8 @@ impl Tool for WorkAssign {
                 ));
             }
             let path = at.path(store.dir());
-            let id = match continued {
+            // A fresh subagent's work_todo, which learns its item below.
+            let (id, todo) = match continued {
                 Some(id) => {
                     if live.worked.get(&path) != Some(&id) {
                         return Err(format!(
@@ -186,7 +184,7 @@ impl Tool for WorkAssign {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
                     shared.spawner.read_only(id, planning)?;
-                    id
+                    (id, None)
                 }
                 None => {
                     let cell = Arc::new(OnceLock::new());
@@ -194,20 +192,23 @@ impl Tool for WorkAssign {
                     let id = shared
                         .spawner
                         .spawn(agent, &format!("work {at}"), ctx, vec![todo]);
-                    // Set before the subagent's first prompt is sent, so
-                    // its tool never finds it empty.
-                    let _ = cell.set(Assignment {
-                        files: shared.files.clone(),
-                        store: store.clone(),
-                        at: at.clone(),
-                        task: id,
-                        agent: agent.name.clone(),
-                        inbox: ctx.inbox.clone(),
-                        closed: subagents.closed(id).unwrap_or_default(),
-                    });
-                    id
+                    (id, Some(cell))
                 }
             };
+            let assignment = Assignment {
+                files: shared.files.clone(),
+                store: store.clone(),
+                at: at.clone(),
+                task: id,
+                agent: agent.name.clone(),
+                inbox: ctx.inbox.clone(),
+                closed: subagents.closed(id).unwrap_or_default(),
+            };
+            // Set before the subagent's first prompt is sent, so its tool
+            // never finds it empty.
+            if let Some(todo) = todo {
+                let _ = todo.set(assignment.clone());
+            }
             let before = item.clone();
             // `0` is no limit, as in the config.
             let timeout = match args.timeout_secs {
@@ -250,15 +251,7 @@ impl Tool for WorkAssign {
                 false => (None, None),
             };
             let assigned = Assigned {
-                assignment: Assignment {
-                    files: shared.files.clone(),
-                    store: store.clone(),
-                    at: at.clone(),
-                    task: id,
-                    agent: agent.name.clone(),
-                    inbox: ctx.inbox.clone(),
-                    closed: subagents.closed(id).unwrap_or_default(),
-                },
+                assignment,
                 // Headless nobody wakes for a stall.
                 stall: shared.stall.filter(|_| !headless),
                 reply,

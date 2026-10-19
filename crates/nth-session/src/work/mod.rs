@@ -13,7 +13,12 @@ mod status;
 pub mod store;
 mod todo;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 pub use assign::Assigned;
 use assign::WorkAssign;
@@ -57,11 +62,9 @@ pub(crate) struct Files(tokio::sync::Mutex<Live>);
 /// What an assigned item's subagent may spend.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Steps its turn may take.
-    pub max_steps: usize,
-    /// How long its turn may run before it returns as timed out; `None`
-    /// leaves it to its steps.
-    pub timeout: Option<Duration>,
+    /// Its steps, and how long its turn may run before the item returns
+    /// as timed out.
+    pub subagent: subagent::Limits,
     /// How long it may say nothing before the orchestrator hears it
     /// stalled; `None` never.
     pub stall: Option<Duration>,
@@ -87,15 +90,9 @@ impl Work {
         subagents: Subagents,
         limits: Limits,
     ) -> Self {
-        let Limits {
-            max_steps,
-            timeout,
-            stall,
-        } = limits;
-        let limits = subagent::Limits { max_steps, timeout };
         Self(Arc::new(Shared {
-            spawner: Spawner::new(provider, tools, subagents, limits),
-            stall,
+            spawner: Spawner::new(provider, tools, subagents, limits.subagent),
+            stall: limits.stall,
             files: Arc::default(),
         }))
     }
@@ -114,23 +111,34 @@ impl Work {
         &self.0.files
     }
 
+    /// The lock every change to an item file is made under, and the plan
+    /// in `store` read under it.
+    async fn locked_plan(
+        &self,
+        store: &Store,
+    ) -> Result<(tokio::sync::MutexGuard<'_, Live>, Plan), String> {
+        let live = self.files().0.lock().await;
+        let plan = reconciled(store, &live).await?;
+        Ok((live, plan))
+    }
+
     /// The store of the session the call runs for.
     fn store(ctx: &ToolContext) -> Result<Store, String> {
         if ctx.session.is_empty() {
             return Err("this call runs outside a session, which has no work plan".into());
         }
-        Ok(Store::new(work_dir(&root(ctx), &ctx.session)))
+        let root = root(ctx.workdir.origin().as_deref(), &ctx.cwd);
+        Ok(Store::new(work_dir(&root, &ctx.session)))
     }
 }
 
-/// Where the session keeps its work: the main checkout, even after a
-/// worktree tool moved the session, so the plan stays one plan and the
-/// subagents still on it keep writing where the model reads.
-pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
-    ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone())
+/// Where a session in `cwd` that left `origin` for a worktree keeps its
+/// work: the main checkout, even after a worktree tool moved the session,
+/// so the plan stays one plan and the subagents still on it keep writing
+/// where the model reads.
+pub(crate) fn root(origin: Option<&Path>, cwd: &Path) -> PathBuf {
+    origin.unwrap_or(cwd).to_path_buf()
 }
-
-impl Work {}
 
 /// The plan, with every item a gone run of nth left running settled as
 /// interrupted: no subagent of this process is on it. Subagent ids start
@@ -282,8 +290,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) const LIMITS: Limits = Limits {
-        max_steps: 10,
-        timeout: None,
+        subagent: subagent::Limits {
+            max_steps: 10,
+            timeout: None,
+        },
         stall: None,
     };
 

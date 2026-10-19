@@ -159,8 +159,10 @@ impl WorkConfig {
     pub fn limits(&self) -> nth_session::work::Limits {
         let secs = |secs: u64| (secs > 0).then(|| Duration::from_secs(secs));
         nth_session::work::Limits {
-            max_steps: self.max_steps,
-            timeout: secs(self.timeout_secs),
+            subagent: nth_session::subagent::Limits {
+                max_steps: self.max_steps,
+                timeout: secs(self.timeout_secs),
+            },
             stall: secs(self.stall_secs),
         }
     }
