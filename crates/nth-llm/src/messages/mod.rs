@@ -15,7 +15,7 @@ use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent, ToolC
 use crate::{
     auth::Auth,
     catalog,
-    http::{self, STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient},
 };
 
 /// The API version the request and the stream are shaped for.
@@ -105,7 +105,6 @@ impl Client {
         );
         let response = http::session(signed, &request)
             .header("anthropic-version", VERSION)
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
             .json(&wire::body(
                 request.model,
                 request.effort,

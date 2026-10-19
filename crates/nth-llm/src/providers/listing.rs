@@ -9,7 +9,7 @@ use std::time::Duration;
 use nth_protocol::{Failed, Listing, ModelInfo, Origin};
 use serde::{Deserialize, de::DeserializeOwned};
 
-use crate::{auth::Auth, catalog, http::USER_AGENT};
+use crate::{auth::Auth, catalog};
 
 /// The list is one small JSON body, so unlike a reply it can have a deadline.
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,11 +52,7 @@ pub(crate) async fn listed(
 pub(crate) async fn fetch<T: DeserializeOwned>(
     request: reqwest::RequestBuilder,
 ) -> Result<T, Error> {
-    let response = request
-        .timeout(LIST_TIMEOUT)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
-        .send()
-        .await?;
+    let response = request.timeout(LIST_TIMEOUT).send().await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
