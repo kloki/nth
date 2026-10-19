@@ -4,7 +4,7 @@
 
 use serde::Deserialize;
 
-use super::Error;
+use super::{Error, Provider};
 use crate::sse::{self, data, excerpt};
 
 #[derive(Debug, PartialEq)]
@@ -210,10 +210,10 @@ fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
             Some(message) => message.to_string(),
             None => error.to_string(),
         };
-        return Err(Error::Provider {
+        return Err(Error::Provider(Provider {
             message,
             status: error_status(&error),
-        });
+        }));
     }
     events.extend(chunk.usage.map(Event::Usage));
     let Some(choice) = chunk.choices.into_iter().flatten().next() else {
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn in_stream_error_carries_its_status() {
         let status = |chunk: &[u8]| match parser().push(chunk) {
-            Err(Error::Provider { status, .. }) => status,
+            Err(Error::Provider(Provider { status, .. })) => status,
             other => panic!("expected a provider error, got {other:?}"),
         };
         assert_eq!(

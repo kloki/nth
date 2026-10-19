@@ -11,42 +11,37 @@ use std::{
 };
 
 use futures::{Stream, StreamExt, stream::BoxStream};
-use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent, ToolCall, Usage};
+use nth_protocol::{BoxError, ContextOverflow, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, retry_after, transient},
+    stream::{self, Payload},
 };
 
+pub(crate) type Error = stream::Error<Provider>;
+
+/// An error chunk, which gateways such as OpenRouter send after the 200
+/// status for a rate limit, an overload or a refusal.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("{status}: {body}")]
-    Status {
-        status: reqwest::StatusCode,
-        body: String,
-        /// The server's `Retry-After`, when it sent one.
-        retry_after: Option<Duration>,
-    },
-    #[error("bad stream chunk: {source} in {line:?}")]
-    Parse {
-        source: serde_json::Error,
-        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
-        line: String,
-    },
-    #[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
-    Provider {
-        message: String,
-        /// The HTTP status the error stands for, when the chunk gave one.
-        status: Option<reqwest::StatusCode>,
-    },
-    #[error("stream ended before the response was complete")]
-    Incomplete,
-    #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
-    Stalled,
-    #[error("response hit the output token limit")]
-    Truncated,
+#[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
+pub(crate) struct Provider {
+    pub(crate) message: String,
+    /// The HTTP status the error stands for, when the chunk gave one.
+    pub(crate) status: Option<reqwest::StatusCode>,
+}
+
+impl Payload for Provider {
+    /// Only by its status: a symbolic code such as `rate_limit_exceeded`
+    /// says nothing every gateway agrees on.
+    fn retryable(&self) -> bool {
+        self.status.is_some_and(transient)
+    }
+
+    fn context_overflow(&self) -> bool {
+        self.status
+            .is_some_and(|status| http::context_overflow(status, &self.message))
+    }
 }
 
 /// One endpoint's chat completions route.
@@ -94,7 +89,7 @@ impl Client {
             .bytes_stream()
             .map(|chunk| chunk.map_err(Error::from))
             .boxed();
-        Ok(events(bytes).map(|e| e.map_err(streamed_error)).boxed())
+        Ok(events(bytes).map(|e| e.map_err(stream::boxed)).boxed())
     }
 }
 
@@ -154,54 +149,12 @@ fn status_error(
     if http::context_overflow(status, &body) {
         return Box::new(ContextOverflow);
     }
+    // The whole body: a compatible server's error shape is anyone's guess.
     Box::new(Error::Status {
         status,
-        body,
+        message: body,
         retry_after,
     })
-}
-
-/// A stream's error: an in-band error that names an overflow status and
-/// body becomes the marker too, so a gateway that reports one after the
-/// 200 status is compacted like one that refused upfront. Everything else
-/// stays the protocol's error.
-fn streamed_error(error: Error) -> BoxError {
-    if let Error::Provider {
-        message,
-        status: Some(status),
-    } = &error
-        && http::context_overflow(*status, message)
-    {
-        return Box::new(ContextOverflow);
-    }
-    Box::new(error)
-}
-
-/// Whether `error`, one a chat completions `Client` produced, may be
-/// retried. Reads only the error, so whatever fronts the clients answers
-/// the same way.
-pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
-    let error = error.downcast_ref::<Error>()?;
-    match error {
-        // A rate limit or a transient server failure; the server may
-        // have said how long to wait.
-        Error::Status {
-            status,
-            retry_after,
-            ..
-        } if transient(*status) => Some(Retry {
-            after: *retry_after,
-        }),
-        // The same, reported inside the stream after a 200 status.
-        Error::Provider {
-            status: Some(status),
-            ..
-        } if transient(*status) => Some(Retry { after: None }),
-        Error::Http(e) if retryable(e) => Some(Retry { after: None }),
-        // The stream ended, or went quiet, before the reply did.
-        Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
-        _ => None,
-    }
 }
 
 struct State<S> {
@@ -335,8 +288,14 @@ impl<S> State<S> {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Retry;
+
     use super::*;
     use crate::testing::{chunks, runs_no_tools, serve_once, serve_status, until};
+
+    fn retry(error: &BoxError) -> Option<Retry> {
+        stream::retry::<Provider>(error)
+    }
 
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");
 
@@ -619,8 +578,9 @@ mod tests {
         assert!(
             matches!(
                 error.downcast_ref::<Error>(),
-                Some(Error::Status { status, body, .. })
-                    if *status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid model")
+                Some(Error::Status { status, message, .. })
+                    if *status == reqwest::StatusCode::BAD_REQUEST
+                        && message.as_bytes() == ORDINARY
             ),
             "{error}"
         );
@@ -671,8 +631,8 @@ mod tests {
         let status = ordinary.downcast_ref::<Error>().expect("the status error");
         assert!(matches!(
             status,
-            Error::Status { status, body, .. }
-                if *status == bad_request && body.contains("invalid model")
+            Error::Status { status, message, .. }
+                if *status == bad_request && message == r#"{"error":{"message":"invalid model"}}"#
         ));
         assert_eq!(retry(&ordinary), None);
 
@@ -693,7 +653,7 @@ mod tests {
 
         let limited = boxed(Error::Status {
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
-            body: String::new(),
+            message: String::new(),
             retry_after: Some(Duration::from_secs(7)),
         });
         assert_eq!(
@@ -705,14 +665,14 @@ mod tests {
 
         let overloaded = boxed(Error::Status {
             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            body: String::new(),
+            message: String::new(),
             retry_after: None,
         });
         assert_eq!(retry(&overloaded), Some(Retry { after: None }));
 
         let rejected = boxed(Error::Status {
             status: reqwest::StatusCode::BAD_REQUEST,
-            body: String::new(),
+            message: String::new(),
             retry_after: None,
         });
         assert_eq!(retry(&rejected), None);
@@ -723,10 +683,10 @@ mod tests {
         assert_eq!(retry(&boxed(Error::Truncated)), None);
 
         let in_stream = |status: Option<reqwest::StatusCode>| {
-            boxed(Error::Provider {
+            boxed(Error::Provider(Provider {
                 message: "from the gateway".into(),
                 status,
-            })
+            }))
         };
         assert_eq!(
             retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),

@@ -4,7 +4,7 @@
 
 use serde::Deserialize;
 
-use super::Error;
+use super::{Error, Provider};
 use crate::sse::{self, data, excerpt};
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -134,10 +134,10 @@ fn parse_line(line: &str) -> Result<Option<Event>, Error> {
         return Ok(None);
     };
     match serde_json::from_str(data) {
-        Ok(Event::Error { error }) => Err(Error::Provider {
+        Ok(Event::Error { error }) => Err(Error::Provider(Provider {
             kind: error.kind,
             message: error.message,
-        }),
+        })),
         Ok(event) => Ok(Some(event)),
         Err(source) => Err(Error::Parse {
             source,

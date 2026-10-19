@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use super::Error;
+use super::{Error, Provider};
 use crate::sse::{self, data, excerpt};
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -105,10 +105,10 @@ pub struct ErrorBody {
 
 impl ErrorBody {
     fn into_error(self) -> Error {
-        Error::Provider {
+        Error::Provider(Provider {
             kind: self.code.or(self.kind).unwrap_or_default(),
             message: self.message,
-        }
+        })
     }
 }
 
@@ -142,16 +142,16 @@ fn parse_line(line: &str) -> Result<Option<Event>, Error> {
         Ok(Event::Error(ErrorEvent {
             error: Some(error), ..
         })) => Err(error.into_error()),
-        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(Error::Provider {
+        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(Error::Provider(Provider {
             kind: code.unwrap_or_default(),
             message: message.unwrap_or_default(),
-        }),
+        })),
         Ok(Event::Failed { response }) => Err(match response.error {
             Some(error) => error.into_error(),
-            None => Error::Provider {
+            None => Error::Provider(Provider {
                 kind: String::new(),
                 message: "response failed".into(),
-            },
+            }),
         }),
         Ok(event) => Ok(Some(event)),
         Err(source) => Err(Error::Parse {

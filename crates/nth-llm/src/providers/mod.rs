@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use self::endpoint::Endpoint;
 use crate::{
     catalog::{Snapshot, Wire},
-    chat_completions, messages, responses,
+    chat_completions, messages, responses, stream,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -214,9 +214,9 @@ impl Provider for Providers {
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
         // Each protocol recognises only its own errors.
-        chat_completions::retry(error)
-            .or_else(|| messages::retry(error))
-            .or_else(|| responses::retry(error))
+        stream::retry::<chat_completions::Provider>(error)
+            .or_else(|| stream::retry::<messages::Provider>(error))
+            .or_else(|| stream::retry::<responses::Provider>(error))
     }
 }
 

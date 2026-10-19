@@ -10,12 +10,13 @@ use std::{
 };
 
 use futures::{Stream, StreamExt, stream::BoxStream};
-use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent, ToolCall, Usage};
+use nth_protocol::{BoxError, ContextOverflow, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
     catalog,
-    http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, retry_after},
+    stream::{self, Payload},
 };
 
 /// The API version the request and the stream are shaped for.
@@ -47,33 +48,25 @@ fn max_tokens(known: Option<&catalog::Model>) -> u64 {
     output.map_or(MAX_TOKENS, |output| output.min(MAX_TOKENS))
 }
 
+pub(crate) type Error = stream::Error<Provider>;
+
+/// An `error` event, sent after the 200 status.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("{status}: {message}")]
-    Status {
-        status: reqwest::StatusCode,
-        /// The error body's message, or the whole body when it has none.
-        message: String,
-        /// The server's `Retry-After`, when it sent one.
-        retry_after: Option<Duration>,
-    },
-    #[error("bad stream event: {source} in {line:?}")]
-    Parse {
-        source: serde_json::Error,
-        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
-        line: String,
-    },
-    /// An `error` event, sent after the 200 status.
-    #[error("provider error {kind}: {message}")]
-    Provider { kind: String, message: String },
-    #[error("stream ended before the response was complete")]
-    Incomplete,
-    #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
-    Stalled,
-    #[error("response hit the output token limit")]
-    Truncated,
+#[error("provider error {kind}: {message}")]
+pub(crate) struct Provider {
+    pub(crate) kind: String,
+    pub(crate) message: String,
+}
+
+impl Payload for Provider {
+    /// A rate limit, an overload or a server failure; the kinds stand
+    /// for 429, 529 and 500.
+    fn retryable(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "rate_limit_error" | "overloaded_error" | "api_error"
+        )
+    }
 }
 
 /// One endpoint's messages route.
@@ -158,34 +151,6 @@ fn status_error(
         message,
         retry_after,
     })
-}
-
-/// Whether `error`, one a messages `Client` produced, may be retried: the
-/// same rules as chat completions'.
-pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
-    let error = error.downcast_ref::<Error>()?;
-    match error {
-        Error::Status {
-            status,
-            retry_after,
-            ..
-        } if transient(*status) => Some(Retry {
-            after: *retry_after,
-        }),
-        // A rate limit, an overload or a server failure reported inside
-        // the stream; the kinds stand for 429, 529 and 500.
-        Error::Provider { kind, .. }
-            if matches!(
-                kind.as_str(),
-                "rate_limit_error" | "overloaded_error" | "api_error"
-            ) =>
-        {
-            Some(Retry { after: None })
-        }
-        Error::Http(e) if retryable(e) => Some(Retry { after: None }),
-        Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
-        _ => None,
-    }
 }
 
 struct State<S> {
@@ -337,8 +302,14 @@ impl<S> State<S> {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Retry;
+
     use super::*;
     use crate::testing::{chunks, runs_no_tools, serve_status, until};
+
+    fn retry(error: &BoxError) -> Option<Retry> {
+        stream::retry::<Provider>(error)
+    }
 
     /// Recorded from OpenCode Zen's claude-haiku-4-5, thinking enabled.
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/zen_messages.sse");
@@ -476,7 +447,9 @@ mod tests {
         let Some(Err(error)) = events.last() else {
             panic!("expected an error, got {events:?}");
         };
-        assert!(matches!(error, Error::Provider { kind, .. } if kind == "overloaded_error"));
+        assert!(
+            matches!(error, Error::Provider(Provider { kind, .. }) if kind == "overloaded_error")
+        );
     }
 
     #[test]
@@ -700,10 +673,10 @@ mod tests {
             })
         };
         let in_stream = |kind: &str| {
-            boxed(Error::Provider {
+            boxed(Error::Provider(Provider {
                 kind: kind.into(),
                 message: String::new(),
-            })
+            }))
         };
 
         assert_eq!(
