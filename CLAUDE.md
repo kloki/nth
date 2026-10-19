@@ -38,7 +38,7 @@ Crates in `crates/`, from the bottom up:
 - **nth-tui**: the interactive chat (ratatui + crossterm).
 - **nth**: the clap CLI; with no subcommand it opens the TUI, `run` prints events with `render.rs`. `tools()` in `main.rs` builds the one tool list both front-ends use, the task tool included.
 
-Front-ends only consume `Event`s; they never reach into the loop. The TUI moves the `Session` into a task for each turn and takes it back when the turn ends (`app/turn.rs`), so Esc cancels cooperatively rather than aborting the task.
+Front-ends only consume `Event`s; they never reach into the loop. The TUI moves the `Session` into a task for each turn and takes it back when the turn ends (`app/turn/`), so Esc cancels cooperatively rather than aborting the task.
 
 ### TUI
 
@@ -57,7 +57,7 @@ Heights are decided bottom-up: the status bar, then the input panel's own `Input
 
 Markdown and code go through `rich.rs`, the only module that uses [hoodrich](https://github.com/kloki/hoodrich). Chat messages are concealed markdown. read, write, edit (as a diff) and webfetch output are highlighted by tool (`output_lines` in `chat/render.rs`). The plan tab renders the plan as markdown. hoodrich gives one line per source line, and `rich::wrap` wraps them with their styles kept, because every pane draws pre-wrapped lines. Every tab but the chats draws them through a `Pager` (`pager.rs`), which keeps where the view is scrolled and is what the keys and the wheel move; a monitor's follows the newest line, and the file and plan tabs keep their wrapped lines in a `Cache` until they or the width change. A chat pages by half a screen over a window of its transcript, so it keeps its own (`chat/scroll.rs`).
 
-TUI tests render `App` into a `TestBackend` and assert on rows (`rows()` in `app/mod.rs` tests), so layout changes mean updating row indexes there.
+TUI tests render `App` into a `TestBackend` and assert on rows (`rows()` in `app/tests/mod.rs`), so layout changes mean updating row indexes there. Turns in tests run against one fake provider, `Scripted` (`app/tests/provider.rs`): a script of replies (events, a failure, a hang, or events once a gate opens), then a fallback for every later request.
 
 Style: no borders or divider lines; bands differ by background and spacing. Use only the 16 ANSI colours plus the terminal's default foreground and background, never hex or RGB (see `docs/ui.md`). The one exception is syntax-highlighted code, which hoodrich draws in Dracula colours.
 

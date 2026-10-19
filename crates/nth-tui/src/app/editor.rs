@@ -203,7 +203,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        app::{Tab, keys::Action, tests::Idle},
+        app::{Tab, keys::Action, tests::Scripted},
         chat::Entry,
     };
 
@@ -229,7 +229,7 @@ mod tests {
     async fn app_with_plan() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+        let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
         std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");
         std::fs::write(app.plan.path(), "# Plan\n").expect("writes");
         app.plan.read();
@@ -283,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn edits_go_to_the_model_and_show_as_one_row() {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()));
+        let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
 
         app.plan_edited("# Plan\n", Ok("# Plan\n".into()));
         assert_eq!(app.hint.as_deref(), Some("no changes to the plan"));

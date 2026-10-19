@@ -110,41 +110,14 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use crossterm::event::Event as TermEvent;
-    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use futures::{FutureExt, future::BoxFuture};
     use nth_notify::{Backend, BoxError as NotifyError, Notification};
-    use nth_protocol::{BoxError, Listing, Provider, Question, Request, StreamEvent};
+    use nth_protocol::Question;
     use nth_session::Session;
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
-
-    /// Answers every request with `reply`, or fails with it.
-    struct Reply {
-        text: &'static str,
-        fail: bool,
-    }
-
-    impl Provider for Reply {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let (text, fail) = (self.text, self.fail);
-            async move {
-                if fail {
-                    return Err(text.into());
-                }
-                let reply = futures::stream::iter([Ok(StreamEvent::TextDelta(text.into()))]);
-                Ok(futures::StreamExt::boxed(reply))
-            }
-            .boxed()
-        }
-    }
+    use crate::app::tests::{Reply, Scripted};
 
     struct Recording(mpsc::UnboundedSender<Notification>);
 
@@ -161,7 +134,7 @@ mod tests {
 
     fn app_in(
         cwd: std::path::PathBuf,
-        provider: Reply,
+        provider: Scripted,
     ) -> (App, mpsc::UnboundedReceiver<Notification>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let session = Session::new("glm", cwd);
@@ -173,7 +146,10 @@ mod tests {
     }
 
     fn answering(text: &'static str) -> (App, mpsc::UnboundedReceiver<Notification>) {
-        app_in("/repo".into(), Reply { text, fail: false })
+        app_in(
+            "/repo".into(),
+            Scripted::default().with_fallback(Reply::text(text)),
+        )
     }
 
     fn send(app: &mut App, text: &str) {
@@ -248,10 +224,7 @@ mod tests {
     async fn a_failed_turn_names_the_error() {
         let (mut app, mut rx) = app_in(
             "/repo".into(),
-            Reply {
-                text: "rate limited",
-                fail: true,
-            },
+            Scripted::default().with_fallback(Reply::Fail("rate limited".into())),
         );
         send(&mut app, "go");
         end(&mut app).await;
@@ -266,10 +239,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (mut app, mut rx) = app_in(
             dir.path().to_path_buf(),
-            Reply {
-                text: "planned",
-                fail: false,
-            },
+            Scripted::default().with_fallback(Reply::text("planned")),
         );
         app.set_mode(Mode::Plan);
         std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");

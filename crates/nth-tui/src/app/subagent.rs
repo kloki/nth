@@ -224,7 +224,7 @@ mod tests {
     use crate::{
         app::{
             keys::Action,
-            tests::{Idle, app, rows, tab_colour},
+            tests::{Scripted, app, rows, tab_colour},
         },
         chat::Entry,
     };
@@ -278,8 +278,13 @@ mod tests {
         .agents;
         let explore = agents.get("explore").expect("built in");
         let session = Session::new("glm", "/repo".into()).as_subagent(None);
-        app.subagents
-            .spawn(explore, "find tabs", session, Arc::new(Idle), Vec::new())
+        app.subagents.spawn(
+            explore,
+            "find tabs",
+            session,
+            Arc::new(Scripted::idle()),
+            Vec::new(),
+        )
     }
 
     #[test]

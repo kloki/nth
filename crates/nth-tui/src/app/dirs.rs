@@ -103,14 +103,14 @@ mod tests {
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{Idle, rows},
+        tests::{Scripted, rows},
     };
 
     /// An idle app in `dir`, which exists.
     fn app_in(dir: &Path) -> App {
         App::new(
             Session::new("glm", dir.to_path_buf()),
-            Arc::new(Idle),
+            Arc::new(Scripted::idle()),
             Arc::new(Vec::new()),
         )
     }
@@ -269,7 +269,7 @@ mod tests {
         app.add_dir("../other");
         let added = app.extra_dirs.clone();
 
-        // The turn fails (`Idle` never answers), and its session comes back
+        // The turn fails (`Scripted::idle` never answers), and its session comes back
         // without the directory: it reaches the session with the next turn,
         // as a model switched mid-turn does.
         let ended = app.turn.join().await.expect("turn ends");
@@ -388,7 +388,7 @@ mod tests {
         // A session nothing was asked in yet is never saved.
         let mut session = Session::new("glm", dir(base.path(), "repo"));
         session.messages.push(Message::User("go".into()));
-        let mut app = App::new(session, Arc::new(Idle), Arc::new(Vec::new()))
+        let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
             .with_store(Store::at(&sessions));
 
         app.add_dir("../other");
