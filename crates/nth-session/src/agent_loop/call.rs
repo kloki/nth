@@ -1,9 +1,7 @@
 //! Running one tool call: its arguments parsed and repaired, its output
 //! streamed, and its result or why it failed.
 
-use nth_protocol::{
-    Attachments, Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed,
-};
+use nth_protocol::{Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -23,33 +21,15 @@ pub(crate) async fn run_call(
     cancel: &CancellationToken,
 ) -> Message {
     emit(events, Event::ToolStarted(call.clone())).await;
-    // A tool in an earlier step may have moved the session.
+    // Where an earlier step moved the session, to tell whether this call
+    // moves it again.
     let moved = ctx.workdir.moved_to();
     // Output goes straight onto the event channel from inside this future,
     // so it is dropped with the call and always lands before ToolFinished.
-    let ctx = ToolContext {
-        cwd: moved.clone().unwrap_or_else(|| ctx.cwd.clone()),
-        workdir: ctx.workdir.clone(),
-        extra_dirs: ctx.extra_dirs.clone(),
-        output: OutputSink::new(events.clone(), call.id.clone()),
-        instructions: ctx.instructions.clone(),
-        context: ctx.context.clone(),
-        asker: ctx.asker.for_call(call.id.clone()),
-        screen: ctx.screen.clone(),
-        monitors: ctx.monitors.clone(),
-        inbox: ctx.inbox.clone(),
-        writable: ctx.writable.clone(),
-        llm: ctx.llm.clone(),
-        subagent: ctx.subagent.clone(),
-        clerk: ctx.clerk.clone(),
-        context_window: ctx.context_window,
-        max_output: ctx.max_output,
-        compaction: ctx.compaction,
-        session: ctx.session.clone(),
-        attachments: Attachments::default(),
-        takes_images: ctx.takes_images,
-        images: ctx.images.clone(),
-    };
+    let ctx = ctx.for_call(
+        call.id.clone(),
+        OutputSink::new(events.clone(), call.id.clone()),
+    );
     let run = async {
         match tool {
             None => Err(format!("unknown tool: {}", call.name)),
