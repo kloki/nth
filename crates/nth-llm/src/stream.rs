@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nth_protocol::{BoxError, ContextOverflow, Retry};
 
-use crate::http::{STREAM_IDLE_TIMEOUT, retryable, transient};
+use crate::http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient};
 
 /// A protocol's in-stream error and the policy that reads it. Kept per
 /// protocol, since each names its retryable failures differently: a
@@ -22,6 +22,12 @@ pub(crate) trait Payload: std::error::Error + Send + Sync + 'static {
     /// gateways say so in-stream.
     fn context_overflow(&self) -> bool {
         false
+    }
+
+    /// The message a refused request's body carries, where the protocol
+    /// knows the body's shape; `None` keeps the whole body.
+    fn status_message(_body: &str) -> Option<String> {
+        None
     }
 }
 
@@ -53,6 +59,39 @@ pub(crate) enum Error<P: Payload> {
     Stalled,
     #[error("response hit the output token limit")]
     Truncated,
+}
+
+/// Turns a non-2xx response into the stream's error: the shared
+/// [`ContextOverflow`] marker when the body is a refusal as too long, so
+/// the loop compacts and replays, else the status error it always was.
+pub(crate) async fn success<P: Payload>(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, BoxError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let retry_after = retry_after(response.headers());
+    let body = response.text().await.unwrap_or_default();
+    Err(status_error::<P>(status, body, retry_after))
+}
+
+/// A failed response as its stream's error; apart from `success` so the
+/// classification is testable without an HTTP response in hand.
+pub(crate) fn status_error<P: Payload>(
+    status: reqwest::StatusCode,
+    body: String,
+    retry_after: Option<Duration>,
+) -> BoxError {
+    if http::context_overflow(status, &body) {
+        return Box::new(ContextOverflow);
+    }
+    let message = P::status_message(&body).unwrap_or(body);
+    Box::new(Error::<P>::Status {
+        status,
+        message,
+        retry_after,
+    })
 }
 
 /// A stream's error as the session sees it: an in-stream refusal as too

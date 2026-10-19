@@ -5,17 +5,14 @@
 mod event;
 mod wire;
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Duration,
-};
+use std::collections::{BTreeMap, VecDeque};
 
 use futures::{Stream, StreamExt, stream::BoxStream};
-use nth_protocol::{BoxError, ContextOverflow, Request, StreamEvent, ToolCall, Usage};
+use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{self, STREAM_IDLE_TIMEOUT, retry_after, transient},
+    http::{self, STREAM_IDLE_TIMEOUT, transient},
     stream::{self, Payload},
 };
 
@@ -83,7 +80,7 @@ impl Client {
             .send()
             .await
             .map_err(Error::from)?;
-        let response = success(response).await?;
+        let response = stream::success::<Provider>(response).await?;
 
         let bytes = response
             .bytes_stream()
@@ -124,37 +121,6 @@ const CACHE_KEY_PROVIDERS: &[&str] = &[
 /// `prompt_cache_key`.
 pub(crate) fn takes_cache_key(provider: &str) -> bool {
     CACHE_KEY_PROVIDERS.contains(&provider)
-}
-
-/// Turns a non-2xx response into the stream's error: the shared
-/// [`ContextOverflow`] marker when the body is a refusal as too long, so
-/// the loop compacts and replays, else the status error it always was.
-async fn success(response: reqwest::Response) -> Result<reqwest::Response, BoxError> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    let retry_after = retry_after(response.headers());
-    let body = response.text().await.unwrap_or_default();
-    Err(status_error(status, body, retry_after))
-}
-
-/// A failed response as its stream's error; apart from `success` so the
-/// classification is testable without an HTTP response in hand.
-fn status_error(
-    status: reqwest::StatusCode,
-    body: String,
-    retry_after: Option<Duration>,
-) -> BoxError {
-    if http::context_overflow(status, &body) {
-        return Box::new(ContextOverflow);
-    }
-    // The whole body: a compatible server's error shape is anyone's guess.
-    Box::new(Error::Status {
-        status,
-        message: body,
-        retry_after,
-    })
 }
 
 struct State<S> {
@@ -288,7 +254,9 @@ impl<S> State<S> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Retry;
+    use std::time::Duration;
+
+    use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
     use crate::testing::{chunks, runs_no_tools, serve_once, serve_status, until};
@@ -591,7 +559,7 @@ mod tests {
     fn only_an_overflow_body_on_an_overflow_status_is_marked() {
         let bad_request = reqwest::StatusCode::BAD_REQUEST;
         let marked = |status, body: &str| {
-            status_error(status, body.to_string(), None)
+            stream::status_error::<Provider>(status, body.to_string(), None)
                 .downcast_ref::<ContextOverflow>()
                 .is_some()
         };
@@ -623,7 +591,7 @@ mod tests {
             "prompt is too long"
         ));
 
-        let ordinary = status_error(
+        let ordinary = stream::status_error::<Provider>(
             bad_request,
             r#"{"error":{"message":"invalid model"}}"#.into(),
             None,
@@ -636,7 +604,11 @@ mod tests {
         ));
         assert_eq!(retry(&ordinary), None);
 
-        let limited = status_error(reqwest::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
+        let limited = stream::status_error::<Provider>(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            String::new(),
+            None,
+        );
         assert_eq!(retry(&limited), Some(Retry { after: None }));
     }
 
