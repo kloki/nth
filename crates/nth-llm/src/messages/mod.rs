@@ -6,12 +6,12 @@ mod wire;
 
 use std::collections::BTreeMap;
 
-use futures::{StreamExt, stream::BoxStream};
+use futures::stream::BoxStream;
 use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    catalog, http,
+    catalog,
     stream::{self, Flow, Out, Payload, Protocol},
 };
 
@@ -71,20 +71,9 @@ impl Payload for Provider {
     }
 }
 
-/// One endpoint's messages route.
-pub(crate) struct Client {
-    http: reqwest::Client,
-    base_url: String,
-}
+pub(crate) type Client = stream::Client<State>;
 
 impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
-        Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
-    }
-
     /// `known` is the catalogue's entry for the model, if it has one: its
     /// output limit bounds `max_tokens`, which is required here, unlike in
     /// chat completions, and its reasoning options say how it thinks.
@@ -94,11 +83,8 @@ impl Client {
         known: Option<&catalog::Model>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let signed = auth.api_key(
-            self.http.post(format!("{}/messages", self.base_url)),
-            Some(request.session_id),
-        );
-        let response = http::session(signed, &request)
+        let builder = auth
+            .api_key(self.post(), Some(request.session_id))
             .header("anthropic-version", VERSION)
             .json(&wire::body(
                 request.model,
@@ -107,19 +93,8 @@ impl Client {
                 max_tokens(known),
                 request.messages,
                 request.tools,
-            ))
-            .send()
-            .await
-            .map_err(Error::from)?;
-        let response = stream::success::<Provider>(response).await?;
-
-        let bytes = response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(Error::from))
-            .boxed();
-        Ok(stream::events::<State, _>(bytes)
-            .map(|e| e.map_err(stream::boxed))
-            .boxed())
+            ));
+        stream::send::<State>(builder, &request).await
     }
 }
 
@@ -136,6 +111,7 @@ pub(crate) struct State {
 impl Protocol for State {
     type Provider = Provider;
     type Event = event::Event;
+    const ROUTE: &'static str = "/messages";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
         Ok(event::parse_line(line)?.into_iter().collect())
@@ -224,6 +200,7 @@ impl Protocol for State {
 mod tests {
     use std::time::Duration;
 
+    use futures::StreamExt;
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;

@@ -7,7 +7,7 @@ mod wire;
 
 use std::collections::BTreeMap;
 
-use futures::{StreamExt, stream::BoxStream};
+use futures::stream::BoxStream;
 use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
@@ -41,20 +41,9 @@ impl Payload for Provider {
     }
 }
 
-/// One endpoint's chat completions route.
-pub(crate) struct Client {
-    http: reqwest::Client,
-    base_url: String,
-}
+pub(crate) type Client = stream::Client<State>;
 
 impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
-        Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
-    }
-
     /// `cache_key` goes out as `prompt_cache_key`: only to a provider known
     /// to take it ([`takes_cache_key`]), since strict ones refuse a field
     /// they do not know.
@@ -64,31 +53,16 @@ impl Client {
         cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let signed = auth.bearer(
-            self.http
-                .post(format!("{}/chat/completions", self.base_url)),
-            Some(request.session_id),
-        );
-        let response = http::session(signed, &request)
+        let builder = auth
+            .bearer(self.post(), Some(request.session_id))
             .json(&wire::body(
                 request.model,
                 request.effort,
                 cache_key,
                 request.messages,
                 request.tools,
-            ))
-            .send()
-            .await
-            .map_err(Error::from)?;
-        let response = stream::success::<Provider>(response).await?;
-
-        let bytes = response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(Error::from))
-            .boxed();
-        Ok(stream::events::<State, _>(bytes)
-            .map(|e| e.map_err(stream::boxed))
-            .boxed())
+            ));
+        stream::send::<State>(builder, &request).await
     }
 }
 
@@ -136,6 +110,7 @@ pub(crate) struct State {
 impl Protocol for State {
     type Provider = Provider;
     type Event = event::Event;
+    const ROUTE: &'static str = "/chat/completions";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
         event::parse_line(line)
@@ -212,6 +187,7 @@ impl State {
 mod tests {
     use std::time::Duration;
 
+    use futures::StreamExt;
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;

@@ -4,10 +4,10 @@
 //! reads its events into a reply (its `Protocol`) and the error it reports
 //! inside the stream, after the 200 status (its `Payload`).
 
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, marker::PhantomData, time::Duration};
 
-use futures::{Stream, StreamExt};
-use nth_protocol::{BoxError, ContextOverflow, Retry, StreamEvent};
+use futures::{Stream, StreamExt, stream::BoxStream};
+use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent};
 
 use crate::{
     http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient},
@@ -66,12 +66,51 @@ pub(crate) enum Error<P: Payload> {
     Truncated,
 }
 
+/// One endpoint's route for protocol `P`. Each protocol's `stream` signs
+/// the request and sets its body, then hands it to [`send`].
+pub(crate) struct Client<P> {
+    http: reqwest::Client,
+    base_url: String,
+    protocol: PhantomData<fn() -> P>,
+}
+
+impl<P: Protocol> Client<P> {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+        Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            protocol: PhantomData,
+        }
+    }
+
+    /// A request to the protocol's route, not yet signed.
+    pub(crate) fn post(&self) -> reqwest::RequestBuilder {
+        self.http.post(format!("{}{}", self.base_url, P::ROUTE))
+    }
+}
+
+/// Sends `builder`, signed and with its body set, as `request`'s session,
+/// and streams the reply once the server accepted it.
+pub(crate) async fn send<P: Protocol>(
+    builder: reqwest::RequestBuilder,
+    request: &Request<'_>,
+) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
+    let response = http::session(builder, request)
+        .send()
+        .await
+        .map_err(Error::<P::Provider>::from)?;
+    let response = success::<P::Provider>(response).await?;
+    let bytes = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(Error::from))
+        .boxed();
+    Ok(events::<P, _>(bytes).map(|e| e.map_err(boxed)).boxed())
+}
+
 /// Turns a non-2xx response into the stream's error: the shared
 /// [`ContextOverflow`] marker when the body is a refusal as too long, so
 /// the loop compacts and replays, else the status error it always was.
-pub(crate) async fn success<P: Payload>(
-    response: reqwest::Response,
-) -> Result<reqwest::Response, BoxError> {
+async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Response, BoxError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -148,6 +187,8 @@ pub(crate) enum Flow {
 pub(crate) trait Protocol: Default + Send + 'static {
     type Provider: Payload;
     type Event: Send;
+    /// Where requests go, under the endpoint's base URL.
+    const ROUTE: &'static str;
 
     /// One line's events, or the protocol's parse or in-stream error.
     fn parse(line: &str) -> Result<Vec<Self::Event>, Error<Self::Provider>>;

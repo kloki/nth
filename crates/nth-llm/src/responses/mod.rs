@@ -6,12 +6,11 @@ mod wire;
 
 use std::collections::BTreeMap;
 
-use futures::{StreamExt, stream::BoxStream};
+use futures::stream::BoxStream;
 use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http,
     stream::{self, Flow, Out, Payload, Protocol},
 };
 
@@ -39,20 +38,9 @@ impl Payload for Provider {
     }
 }
 
-/// One endpoint's responses route.
-pub(crate) struct Client {
-    http: reqwest::Client,
-    base_url: String,
-}
+pub(crate) type Client = stream::Client<State>;
 
 impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
-        Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
-    }
-
     /// `reasons` is whether the model is known to reason, which asks for
     /// its summary even when the effort is left to it.
     pub(crate) async fn stream(
@@ -61,11 +49,8 @@ impl Client {
         reasons: bool,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let signed = auth.bearer(
-            self.http.post(format!("{}/responses", self.base_url)),
-            Some(request.session_id),
-        );
-        let response = http::session(signed, &request)
+        let builder = auth
+            .bearer(self.post(), Some(request.session_id))
             .json(&wire::body(
                 request.model,
                 request.session_id,
@@ -73,19 +58,8 @@ impl Client {
                 reasons,
                 request.messages,
                 request.tools,
-            ))
-            .send()
-            .await
-            .map_err(Error::from)?;
-        let response = stream::success::<Provider>(response).await?;
-
-        let bytes = response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(Error::from))
-            .boxed();
-        Ok(stream::events::<State, _>(bytes)
-            .map(|e| e.map_err(stream::boxed))
-            .boxed())
+            ));
+        stream::send::<State>(builder, &request).await
     }
 }
 
@@ -105,6 +79,7 @@ pub(crate) struct State {
 impl Protocol for State {
     type Provider = Provider;
     type Event = event::Event;
+    const ROUTE: &'static str = "/responses";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
         Ok(event::parse_line(line)?.into_iter().collect())
@@ -187,6 +162,7 @@ fn usage(response: &event::Response, out: &mut Out<Provider>) {
 mod tests {
     use std::time::Duration;
 
+    use futures::StreamExt;
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
