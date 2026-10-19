@@ -11,7 +11,7 @@ use nth_session::{
     subagent::{Done, Job, SubagentEvent, SubagentId},
 };
 
-use super::{App, NOTICE_DELAY, Tab, TabState};
+use super::{App, Tab, TabState};
 use crate::subagent::SubagentView;
 
 /// How long quitting waits for the stopped subagents to report back.
@@ -93,9 +93,7 @@ impl App {
             }
         }
         // A task's answer waits in the inbox with the monitors' notices.
-        if self.notices_due.is_none() && self.inbox.wakes() {
-            self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
-        }
+        self.arm_notices();
     }
 
     /// What the subagents' finished turns spent goes into the session

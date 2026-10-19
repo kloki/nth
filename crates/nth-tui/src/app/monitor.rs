@@ -38,6 +38,13 @@ impl App {
                 self.content.remove(Tab::Monitor(id));
             }
         }
+        self.arm_notices();
+    }
+
+    /// Starts the wait before notices wake the model, unless one runs
+    /// already: a burst keeps its first deadline rather than putting it off
+    /// line by line.
+    pub(super) fn arm_notices(&mut self) {
         if self.notices_due.is_none() && self.inbox.wakes() {
             self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
         }

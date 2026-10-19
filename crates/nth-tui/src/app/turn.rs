@@ -11,7 +11,7 @@ use nth_protocol::{Asker, FrontEnd, Llm, Screen, SubagentLlm};
 use nth_session::{Session, plan, store};
 use tokio::task::JoinError;
 
-use super::{App, NOTICE_DELAY, TabState};
+use super::{App, TabState};
 use crate::{command::Command, status};
 
 /// What a turn task hands back: the session, how its turn ended, and
@@ -501,7 +501,8 @@ impl App {
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
         if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
-            self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
+            self.notices_due = None;
+            self.arm_notices();
         }
         // A command of yours is not the model answering: nothing to say.
         self.notify_turn_ended(shell || compact, error, elapsed);
