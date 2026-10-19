@@ -4,12 +4,10 @@
 use std::{borrow::Cow, time::Duration};
 
 use futures::{StreamExt, stream::BoxStream};
-use nth_protocol::{
-    AssistantMessage, BoxError, Event, Message, Request, StreamEvent, ToolSpec, Usage,
-};
+use nth_protocol::{AssistantMessage, BoxError, Event, Request, StreamEvent, ToolSpec, Usage};
 
 use super::{Turn, emit, max_steps_messages};
-use crate::compaction::{checkpoint, last_marker};
+use crate::compaction::effective;
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -26,7 +24,7 @@ const RETRY_MAX_ATTEMPTS: u32 = 5;
 const RETRY_MAX_AFTER: Duration = Duration::from_secs(60);
 
 /// Why a step's reply did not finish.
-pub(super) enum Stop {
+pub(crate) enum Stop {
     /// The provider failed; whether a retry can help is the provider's say.
     Failed(BoxError),
     /// Cancelled; the partial reply is handed back so it can be kept.
@@ -81,15 +79,7 @@ impl Turn<'_> {
         } else {
             effective
         };
-        let request = Request {
-            model: self.route.model,
-            session_id: self.route.session_id,
-            parent_session_id: self.route.parent_session_id,
-            effort: self.route.effort,
-            messages: &sent,
-            tools: specs,
-        };
-        let mut stream = self.open_once(request).await?;
+        let mut stream = self.open_once(self.route.request(&sent, specs)).await?;
         let mut reply = AssistantMessage::default();
         loop {
             let event = tokio::select! {
@@ -128,7 +118,7 @@ impl Turn<'_> {
     /// when the provider says a retry can help; `None` when it cannot, or
     /// when its `Retry-After` is longer than `RETRY_MAX_AFTER` (the error
     /// shows right away rather than an unexplained stall).
-    pub(super) fn retry_delay(&self, error: &BoxError, attempt: u32) -> Option<Duration> {
+    pub(crate) fn retry_delay(&self, error: &BoxError, attempt: u32) -> Option<Duration> {
         self.provider
             .retry(error)
             .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
@@ -138,7 +128,7 @@ impl Turn<'_> {
 
     /// Announces a retry and waits out its delay; `false` when cancelled
     /// during the wait, which ends the caller's request.
-    pub(super) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
+    pub(crate) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
         emit(self.events, Event::Retry { attempt, delay }).await;
         tokio::select! {
             biased;
@@ -148,7 +138,7 @@ impl Turn<'_> {
     }
 
     /// One attempt at opening `request`'s stream; cancelling ends it.
-    pub(super) async fn open_once(
+    pub(crate) async fn open_once(
         &self,
         request: Request<'_>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
@@ -160,29 +150,6 @@ impl Turn<'_> {
     }
 }
 
-/// The messages a request carries. Without a compaction marker, the history
-/// is the request. With one, the request starts at the last marker, read
-/// the way opencode reads its checkpoint: the system prompts, then one user
-/// message holding the summary and the text kept beside it, then everything
-/// after the marker verbatim. The request so never ends on the summary.
-/// Only this filter and the check on what a compaction left ever see the
-/// marker; the protocols never do.
-pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
-    let Some(at) = last_marker(messages) else {
-        return Cow::Borrowed(messages);
-    };
-    let mut sent: Vec<Message> = messages[..at]
-        .iter()
-        .filter(|message| matches!(message, Message::System(_)))
-        .cloned()
-        .collect();
-    if let Message::Compaction { summary, recent } = &messages[at] {
-        sent.push(Message::User(checkpoint(summary, recent)));
-    }
-    sent.extend(messages[at + 1..].iter().cloned());
-    Cow::Owned(sent)
-}
-
 /// The backoff before the `attempt`-th retry: `RETRY_INITIAL_DELAY` doubled
 /// each time, capped at `RETRY_MAX_DELAY`.
 fn backoff(attempt: u32) -> Duration {
@@ -192,49 +159,17 @@ fn backoff(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
 
-    use futures::{
-        FutureExt, StreamExt,
-        future::BoxFuture,
-        stream::{self, BoxStream},
-    };
-    use nth_protocol::{
-        AssistantMessage, BoxError, Event, Listing, Message, Provider, Request, Retry, StreamEvent,
-        ToolContext, Usage,
-    };
+    use nth_protocol::{AssistantMessage, Event, Message, StreamEvent, ToolContext, Usage};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::agent_loop::{Error, Turn, tests::*};
 
-    /// Streams `events` and then stays open, like a reply cut off mid-way.
-    struct Unfinished(Vec<StreamEvent>);
-
-    impl Provider for Unfinished {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let events = self.0.clone();
-            async move {
-                Ok(stream::iter(events.into_iter().map(Ok))
-                    .chain(stream::pending())
-                    .boxed())
-            }
-            .boxed()
-        }
-    }
-
     #[tokio::test]
     async fn interrupting_a_reply_keeps_its_text_but_not_its_calls() {
-        let provider = Unfinished(vec![
+        let provider = Scripted::script(vec![Reply::Hangs(vec![
             StreamEvent::Usage(Usage {
                 input: 40,
                 output: 2,
@@ -242,7 +177,7 @@ mod tests {
             }),
             StreamEvent::TextDelta("partial".into()),
             StreamEvent::ToolCall(call("1", "echo", "")),
-        ]);
+        ])]);
         let cancel = CancellationToken::new();
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
@@ -279,64 +214,18 @@ mod tests {
         assert_eq!((spent.steps, spent.tokens.input), (1, 40), "still counted");
     }
 
-    /// A transient provider failure, retried by [`Flaky`].
-    #[derive(Debug, thiserror::Error)]
-    #[error("temporary failure")]
-    struct Temporary;
-
-    /// Fails the requests named in `fail` (1-based) and answers the rest.
-    struct Flaky {
-        fail: Vec<usize>,
-        attempts: Mutex<usize>,
-        reply: Vec<StreamEvent>,
-        retry_after: Option<Duration>,
-    }
-
-    impl Flaky {
-        fn new(fail: Vec<usize>) -> Self {
-            Self {
-                fail,
-                attempts: Mutex::new(0),
-                // A retry that waits in a test would only slow it down.
-                reply: vec![StreamEvent::TextDelta("done".into())],
-                retry_after: Some(Duration::ZERO),
-            }
-        }
-    }
-
-    impl Provider for Flaky {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let mut attempts = self.attempts.lock().expect("not poisoned");
-            *attempts += 1;
-            let fails = self.fail.contains(&*attempts);
-            let reply = self.reply.clone();
-            async move {
-                match fails {
-                    true => Err(Box::new(Temporary) as BoxError),
-                    false => Ok(stream::iter(reply.into_iter().map(Ok)).boxed()),
-                }
-            }
-            .boxed()
-        }
-
-        fn retry(&self, error: &BoxError) -> Option<Retry> {
-            error.downcast_ref::<Temporary>().map(|_| Retry {
-                after: self.retry_after,
-            })
-        }
+    /// Fails the first request with a transient error and answers the
+    /// retry.
+    fn flaky() -> Scripted {
+        Scripted::script(vec![
+            Reply::Refused(Failure::Temporary),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ])
     }
 
     #[tokio::test]
     async fn retries_a_transient_error_then_answers() {
-        let provider = Flaky::new(vec![1]);
+        let provider = flaky();
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -364,7 +253,7 @@ mod tests {
                 ..Default::default()
             })]
         );
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        assert_eq!(provider.requests(), 2);
         drop(tx);
         let mut retries = Vec::new();
         while let Some(event) = rx.recv().await {
@@ -375,54 +264,15 @@ mod tests {
         assert_eq!(retries, [(1, Duration::ZERO)]);
     }
 
-    /// Streams a text delta and then fails, like a dropped connection; a
-    /// retried request answers whole.
-    struct DropsMidway {
-        attempts: Mutex<usize>,
-    }
-
-    impl Provider for DropsMidway {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Ok(Listing::default()) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            let mut attempts = self.attempts.lock().expect("not poisoned");
-            *attempts += 1;
-            let first = *attempts == 1;
-            async move {
-                let events: Vec<Result<StreamEvent, BoxError>> = match first {
-                    true => vec![
-                        Ok(StreamEvent::TextDelta("partial".into())),
-                        Err(Box::new(Temporary) as BoxError),
-                    ],
-                    false => vec![Ok(StreamEvent::TextDelta("the whole answer".into()))],
-                };
-                Ok(stream::iter(events).boxed())
-            }
-            .boxed()
-        }
-
-        fn retry(&self, error: &BoxError) -> Option<Retry> {
-            error.downcast_ref::<Temporary>().map(|_| Retry {
-                // A retry that waits in a test would only slow it down.
-                after: Some(Duration::ZERO),
-            })
-        }
-    }
-
     /// A failure in the middle of a reply retries the whole attempt: what
     /// was already streamed is not saved, and the second attempt replaces
     /// it, as `Event::Retry` promises.
     #[tokio::test]
     async fn a_mid_stream_failure_restarts_the_step_from_scratch() {
-        let provider = DropsMidway {
-            attempts: Mutex::new(0),
-        };
+        let provider = Scripted::script(vec![
+            Reply::Breaks(vec![StreamEvent::TextDelta("partial".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("the whole answer".into())]),
+        ]);
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -451,7 +301,7 @@ mod tests {
             })],
             "the second, complete attempt is what is saved"
         );
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 2);
+        assert_eq!(provider.requests(), 2);
         drop(tx);
         let mut deltas = Vec::new();
         let mut retries = Vec::new();
@@ -472,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn gives_up_after_the_retry_budget() {
-        let provider = Flaky::new((1..=20).collect());
+        let provider = Scripted::always(Reply::Refused(Failure::Temporary));
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -494,7 +344,7 @@ mod tests {
 
         assert!(matches!(result, Err(Error::Provider(_))));
         assert_eq!(
-            *provider.attempts.lock().expect("not poisoned"),
+            provider.requests(),
             RETRY_MAX_ATTEMPTS as usize + 1,
             "the first try plus the retries"
         );
@@ -508,9 +358,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_long_retry_after_fails_at_once() {
-        let provider = Flaky {
+        let provider = Scripted {
             retry_after: Some(RETRY_MAX_AFTER + Duration::from_secs(1)),
-            ..Flaky::new(vec![1])
+            ..flaky()
         };
         let ctx = ToolContext::new(".".into());
         let mut messages = vec![Message::User("go".into())];
@@ -518,6 +368,6 @@ mod tests {
         let (result, _) = turn(&provider, &[], &ctx, &mut messages).await;
 
         assert!(matches!(result, Err(Error::Provider(_))));
-        assert_eq!(*provider.attempts.lock().expect("not poisoned"), 1);
+        assert_eq!(provider.requests(), 1);
     }
 }

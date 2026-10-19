@@ -2,7 +2,7 @@
 //! lives here, beside the messages and providers it shapes, so anything
 //! carrying a conversation — a tool that starts a child session, a
 //! front-end — can carry it too; running a compaction is the session
-//! loop's, `nth_session::Turn::compact`.
+//! loop's, nth-session's `Turn::compact`.
 
 use serde::{Deserialize, Serialize};
 

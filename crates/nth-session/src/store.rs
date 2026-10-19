@@ -226,19 +226,25 @@ async fn image_bytes(image: &Image, root: &Path) -> Option<Vec<u8>> {
     (sha256 == image.sha256 && bytes.len() <= MAX_IMAGE_BYTES).then_some(bytes)
 }
 
-fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
+/// What `parse` reads out of every saved session in `dir`; one it cannot
+/// read is left out.
+fn scan<T>(dir: &Path, parse: impl Fn(&[u8]) -> Option<T>) -> Result<Vec<T>, Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         // Nothing saved yet.
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(io_at(dir)(e)),
     };
-    let mut sessions: Vec<Summary> = entries
+    Ok(entries
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .filter_map(|path| std::fs::read(&path).ok())
-        .filter_map(|json| summary(&json))
-        .collect();
+        .filter_map(|json| parse(&json))
+        .collect())
+}
+
+fn list(dir: &Path) -> Result<Vec<Summary>, Error> {
+    let mut sessions = scan(dir, summary)?;
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
 }
@@ -253,17 +259,7 @@ pub struct Spending {
 }
 
 fn spending(dir: &Path) -> Result<Vec<Spending>, Error> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io_at(dir)(e)),
-    };
-    let mut sessions: Vec<Spending> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|path| std::fs::read(&path).ok())
-        .filter_map(|json| serde_json::from_slice(&json).ok())
-        .collect();
+    let mut sessions: Vec<Spending> = scan(dir, |json| serde_json::from_slice(json).ok())?;
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     Ok(sessions)
 }

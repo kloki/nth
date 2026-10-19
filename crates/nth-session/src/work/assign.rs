@@ -14,10 +14,8 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Assignment, ItemRef, Status, Work, open_items, outcome, reconciled, returned, todo::WorkTodo,
-};
-use crate::subagent::{Done, Job, PLANNING, TaskIdArg, Turn, child_session, tools_for};
+use super::{Assignment, ItemRef, Status, Work, open_items, outcome, returned, todo::WorkTodo};
+use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent};
 
 const ASSIGNED: &str = include_str!("assigned.md");
 
@@ -55,7 +53,7 @@ impl Assigned {
     }
 
     /// The subagent's turn ended: the item returns and the model hears.
-    pub(crate) async fn settle(self, turn: Turn) {
+    pub(crate) async fn settle(self, turn: Answer) {
         let notice = returned(&self.assignment, outcome(&turn)).await;
         self.assignment.inbox.post_work(notice.clone());
         // A dropped receiver is a call that stopped waiting, which is fine.
@@ -115,21 +113,13 @@ impl Tool for WorkAssign {
             }
             let store = Work::store(ctx)?;
             let shared = &self.work.0;
-            let agents = &ctx.context.agents;
-            let Some(agent) = agents.get(&args.subagent_type) else {
-                let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-                return Err(format!(
-                    "Agent \"{}\" not found. Available agents: {}",
-                    args.subagent_type,
-                    names.join(", ")
-                ));
-            };
+            let subagents = shared.spawner.subagents();
+            let agent = find_agent(ctx, &args.subagent_type)?;
             let planning = matches!(ctx.writable, Writable::Only(_));
             let continued = args.task_id.as_ref().map(TaskIdArg::parse).transpose()?;
             // Held from reading the plan until the file says running and
             // `Live` knows it, so two calls cannot both take one item.
-            let mut live = self.work.files().0.lock().await;
-            let plan = reconciled(&store, &live).await?;
+            let (mut live, plan) = self.work.locked_plan(&store).await?;
             let Some(cycle) = plan.cycle(args.cycle) else {
                 return Err(format!("there is no cycle {}", args.cycle));
             };
@@ -168,14 +158,15 @@ impl Tool for WorkAssign {
                 ));
             }
             let path = at.path(store.dir());
-            let id = match continued {
+            // A fresh subagent's work_todo, which learns its item below.
+            let (id, todo) = match continued {
                 Some(id) => {
                     if live.worked.get(&path) != Some(&id) {
                         return Err(format!(
                             "subagent {id} did not work on {at} in this run of nth; leave task_id out to start a fresh one"
                         ));
                     }
-                    match shared.subagents.describe(id) {
+                    match subagents.describe(id) {
                         None => {
                             return Err(format!(
                                 "subagent {id} has ended; leave task_id out to start a fresh one"
@@ -189,48 +180,41 @@ impl Tool for WorkAssign {
                         }
                         Some(_) => {}
                     }
-                    if shared.subagents.is_running(id) || shared.subagents.queued(id) > 0 {
+                    if subagents.is_running(id) || subagents.queued(id) > 0 {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
-                    if planning && shared.subagents.writes(id) {
-                        return Err(format!(
-                            "subagent {id} can change files, which is not allowed while planning; leave task_id out to start a read-only one"
-                        ));
-                    }
-                    id
+                    shared.spawner.read_only(id, planning)?;
+                    (id, None)
                 }
                 None => {
                     let cell = Arc::new(OnceLock::new());
-                    let mut tools = tools_for(&shared.tools, agent, &ctx.writable);
-                    tools.push(Box::new(WorkTodo::new(cell.clone())));
-                    let session = child_session(agent, ctx, shared.limits.max_steps);
-                    let id = shared.subagents.spawn(
-                        agent,
-                        &format!("work {at}"),
-                        session,
-                        shared.provider.clone(),
-                        tools,
-                    );
-                    // Set before the subagent's first prompt is sent, so
-                    // its tool never finds it empty.
-                    let _ = cell.set(Assignment {
-                        files: shared.files.clone(),
-                        store: store.clone(),
-                        at: at.clone(),
-                        task: id,
-                        agent: agent.name.clone(),
-                        inbox: ctx.inbox.clone(),
-                        closed: shared.subagents.closed(id).unwrap_or_default(),
-                    });
-                    id
+                    let todo: Box<dyn Tool> = Box::new(WorkTodo::new(cell.clone()));
+                    let id = shared
+                        .spawner
+                        .spawn(agent, &format!("work {at}"), ctx, vec![todo]);
+                    (id, Some(cell))
                 }
             };
+            let assignment = Assignment {
+                files: shared.files.clone(),
+                store: store.clone(),
+                at: at.clone(),
+                task: id,
+                agent: agent.name.clone(),
+                inbox: ctx.inbox.clone(),
+                closed: subagents.closed(id).unwrap_or_default(),
+            };
+            // Set before the subagent's first prompt is sent, so its tool
+            // never finds it empty.
+            if let Some(todo) = todo {
+                let _ = todo.set(assignment.clone());
+            }
             let before = item.clone();
             // `0` is no limit, as in the config.
             let timeout = match args.timeout_secs {
                 Some(0) => None,
                 Some(secs) => Some(Duration::from_secs(secs)),
-                None => shared.limits.timeout,
+                None => shared.spawner.limits().timeout,
             };
             let limit = match timeout {
                 Some(timeout) => format!(
@@ -267,17 +251,9 @@ impl Tool for WorkAssign {
                 false => (None, None),
             };
             let assigned = Assigned {
-                assignment: Assignment {
-                    files: shared.files.clone(),
-                    store: store.clone(),
-                    at: at.clone(),
-                    task: id,
-                    agent: agent.name.clone(),
-                    inbox: ctx.inbox.clone(),
-                    closed: shared.subagents.closed(id).unwrap_or_default(),
-                },
+                assignment,
                 // Headless nobody wakes for a stall.
-                stall: shared.limits.stall.filter(|_| !headless),
+                stall: shared.stall.filter(|_| !headless),
                 reply,
             };
             let cancel = CancellationToken::new();
@@ -293,7 +269,7 @@ impl Tool for WorkAssign {
             // the actor, which sees the file only once it is written.
             live.running.insert(path.clone(), id);
             live.worked.insert(path.clone(), id);
-            if !shared.subagents.prompt(id, job) {
+            if !subagents.prompt(id, job) {
                 live.running.remove(&path);
                 return Err(format!(
                     "subagent {id} has ended; leave task_id out to start a fresh one"
@@ -301,7 +277,7 @@ impl Tool for WorkAssign {
             }
             if let Err(e) = store.write(&running).await {
                 live.running.remove(&path);
-                shared.subagents.cancel(id);
+                subagents.cancel(id);
                 return Err(format!("writing {at} failed: {e}"));
             }
             let Some(waiting) = waiting else {

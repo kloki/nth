@@ -5,7 +5,6 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_context::Agent;
 use nth_protocol::{
     Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec, Writable,
 };
@@ -14,7 +13,10 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Done, Job, PLANNING, SubagentId, Subagents, child_session};
+use super::{
+    Done, Job, PLANNING, SubagentId, Subagents,
+    spawn::{Spawner, find_agent},
+};
 use crate::{Error, work::ORCHESTRATOR_TOOLS};
 
 /// Tools a subagent never gets: another task would nest without end, the
@@ -38,11 +40,7 @@ pub(super) const WITHHELD: [&str; 13] = [
 ];
 
 pub struct Task {
-    provider: Arc<dyn Provider>,
-    /// Every tool the model has; each subagent gets its share of them.
-    tools: Vec<Arc<dyn Tool>>,
-    subagents: Subagents,
-    limits: Limits,
+    spawner: Spawner,
 }
 
 /// What one task may spend before it fails: a child works on one
@@ -92,23 +90,8 @@ impl Task {
         limits: Limits,
     ) -> Self {
         Self {
-            provider,
-            tools,
-            subagents,
-            limits,
+            spawner: Spawner::new(provider, tools, subagents, limits),
         }
-    }
-
-    /// The tools `agent` gets.
-    fn tools_for(&self, agent: &Agent, writable: &Writable) -> Vec<Box<dyn Tool>> {
-        super::tools_for(&self.tools, agent, writable)
-    }
-
-    fn spawn(&self, agent: &Agent, description: &str, ctx: &ToolContext) -> SubagentId {
-        let session = child_session(agent, ctx, self.limits.max_steps);
-        let tools = self.tools_for(agent, &ctx.writable);
-        self.subagents
-            .spawn(agent, description, session, self.provider.clone(), tools)
     }
 }
 
@@ -140,20 +123,14 @@ impl Tool for Task {
             if ctx.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());
             }
-            let agents = &ctx.context.agents;
-            let Some(agent) = agents.get(&args.subagent_type) else {
-                let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-                return Err(format!(
-                    "Agent \"{}\" not found. Available agents: {}",
-                    args.subagent_type,
-                    names.join(", ")
-                ));
-            };
+            let agent = find_agent(ctx, &args.subagent_type)?;
+            let subagents = self.spawner.subagents();
+            let limits = self.spawner.limits();
             let planning = matches!(ctx.writable, Writable::Only(_));
             let (id, started) = match &args.task_id {
                 Some(id) => {
                     let id = id.parse()?;
-                    match self.subagents.describe(id) {
+                    match subagents.describe(id) {
                         None => {
                             return Err(format!(
                                 "no subagent with task_id {id}; leave task_id out to start a new one"
@@ -167,15 +144,14 @@ impl Tool for Task {
                         }
                         Some(_) => {}
                     }
-                    // Its tools were picked when it started, outside plan mode.
-                    if planning && self.subagents.writes(id) {
-                        return Err(format!(
-                            "subagent {id} can change files, which is not allowed while planning; leave task_id out to start a read-only one"
-                        ));
-                    }
+                    self.spawner.read_only(id, planning)?;
                     (id, false)
                 }
-                None => (self.spawn(agent, &args.description, ctx), true),
+                None => (
+                    self.spawner
+                        .spawn(agent, &args.description, ctx, Vec::new()),
+                    true,
+                ),
             };
             let text = match planning {
                 true => format!("{}\n\n{PLANNING}", args.prompt),
@@ -189,9 +165,9 @@ impl Tool for Task {
                     text,
                     cancel,
                     done: Done::Notify(ctx.inbox.clone()),
-                    timeout: self.limits.timeout,
+                    timeout: limits.timeout,
                 };
-                if !self.subagents.prompt(id, job) {
+                if !subagents.prompt(id, job) {
                     return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
                 }
                 let verb = match started {
@@ -211,9 +187,9 @@ impl Tool for Task {
                 text,
                 cancel,
                 done: Done::Reply(reply),
-                timeout: self.limits.timeout,
+                timeout: limits.timeout,
             };
-            if !self.subagents.prompt(id, job) {
+            if !subagents.prompt(id, job) {
                 return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
             }
             match waiting.await {
@@ -242,10 +218,7 @@ mod tests {
     use super::*;
     use crate::{
         agent_loop::tests::Scripted,
-        subagent::{
-            SubagentEvent,
-            tests::{Stalled, says},
-        },
+        subagent::{SubagentEvent, tests::says},
     };
 
     /// Ten steps and no clock, as the tests here need.
@@ -341,16 +314,20 @@ mod tests {
         let explore = agents.agents.get("explore").unwrap();
 
         assert_eq!(
-            names(&task.tools_for(general, &Writable::Any)),
+            names(&task.spawner.tools_for(general, &Writable::Any)),
             ["read", "write", "edit", "apply_patch", "grep"]
         );
         assert_eq!(
-            names(&task.tools_for(general, &Writable::Only("/repo/.nth/plans/x.md".into()))),
+            names(
+                &task
+                    .spawner
+                    .tools_for(general, &Writable::Only("/repo/.nth/plans/x.md".into()))
+            ),
             ["read", "grep"],
             "a planning parent's child may not write"
         );
         assert_eq!(
-            names(&task.tools_for(explore, &Writable::Any)),
+            names(&task.spawner.tools_for(explore, &Writable::Any)),
             ["read", "grep"]
         );
     }
@@ -404,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn headless_a_task_past_its_budget_fails_and_says_so() {
         let task = Task::new(
-            Arc::new(Stalled),
+            Arc::new(Scripted::stalled()),
             Vec::new(),
             Subagents::default(),
             Limits {

@@ -30,7 +30,7 @@ pub struct Config {
     /// (the buffer kept below it; 0 sizes it to the model) and `preserve`
     /// (tokens kept verbatim; 0 sizes it to the window).
     #[serde(default)]
-    pub context: nth_session::Compaction,
+    pub context: nth_protocol::Compaction,
     pub task: TaskConfig,
     pub work: WorkConfig,
     pub mode: ModeConfig,
@@ -159,8 +159,10 @@ impl WorkConfig {
     pub fn limits(&self) -> nth_session::work::Limits {
         let secs = |secs: u64| (secs > 0).then(|| Duration::from_secs(secs));
         nth_session::work::Limits {
-            max_steps: self.max_steps,
-            timeout: secs(self.timeout_secs),
+            subagent: nth_session::subagent::Limits {
+                max_steps: self.max_steps,
+                timeout: secs(self.timeout_secs),
+            },
             stall: secs(self.stall_secs),
         }
     }

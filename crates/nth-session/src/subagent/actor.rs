@@ -10,7 +10,7 @@ use nth_protocol::{Event, FrontEnd, Message, Provider, TaskNotice, TaskOutcome, 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId};
+use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId, task_outcome};
 use crate::{Error, Session, Spend};
 
 pub(super) struct Actor {
@@ -171,22 +171,12 @@ pub(super) async fn run(actor: Actor) {
                 }));
             }
         }
-        let outcome = match &result {
-            Ok(()) => TaskOutcome::Completed(answer(&session)),
-            Err(Error::Interrupted) => TaskOutcome::Interrupted,
-            Err(e) => TaskOutcome::Failed(e.to_string()),
-        };
+        let turn = result.map(|()| answer(&session));
+        let outcome = task_outcome(&turn);
         // Before the turn counts as ended, so whoever looks for the answer
         // once it has, on `TurnEnded` or when nothing runs any more, finds
         // it.
-        settle(
-            told(done, &closed),
-            &agent,
-            &description,
-            id,
-            result.map(|()| answer(&session)),
-        )
-        .await;
+        settle(told(done, &closed), &agent, &description, id, turn).await;
         {
             let mut state = lock(&shared);
             state.running = None;
@@ -267,23 +257,18 @@ fn told(done: Done, closed: &CancellationToken) -> Done {
 }
 
 /// Tells whoever waits on the job how it ended.
-async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Turn) {
+async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Answer) {
     match done {
         // A dropped receiver is a parent that stopped waiting, which is fine.
         Done::Reply(reply) => {
             let _ = reply.send(turn);
         }
         Done::Notify(inbox) => {
-            let outcome = match turn {
-                Ok(text) => TaskOutcome::Completed(text),
-                Err(Error::Interrupted) => TaskOutcome::Interrupted,
-                Err(e) => TaskOutcome::Failed(e.to_string()),
-            };
             inbox.post_task(TaskNotice {
                 id,
                 agent: agent.to_string(),
                 description: description.to_string(),
-                outcome,
+                outcome: task_outcome(&turn),
             });
         }
         Done::Work(assigned) => assigned.settle(turn).await,

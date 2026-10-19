@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nth_protocol::{Mode, Writable};
 use uuid::Uuid;
 
 const PLAN_MODE: &str = include_str!("plan_mode.md");
@@ -88,6 +89,37 @@ pub fn build_switch_reminder(plan: &Path, exists: bool) -> String {
     }
 }
 
+/// What the model needs to hear about the mode before a turn in `mode`
+/// after one in `last`: that plan mode starts, or that it ended. Nothing
+/// while the mode stays.
+pub(crate) async fn reminder(
+    mode: Mode,
+    last: Option<Mode>,
+    plan: &Path,
+    approver: Approver,
+) -> Option<String> {
+    let entering = mode == Mode::Plan && last != Some(Mode::Plan);
+    let leaving = mode == Mode::Act && last == Some(Mode::Plan);
+    if !entering && !leaving {
+        return None;
+    }
+    // A check that fails reads as no plan yet, which only changes the
+    // wording of the reminder.
+    let exists = tokio::fs::try_exists(plan).await.unwrap_or(false);
+    Some(match mode {
+        Mode::Plan => plan_mode_reminder(plan, exists, approver),
+        Mode::Act => build_switch_reminder(plan, exists),
+    })
+}
+
+/// What tools may write in `mode`: in plan mode only the plan file.
+pub(crate) fn writable(mode: Mode, plan: PathBuf) -> Writable {
+    match mode {
+        Mode::Plan => Writable::Only(plan),
+        Mode::Act => Writable::Any,
+    }
+}
+
 /// What `/approve` tells the model, as opencode's plan exit does.
 pub fn approved(plan: &Path) -> String {
     APPROVED
@@ -96,75 +128,4 @@ pub fn approved(plan: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plan_lives_under_dot_nth() {
-        let id = Uuid::nil();
-        assert_eq!(
-            plan_path("/repo".as_ref(), &id),
-            PathBuf::from(format!("/repo/.nth/plans/{id}.md"))
-        );
-    }
-
-    #[test]
-    fn plan_mode_says_where_the_plan_goes_and_who_approves() {
-        let plan = Path::new("/repo/.nth/plans/1.md");
-
-        let fresh = plan_mode_reminder(plan, false, Approver::User);
-        assert!(fresh.starts_with("<system-reminder>\nPlan mode is active."));
-        assert!(fresh.contains(
-            "No plan file exists yet. You should create your plan at /repo/.nth/plans/1.md using the write tool."
-        ));
-        assert!(fresh.contains("/approve"));
-        // The guidance nth adds on top of opencode's text.
-        assert!(fresh.contains("Always plan to work in a worktree"));
-        assert!(fresh.contains("enter_worktree"));
-        assert!(fresh.contains("the `work-plan` skill"));
-        assert!(fresh.contains("work plan in the plan file as a tree"));
-        assert!(fresh.contains("open a pull request with `gh` on GitHub or `tea` on Forgejo"));
-        assert!(!fresh.contains('{'), "every placeholder filled");
-
-        let again = plan_mode_reminder(plan, true, Approver::Nobody);
-        assert!(again.contains("A plan file already exists at /repo/.nth/plans/1.md."));
-        assert!(!again.contains("/approve"));
-    }
-
-    #[test]
-    fn approval_names_the_plan() {
-        assert_eq!(
-            approved(Path::new("/p.md")),
-            "The plan at /p.md has been approved, you can now edit files. Execute the plan"
-        );
-    }
-
-    #[test]
-    fn build_switch_points_at_an_existing_plan() {
-        let plan = Path::new("/p.md");
-        assert!(build_switch_reminder(plan, false).ends_with("as needed.\n</system-reminder>"));
-        assert!(build_switch_reminder(plan, true).ends_with(
-            "A plan file exists at /p.md. You should execute on the plan defined within it"
-        ));
-    }
-
-    #[tokio::test]
-    async fn ensure_dir_writes_a_gitignore_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        ensure_dir(dir.path()).await.expect("creates .nth");
-
-        let gitignore = dir.path().join(".nth/.gitignore");
-        assert_eq!(
-            std::fs::read_to_string(&gitignore).expect("reads"),
-            GITIGNORE
-        );
-
-        // The user's own rules win over nth's.
-        std::fs::write(&gitignore, "plans/\ncustom\n").expect("writes");
-        ensure_dir(dir.path()).await.expect("leaves it alone");
-        assert_eq!(
-            std::fs::read_to_string(&gitignore).expect("reads"),
-            "plans/\ncustom\n"
-        );
-    }
-}
+mod tests;
