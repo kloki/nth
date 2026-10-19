@@ -8,12 +8,13 @@ mod system_prompt;
 pub mod usage;
 pub mod work;
 
-pub use agent_loop::{DEFAULT_MAX_STEPS, Error, Route, Turn};
-pub use nth_protocol::Compaction;
+pub use agent_loop::{DEFAULT_MAX_STEPS, Error};
+pub(crate) use agent_loop::{Route, Turn};
+pub(crate) use nth_protocol::Compaction;
 pub use session::{SHELL_PROMPT, Session};
-pub use store::{Spending, Store, Summary};
+pub use store::{Store, Summary};
 pub use subagent::{SubagentEvent, SubagentId, Subagents, Task, TaskStop};
-pub use system_prompt::system_prompt;
+pub(crate) use system_prompt::system_prompt;
 pub use tokio_util::sync::CancellationToken;
 pub use usage::{Ledger, Price, Spend, ToolUse, Total};
 pub use work::Work;

@@ -463,7 +463,7 @@ impl Session {
 
     /// Runs one compaction outside a turn: everything the requests would
     /// not keep verbatim becomes a summary they start from. The `/compact`
-    /// command and the loop's overflow recovery share [`Turn::compact`];
+    /// command and the loop's overflow recovery share `Turn::compact`;
     /// this is the manual entry.
     pub async fn compact(
         &mut self,
