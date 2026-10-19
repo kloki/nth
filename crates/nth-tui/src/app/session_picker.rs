@@ -6,7 +6,7 @@ use std::sync::Arc;
 use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
-use super::{App, TabState, input::Input, spent::Spent};
+use super::{App, TabState, input::Input, usage::Spent};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
 impl App {

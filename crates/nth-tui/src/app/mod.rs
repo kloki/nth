@@ -3,12 +3,13 @@
 //! and the status bar. Row heights never depend on content, so nothing
 //! shifts while a turn runs.
 
-mod checks;
 mod completion;
 mod connect;
 mod content;
+mod diagnostics;
 mod dirs;
 mod editor;
+mod file;
 mod files;
 mod flash;
 mod git;
@@ -17,20 +18,20 @@ mod history;
 mod input;
 mod job;
 mod keys;
-mod llms;
+mod llm_picker;
 mod mode;
 mod monitor;
 mod mouse;
 mod notify;
 mod plan;
 mod profiles;
-mod resume;
-mod shown;
-mod spent;
+mod question;
+mod session_picker;
 mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
 mod turn;
+mod usage;
 mod work;
 
 use std::{
@@ -41,7 +42,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use checks::lsp_changed;
 use completion::Completion;
 pub(crate) use content::{Content, Panes, Tab, TabState};
 use crossterm::{
@@ -49,6 +49,7 @@ use crossterm::{
     execute, queue,
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
+use diagnostics::lsp_changed;
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -73,28 +74,27 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
-use spent::Spent;
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinError,
     time::MissedTickBehavior,
 };
 use turn::{Ended, Queued};
+use usage::Spent;
 
 use crate::{
     Checkers,
     chat::Chat,
     command::Command,
-    diagnostics::{self, Diagnostics, Program},
+    diagnostics::{Diagnostics, Program},
     file::{FileId, FileRead, FileView},
     git::{GitStatus, Pr},
     header, hero,
     history::History,
-    llm_picker::{self, usage::LlmUsage},
+    llm_picker::usage::LlmUsage,
     monitor::MonitorView,
     plan::PlanView,
     prompt::{self, Prompt},
-    question, session_picker,
     settings::{self, ChatSettings, SettingsPanel},
     spinner, status,
     subagent::SubagentView,
@@ -878,9 +878,9 @@ impl App {
                     completion.draw(frame, area, at);
                 }
             }
-            Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
-            Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
-            Input::Question(panel) => question::draw(frame, input, panel),
+            Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
+            Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
+            Input::Question(panel) => crate::question::draw(frame, input, panel),
             Input::Settings(panel) => settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
                 self.areas.login_url = crate::connect::draw(frame, input, panel)
@@ -929,7 +929,7 @@ impl App {
                 }
             }
             Tab::Diagnostics => {
-                let row = |label, llm: Llm, current, inherits| diagnostics::ModeModel {
+                let row = |label, llm: Llm, current, inherits| crate::diagnostics::ModeModel {
                     label,
                     effort: llm.effort.wire(),
                     context_window: self.context_window_of(&llm.model),
@@ -951,7 +951,7 @@ impl App {
                     false,
                     self.mode_llms.clerk.is_none().then_some("subagent"),
                 );
-                let facts = diagnostics::Facts {
+                let facts = crate::diagnostics::Facts {
                     models: [plan, act, subagent, clerk],
                     llms: self.llms.as_ref().map(|l| l.models.len()),
                     failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
@@ -1129,41 +1129,6 @@ impl App {
                 Tab::Usage => self.load_tools(),
                 _ => {}
             }
-        }
-    }
-
-    /// Re-reads every saved session's tool totals, for the usage tab's
-    /// all-time section; the store's absence leaves what is shown.
-    fn load_tools(&mut self) {
-        let Some(store) = self.store.clone() else {
-            return;
-        };
-        if self.tools_lookup.is_running() {
-            return;
-        }
-        self.tools_lookup.start(|_| {
-            tokio::spawn(async move {
-                let spending = store.spending().await?;
-                let spends: Vec<&nth_session::Spend> = spending
-                    .iter()
-                    .flat_map(|session| session.usage.spends())
-                    .collect();
-                let mut tools: Vec<(String, ToolUse)> = nth_session::usage::tools(spends)
-                    .into_iter()
-                    .map(|(name, use_of)| (name.to_string(), use_of))
-                    .collect();
-                tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls).then_with(|| a.0.cmp(&b.0)));
-                Ok(tools)
-            })
-        });
-    }
-
-    /// The tool totals arrived; a failure keeps what was already shown and
-    /// says why.
-    fn tools_found(&mut self, tools: Result<Vec<(String, ToolUse)>, store::Error>) {
-        match tools {
-            Ok(tools) => self.all_time_tools = tools,
-            Err(e) => self.hint = Some(format!("tool usage: {e}").into()),
         }
     }
 }
