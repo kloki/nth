@@ -372,7 +372,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Approve);
-        for _ in 0..14 {
+        for _ in 0..15 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -416,6 +416,7 @@ mod tests {
                 "copy-id",
                 "diagnostics",
                 "exit",
+                "memory",
                 "models",
                 "plan",
                 "resume",

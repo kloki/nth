@@ -4,7 +4,7 @@ Plan mode is active. The user indicated that they do not want you to execute yet
 ## Plan File Info:
 
 {plan_info}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions. Do NOT use sed, tee, echo, cat, or ANY other bash command to manipulate files - bash commands may ONLY read/inspect.
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions. Do NOT use sed, tee, echo, cat, or ANY other bash command to manipulate files - bash commands may ONLY read/inspect.{memory}
 
 ## Plan Workflow
 

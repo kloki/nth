@@ -7,6 +7,7 @@ mod config;
 mod connect;
 mod formatters;
 mod lsp;
+mod memory;
 mod models;
 mod notify;
 mod run;
@@ -120,6 +121,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List what the model saved in the project's memory, .nth/memory/
+    Memory {
+        /// Print JSON lines, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
     /// Sign in to ChatGPT, so its models run on your subscription
     Connect {
         /// Only say whether ChatGPT is connected
@@ -194,6 +201,7 @@ async fn dispatch(
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
         Command::Work { session, json } => work::run(session, json).await,
+        Command::Memory { json } => memory::run(json, &config()?),
         Command::Session { command } => session::run(command).await,
         Command::Connect {
             status,

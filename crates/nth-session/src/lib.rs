@@ -1,5 +1,6 @@
 mod agent_loop;
 mod compaction;
+mod memory;
 pub mod plan;
 mod session;
 pub mod store;

@@ -18,7 +18,7 @@ fn plan_lives_under_dot_nth() {
 fn plan_mode_says_where_the_plan_goes_and_who_approves() {
     let plan = Path::new("/repo/.nth/plans/1.md");
 
-    let fresh = plan_mode_reminder(plan, false, Approver::User);
+    let fresh = plan_mode_reminder(plan, false, Approver::User, None);
     assert!(fresh.starts_with("<system-reminder>\nPlan mode is active."));
     assert!(fresh.contains(
         "No plan file exists yet. You should create your plan at /repo/.nth/plans/1.md using the write tool."
@@ -32,9 +32,27 @@ fn plan_mode_says_where_the_plan_goes_and_who_approves() {
     assert!(fresh.contains("open a pull request with `gh` on GitHub or `tea` on Forgejo"));
     assert!(!fresh.contains('{'), "every placeholder filled");
 
-    let again = plan_mode_reminder(plan, true, Approver::Nobody);
+    assert!(!fresh.contains("memory folder"));
+
+    let again = plan_mode_reminder(plan, true, Approver::Nobody, None);
     assert!(again.contains("A plan file already exists at /repo/.nth/plans/1.md."));
     assert!(!again.contains("/approve"));
+}
+
+#[test]
+fn plan_mode_lets_the_memory_be_written() {
+    let plan = Path::new("/repo/.nth/plans/1.md");
+    let memory = Path::new("/repo/.nth/memory");
+
+    let reminder = plan_mode_reminder(plan, false, Approver::User, Some(memory));
+
+    assert!(
+        reminder.contains(
+            "may ONLY read/inspect. The one other place you may write is the project's memory folder, /repo/.nth/memory:"
+        ),
+        "{reminder}"
+    );
+    assert!(!reminder.contains('{'), "every placeholder filled");
 }
 
 #[test]

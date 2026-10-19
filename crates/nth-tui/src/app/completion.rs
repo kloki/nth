@@ -183,7 +183,7 @@ mod tests {
         assert!(rows[7].starts_with("  /diagnostics "));
         assert!(rows[8].starts_with("  /exit "));
         assert!(
-            rows[9].starts_with("  /models "),
+            rows[9].starts_with("  /memory "),
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));

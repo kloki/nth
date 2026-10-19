@@ -102,6 +102,13 @@ timeout_secs = 600
 # running (0 never reports one).
 stall_secs = 120
 
+[memory]
+# The model keeps what it learns about the project and about you in
+# .nth/memory/ in the main checkout, one file per fact, ignored by git. Its
+# index, MEMORY.md, goes into every session's system prompt. false turns it
+# off: no index and no instructions to save.
+enabled = true
+
 [mode]
 # The mode a new chat starts in: "plan" or "act". Tab switches between them.
 # `nth run` starts in act; `nth run --mode plan` plans instead.

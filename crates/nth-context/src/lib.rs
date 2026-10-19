@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod frontmatter;
 pub mod instructions;
+pub mod memory;
 pub mod skills;
 
 use std::{
@@ -15,6 +16,7 @@ use std::{
 
 pub use agents::{Agent, Agents};
 pub use instructions::Instruction;
+pub use memory::Memory;
 pub use skills::{Skill, Skills};
 
 /// Where the global files live. Read from the environment once, and passed
@@ -31,6 +33,8 @@ pub struct Paths {
     /// Extra skill folders from the config. Relative ones are resolved
     /// against the working directory.
     pub skill_paths: Vec<PathBuf>,
+    /// Whether the project's memory is read, from the config's `[memory]`.
+    pub memory: bool,
 }
 
 impl Paths {
@@ -51,6 +55,7 @@ impl Paths {
             config_home,
             data_home,
             skill_paths: Vec::new(),
+            memory: false,
         }
     }
 
@@ -92,6 +97,8 @@ pub struct Context {
     pub absent_instructions: Vec<PathBuf>,
     pub skills: Skills,
     pub agents: Agents,
+    /// The project's memory, when `Paths::memory` asks for it.
+    pub memory: Option<Memory>,
     /// Files that were found but could not be used, worth telling the user.
     pub warnings: Vec<String>,
 }
@@ -107,6 +114,9 @@ impl Context {
         context.absent_instructions = found.absent;
         context.skills = skills::discover(cwd, paths, &mut context.warnings);
         context.agents = agents::discover(cwd, paths, &mut context.warnings);
+        if paths.memory {
+            context.memory = Some(memory::discover(cwd, &mut context.warnings));
+        }
         context
     }
 
@@ -131,6 +141,17 @@ pub fn project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
+}
+
+/// The main checkout of the linked worktree at `root`, whose `.git` is a
+/// file naming `<main>/.git/worktrees/<name>`.
+pub(crate) fn main_checkout(root: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(root.join(".git")).ok()?;
+    let gitdir = instructions::normalize(&root.join(link.strip_prefix("gitdir:")?.trim()));
+    let worktrees = gitdir.parent()?;
+    let git = worktrees.parent()?;
+    let linked = worktrees.file_name()? == "worktrees" && git.file_name()? == ".git";
+    linked.then(|| git.parent().map(Path::to_path_buf))?
 }
 
 /// A program by name on `PATH`, or as given when it is a path already.
