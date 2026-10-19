@@ -356,7 +356,7 @@ impl Config {
             .skills
             .paths
             .iter()
-            .map(|path| expand_home(path, paths.home.as_deref()))
+            .map(|path| skill_path(path, paths.home.as_deref()))
             .collect();
         paths
     }
@@ -458,14 +458,11 @@ fn write_template(path: &Path, force: bool) -> Result<()> {
     std::fs::write(path, TEMPLATE).with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// `~/x` is `x` in the home directory. Everything else, relative paths
-/// included, is left for the caller to resolve.
-fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
-    match (path.strip_prefix("~/"), home) {
-        (Some(rest), Some(home)) => home.join(rest),
-        _ if path == "~" => home.map_or_else(|| PathBuf::from(path), Path::to_path_buf),
-        _ => PathBuf::from(path),
-    }
+/// A configured skill folder: `~/x` is `x` in the home directory.
+/// Everything else, relative paths included, is left for the caller to
+/// resolve.
+fn skill_path(path: &str, home: Option<&Path>) -> PathBuf {
+    nth_context::expand_home(path, home).unwrap_or_else(|| PathBuf::from(path))
 }
 
 #[cfg(test)]
@@ -1019,7 +1016,7 @@ mod tests {
             .skills
             .paths
             .iter()
-            .map(|p| expand_home(p, Some(home)))
+            .map(|p| skill_path(p, Some(home)))
             .collect();
 
         assert_eq!(

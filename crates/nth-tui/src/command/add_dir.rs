@@ -21,16 +21,12 @@ pub fn complete(cwd: &Path, home: Option<&str>, arg: &str) -> Option<Popup<Strin
     Popup::new(candidates(cwd, home, arg))
 }
 
-/// `arg` as the directory it names: `~` for home, an absolute path as it
-/// is, anything else against `cwd`.
+/// `arg` as the directory it names: `~` or `~/` for home, an absolute
+/// path as it is, anything else against `cwd`.
 pub fn expand(cwd: &Path, home: Option<&str>, arg: &str) -> PathBuf {
-    if let Some(rest) = arg.strip_prefix('~')
-        && let Some(home) = home.filter(|home| !home.is_empty())
-    {
-        return match rest.strip_prefix('/') {
-            Some(rest) => Path::new(home).join(rest),
-            None => PathBuf::from(home),
-        };
+    let home = home.filter(|home| !home.is_empty()).map(Path::new);
+    if let Some(path) = nth_context::expand_home(arg, home) {
+        return path;
     }
     let path = Path::new(arg);
     if path.is_absolute() {
@@ -123,6 +119,16 @@ mod tests {
         assert_eq!(expand(cwd, None, "~"), PathBuf::from("/repo/~"));
         assert_eq!(expand(cwd, Some("/home/k"), "other"), cwd.join("other"));
         assert_eq!(expand(cwd, Some("/home/k"), "/abs"), PathBuf::from("/abs"));
+    }
+
+    #[test]
+    fn a_tilde_before_a_name_is_part_of_the_name() {
+        let cwd = Path::new("/repo");
+
+        assert_eq!(
+            expand(cwd, Some("/home/k"), "~other"),
+            PathBuf::from("/repo/~other")
+        );
     }
 
     #[test]

@@ -65,6 +65,18 @@ impl Paths {
     }
 }
 
+/// `path` in `home` when it is exactly `~` or starts with `~/`, as a shell
+/// reads it; `None` for any other path, which the caller resolves as it
+/// resolves paths. `~user` and a `~` further in are names like any other,
+/// and with no home `~` stays one too.
+pub fn expand_home(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    if path == "~" {
+        return Some(home.to_path_buf());
+    }
+    path.strip_prefix("~/").map(|rest| home.join(rest))
+}
+
 /// Everything found for one working directory.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Context {
@@ -170,6 +182,20 @@ pub fn extension_keys(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_leading_tilde_alone_or_before_a_slash_is_home() {
+        let home = Some(Path::new("/home/me"));
+        assert_eq!(expand_home("~", home), Some(PathBuf::from("/home/me")));
+        assert_eq!(
+            expand_home("~/a/b", home),
+            Some(PathBuf::from("/home/me/a/b"))
+        );
+        assert_eq!(expand_home("~user/x", home), None);
+        assert_eq!(expand_home("a/~", home), None);
+        assert_eq!(expand_home("/abs", home), None);
+        assert_eq!(expand_home("~", None), None);
+    }
 
     #[test]
     fn project_root_is_the_nearest_git_directory() {
