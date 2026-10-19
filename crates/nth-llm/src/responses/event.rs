@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 use super::{Error, Provider};
-use crate::sse::{self, data, excerpt};
+use crate::sse::{data, excerpt};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
@@ -127,14 +127,16 @@ pub struct ErrorResponse {
     pub error: ErrorBody,
 }
 
-/// Turns raw response bytes into events.
-pub(super) type Parser = sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
+/// Turns raw response bytes into events, as the stream does.
+#[cfg(test)]
+pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
 
+#[cfg(test)]
 pub(super) fn parser() -> Parser {
-    sse::Parser::new(parse_line)
+    crate::sse::Parser::new(parse_line)
 }
 
-fn parse_line(line: &str) -> Result<Option<Event>, Error> {
+pub(super) fn parse_line(line: &str) -> Result<Option<Event>, Error> {
     let Some(data) = data(line) else {
         return Ok(None);
     };

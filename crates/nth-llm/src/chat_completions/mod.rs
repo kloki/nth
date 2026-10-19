@@ -5,15 +5,15 @@
 mod event;
 mod wire;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
-use futures::{Stream, StreamExt, stream::BoxStream};
+use futures::{StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{self, STREAM_IDLE_TIMEOUT, transient},
-    stream::{self, Payload},
+    http::{self, transient},
+    stream::{self, Flow, Out, Payload, Protocol},
 };
 
 pub(crate) type Error = stream::Error<Provider>;
@@ -86,7 +86,9 @@ impl Client {
             .bytes_stream()
             .map(|chunk| chunk.map_err(Error::from))
             .boxed();
-        Ok(events(bytes).map(|e| e.map_err(stream::boxed)).boxed())
+        Ok(stream::events::<State, _>(bytes)
+            .map(|e| e.map_err(stream::boxed))
+            .boxed())
     }
 }
 
@@ -123,113 +125,67 @@ pub(crate) fn takes_cache_key(provider: &str) -> bool {
     CACHE_KEY_PROVIDERS.contains(&provider)
 }
 
-struct State<S> {
-    bytes: S,
-    parser: event::Parser,
-    pending: VecDeque<Result<StreamEvent, Error>>,
-    calls: BTreeMap<usize, ToolCall>,
-    finish_reason: Option<String>,
-    finished: bool,
-}
-
 /// Text and reasoning go out as they arrive. Tool calls are assembled from
 /// their fragments and go out once the stream ends, when they are complete.
-fn events<S>(bytes: S) -> impl Stream<Item = Result<StreamEvent, Error>>
-where
-    S: Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
-{
-    let state = State {
-        bytes,
-        parser: event::parser(),
-        pending: VecDeque::new(),
-        calls: BTreeMap::new(),
-        finish_reason: None,
-        finished: false,
-    };
-    futures::stream::unfold(state, |mut s| async move {
-        loop {
-            if let Some(event) = s.pending.pop_front() {
-                return Some((event, s));
-            }
-            if s.finished {
-                return None;
-            }
-            let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, s.bytes.next()).await;
-            let (parsed, ended) = match next {
-                Ok(Some(Ok(chunk))) => (s.parser.push(&chunk), false),
-                // The reply is complete once the finish chunk arrived; what
-                // is lost with the connection after that is at most the
-                // `[DONE]` line, not worth failing the turn over.
-                Ok(Some(Err(_))) | Err(_) if s.finish_reason.is_some() => (Ok(Vec::new()), true),
-                Ok(Some(Err(e))) => (Err(e), false),
-                Err(_elapsed) => (Err(Error::Stalled), false),
-                // A remainder that does not parse is a line the connection
-                // cut short, which the end-of-stream rules below describe
-                // better than a parse error would.
-                Ok(None) => (Ok(s.parser.finish().unwrap_or_default()), true),
-            };
-            let parsed = match parsed {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    s.finished = true;
-                    return Some((Err(e), s));
-                }
-            };
-            for event in parsed {
-                match event {
-                    event::Event::Delta(delta) => s.apply(delta),
-                    event::Event::Finish(reason) => s.finish_reason = Some(reason),
-                    event::Event::Usage(usage) => {
-                        s.pending.push_back(Ok(StreamEvent::Usage(Usage {
-                            input: usage.prompt_tokens,
-                            output: usage.completion_tokens,
-                            cache_read: usage.cache_read(),
-                            // No compatible server reports a cache write.
-                            cache_write: None,
-                            reasoning: usage.reasoning(),
-                        })))
-                    }
-                    event::Event::Done => {
-                        s.done();
-                        break;
-                    }
-                }
-            }
-            if ended && !s.finished {
-                // Some servers close right after the finish chunk without
-                // `[DONE]`; without either, the connection was cut mid-reply.
-                if s.finish_reason.is_some() {
-                    s.done();
-                } else {
-                    s.finished = true;
-                    s.pending.push_back(Err(Error::Incomplete));
-                }
-            }
-        }
-    })
+#[derive(Default)]
+pub(crate) struct State {
+    calls: BTreeMap<usize, ToolCall>,
+    finish_reason: Option<String>,
 }
 
-impl<S> State<S> {
-    fn done(&mut self) {
-        self.finished = true;
+impl Protocol for State {
+    type Provider = Provider;
+    type Event = event::Event;
+
+    fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
+        event::parse_line(line)
+    }
+
+    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+        match event {
+            event::Event::Delta(delta) => self.delta(delta, out),
+            event::Event::Finish(reason) => self.finish_reason = Some(reason),
+            event::Event::Usage(usage) => out.push_back(Ok(StreamEvent::Usage(Usage {
+                input: usage.prompt_tokens,
+                output: usage.completion_tokens,
+                cache_read: usage.cache_read(),
+                // No compatible server reports a cache write.
+                cache_write: None,
+                reasoning: usage.reasoning(),
+            }))),
+            event::Event::Done => {
+                self.finish(out);
+                return Flow::Done;
+            }
+        }
+        Flow::Continue
+    }
+
+    /// The reply is complete once the finish chunk arrived; what is lost
+    /// with the connection after that is at most the `[DONE]` line.
+    fn complete(&self) -> bool {
+        self.finish_reason.is_some()
+    }
+
+    fn finish(&mut self, out: &mut Out<Provider>) {
         // Tool calls cut off at the token limit have partial JSON
         // arguments and must not run.
         if self.finish_reason.as_deref() == Some("length") {
-            self.pending.push_back(Err(Error::Truncated));
+            out.push_back(Err(Error::Truncated));
             return;
         }
         let calls = std::mem::take(&mut self.calls);
-        self.pending
-            .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+        out.extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
     }
+}
 
-    fn apply(&mut self, delta: event::Delta) {
+impl State {
+    fn delta(&mut self, delta: event::Delta, out: &mut Out<Provider>) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
-            self.pending
-                .push_back(Ok(StreamEvent::ReasoningDelta(text)));
+            out.push_back(Ok(StreamEvent::ReasoningDelta(text)));
         }
         if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
-            self.pending.push_back(Ok(StreamEvent::TextDelta(text)));
+            out.push_back(Ok(StreamEvent::TextDelta(text)));
         }
         for part in delta.tool_calls.into_iter().flatten() {
             let call = self.calls.entry(part.index).or_insert_with(|| ToolCall {
@@ -263,6 +219,13 @@ mod tests {
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
+    }
+
+    fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
+    {
+        stream::events::<State, S>(bytes)
     }
 
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");

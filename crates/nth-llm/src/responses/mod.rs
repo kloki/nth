@@ -4,15 +4,15 @@
 mod event;
 mod wire;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
-use futures::{Stream, StreamExt, stream::BoxStream};
+use futures::{StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{self, STREAM_IDLE_TIMEOUT},
-    stream::{self, Payload},
+    http,
+    stream::{self, Flow, Out, Payload, Protocol},
 };
 
 pub(crate) type Error = stream::Error<Provider>;
@@ -83,90 +83,43 @@ impl Client {
             .bytes_stream()
             .map(|chunk| chunk.map_err(Error::from))
             .boxed();
-        Ok(events(bytes).map(|e| e.map_err(BoxError::from)).boxed())
+        Ok(stream::events::<State, _>(bytes)
+            .map(|e| e.map_err(stream::boxed))
+            .boxed())
     }
-}
-
-struct State<S> {
-    bytes: S,
-    parser: event::Parser,
-    pending: VecDeque<Result<StreamEvent, Error>>,
-    /// Tool calls by the index of their output item.
-    calls: BTreeMap<usize, ToolCall>,
-    finished: bool,
 }
 
 /// Text and reasoning go out as they arrive. Tool calls go out once the
 /// response is complete, so a response that ends badly runs none.
-fn events<S>(bytes: S) -> impl Stream<Item = Result<StreamEvent, Error>>
-where
-    S: Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
-{
-    let state = State {
-        bytes,
-        parser: event::parser(),
-        pending: VecDeque::new(),
-        calls: BTreeMap::new(),
-        finished: false,
-    };
-    futures::stream::unfold(state, |mut s| async move {
-        loop {
-            if let Some(event) = s.pending.pop_front() {
-                return Some((event, s));
-            }
-            if s.finished {
-                return None;
-            }
-            let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, s.bytes.next()).await;
-            // Unlike the other two protocols, nothing after the end is
-            // tolerated: `response.completed` is the last event and ends
-            // the stream at once, so there is no window for the connection
-            // to fail in after the reply is complete.
-            let (parsed, ended) = match next {
-                Ok(Some(Ok(chunk))) => (s.parser.push(&chunk), false),
-                Ok(Some(Err(e))) => (Err(e), false),
-                Err(_elapsed) => (Err(Error::Stalled), false),
-                // A remainder that does not parse is a line the connection
-                // cut short, which `Incomplete` describes better than a
-                // parse error would.
-                Ok(None) => (Ok(s.parser.finish().unwrap_or_default()), true),
-            };
-            let parsed = match parsed {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    s.finished = true;
-                    return Some((Err(e), s));
-                }
-            };
-            for event in parsed {
-                s.apply(event);
-                if s.finished {
-                    break;
-                }
-            }
-            // The response ends with its own event, the last the server
-            // sends; without it, the connection was cut mid-reply.
-            if ended && !s.finished {
-                s.finished = true;
-                s.pending.push_back(Err(Error::Incomplete));
-            }
-        }
-    })
+///
+/// Unlike the other two protocols, nothing after the end is tolerated, so
+/// it keeps `complete`'s default: `response.completed` is the last event
+/// and ends the stream at once, so there is no window for the connection
+/// to fail in after the reply is complete.
+#[derive(Default)]
+pub(crate) struct State {
+    /// Tool calls by the index of their output item.
+    calls: BTreeMap<usize, ToolCall>,
 }
 
-impl<S> State<S> {
-    fn apply(&mut self, event: event::Event) {
+impl Protocol for State {
+    type Provider = Provider;
+    type Event = event::Event;
+
+    fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
+        Ok(event::parse_line(line)?.into_iter().collect())
+    }
+
+    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
         match event {
             event::Event::TextDelta { delta } if !delta.is_empty() => {
-                self.pending.push_back(Ok(StreamEvent::TextDelta(delta)));
+                out.push_back(Ok(StreamEvent::TextDelta(delta)));
             }
             event::Event::ReasoningDelta { delta } if !delta.is_empty() => {
-                self.pending
-                    .push_back(Ok(StreamEvent::ReasoningDelta(delta)));
+                out.push_back(Ok(StreamEvent::ReasoningDelta(delta)));
             }
             event::Event::SummaryPart { summary_index } if summary_index > 0 => {
-                self.pending
-                    .push_back(Ok(StreamEvent::ReasoningDelta("\n\n".into())));
+                out.push_back(Ok(StreamEvent::ReasoningDelta("\n\n".into())));
             }
             event::Event::ItemDone {
                 output_index,
@@ -191,42 +144,42 @@ impl<S> State<S> {
                 );
             }
             event::Event::Completed { response } => {
-                self.usage(&response);
-                self.finished = true;
+                usage(&response, out);
                 let calls = std::mem::take(&mut self.calls);
-                self.pending
-                    .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+                out.extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+                return Flow::Done;
             }
             // Tool calls of a response stopped early may be partial, so
             // none run.
             event::Event::Incomplete { response } => {
-                self.usage(&response);
-                self.finished = true;
+                usage(&response, out);
                 let reason = response.incomplete_details.and_then(|d| d.reason);
-                self.pending.push_back(Err(match reason.as_deref() {
+                out.push_back(Err(match reason.as_deref() {
                     Some("max_output_tokens") => Error::Truncated,
                     _ => Error::Provider(Provider {
                         kind: reason.unwrap_or_default(),
                         message: "response stopped early".into(),
                     }),
                 }));
+                return Flow::Done;
             }
             _ => {}
         }
+        Flow::Continue
     }
+}
 
-    fn usage(&mut self, response: &event::Response) {
-        if let Some(usage) = response.usage {
-            self.pending.push_back(Ok(StreamEvent::Usage(Usage {
-                input: usage.input_tokens,
-                output: usage.output_tokens,
-                cache_read: usage.input_tokens_details.and_then(|d| d.cached_tokens),
-                cache_write: usage
-                    .input_tokens_details
-                    .and_then(|d| d.cache_write_tokens),
-                reasoning: usage.output_tokens_details.and_then(|d| d.reasoning_tokens),
-            })));
-        }
+fn usage(response: &event::Response, out: &mut Out<Provider>) {
+    if let Some(usage) = response.usage {
+        out.push_back(Ok(StreamEvent::Usage(Usage {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+            cache_read: usage.input_tokens_details.and_then(|d| d.cached_tokens),
+            cache_write: usage
+                .input_tokens_details
+                .and_then(|d| d.cache_write_tokens),
+            reasoning: usage.output_tokens_details.and_then(|d| d.reasoning_tokens),
+        })));
     }
 }
 
@@ -241,6 +194,13 @@ mod tests {
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
+    }
+
+    fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
+    {
+        stream::events::<State, S>(bytes)
     }
 
     /// Recorded from OpenCode Zen's gpt-5.4-nano at low effort, shortened:
