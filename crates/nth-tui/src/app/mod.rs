@@ -89,7 +89,7 @@ use crate::{
     chat::Chat,
     command::Command,
     diagnostics::{Diagnostics, Program},
-    file::{FileId, FileRead, FileView},
+    file::FileRead,
     git::{GitStatus, Pr},
     header, hero,
     history::History,
@@ -298,13 +298,7 @@ pub struct App {
     subagent_rx: mpsc::Receiver<SubagentEvent>,
     /// Each subagent's tab, open from its start until you close it.
     subagent_views: BTreeMap<SubagentId, SubagentView>,
-    /// Each file tab, open from when the model showed it until you close
-    /// it, and the id the next one gets.
-    file_views: BTreeMap<FileId, FileView>,
-    next_file: FileId,
-    /// Where the file tabs' watchers send what they read.
-    file_tx: mpsc::Sender<FileRead>,
-    file_rx: mpsc::Receiver<FileRead>,
+    file_tabs: file::FileTabs,
     /// The session's plan file and what the plan tab shows of it.
     plan: PlanView,
     plan_path: PathBuf,
@@ -440,7 +434,6 @@ impl App {
         let (asks_tx, asks_rx) = mpsc::channel(4);
         let (screen_tx, screen_rx) = mpsc::channel(4);
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
-        let (file_tx, file_rx) = mpsc::channel(16);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
         let monitor_root = std::env::temp_dir().join("nth");
@@ -544,10 +537,7 @@ impl App {
             subagents: Subagents::default(),
             subagent_rx,
             subagent_views: BTreeMap::new(),
-            file_views: BTreeMap::new(),
-            next_file: 0,
-            file_tx,
-            file_rx,
+            file_tabs: file::FileTabs::new(),
             plan: PlanView::default(),
             plan_path,
             plan_reading: Job::default(),
@@ -669,7 +659,7 @@ impl App {
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 Ok(()) = self.notify_errors.changed() => Step::NotifyFailed,
                 Some(show) = self.screen_rx.recv() => Step::Show(show),
-                Some(read) = self.file_rx.recv() => Step::FileRead(read),
+                Some(read) = self.file_tabs.next() => Step::FileRead(read),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
@@ -923,7 +913,7 @@ impl App {
             }
             Tab::File(id) => {
                 let place = self.file_place(id);
-                if let Some(view) = self.file_views.get_mut(&id) {
+                if let Some(view) = self.file_tabs.views.get_mut(&id) {
                     view.draw(frame, area, &place);
                     if let Some(state) = view.pager.scrollbar() {
                         draw_scrollbar(frame, area, state);

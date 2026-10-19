@@ -1,53 +1,103 @@
 //! The file tabs, wired to the `show_user` tool: one per file the model
 //! showed, following it on disk until you close it.
 
-use std::path::PathBuf;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use tokio::sync::mpsc;
 
 use super::{App, Tab};
-use crate::file::{FileId, FileView};
+use crate::file::{FileId, FileRead, FileView};
 
-impl App {
-    /// Shows the file at `path`, in the tab it has or a new one.
-    pub(super) fn show_file(&mut self, path: PathBuf) {
+/// The file tabs' views and where their watchers report.
+pub(super) struct FileTabs {
+    /// Each file tab, open from when the model showed it until you close
+    /// it, and the id the next one gets.
+    pub(super) views: BTreeMap<FileId, FileView>,
+    next: FileId,
+    /// Where the file tabs' watchers send what they read.
+    tx: mpsc::Sender<FileRead>,
+    pub(super) rx: mpsc::Receiver<FileRead>,
+}
+
+impl FileTabs {
+    pub(super) fn new() -> Self {
+        let (tx, rx) = mpsc::channel(16);
+        Self {
+            views: BTreeMap::new(),
+            next: 0,
+            tx,
+            rx,
+        }
+    }
+
+    /// The next read of any tab's watcher. Never `None`, since the sender
+    /// is kept here, so it waits while no tab is open.
+    pub(super) async fn next(&mut self) -> Option<FileRead> {
+        self.rx.recv().await
+    }
+
+    /// The tab showing `path`, opened when there is none yet.
+    fn open(&mut self, path: PathBuf) -> FileId {
         let open = self
-            .file_views
+            .views
             .iter()
             .find(|(_, view)| view.path() == path)
             .map(|(&id, _)| id);
-        let id = open.unwrap_or_else(|| {
-            let id = self.next_file;
-            self.next_file += 1;
-            let view = FileView::new(id, path, self.file_tx.clone());
-            self.file_views.insert(id, view);
+        open.unwrap_or_else(|| {
+            let id = self.next;
+            self.next += 1;
+            let view = FileView::new(id, path, self.tx.clone());
+            self.views.insert(id, view);
             id
-        });
-        self.content.open(Tab::File(id));
+        })
     }
 
-    /// A file tab's watcher read its file; one closed since is gone.
-    pub(super) fn file_read(&mut self, id: FileId, text: Option<String>) {
-        if let Some(view) = self.file_views.get_mut(&id) {
+    /// A tab's watcher read its file; one closed since is gone.
+    fn read(&mut self, id: FileId, text: Option<String>) {
+        if let Some(view) = self.views.get_mut(&id) {
             view.update(text);
         }
     }
 
-    /// Drops the views of file tabs you closed, which stops their watchers.
+    /// Drops the views of tabs no longer in `tabs`, which stops their
+    /// watchers.
+    fn keep_open(&mut self, tabs: &[Tab]) {
+        self.views.retain(|&id, _| tabs.contains(&Tab::File(id)));
+    }
+
+    /// The file as its tab names it: relative to `cwd`.
+    fn place(&self, id: FileId, cwd: &Path) -> String {
+        let Some(view) = self.views.get(&id) else {
+            return String::new();
+        };
+        let path = view.path();
+        path.strip_prefix(cwd).unwrap_or(path).display().to_string()
+    }
+}
+
+impl App {
+    /// Shows the file at `path`, in the tab it has or a new one.
+    pub(super) fn show_file(&mut self, path: PathBuf) {
+        let id = self.file_tabs.open(path);
+        self.content.open(Tab::File(id));
+    }
+
+    /// A file tab's watcher read its file.
+    pub(super) fn file_read(&mut self, id: FileId, text: Option<String>) {
+        self.file_tabs.read(id, text);
+    }
+
+    /// Drops the views of file tabs you closed.
     pub(super) fn forget_closed_files(&mut self) {
-        let tabs = self.content.tabs();
-        self.file_views
-            .retain(|&id, _| tabs.contains(&Tab::File(id)));
+        self.file_tabs.keep_open(self.content.tabs());
     }
 
     /// The file as its tab names it: relative to the working directory.
     pub(super) fn file_place(&self, id: FileId) -> String {
-        let Some(view) = self.file_views.get(&id) else {
-            return String::new();
-        };
-        let path = view.path();
-        path.strip_prefix(&self.cwd)
-            .unwrap_or(path)
-            .display()
-            .to_string()
+        self.file_tabs.place(id, &self.cwd)
     }
 }
 
@@ -60,7 +110,7 @@ mod tests {
     };
 
     async fn read(app: &mut App) {
-        let (id, text) = app.file_rx.recv().await.expect("read");
+        let (id, text) = app.file_tabs.rx.recv().await.expect("read");
         app.file_read(id, text);
     }
 
@@ -112,6 +162,6 @@ mod tests {
         app.apply(Action::CloseContent);
 
         assert_eq!(app.content.tabs(), [Tab::Chat]);
-        assert!(app.file_views.is_empty());
+        assert!(app.file_tabs.views.is_empty());
     }
 }

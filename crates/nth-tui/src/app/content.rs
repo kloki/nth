@@ -283,7 +283,8 @@ impl App {
             Tab::Plan => self.plan.label(),
             Tab::Work => self.work.label(),
             Tab::File(id) => self
-                .file_views
+                .file_tabs
+                .views
                 .get(&id)
                 .map_or_else(|| format!("file {id}"), FileView::label),
             Tab::Monitor(id) => self
@@ -450,7 +451,7 @@ impl App {
             Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
             Tab::Plan => &mut self.plan.pager,
             Tab::Work => &mut self.work.pager,
-            Tab::File(id) => &mut self.file_views.get_mut(&id)?.pager,
+            Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,
         })
     }
 }
