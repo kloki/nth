@@ -3,12 +3,13 @@
 
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use nth_notify::Event;
 use nth_protocol::{Asker, FrontEnd, Llm, Screen, SubagentLlm};
-use nth_session::{Session, plan, store};
+use nth_session::{Session, Store, Subagents, plan, store};
 use tokio::task::JoinError;
 
 use super::{App, TabState};
@@ -20,11 +21,49 @@ pub(super) struct Ended {
     session: Session,
     result: Result<(), nth_session::Error>,
     saved: Result<(), store::Error>,
-    /// Ran a command you typed after `!`, not a model turn.
-    shell: bool,
-    /// Ran `/compact`: a summary request, not a model turn; the divider
-    /// the event pushed says how it went.
-    compact: bool,
+    ran: Ran,
+}
+
+/// What a turn task ran.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Ran {
+    /// A model turn.
+    Turn,
+    /// A command you typed after `!`.
+    Shell,
+    /// `/compact`: a summary request; the divider the event pushed says
+    /// how it went.
+    Compact,
+}
+
+impl Ran {
+    /// Whether the model answered, which only a turn has it do.
+    fn answered(self) -> bool {
+        self == Ran::Turn
+    }
+}
+
+/// The tail of every turn task: subagents that finished while it ran
+/// spent on its behalf, and the session is saved however the run ended,
+/// interrupted included, since it is always valid to continue from.
+async fn ended(
+    mut session: Session,
+    result: Result<(), nth_session::Error>,
+    subagents: Subagents,
+    store: Option<Arc<Store>>,
+    ran: Ran,
+) -> Ended {
+    session.usage.extend(subagents.take_spent());
+    let saved = match &store {
+        Some(store) => store.save(&session).await,
+        None => Ok(()),
+    };
+    Ended {
+        session,
+        result,
+        saved,
+        ran,
+    }
 }
 
 /// What is sent while a turn runs. A plain prompt is not held: it steers
@@ -179,18 +218,7 @@ impl App {
                 let result = session
                     .shell(command, shell.as_ref(), &events, &token)
                     .await;
-                session.usage.extend(subagents.take_spent());
-                let saved = match &store {
-                    Some(store) => store.save(&session).await,
-                    None => Ok(()),
-                };
-                Ended {
-                    session,
-                    result,
-                    saved,
-                    shell: true,
-                    compact: false,
-                }
+                ended(session, result, subagents, store, Ran::Shell).await
             })
         });
     }
@@ -226,30 +254,13 @@ impl App {
         let events = self.events_tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
-        let front_end = FrontEnd {
-            asker: Asker::new(self.asks_tx.clone()),
-            screen: Screen::new(self.screen_tx.clone()),
-            monitors: self.monitors.clone(),
-            inbox: self.inbox.clone(),
-        };
+        let front_end = self.front_end();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let result = session
                     .compact(provider.as_ref(), &tools, &front_end, &events, &token)
                     .await;
-                // Subagents that finished while it ran spent on its behalf.
-                session.usage.extend(subagents.take_spent());
-                let saved = match &store {
-                    Some(store) => store.save(&session).await,
-                    None => Ok(()),
-                };
-                Ended {
-                    session,
-                    result,
-                    saved,
-                    shell: false,
-                    compact: true,
-                }
+                ended(session, result, subagents, store, Ran::Compact).await
             })
         });
     }
@@ -317,12 +328,7 @@ impl App {
         let events = self.events_tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
-        let front_end = FrontEnd {
-            asker: Asker::new(self.asks_tx.clone()),
-            screen: Screen::new(self.screen_tx.clone()),
-            monitors: self.monitors.clone(),
-            inbox: self.inbox.clone(),
-        };
+        let front_end = self.front_end();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let text = match skill {
@@ -345,23 +351,19 @@ impl App {
                     }
                     Err(e) => Err(e),
                 };
-                // Subagents that finished while it ran spent on its behalf.
-                session.usage.extend(subagents.take_spent());
-                // Saved however the turn ended, interrupted included: the
-                // session is always valid to continue from.
-                let saved = match &store {
-                    Some(store) => store.save(&session).await,
-                    None => Ok(()),
-                };
-                Ended {
-                    session,
-                    result,
-                    saved,
-                    shell: false,
-                    compact: false,
-                }
+                ended(session, result, subagents, store, Ran::Turn).await
             })
         });
+    }
+
+    /// The handles the session's tools reach the app through.
+    fn front_end(&self) -> FrontEnd {
+        FrontEnd {
+            asker: Asker::new(self.asks_tx.clone()),
+            screen: Screen::new(self.screen_tx.clone()),
+            monitors: self.monitors.clone(),
+            inbox: self.inbox.clone(),
+        }
     }
 
     /// The model, effort and limits the next request runs with, and what
@@ -418,8 +420,7 @@ impl App {
             session,
             result,
             saved,
-            shell,
-            compact,
+            ran,
         }: Ended,
     ) {
         self.drain_events();
@@ -447,7 +448,7 @@ impl App {
             Err(nth_session::Error::Interrupted) => transcript.interrupt(elapsed),
             // The bash row says how a command went, and the divider the
             // compaction pushed does for it; neither had the model answer.
-            Ok(()) if shell || compact => {}
+            Ok(()) if !ran.answered() => {}
             result => {
                 // The session's model ran the turn; `self.model` may have
                 // been switched since.
@@ -505,7 +506,7 @@ impl App {
             self.arm_notices();
         }
         // A command of yours is not the model answering: nothing to say.
-        self.notify_turn_ended(shell || compact, error, elapsed);
+        self.notify_turn_ended(!ran.answered(), error, elapsed);
         // The turn may have called tools; the all-time totals follow.
         if matches!(self.content.active(), super::Tab::Usage) {
             self.load_tools();
@@ -1791,8 +1792,7 @@ mod tests {
             session,
             result: Ok(()),
             saved: Ok(()),
-            shell: false,
-            compact: false,
+            ran: Ran::Turn,
         });
 
         assert_eq!(app.cwd, worktree);
