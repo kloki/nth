@@ -5,7 +5,6 @@
 //! the model what was sent while it worked `steer`.
 
 mod call;
-mod compact;
 mod doom_loop;
 mod repair;
 mod steer;
@@ -24,7 +23,7 @@ use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Tool,
     ToolContext, Usage, failed,
 };
-use stream::Stop;
+pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -96,7 +95,8 @@ pub struct Route<'a> {
 
 /// One user turn: where its requests go, what runs its tool calls, and
 /// where its messages, spend and progress land. [`Turn::run`] is the agent
-/// loop, and the helpers in this module's files are its methods.
+/// loop, and the helpers in this module's files and in compaction's
+/// `turn.rs` are its methods.
 pub struct Turn<'a> {
     pub provider: &'a dyn Provider,
     pub route: Route<'a>,
@@ -268,7 +268,7 @@ fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
     sent
 }
 
-async fn emit(events: &mpsc::Sender<Event>, event: Event) {
+pub(crate) async fn emit(events: &mpsc::Sender<Event>, event: Event) {
     // No listener is fine: the turn still completes and lands in `messages`.
     let _ = events.send(event).await;
 }

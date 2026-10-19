@@ -1,6 +1,6 @@
 //! Compaction through a whole [`Session`]: what the provider is sent, what
 //! the saved history keeps, and how a resumed session carries on. The policy
-//! itself is tested in `compaction.rs`; these go through the agent loop.
+//! itself is tested in `tests`; these go through the agent loop.
 
 use std::sync::Mutex;
 
@@ -11,15 +11,17 @@ use futures::{
 };
 use nth_context::{Context, Paths};
 use nth_protocol::{
-    ContextOverflow, FrontEnd, Listing, Llm, Message, Provider, Request, StreamEvent, Tool,
-    ToolContext, Usage,
+    AssistantMessage, BoxError, ContextOverflow, FrontEnd, Listing, Llm, Message, Provider,
+    Request, StreamEvent, Tool, ToolContext, Usage,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::*;
 use crate::{
-    Compaction, DEFAULT_MAX_STEPS, Error, Session, Store, compaction, subagent::child_session,
+    Compaction, DEFAULT_MAX_STEPS, Error, Session, Store,
+    agent_loop::tests::{Echo, Scripted, call},
+    compaction,
+    subagent::child_session,
 };
 
 fn usage(input: u64, output: u64) -> Usage {

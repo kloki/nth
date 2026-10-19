@@ -4,12 +4,10 @@
 use std::{borrow::Cow, time::Duration};
 
 use futures::{StreamExt, stream::BoxStream};
-use nth_protocol::{
-    AssistantMessage, BoxError, Event, Message, Request, StreamEvent, ToolSpec, Usage,
-};
+use nth_protocol::{AssistantMessage, BoxError, Event, Request, StreamEvent, ToolSpec, Usage};
 
 use super::{Turn, emit, max_steps_messages};
-use crate::compaction::{checkpoint, last_marker};
+use crate::compaction::effective;
 
 /// The first retry waits this long; each next one doubles it.
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
@@ -26,7 +24,7 @@ const RETRY_MAX_ATTEMPTS: u32 = 5;
 const RETRY_MAX_AFTER: Duration = Duration::from_secs(60);
 
 /// Why a step's reply did not finish.
-pub(super) enum Stop {
+pub(crate) enum Stop {
     /// The provider failed; whether a retry can help is the provider's say.
     Failed(BoxError),
     /// Cancelled; the partial reply is handed back so it can be kept.
@@ -41,7 +39,7 @@ impl Turn<'_> {
     /// wait ends the step. A failure — opening the stream or in the middle
     /// of it — retries the whole attempt, so the reply starts over and the
     /// partial one is never saved.
-    pub(super) async fn stream_step(
+    pub(crate) async fn stream_step(
         &mut self,
         last: bool,
         specs: &[ToolSpec],
@@ -128,7 +126,7 @@ impl Turn<'_> {
     /// when the provider says a retry can help; `None` when it cannot, or
     /// when its `Retry-After` is longer than `RETRY_MAX_AFTER` (the error
     /// shows right away rather than an unexplained stall).
-    pub(super) fn retry_delay(&self, error: &BoxError, attempt: u32) -> Option<Duration> {
+    pub(crate) fn retry_delay(&self, error: &BoxError, attempt: u32) -> Option<Duration> {
         self.provider
             .retry(error)
             .filter(|_| attempt <= RETRY_MAX_ATTEMPTS)
@@ -138,7 +136,7 @@ impl Turn<'_> {
 
     /// Announces a retry and waits out its delay; `false` when cancelled
     /// during the wait, which ends the caller's request.
-    pub(super) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
+    pub(crate) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
         emit(self.events, Event::Retry { attempt, delay }).await;
         tokio::select! {
             biased;
@@ -148,7 +146,7 @@ impl Turn<'_> {
     }
 
     /// One attempt at opening `request`'s stream; cancelling ends it.
-    pub(super) async fn open_once(
+    pub(crate) async fn open_once(
         &self,
         request: Request<'_>,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, Stop> {
@@ -158,29 +156,6 @@ impl Turn<'_> {
             stream = self.provider.stream(request) => stream.map_err(Stop::Failed),
         }
     }
-}
-
-/// The messages a request carries. Without a compaction marker, the history
-/// is the request. With one, the request starts at the last marker, read
-/// the way opencode reads its checkpoint: the system prompts, then one user
-/// message holding the summary and the text kept beside it, then everything
-/// after the marker verbatim. The request so never ends on the summary.
-/// Only this filter and the check on what a compaction left ever see the
-/// marker; the protocols never do.
-pub(super) fn effective(messages: &[Message]) -> Cow<'_, [Message]> {
-    let Some(at) = last_marker(messages) else {
-        return Cow::Borrowed(messages);
-    };
-    let mut sent: Vec<Message> = messages[..at]
-        .iter()
-        .filter(|message| matches!(message, Message::System(_)))
-        .cloned()
-        .collect();
-    if let Message::Compaction { summary, recent } = &messages[at] {
-        sent.push(Message::User(checkpoint(summary, recent)));
-    }
-    sent.extend(messages[at + 1..].iter().cloned());
-    Cow::Owned(sent)
 }
 
 /// The backoff before the `attempt`-th retry: `RETRY_INITIAL_DELAY` doubled

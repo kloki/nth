@@ -1,22 +1,24 @@
 //! One compaction: summarizing the conversation since the last
 //! [`Message::Compaction`] into a new one appended at the end, which keeps
 //! the newest messages beside the summary as text. Later requests start at
-//! it (see `stream::effective`).
+//! it (see [`effective`](super::effective)).
 
 use futures::StreamExt;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Event, Message, Request, StreamEvent, Usage,
 };
 
-use super::{Error, Stop, Turn, emit};
-use crate::compaction::{self, SHRINK_STEPS};
+use crate::{
+    agent_loop::{Error, Stop, Turn, emit},
+    compaction::{self, SHRINK_STEPS},
+};
 
 impl Turn<'_> {
     /// Whether the next step should summarize instead of asking the model:
     /// the session has automatic compaction on, knows the model's window
     /// with room left under the reserved buffer, and the last finished
     /// reply's usage reached the usable part of it.
-    pub(super) fn compaction_due(&self, last_usage: Option<Usage>) -> bool {
+    pub(crate) fn compaction_due(&self, last_usage: Option<Usage>) -> bool {
         let compaction = &self.route.compaction;
         if !compaction.auto {
             return false;
@@ -36,7 +38,7 @@ impl Turn<'_> {
     /// summarize a view that no longer shrinks — a floor like a huge system
     /// prompt — so the turn gives up instead of asking for a summary before
     /// every step.
-    pub(super) fn still_over_the_window(&self) -> bool {
+    pub(crate) fn still_over_the_window(&self) -> bool {
         let Some(usable) = self
             .route
             .compaction
@@ -44,7 +46,7 @@ impl Turn<'_> {
         else {
             return false;
         };
-        usable > 0 && compaction::estimate(&super::stream::effective(self.messages)) >= usable
+        usable > 0 && compaction::estimate(&compaction::effective(self.messages)) >= usable
     }
 
     /// Summarizes what came since the last compaction — its summary and
@@ -57,20 +59,12 @@ impl Turn<'_> {
     pub async fn compact(&mut self) -> Result<bool, Error> {
         let compaction = self.route.compaction;
         let usable = compaction.usable(self.route.context_window, self.route.max_output);
-        let last = self
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(at, message)| match message {
-                Message::Compaction { summary, recent } => {
-                    Some((at, summary.clone(), recent.clone()))
-                }
-                _ => None,
-            });
+        let last = compaction::last_marker(self.messages).map(|at| (at, &self.messages[at]));
         let (since, previous, previous_recent) = match last {
-            Some((at, summary, recent)) => (at + 1, Some(summary), recent),
-            None => (0, None, String::new()),
+            Some((at, Message::Compaction { summary, recent })) => {
+                (at + 1, Some(summary.clone()), recent.clone())
+            }
+            _ => (0, None, String::new()),
         };
         let since = &self.messages[since..];
         let Some(split) = compaction::split(

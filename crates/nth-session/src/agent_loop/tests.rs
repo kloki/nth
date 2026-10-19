@@ -16,9 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
-mod compaction_e2e;
-
-pub(super) const ROUTE: Route = Route {
+pub(crate) const ROUTE: Route = Route {
     model: "glm-5.3",
     effort: Effort::Default,
     session_id: "s1",
@@ -32,9 +30,9 @@ pub(super) const ROUTE: Route = Route {
 
 /// Replays one scripted reply per request and records the model asked for.
 pub(crate) struct Scripted {
-    pub(super) replies: Mutex<Vec<Vec<StreamEvent>>>,
+    pub(crate) replies: Mutex<Vec<Vec<StreamEvent>>>,
     /// The model and session id of every request, in order.
-    pub(super) routes: Mutex<Vec<(String, String)>>,
+    pub(crate) routes: Mutex<Vec<(String, String)>>,
     /// The system prompt of every request, in order.
     pub(crate) systems: Mutex<Vec<String>>,
     /// Every request's messages, in order.
@@ -92,7 +90,7 @@ impl Provider for Scripted {
 }
 
 /// Streams what it is asked to say, then returns it.
-pub(super) struct Echo;
+pub(crate) struct Echo;
 
 impl Tool for Echo {
     fn spec(&self) -> ToolSpec {
@@ -118,7 +116,7 @@ impl Tool for Echo {
 }
 
 /// A spend for a turn whose usage the test does not look at.
-pub(super) fn spend() -> Spend {
+pub(crate) fn spend() -> Spend {
     Spend::new("scripted", None)
 }
 
@@ -348,7 +346,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
 }
 
 /// Runs a turn on [`ROUTE`] with a fresh token, and every event it sent.
-pub(super) async fn turn(
+pub(crate) async fn turn(
     provider: &dyn Provider,
     tools: &[Box<dyn Tool>],
     ctx: &ToolContext,
