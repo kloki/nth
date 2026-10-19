@@ -14,7 +14,7 @@ use std::{
 
 pub use notice::{
     NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice, WorkOutcome,
-    WorkState, one_line, quiet_text, split_notices, todo_counts, todo_lines,
+    WorkState, instructions_notice, one_line, quiet_text, split_notices, todo_counts, todo_lines,
 };
 
 use crate::{MonitorEnd, MonitorId};

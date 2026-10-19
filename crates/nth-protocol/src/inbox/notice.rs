@@ -1,10 +1,13 @@
 //! The notices the model reads between its steps: a `<monitor>` element for
 //! what a monitor said, a `<task>` element for what a subagent answered, a
-//! `<work_item>` element for what happened to a work item, and what the
-//! transcript reads back out of them. Both sides are here so they cannot
+//! `<work_item>` element for what happened to a work item, an
+//! `<instructions>` element for an instruction file that changed, and what
+//! the transcript reads back out of them. Both sides are here so they cannot
 //! drift apart.
 
 use std::{fmt, path::Path, time::Duration};
+
+use nth_context::instructions::{Change, ChangeKind};
 
 use crate::{MonitorEnd, MonitorId};
 
@@ -300,6 +303,40 @@ pub(super) fn render_work(notice: &WorkNotice) -> String {
     }
 }
 
+/// An `<instructions>` element for each file in `changes`, as one notice;
+/// `None` when nothing changed. An edit comes as a unified diff when that
+/// is shorter than the file, else as the whole file, as opencode sends it.
+pub fn instructions_notice(changes: &[Change]) -> Option<String> {
+    let notices: Vec<String> = changes.iter().map(render_instructions).collect();
+    (!notices.is_empty()).then(|| notices.join("\n"))
+}
+
+fn render_instructions(change: &Change) -> String {
+    let attributes = format!(
+        "path=\"{}\" change=\"{}\"",
+        attribute(&change.path.display().to_string()),
+        change.kind.name(),
+    );
+    let (content, text) = match &change.kind {
+        ChangeKind::Removed => return format!("<instructions {attributes}/>"),
+        ChangeKind::Created(text) => ("whole", text.clone()),
+        ChangeKind::Edited { before, after } => {
+            let diff = similar::TextDiff::from_lines(before, after)
+                .unified_diff()
+                .context_radius(3)
+                .to_string();
+            match diff.len() < after.len() {
+                true => ("diff", diff),
+                false => ("whole", after.clone()),
+            }
+        }
+    };
+    format!(
+        "<instructions {attributes} content=\"{content}\">\n{}\n</instructions>",
+        body(text.trim_end(), "instructions")
+    )
+}
+
 /// Keeps a value from ending its attribute or its tag: `split_notices`
 /// finds the tag's end at the first `>`, and a newline would read as a
 /// line of output.
@@ -346,10 +383,13 @@ pub enum NoticeSummary {
         /// Ticked steps and all of them; `None` for a stalled item.
         progress: Option<(usize, usize)>,
     },
+    /// Which instruction file, and whether it was created, edited or
+    /// removed.
+    Instructions { path: String, change: String },
 }
 
 /// The elements `split_notices` knows.
-const ELEMENTS: [&str; 3] = ["monitor", "task", "work_item"];
+const ELEMENTS: [&str; 4] = ["monitor", "task", "work_item", "instructions"];
 
 /// Splits the notices off the front of a user message: what monitors,
 /// subagents and work items said, then what the user typed after it, if
@@ -406,6 +446,10 @@ fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
             agent: value(attrs, "agent").unwrap_or_default(),
             description: value(attrs, "description").unwrap_or_default(),
             state: value(attrs, "state").unwrap_or_default(),
+        },
+        "instructions" => NoticeSummary::Instructions {
+            path: value(attrs, "path")?,
+            change: value(attrs, "change").unwrap_or_default(),
         },
         _ => NoticeSummary::Work {
             cycle: value(attrs, "cycle")?,
@@ -718,5 +762,62 @@ mod tests {
         assert_eq!(WorkOutcome::parse("bored"), None);
         assert_eq!(quiet_text(Duration::from_millis(45_900)), "45s");
         assert_eq!(quiet_text(Duration::from_secs(120)), "2m0s");
+    }
+
+    fn change(kind: ChangeKind) -> Change {
+        Change {
+            path: "/repo/AGENTS.md".into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_small_edit_to_a_long_file_goes_as_a_diff() {
+        let before: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+        let after = before.replace("line 20\n", "line twenty\n");
+        let notice =
+            instructions_notice(&[change(ChangeKind::Edited { before, after })]).expect("a change");
+
+        assert!(
+            notice.starts_with(
+                "<instructions path=\"/repo/AGENTS.md\" change=\"edited\" content=\"diff\">\n@@"
+            ),
+            "{notice}"
+        );
+        assert!(notice.contains("-line 20\n+line twenty\n"), "{notice}");
+        assert!(!notice.contains("line 1\n"), "{notice}");
+    }
+
+    #[test]
+    fn a_rewrite_goes_whole() {
+        let notice = instructions_notice(&[change(ChangeKind::Edited {
+            before: "old".into(),
+            after: "new".into(),
+        })])
+        .expect("a change");
+
+        assert_eq!(
+            notice,
+            "<instructions path=\"/repo/AGENTS.md\" change=\"edited\" content=\"whole\">\nnew\n</instructions>"
+        );
+    }
+
+    #[test]
+    fn instruction_changes_split_off_as_notices() {
+        let notice = instructions_notice(&[
+            change(ChangeKind::Created("hi".into())),
+            change(ChangeKind::Removed),
+        ])
+        .expect("changes");
+        assert_eq!(instructions_notice(&[]), None);
+
+        let message = format!("{notice}\nwhat now?");
+        let (notices, typed) = split_notices(&message);
+        let summary = |change: &str| NoticeSummary::Instructions {
+            path: "/repo/AGENTS.md".into(),
+            change: change.into(),
+        };
+        assert_eq!(notices, [summary("created"), summary("removed")]);
+        assert_eq!(typed, "what now?");
     }
 }

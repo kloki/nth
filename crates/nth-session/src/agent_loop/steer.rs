@@ -1,9 +1,11 @@
 //! What you send while a turn works reaches the model at its next step:
 //! a prompt sent while the reply streamed pre-empts the reply's tool
 //! calls, and what monitors said and you sent while the tools ran
-//! follows their results.
+//! follows their results, after any instruction file that changed.
 
-use nth_protocol::{Event, INTERRUPTED, Message, ToolCall, ToolContext, failed};
+use nth_protocol::{
+    Event, INTERRUPTED, Message, ToolCall, ToolContext, failed, instructions_notice,
+};
 
 use super::{Turn, emit};
 
@@ -52,7 +54,17 @@ impl Turn<'_> {
     /// ends: the notices first, so the transcript reads them back, then the
     /// prompts, as a turn's own prompt follows its notices.
     pub(super) async fn hand_over(&mut self) {
-        let notices = self.ctx.inbox.take_notices();
+        let loaded = self
+            .ctx
+            .instructions
+            .lock()
+            .expect("loaded instructions lock poisoned")
+            .clone();
+        let changed = instructions_notice(&self.ctx.watch.changes(loaded).await);
+        let notices = [changed, self.ctx.inbox.take_notices()]
+            .into_iter()
+            .flatten();
+        let notices = Some(notices.collect::<Vec<_>>().join("\n")).filter(|n| !n.is_empty());
         let prompts = self.ctx.inbox.take_prompts();
         let shown = [notices.clone(), prompts.clone()].into_iter().flatten();
         let shown = shown.collect::<Vec<_>>().join("\n");

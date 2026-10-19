@@ -37,6 +37,8 @@ pub struct Icons {
     pub plan_edits: &'static str,
     /// A subagent in the chat.
     pub subagent: &'static str,
+    /// An instruction file that changed, in the chat.
+    pub instructions: &'static str,
     /// Lower and higher effort in the model picker.
     pub effort_less: &'static str,
     pub effort_more: &'static str,
@@ -139,6 +141,7 @@ pub static PLAIN: Icons = Icons {
     retry: "⟳",
     plan_edits: "±",
     subagent: "↳",
+    instructions: "¶",
     effort_less: "◂",
     effort_more: "▸",
     unchecked: "☐",
@@ -242,6 +245,7 @@ impl Icons {
             retry,
             plan_edits,
             subagent,
+            instructions,
             effort_less,
             effort_more,
             unchecked,
@@ -270,6 +274,7 @@ impl Icons {
             *retry,
             *plan_edits,
             *subagent,
+            *instructions,
             *effort_less,
             *effort_more,
             *unchecked,
