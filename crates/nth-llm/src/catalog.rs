@@ -8,8 +8,6 @@ use nth_protocol::{Cost, Effort};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
-use crate::http::USER_AGENT;
-
 const URL: &str = "https://models.dev/api.json";
 /// The catalogue only refines a listing, so a stall must not hold it up.
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -240,7 +238,6 @@ impl Snapshot {
 async fn fetch(http: &reqwest::Client, url: &str) -> Result<Catalog, reqwest::Error> {
     http.get(url)
         .timeout(TIMEOUT)
-        .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await?
         .error_for_status()?

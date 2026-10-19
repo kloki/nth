@@ -14,11 +14,8 @@ use tokio::{
 use self::rtk::Rtk;
 use crate::{
     output::{self, tail},
-    process::{self, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
+    process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
 };
-
-/// How long to keep reading after bash exits, for output still in the pipe.
-const DRAIN: Duration = Duration::from_millis(100);
 
 /// Told to the model when rtk rewrites its commands, so it can follow the
 /// pointers rtk leaves in what it cut.

@@ -1,14 +1,22 @@
 //! What happens after a tool writes a file: its formatters run, its
 //! language servers check it, and the model is told what they found. The
-//! tools format under their shared lock and ask the servers after it, so
-//! they call the two halves; [`PostWrite::after_write`] is both at once.
+//! tools write and format holding [`PostWrite::lock`] and ask the servers
+//! after letting it go, each in its own way, so they call the two halves.
 
-use std::{path::Path, sync::Arc};
+use std::{io::ErrorKind, path::Path, sync::Arc};
 
 use nth_format::{Formatters, Outcome};
 use nth_lsp::{Diagnostic, Lsp, report};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::bom;
+
+/// The calls of a turn run in parallel, and two edits of one file would
+/// each read it before the other writes, losing the first. One lock for
+/// every tool that writes files (write, edit and apply_patch), held while
+/// the formatters rewrite the file too, so writes of different files wait
+/// on each other's formatters; a lock per path can come when that shows.
+static EDITS: Mutex<()> = Mutex::const_new(());
 
 #[derive(Clone)]
 pub struct PostWrite {
@@ -29,14 +37,14 @@ impl PostWrite {
         &self.format
     }
 
-    /// What to append to the tool's output after writing `path`: a note per
-    /// formatter that ran, then the errors language servers report on the
-    /// formatted file (and on up to five others), a blank line apart. Empty
-    /// when nothing ran and nothing is wrong.
-    pub async fn after_write(&self, path: &Path, cwd: &Path) -> String {
-        let notes = self.format(path, cwd).await;
-        let errors = self.check(path).await;
-        join_sections(&notes, &errors)
+    /// Waits for every other write to finish and holds them off until the
+    /// guard drops. Anything a tool reads to decide what to write is read
+    /// under it too, or a parallel call could change it in between.
+    pub(crate) async fn lock(&self) -> Writing<'_> {
+        Writing {
+            post_write: self,
+            _held: EDITS.lock().await,
+        }
     }
 
     /// The errors language servers report on `path` as it now is, and on
@@ -47,12 +55,30 @@ impl PostWrite {
         report::after_write(path, &diagnostics)
     }
 
+    /// What the language servers report on `path` once they have seen it
+    /// as it now is; other files' diagnostics are left out.
+    pub(crate) async fn diagnostics(&self, path: &Path) -> Vec<Diagnostic> {
+        let mut all = self.lsp.touch(path, true).await;
+        all.remove(path).unwrap_or_default()
+    }
+}
+
+/// The write lock, held from before a tool reads what it changes until
+/// the formatters are done with it. The formatter rewrites the file, so it
+/// runs under the lock; waiting on the language servers need not, so the
+/// tools drop the guard before asking them.
+pub(crate) struct Writing<'a> {
+    post_write: &'a PostWrite,
+    _held: MutexGuard<'static, ()>,
+}
+
+impl Writing<'_> {
     /// Formats `path` with the formatters for `cwd`'s project and returns
     /// one note per formatter that ran. A BOM the file had before survives
     /// the formatter.
     pub(crate) async fn format(&self, path: &Path, cwd: &Path) -> String {
         let bom = bom::has_bom(path).await.unwrap_or(false);
-        let outcomes = self.format.format(path, cwd).await;
+        let outcomes = self.post_write.format.format(path, cwd).await;
         let mut notes: Vec<_> = outcomes.iter().map(note).collect();
         if !outcomes.is_empty()
             && let Err(e) = bom::sync(path, bom).await
@@ -61,12 +87,18 @@ impl PostWrite {
         }
         notes.join("\n")
     }
+}
 
-    /// What the language servers report on `path` once they have seen it
-    /// as it now is; other files' diagnostics are left out.
-    pub(crate) async fn diagnostics(&self, path: &Path) -> Vec<Diagnostic> {
-        let mut all = self.lsp.touch(path, true).await;
-        all.remove(path).unwrap_or_default()
+/// Writes `content` to `path`, creating its folders when they are missing.
+pub(crate) async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    match tokio::fs::write(path, content).await {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(path, content).await
+        }
+        result => result,
     }
 }
 
@@ -85,6 +117,7 @@ pub(crate) fn append(result: String, sections: &[&str]) -> String {
 }
 
 /// The format notes, then the LSP report, a blank line apart.
+#[cfg(test)]
 fn join_sections(notes: &str, errors: &str) -> String {
     let joined = append(notes.to_string(), &[errors]);
     joined.trim_start_matches('\n').to_string()
@@ -99,6 +132,18 @@ fn note(outcome: &Outcome) -> String {
 
 #[cfg(test)]
 impl PostWrite {
+    /// What the write tool appends after writing `path`: a note per
+    /// formatter that ran, then the errors language servers report on the
+    /// formatted file (and on up to five others), a blank line apart. Empty
+    /// when nothing ran and nothing is wrong.
+    async fn after_write(&self, path: &Path, cwd: &Path) -> String {
+        let writing = self.lock().await;
+        let notes = writing.format(path, cwd).await;
+        drop(writing);
+        let errors = self.check(path).await;
+        join_sections(&notes, &errors)
+    }
+
     /// Formats nothing and checks nothing.
     pub(crate) fn off() -> Self {
         let config = nth_format::FormatConfig {

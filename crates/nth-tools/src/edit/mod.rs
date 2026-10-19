@@ -8,16 +8,12 @@ use nth_lsp::report;
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::Mutex;
 
-use crate::{PostWrite, bom::BOM, post_write, write::write_with_dirs};
-
-/// The calls of a turn run in parallel, and two edits of one file would
-/// each read it before the other writes, losing the first. One lock for
-/// every tool that writes files (write, edit and apply_patch), held while
-/// the formatters rewrite the file too, so writes of different files wait
-/// on each other's formatters; a lock per path can come when that shows.
-pub(crate) static EDITS: Mutex<()> = Mutex::const_new(());
+use crate::{
+    PostWrite,
+    bom::BOM,
+    post_write::{self, write_with_dirs},
+};
 
 pub struct Edit {
     post_write: PostWrite,
@@ -69,12 +65,10 @@ impl Tool for Edit {
             }
             let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             ctx.writable.check(&path)?;
-            let edits = EDITS.lock().await;
+            let writing = self.post_write.lock().await;
             let done = edit(&path, &args).await?;
-            // The formatter rewrites the file, so it runs under the lock;
-            // waiting on the language servers need not.
-            let notes = self.post_write.format(&path, &ctx.cwd).await;
-            drop(edits);
+            let notes = writing.format(&path, &ctx.cwd).await;
+            drop(writing);
             let errors = report::after_edit(&path, &self.post_write.diagnostics(&path).await);
             Ok(post_write::append(done, &[&notes, &errors]))
         }

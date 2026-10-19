@@ -5,64 +5,45 @@
 mod event;
 mod wire;
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Duration,
-};
+use std::collections::BTreeMap;
 
-use futures::{Stream, StreamExt, stream::BoxStream};
-use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent, ToolCall, Usage};
+use futures::stream::BoxStream;
+use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    http::{self, STREAM_IDLE_TIMEOUT, USER_AGENT, retry_after, retryable, transient},
+    http::{self, transient},
+    stream::{self, Flow, Out, Payload, Protocol},
 };
 
+pub(crate) type Error = stream::Error<Provider>;
+
+/// An error chunk, which gateways such as OpenRouter send after the 200
+/// status for a rate limit, an overload or a refusal.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("{status}: {body}")]
-    Status {
-        status: reqwest::StatusCode,
-        body: String,
-        /// The server's `Retry-After`, when it sent one.
-        retry_after: Option<Duration>,
-    },
-    #[error("bad stream chunk: {source} in {line:?}")]
-    Parse {
-        source: serde_json::Error,
-        /// The start of the offending line; see `crate::event::EXCERPT_CHARS`.
-        line: String,
-    },
-    #[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
-    Provider {
-        message: String,
-        /// The HTTP status the error stands for, when the chunk gave one.
-        status: Option<reqwest::StatusCode>,
-    },
-    #[error("stream ended before the response was complete")]
-    Incomplete,
-    #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
-    Stalled,
-    #[error("response hit the output token limit")]
-    Truncated,
+#[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
+pub(crate) struct Provider {
+    pub(crate) message: String,
+    /// The HTTP status the error stands for, when the chunk gave one.
+    pub(crate) status: Option<reqwest::StatusCode>,
 }
 
-/// One endpoint's chat completions route.
-pub(crate) struct Client {
-    http: reqwest::Client,
-    base_url: String,
-}
-
-impl Client {
-    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
-        Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        }
+impl Payload for Provider {
+    /// Only by its status: a symbolic code such as `rate_limit_exceeded`
+    /// says nothing every gateway agrees on.
+    fn retryable(&self) -> bool {
+        self.status.is_some_and(transient)
     }
 
+    fn context_overflow(&self) -> bool {
+        self.status
+            .is_some_and(|status| http::context_overflow(status, &self.message))
+    }
+}
+
+pub(crate) type Client = stream::Client<State>;
+
+impl Client {
     /// `cache_key` goes out as `prompt_cache_key`: only to a provider known
     /// to take it ([`takes_cache_key`]), since strict ones refuse a field
     /// they do not know.
@@ -72,30 +53,16 @@ impl Client {
         cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let signed = auth.bearer(
-            self.http
-                .post(format!("{}/chat/completions", self.base_url)),
-            Some(request.session_id),
-        );
-        let response = http::session(signed, &request)
-            .header(reqwest::header::USER_AGENT, USER_AGENT)
+        let builder = auth
+            .bearer(self.post(), Some(request.session_id))
             .json(&wire::body(
                 request.model,
                 request.effort,
                 cache_key,
                 request.messages,
                 request.tools,
-            ))
-            .send()
-            .await
-            .map_err(Error::from)?;
-        let response = success(response).await?;
-
-        let bytes = response
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(Error::from))
-            .boxed();
-        Ok(events(bytes).map(|e| e.map_err(streamed_error)).boxed())
+            ));
+        stream::send::<State>(builder, &request).await
     }
 }
 
@@ -132,186 +99,68 @@ pub(crate) fn takes_cache_key(provider: &str) -> bool {
     CACHE_KEY_PROVIDERS.contains(&provider)
 }
 
-/// Turns a non-2xx response into the stream's error: the shared
-/// [`ContextOverflow`] marker when the body is a refusal as too long, so
-/// the loop compacts and replays, else the status error it always was.
-async fn success(response: reqwest::Response) -> Result<reqwest::Response, BoxError> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    let retry_after = retry_after(response.headers());
-    let body = response.text().await.unwrap_or_default();
-    Err(status_error(status, body, retry_after))
-}
-
-/// A failed response as its stream's error; apart from `success` so the
-/// classification is testable without an HTTP response in hand.
-fn status_error(
-    status: reqwest::StatusCode,
-    body: String,
-    retry_after: Option<Duration>,
-) -> BoxError {
-    if http::context_overflow(status, &body) {
-        return Box::new(ContextOverflow);
-    }
-    Box::new(Error::Status {
-        status,
-        body,
-        retry_after,
-    })
-}
-
-/// A stream's error: an in-band error that names an overflow status and
-/// body becomes the marker too, so a gateway that reports one after the
-/// 200 status is compacted like one that refused upfront. Everything else
-/// stays the protocol's error.
-fn streamed_error(error: Error) -> BoxError {
-    if let Error::Provider {
-        message,
-        status: Some(status),
-    } = &error
-        && http::context_overflow(*status, message)
-    {
-        return Box::new(ContextOverflow);
-    }
-    Box::new(error)
-}
-
-/// Whether `error`, one a chat completions `Client` produced, may be
-/// retried. Reads only the error, so whatever fronts the clients answers
-/// the same way.
-pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
-    let error = error.downcast_ref::<Error>()?;
-    match error {
-        // A rate limit or a transient server failure; the server may
-        // have said how long to wait.
-        Error::Status {
-            status,
-            retry_after,
-            ..
-        } if transient(*status) => Some(Retry {
-            after: *retry_after,
-        }),
-        // The same, reported inside the stream after a 200 status.
-        Error::Provider {
-            status: Some(status),
-            ..
-        } if transient(*status) => Some(Retry { after: None }),
-        Error::Http(e) if retryable(e) => Some(Retry { after: None }),
-        // The stream ended, or went quiet, before the reply did.
-        Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
-        _ => None,
-    }
-}
-
-struct State<S> {
-    bytes: S,
-    parser: event::Parser,
-    pending: VecDeque<Result<StreamEvent, Error>>,
-    calls: BTreeMap<usize, ToolCall>,
-    finish_reason: Option<String>,
-    finished: bool,
-}
-
 /// Text and reasoning go out as they arrive. Tool calls are assembled from
 /// their fragments and go out once the stream ends, when they are complete.
-fn events<S>(bytes: S) -> impl Stream<Item = Result<StreamEvent, Error>>
-where
-    S: Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
-{
-    let state = State {
-        bytes,
-        parser: event::parser(),
-        pending: VecDeque::new(),
-        calls: BTreeMap::new(),
-        finish_reason: None,
-        finished: false,
-    };
-    futures::stream::unfold(state, |mut s| async move {
-        loop {
-            if let Some(event) = s.pending.pop_front() {
-                return Some((event, s));
-            }
-            if s.finished {
-                return None;
-            }
-            let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, s.bytes.next()).await;
-            let (parsed, ended) = match next {
-                Ok(Some(Ok(chunk))) => (s.parser.push(&chunk), false),
-                // The reply is complete once the finish chunk arrived; what
-                // is lost with the connection after that is at most the
-                // `[DONE]` line, not worth failing the turn over.
-                Ok(Some(Err(_))) | Err(_) if s.finish_reason.is_some() => (Ok(Vec::new()), true),
-                Ok(Some(Err(e))) => (Err(e), false),
-                Err(_elapsed) => (Err(Error::Stalled), false),
-                // A remainder that does not parse is a line the connection
-                // cut short, which the end-of-stream rules below describe
-                // better than a parse error would.
-                Ok(None) => (Ok(s.parser.finish().unwrap_or_default()), true),
-            };
-            let parsed = match parsed {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    s.finished = true;
-                    return Some((Err(e), s));
-                }
-            };
-            for event in parsed {
-                match event {
-                    event::Event::Delta(delta) => s.apply(delta),
-                    event::Event::Finish(reason) => s.finish_reason = Some(reason),
-                    event::Event::Usage(usage) => {
-                        s.pending.push_back(Ok(StreamEvent::Usage(Usage {
-                            input: usage.prompt_tokens,
-                            output: usage.completion_tokens,
-                            cache_read: usage.cache_read(),
-                            // No compatible server reports a cache write.
-                            cache_write: None,
-                            reasoning: usage.reasoning(),
-                        })))
-                    }
-                    event::Event::Done => {
-                        s.done();
-                        break;
-                    }
-                }
-            }
-            if ended && !s.finished {
-                // Some servers close right after the finish chunk without
-                // `[DONE]`; without either, the connection was cut mid-reply.
-                if s.finish_reason.is_some() {
-                    s.done();
-                } else {
-                    s.finished = true;
-                    s.pending.push_back(Err(Error::Incomplete));
-                }
-            }
-        }
-    })
+#[derive(Default)]
+pub(crate) struct State {
+    calls: BTreeMap<usize, ToolCall>,
+    finish_reason: Option<String>,
 }
 
-impl<S> State<S> {
-    fn done(&mut self) {
-        self.finished = true;
+impl Protocol for State {
+    type Provider = Provider;
+    type Event = event::Event;
+    const ROUTE: &'static str = "/chat/completions";
+
+    fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
+        event::parse_line(line)
+    }
+
+    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+        match event {
+            event::Event::Delta(delta) => self.delta(delta, out),
+            event::Event::Finish(reason) => self.finish_reason = Some(reason),
+            event::Event::Usage(usage) => out.push_back(Ok(StreamEvent::Usage(Usage {
+                input: usage.prompt_tokens,
+                output: usage.completion_tokens,
+                cache_read: usage.cache_read(),
+                // No compatible server reports a cache write.
+                cache_write: None,
+                reasoning: usage.reasoning(),
+            }))),
+            event::Event::Done => {
+                self.finish(out);
+                return Flow::Done;
+            }
+        }
+        Flow::Continue
+    }
+
+    /// The reply is complete once the finish chunk arrived; what is lost
+    /// with the connection after that is at most the `[DONE]` line.
+    fn complete(&self) -> bool {
+        self.finish_reason.is_some()
+    }
+
+    fn finish(&mut self, out: &mut Out<Provider>) {
         // Tool calls cut off at the token limit have partial JSON
         // arguments and must not run.
         if self.finish_reason.as_deref() == Some("length") {
-            self.pending.push_back(Err(Error::Truncated));
+            out.push_back(Err(Error::Truncated));
             return;
         }
         let calls = std::mem::take(&mut self.calls);
-        self.pending
-            .extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+        out.extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
     }
+}
 
-    fn apply(&mut self, delta: event::Delta) {
+impl State {
+    fn delta(&mut self, delta: event::Delta, out: &mut Out<Provider>) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
-            self.pending
-                .push_back(Ok(StreamEvent::ReasoningDelta(text)));
+            out.push_back(Ok(StreamEvent::ReasoningDelta(text)));
         }
         if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
-            self.pending.push_back(Ok(StreamEvent::TextDelta(text)));
+            out.push_back(Ok(StreamEvent::TextDelta(text)));
         }
         for part in delta.tool_calls.into_iter().flatten() {
             let call = self.calls.entry(part.index).or_insert_with(|| ToolCall {
@@ -336,8 +185,22 @@ impl<S> State<S> {
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
+    use nth_protocol::{ContextOverflow, Retry};
+
     use super::*;
     use crate::testing::{chunks, runs_no_tools, serve_once, serve_status, until};
+
+    fn retry(error: &BoxError) -> Option<Retry> {
+        stream::retry::<Provider>(error)
+    }
+
+    fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
+    {
+        stream::events::<State, S>(bytes)
+    }
 
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/go_stream.sse");
 
@@ -485,6 +348,18 @@ mod tests {
         assert_eq!(events, replay(FIXTURE.len()).await);
     }
 
+    /// As a body error after the finish chunk: what goes quiet then is at
+    /// most the `[DONE]` line.
+    #[tokio::test(start_paused = true)]
+    async fn a_stall_after_finish_keeps_the_reply() {
+        let head = fixture_until("data: [DONE]");
+        let bytes =
+            futures::stream::iter(chunks(head, head.len())).chain(futures::stream::pending());
+        let events: Vec<_> = events(bytes).collect().await;
+        let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();
+        assert_eq!(events, replay(FIXTURE.len()).await);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_stream_is_a_retryable_error() {
         let head = fixture_until("\"finish_reason\"");
@@ -551,60 +426,9 @@ mod tests {
         assert_eq!(retry(error), None, "compacting, not retrying, is the fix");
     }
 
-    /// The refusal phrased in a nested field, and as plain text: the
-    /// classification reads the whole body, not one field of it.
-    const NESTED_OVERFLOW: &[u8] = br#"{"error":{"message":"Request failed","detail":{"reason":"maximum context length exceeded"}}}"#;
-    const PLAIN_OVERFLOW: &[u8] = b"Input is too long for requested model";
     /// An ordinary refusal that says nothing about a limit.
     const ORDINARY: &[u8] =
         br#"{"error":{"message":"invalid model","type":"invalid_request_error"}}"#;
-
-    #[tokio::test]
-    async fn any_overflow_phrasing_on_a_400_413_or_422_becomes_a_context_overflow() {
-        for status in [400, 413, 422] {
-            for body in [NESTED_OVERFLOW, PLAIN_OVERFLOW] {
-                let (url, _) = serve_status(status, body).await;
-                let client = Client::new(reqwest::Client::new(), url);
-                let error = client
-                    .stream(request(), None, &Auth::Key("key".into()))
-                    .await
-                    .err()
-                    .expect("refused");
-                assert!(
-                    error.downcast_ref::<ContextOverflow>().is_some(),
-                    "{status} with {}: {error}",
-                    String::from_utf8_lossy(body)
-                );
-                assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn an_overflow_body_on_a_transient_status_stays_a_status_error() {
-        for status in [429, 500] {
-            let (url, _) = serve_status(status, OVERFLOW).await;
-            let client = Client::new(reqwest::Client::new(), url);
-            let error = client
-                .stream(request(), None, &Auth::Key("key".into()))
-                .await
-                .err()
-                .expect("refused");
-            assert!(
-                error.downcast_ref::<ContextOverflow>().is_none(),
-                "{status}: {error}"
-            );
-            let expected = reqwest::StatusCode::from_u16(status).expect("a status");
-            assert!(
-                matches!(
-                    error.downcast_ref::<Error>(),
-                    Some(Error::Status { status, .. }) if *status == expected
-                ),
-                "{error}"
-            );
-            assert!(retry(&error).is_some(), "{status} is worth retrying");
-        }
-    }
 
     #[tokio::test]
     async fn an_ordinary_400_stays_a_status_error() {
@@ -620,114 +444,23 @@ mod tests {
         assert!(
             matches!(
                 error.downcast_ref::<Error>(),
-                Some(Error::Status { status, body, .. })
-                    if *status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid model")
+                Some(Error::Status { status, message, .. })
+                    if *status == reqwest::StatusCode::BAD_REQUEST
+                        && message.as_bytes() == ORDINARY
             ),
             "{error}"
         );
         assert_eq!(retry(&error), None);
     }
 
-    #[test]
-    fn only_an_overflow_body_on_an_overflow_status_is_marked() {
-        let bad_request = reqwest::StatusCode::BAD_REQUEST;
-        let marked = |status, body: &str| {
-            status_error(status, body.to_string(), None)
-                .downcast_ref::<ContextOverflow>()
-                .is_some()
-        };
-
-        assert!(marked(
-            bad_request,
-            "This model's maximum context length is 8192 tokens"
-        ));
-        assert!(marked(bad_request, r#"{"code":"context_length_exceeded"}"#));
-        assert!(marked(
-            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
-            "input is too long"
-        ));
-        assert!(marked(
-            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-            "PROMPT IS TOO LONG"
-        ));
-
-        assert!(!marked(
-            bad_request,
-            r#"{"error":{"message":"invalid model"}}"#
-        ));
-        assert!(!marked(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "maximum context length is 8192 tokens"
-        ));
-        assert!(!marked(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            "prompt is too long"
-        ));
-
-        let ordinary = status_error(
-            bad_request,
-            r#"{"error":{"message":"invalid model"}}"#.into(),
-            None,
-        );
-        let status = ordinary.downcast_ref::<Error>().expect("the status error");
-        assert!(matches!(
-            status,
-            Error::Status { status, body, .. }
-                if *status == bad_request && body.contains("invalid model")
-        ));
-        assert_eq!(retry(&ordinary), None);
-
-        let limited = status_error(reqwest::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
-        assert_eq!(retry(&limited), Some(Retry { after: None }));
-    }
-
+    /// The payload's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
-        let boxed = |error: Error| -> BoxError { Box::new(error) };
-
-        let overflow: BoxError = Box::new(ContextOverflow);
-        assert_eq!(
-            retry(&overflow),
-            None,
-            "compacting, not retrying, is the fix"
-        );
-
-        let limited = boxed(Error::Status {
-            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
-            body: String::new(),
-            retry_after: Some(Duration::from_secs(7)),
-        });
-        assert_eq!(
-            retry(&limited),
-            Some(Retry {
-                after: Some(Duration::from_secs(7))
-            })
-        );
-
-        let overloaded = boxed(Error::Status {
-            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            body: String::new(),
-            retry_after: None,
-        });
-        assert_eq!(retry(&overloaded), Some(Retry { after: None }));
-
-        let rejected = boxed(Error::Status {
-            status: reqwest::StatusCode::BAD_REQUEST,
-            body: String::new(),
-            retry_after: None,
-        });
-        assert_eq!(retry(&rejected), None);
-        assert_eq!(
-            retry(&boxed(Error::Incomplete)),
-            Some(Retry { after: None })
-        );
-        assert_eq!(retry(&boxed(Error::Truncated)), None);
-
-        let in_stream = |status: Option<reqwest::StatusCode>| {
-            boxed(Error::Provider {
+        let in_stream = |status: Option<reqwest::StatusCode>| -> BoxError {
+            Box::new(Error::Provider(Provider {
                 message: "from the gateway".into(),
                 status,
-            })
+            }))
         };
         assert_eq!(
             retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),
@@ -742,11 +475,5 @@ mod tests {
             None
         );
         assert_eq!(retry(&in_stream(None)), None);
-
-        let bad_url = reqwest::Client::new()
-            .get("not a url")
-            .build()
-            .expect_err("not a url");
-        assert_eq!(retry(&boxed(Error::Http(bad_url))), None);
     }
 }
