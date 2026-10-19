@@ -1074,6 +1074,7 @@ impl App {
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Usage => self.open_content(Tab::Usage),
+            Command::Plan => self.open_content(Tab::Plan),
             Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(),
             Command::Compact => self.compact(),

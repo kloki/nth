@@ -176,6 +176,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_tab_closes_and_plan_or_a_revision_brings_it_back() {
+        let (mut app, _dir) = app_with_plan_dir();
+        app.read_plan();
+        read(&mut app).await;
+        write_plan(&app, "# Plan\n");
+        app.read_plan();
+        read(&mut app).await;
+        assert_eq!(app.content.active(), Tab::Plan);
+
+        app.close_content();
+        assert_eq!(app.content.tabs(), [Tab::Chat], "dismissed");
+
+        app.prompt.insert_str("/plan");
+        app.apply(Action::Submit);
+        assert_eq!(app.content.active(), Tab::Plan, "/plan shows it");
+
+        app.close_content();
+        write_plan(&app, "# Plan\nstep\n");
+        app.read_plan();
+        read(&mut app).await;
+        assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Plan]);
+        assert_eq!(app.content.active(), Tab::Chat, "a revision, unfocused");
+    }
+
+    #[tokio::test]
     async fn the_tab_shows_the_plan_with_its_changes() {
         let (mut app, _dir) = app_with_plan_dir();
         app.read_plan();
