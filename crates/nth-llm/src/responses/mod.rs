@@ -331,6 +331,25 @@ mod tests {
         assert_eq!(events, replay(FIXTURE.len()).await);
     }
 
+    /// Unlike the other two protocols, nothing short of the closing event
+    /// is a complete reply, so the connection failing before it is the
+    /// stream's error, and no tool call runs.
+    #[tokio::test]
+    async fn a_body_error_before_the_completed_response_is_the_error() {
+        let bad_url = reqwest::Client::new()
+            .get("not a url")
+            .build()
+            .expect_err("not a url");
+        let mut input = chunks(fixture_until("event: response.completed"), FIXTURE.len());
+        input.push(Err(Error::Http(bad_url)));
+        let events: Vec<_> = events(futures::stream::iter(input)).collect().await;
+        assert!(
+            matches!(events.last(), Some(Err(Error::Http(_)))),
+            "{events:?}"
+        );
+        assert!(runs_no_tools(&events));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_stream_is_a_retryable_error() {
         let head = fixture_until("event: response.completed");

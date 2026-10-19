@@ -374,6 +374,16 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_stall_after_the_stop_reason_keeps_the_reply() {
+        let head = fixture_until("event: message_stop");
+        let bytes =
+            futures::stream::iter(chunks(head, head.len())).chain(futures::stream::pending());
+        let events: Vec<_> = events(bytes).collect().await;
+        let events: Vec<_> = events.into_iter().map(|e| e.expect("valid")).collect();
+        assert_eq!(events, replay(FIXTURE.len()).await);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn stalled_stream_is_a_retryable_error() {
         let head = fixture_until("event: message_delta");
         let bytes =
