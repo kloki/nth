@@ -6,10 +6,35 @@ use std::path::Path;
 use nth_protocol::{BoxError, Cost, Effort, Listing};
 use nth_session::Price;
 
-use super::{App, Llm, input::Input};
+use super::{App, Llm, input::Input, keys::Action};
 use crate::llm_picker::{LlmPicker, Target};
 
 impl App {
+    /// A key while the model picker is open.
+    pub(super) fn key_llm_picker(&mut self, action: Action) {
+        let Input::LlmPicker(picker) = &mut self.input else {
+            return;
+        };
+        match action {
+            Action::SelectNext => picker.next(),
+            Action::SelectPrev => picker.prev(),
+            Action::Right => picker.more(),
+            Action::Left => picker.less(),
+            Action::NextTab => self.cycle_llm_target(false),
+            Action::PrevTab => self.cycle_llm_target(true),
+            Action::Insert(c) => picker.insert(c),
+            Action::Backspace => picker.backspace(),
+            Action::Submit => self.choose_llm(),
+            // As on the prompt, ctrl+c clears the query before closing.
+            Action::ClearOrQuit if picker.clear_query() => {}
+            // Closing the picker must not also interrupt a running turn.
+            Action::Interrupt | Action::ClearOrQuit | Action::LlmPicker => {
+                self.input = Input::Prompt
+            }
+            _ => {}
+        }
+    }
+
     /// Opens the picker on the current mode's LLM, listing LLMs the first
     /// time, and again while a provider is missing from the list.
     pub(super) fn open_llm_picker(&mut self) {

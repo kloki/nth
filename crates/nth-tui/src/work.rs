@@ -17,10 +17,9 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, ScrollbarState},
 };
 
-use crate::{app::TabState, rich, spinner, theme};
+use crate::{app::TabState, pager::Pager, rich, spinner, theme};
 
 /// What this run's tab of the subagent on an item knows about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +59,7 @@ fn seen(item: &Item, live: &Live) -> Seen {
 pub struct WorkView {
     /// `None` while the session has no plan.
     plan: Option<Plan>,
-    top: usize,
-    max_top: usize,
-    height: usize,
+    pub pager: Pager,
 }
 
 impl WorkView {
@@ -107,48 +104,11 @@ impl WorkView {
         }
     }
 
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.top = self.top.saturating_sub(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.top = (self.top + lines).min(self.max_top);
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.height.max(1));
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.height.max(1));
-    }
-
-    pub fn jump_top(&mut self) {
-        self.top = 0;
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.top = self.max_top;
-    }
-
-    /// Where the view sits in the tab, while it doesn't all fit.
-    pub fn scrollbar(&self) -> Option<ScrollbarState> {
-        (self.max_top > 0).then(|| {
-            ScrollbarState::new(self.max_top + 1)
-                .position(self.top)
-                .viewport_content_length(self.height)
-        })
-    }
-
     /// `place` is the work directory as the header names it. Drawn anew
     /// every frame: a running item's spinner and time move.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, place: &str, live: &Live) {
         let lines = self.lines(place, usize::from(area.width), live);
-        self.height = usize::from(area.height);
-        self.max_top = lines.len().saturating_sub(self.height);
-        self.top = self.top.min(self.max_top);
-        let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines).scroll((top, 0)), area);
+        self.pager.render(frame, area, lines);
     }
 
     /// The header and overview, then a block per cycle, every row behind

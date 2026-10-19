@@ -3,12 +3,13 @@
 //! and the status bar. Row heights never depend on content, so nothing
 //! shifts while a turn runs.
 
-mod checks;
 mod completion;
 mod connect;
 mod content;
+mod diagnostics;
 mod dirs;
 mod editor;
+mod file;
 mod files;
 mod flash;
 mod git;
@@ -17,20 +18,22 @@ mod history;
 mod input;
 mod job;
 mod keys;
-mod llms;
+mod llm_picker;
 mod mode;
 mod monitor;
 mod mouse;
 mod notify;
 mod plan;
 mod profiles;
-mod resume;
-mod shown;
-mod spent;
+mod question;
+mod quit;
+mod session_picker;
+mod settings;
 mod subagent;
 #[cfg(test)]
 pub(crate) mod tests;
 mod turn;
+mod usage;
 mod work;
 
 use std::{
@@ -41,7 +44,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use checks::lsp_changed;
 use completion::Completion;
 pub(crate) use content::{Content, Panes, Tab, TabState};
 use crossterm::{
@@ -49,6 +51,7 @@ use crossterm::{
     execute, queue,
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
+use diagnostics::lsp_changed;
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -73,33 +76,30 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
-use spent::Spent;
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinError,
     time::MissedTickBehavior,
 };
 use turn::{Ended, Queued};
+use usage::Spent;
 
 use crate::{
     Checkers,
     chat::Chat,
     command::Command,
-    diagnostics::{self, Diagnostics, Program},
-    file::{FileId, FileRead, FileView},
+    diagnostics::{Diagnostics, Program},
+    file::FileRead,
     git::{GitStatus, Pr},
     header, hero,
     history::History,
-    llm_picker::{self, usage::LlmUsage},
+    llm_picker::usage::LlmUsage,
     monitor::MonitorView,
-    plan::PlanView,
     prompt::{self, Prompt},
-    question, session_picker,
-    settings::{self, ChatSettings, SettingsPanel},
+    settings::ChatSettings,
     spinner, status,
     subagent::SubagentView,
     usage::UsageView,
-    work::WorkView,
 };
 
 /// How often the app redraws with nothing else happening, while a turn
@@ -296,28 +296,9 @@ pub struct App {
     subagent_rx: mpsc::Receiver<SubagentEvent>,
     /// Each subagent's tab, open from its start until you close it.
     subagent_views: BTreeMap<SubagentId, SubagentView>,
-    /// Each file tab, open from when the model showed it until you close
-    /// it, and the id the next one gets.
-    file_views: BTreeMap<FileId, FileView>,
-    next_file: FileId,
-    /// Where the file tabs' watchers send what they read.
-    file_tx: mpsc::Sender<FileRead>,
-    file_rx: mpsc::Receiver<FileRead>,
-    /// The session's plan file and what the plan tab shows of it.
-    plan: PlanView,
-    plan_path: PathBuf,
-    plan_reading: Job<Option<String>>,
-    /// The next read is of a session just opened, so it marks nothing as
-    /// changed.
-    plan_settle: bool,
-    /// The session's work plan and what the work tab shows of it.
-    work: WorkView,
-    work_dir: PathBuf,
-    /// Reads of the work plan, with the directory each read.
-    work_reading: Job<(PathBuf, Option<nth_session::work::Plan>)>,
-    /// The next read is of a session just opened, so a plan it finds
-    /// opens its tab without showing it.
-    work_settle: bool,
+    file_tabs: file::FileTabs,
+    plan: plan::PlanTab,
+    work: work::WorkTab,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -343,9 +324,6 @@ pub struct App {
     editor: Job<std::io::Result<std::process::ExitStatus>>,
     notifier: Notifier,
     notify_errors: watch::Receiver<Option<String>>,
-    /// A turn that ended in plan mode, waiting for the plan to be read to
-    /// say whether it left a plan to approve.
-    plan_notice: Option<nth_notify::Context>,
     /// Whether the terminal has focus, as it last reported; nth starts
     /// focused because you just started it. Notifications go out only
     /// without it.
@@ -438,7 +416,6 @@ impl App {
         let (asks_tx, asks_rx) = mpsc::channel(4);
         let (screen_tx, screen_rx) = mpsc::channel(4);
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
-        let (file_tx, file_rx) = mpsc::channel(16);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
         let monitor_root = std::env::temp_dir().join("nth");
@@ -542,18 +519,9 @@ impl App {
             subagents: Subagents::default(),
             subagent_rx,
             subagent_views: BTreeMap::new(),
-            file_views: BTreeMap::new(),
-            next_file: 0,
-            file_tx,
-            file_rx,
-            plan: PlanView::default(),
-            plan_path,
-            plan_reading: Job::default(),
-            plan_settle: true,
-            work: WorkView::default(),
-            work_dir,
-            work_reading: Job::default(),
-            work_settle: true,
+            file_tabs: file::FileTabs::new(),
+            plan: plan::PlanTab::new(plan_path),
+            work: work::WorkTab::new(work_dir),
             monitor_root,
             notices_due: None,
             hold_notices: false,
@@ -566,7 +534,6 @@ impl App {
             editor: Job::default(),
             notify_errors: notifier.errors(),
             notifier,
-            plan_notice: None,
             focused: true,
             quit_armed: false,
             quit: false,
@@ -639,8 +606,8 @@ impl App {
         self.load_git();
         self.load_pr();
         self.list_llms();
-        self.read_plan();
-        self.read_work();
+        self.plan.read();
+        self.work.read();
 
         while !self.quit {
             if self.pending_editor.is_some() {
@@ -667,7 +634,7 @@ impl App {
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
                 Ok(()) = self.notify_errors.changed() => Step::NotifyFailed,
                 Some(show) = self.screen_rx.recv() => Step::Show(show),
-                Some(read) = self.file_rx.recv() => Step::FileRead(read),
+                Some(read) = self.file_tabs.next() => Step::FileRead(read),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.notices_due) => Step::NoticesDue,
@@ -686,8 +653,8 @@ impl App {
                 saved = self.history_saving.join() => Step::HistorySaved(saved),
                 saved = self.session_saving.join() => Step::SessionSaved(saved),
                 saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
-                plan = self.plan_reading.join() => Step::PlanRead(plan),
-                plan = self.work_reading.join() => Step::WorkRead(plan),
+                plan = self.plan.next() => Step::PlanRead(plan),
+                plan = self.work.next() => Step::WorkRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 tools = self.tools_lookup.join() => Step::ToolsFound(tools),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
@@ -878,10 +845,10 @@ impl App {
                     completion.draw(frame, area, at);
                 }
             }
-            Input::LlmPicker(picker) => llm_picker::draw(frame, input, picker),
-            Input::SessionPicker(picker) => session_picker::draw(frame, input, picker),
-            Input::Question(panel) => question::draw(frame, input, panel),
-            Input::Settings(panel) => settings::draw(frame, input, panel, self.settings),
+            Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
+            Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
+            Input::Question(panel) => crate::question::draw(frame, input, panel),
+            Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
                 self.areas.login_url = crate::connect::draw(frame, input, panel)
             }
@@ -906,30 +873,30 @@ impl App {
             }
             Tab::Plan => {
                 let place = self.plan_place();
-                self.plan.draw(frame, area, &place);
-                if let Some(state) = self.plan.scrollbar() {
+                self.plan.view.draw(frame, area, &place);
+                if let Some(state) = self.plan.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
             Tab::Work => {
                 let place = self.work_place();
                 let live = self.live_work();
-                self.work.draw(frame, area, &place, &live);
-                if let Some(state) = self.work.scrollbar() {
+                self.work.view.draw(frame, area, &place, &live);
+                if let Some(state) = self.work.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
             Tab::File(id) => {
                 let place = self.file_place(id);
-                if let Some(view) = self.file_views.get_mut(&id) {
+                if let Some(view) = self.file_tabs.views.get_mut(&id) {
                     view.draw(frame, area, &place);
-                    if let Some(state) = view.scrollbar() {
+                    if let Some(state) = view.pager.scrollbar() {
                         draw_scrollbar(frame, area, state);
                     }
                 }
             }
             Tab::Diagnostics => {
-                let row = |label, llm: Llm, current, inherits| diagnostics::ModeModel {
+                let row = |label, llm: Llm, current, inherits| crate::diagnostics::ModeModel {
                     label,
                     effort: llm.effort.wire(),
                     context_window: self.context_window_of(&llm.model),
@@ -951,7 +918,7 @@ impl App {
                     false,
                     self.mode_llms.clerk.is_none().then_some("subagent"),
                 );
-                let facts = diagnostics::Facts {
+                let facts = crate::diagnostics::Facts {
                     models: [plan, act, subagent, clerk],
                     llms: self.llms.as_ref().map(|l| l.models.len()),
                     failed: self.llms.as_ref().map_or(&[], |l| l.failed.as_slice()),
@@ -963,7 +930,7 @@ impl App {
                     home: self.home.as_deref(),
                 };
                 self.diagnostics.draw(frame, area, &facts);
-                if let Some(state) = self.diagnostics.scrollbar() {
+                if let Some(state) = self.diagnostics.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -979,7 +946,7 @@ impl App {
                     &self.all_time_tools,
                     &cost,
                 );
-                if let Some(state) = self.usage_view.scrollbar() {
+                if let Some(state) = self.usage_view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -1038,11 +1005,11 @@ impl App {
             {
                 self.load_git();
                 if call.name != "bash" {
-                    self.read_plan();
+                    self.plan.read();
                 }
             }
             Event::ToolFinished { call, .. } if tool_names::touches_work(&call.name) => {
-                self.read_work()
+                self.work.read()
             }
             Event::Usage(usage) => {
                 self.usage = Some(*usage);
@@ -1079,10 +1046,7 @@ impl App {
             Command::Compact => self.compact(),
             Command::Close => self.close_content(),
             Command::CopyId => self.copy_session_id(),
-            Command::Settings => {
-                self.completion = None;
-                self.input = Input::Settings(SettingsPanel::default());
-            }
+            Command::Settings => self.open_settings(),
         }
     }
 
@@ -1114,8 +1078,8 @@ impl App {
         self.session = Some(session);
         self.usage = None;
         self.spent = Spent::default();
-        self.plan_for_session(plan_path);
-        self.work_for_session(work_dir);
+        self.plan.for_session(plan_path);
+        self.work.for_session(work_dir);
         self.left_session();
     }
 
@@ -1129,41 +1093,6 @@ impl App {
                 Tab::Usage => self.load_tools(),
                 _ => {}
             }
-        }
-    }
-
-    /// Re-reads every saved session's tool totals, for the usage tab's
-    /// all-time section; the store's absence leaves what is shown.
-    fn load_tools(&mut self) {
-        let Some(store) = self.store.clone() else {
-            return;
-        };
-        if self.tools_lookup.is_running() {
-            return;
-        }
-        self.tools_lookup.start(|_| {
-            tokio::spawn(async move {
-                let spending = store.spending().await?;
-                let spends: Vec<&nth_session::Spend> = spending
-                    .iter()
-                    .flat_map(|session| session.usage.spends())
-                    .collect();
-                let mut tools: Vec<(String, ToolUse)> = nth_session::usage::tools(spends)
-                    .into_iter()
-                    .map(|(name, use_of)| (name.to_string(), use_of))
-                    .collect();
-                tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls).then_with(|| a.0.cmp(&b.0)));
-                Ok(tools)
-            })
-        });
-    }
-
-    /// The tool totals arrived; a failure keeps what was already shown and
-    /// says why.
-    fn tools_found(&mut self, tools: Result<Vec<(String, ToolUse)>, store::Error>) {
-        match tools {
-            Ok(tools) => self.all_time_tools = tools,
-            Err(e) => self.hint = Some(format!("tool usage: {e}").into()),
         }
     }
 }

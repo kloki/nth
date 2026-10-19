@@ -15,6 +15,7 @@ mod history;
 mod llm_picker;
 mod mention;
 mod monitor;
+mod pager;
 mod plan;
 mod popup;
 mod prompt;

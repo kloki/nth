@@ -5,19 +5,16 @@
 use std::collections::HashSet;
 
 use nth_icons::icons;
-use nth_protocol::{MonitorId, Panel};
+use nth_protocol::{MonitorId, Panel, StoppedBy};
 use nth_session::subagent::SubagentId;
 
 use super::{App, input::Input};
 use crate::{
     chat::Chat,
-    diagnostics::Diagnostics,
     file::{FileId, FileView},
     monitor::MonitorView,
-    plan::PlanView,
+    pager::Pager,
     subagent::SubagentView,
-    usage::UsageView,
-    work::WorkView,
 };
 
 /// A view the content panel can show. Each view's state lives on the app,
@@ -283,10 +280,11 @@ impl App {
             Tab::Chat => "chat".into(),
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
-            Tab::Plan => self.plan.label(),
-            Tab::Work => self.work.label(),
+            Tab::Plan => self.plan.view.label(),
+            Tab::Work => self.work.view.label(),
             Tab::File(id) => self
-                .file_views
+                .file_tabs
+                .views
                 .get(&id)
                 .map_or_else(|| format!("file {id}"), FileView::label),
             Tab::Monitor(id) => self
@@ -298,6 +296,46 @@ impl App {
                 .get(&id)
                 .map_or_else(|| format!("subagent {id}"), SubagentView::label),
         }
+    }
+
+    /// ctrl+w: stops the monitor showing, whose tab then closes, or the
+    /// subagent showing, or closes its tab once stopped.
+    pub(super) fn stop_content(&mut self) {
+        match self.content.active() {
+            Tab::Monitor(id) => {
+                self.monitors.stop(id, StoppedBy::User);
+            }
+            Tab::Subagent(id) => match self.subagent_views.get(&id) {
+                Some(view) if view.is_running() => self.interrupt_subagent(id),
+                _ => self.close_content(),
+            },
+            _ => {}
+        }
+    }
+
+    /// Closes the tab showing, unless it is a monitor or subagent still
+    /// running, or the plan or the work plan, which show while there is one.
+    pub(super) fn close_content(&mut self) {
+        if self.content.active() == Tab::Work && self.work.view.exists() {
+            self.hint = Some("the work tab stays while there is a plan".into());
+            return;
+        }
+        let running = match self.content.active() {
+            Tab::Monitor(id) => self.monitor_views.contains_key(&id),
+            Tab::Subagent(id) => self
+                .subagent_views
+                .get(&id)
+                .is_some_and(SubagentView::is_running),
+            _ => false,
+        };
+        if running {
+            self.hint = Some("still running · ctrl+w stops it first".into());
+            return;
+        }
+        // A monitor's tab is only here while it runs, and a subagent's view
+        // stays: continued, it opens again with its turns.
+        self.content.close();
+        self.forget_closed_files();
     }
 
     /// In front of the tab's name: what kind it is, or a subagent's
@@ -321,14 +359,41 @@ impl App {
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
             Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
-            Tab::Plan => self.plan.state(),
-            Tab::Work => self.work.state(&self.live_work()),
+            Tab::Plan => self.plan.view.state(),
+            Tab::Work => self.work.view.state(&self.live_work()),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
                 .map_or(TabState::Idle, SubagentView::state),
+        }
+    }
+}
+
+/// What a read did to a tab that shows while its file does: the plan's
+/// and the work plan's.
+pub(super) enum Change {
+    /// The file is new.
+    Created,
+    /// The file is there, maybe revised.
+    Present,
+    Gone,
+}
+
+impl App {
+    /// Opens, keeps or closes `tab` after a read of its file. A new one is
+    /// what you will want to see, and it comes in after a blank like a tab
+    /// the model shows you; a revision opens the tab unfocused, so the
+    /// reply the model is writing stays in view.
+    pub(super) fn tab_read(&mut self, tab: Tab, change: Change) {
+        match change {
+            Change::Created => {
+                self.content.open(tab);
+                self.flash = Some(super::flash::Flash::new());
+            }
+            Change::Present => self.content.add(tab),
+            Change::Gone => self.content.remove(tab),
         }
     }
 }
@@ -370,185 +435,29 @@ impl Scrollable for Chat {
     }
 }
 
-impl Scrollable for Diagnostics {
+impl Scrollable for Pager {
     fn scroll_up(&mut self, lines: usize) {
-        Diagnostics::scroll_up(self, lines);
+        Pager::scroll_up(self, lines);
     }
 
     fn scroll_down(&mut self, lines: usize) {
-        Diagnostics::scroll_down(self, lines);
+        Pager::scroll_down(self, lines);
     }
 
     fn page_up(&mut self) {
-        Diagnostics::page_up(self);
+        Pager::page_up(self);
     }
 
     fn page_down(&mut self) {
-        Diagnostics::page_down(self);
+        Pager::page_down(self);
     }
 
     fn jump_top(&mut self) {
-        Diagnostics::jump_top(self);
+        Pager::jump_top(self);
     }
 
     fn jump_bottom(&mut self) {
-        Diagnostics::jump_bottom(self);
-    }
-}
-
-impl Scrollable for UsageView {
-    fn scroll_up(&mut self, lines: usize) {
-        UsageView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        UsageView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        UsageView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        UsageView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        UsageView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        UsageView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for MonitorView {
-    fn scroll_up(&mut self, lines: usize) {
-        MonitorView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        MonitorView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        MonitorView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        MonitorView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        MonitorView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        MonitorView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for SubagentView {
-    fn scroll_up(&mut self, lines: usize) {
-        SubagentView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        SubagentView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        SubagentView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        SubagentView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        SubagentView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        SubagentView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for PlanView {
-    fn scroll_up(&mut self, lines: usize) {
-        PlanView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        PlanView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        PlanView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        PlanView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        PlanView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        PlanView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for WorkView {
-    fn scroll_up(&mut self, lines: usize) {
-        WorkView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        WorkView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        WorkView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        WorkView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        WorkView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        WorkView::jump_bottom(self);
-    }
-}
-
-impl Scrollable for FileView {
-    fn scroll_up(&mut self, lines: usize) {
-        FileView::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        FileView::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        FileView::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        FileView::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        FileView::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        FileView::jump_bottom(self);
+        Pager::jump_bottom(self);
     }
 }
 
@@ -563,13 +472,13 @@ impl App {
     pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
         Some(match tab {
             Tab::Chat => &mut self.chat,
-            Tab::Diagnostics => &mut self.diagnostics,
-            Tab::Usage => &mut self.usage_view,
-            Tab::Monitor(id) => self.monitor_views.get_mut(&id)?,
-            Tab::Subagent(id) => self.subagent_views.get_mut(&id)?,
-            Tab::Plan => &mut self.plan,
-            Tab::Work => &mut self.work,
-            Tab::File(id) => self.file_views.get_mut(&id)?,
+            Tab::Diagnostics => &mut self.diagnostics.pager,
+            Tab::Usage => &mut self.usage_view.pager,
+            Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
+            Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
+            Tab::Plan => &mut self.plan.view.pager,
+            Tab::Work => &mut self.work.view.pager,
+            Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,
         })
     }
 }

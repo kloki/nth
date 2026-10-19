@@ -3,29 +3,53 @@
 //! subagent's, after each subagent's turn and at the end of every turn,
 //! and shown in a tab while there is a plan.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nth_session::work::{Plan, Store};
+use tokio::task::JoinError;
 
-use super::{App, Tab, flash::Flash};
-use crate::work::{Live, LiveTask};
+use super::{App, Tab, content::Change, job::Job};
+use crate::work::{Live, LiveTask, WorkView};
 
 /// What a subagent's tab says it works on: its description.
 const WORK_PREFIX: &str = "work ";
 
-impl App {
-    /// Points the work tab at the directory of the session the app is on,
-    /// and reads it as already there.
-    pub(super) fn work_for_session(&mut self, dir: PathBuf) {
-        self.work_dir = dir;
-        self.work_settle = true;
-        self.read_work();
+/// A read of the work plan, with the directory it read.
+type Read = (PathBuf, Option<Plan>);
+
+/// The session's work plan, where it is read from, and what the work tab
+/// shows of it.
+pub(super) struct WorkTab {
+    pub(super) view: WorkView,
+    pub(super) dir: PathBuf,
+    pub(super) reading: Job<Read>,
+    /// The next read is of a session just opened, so a plan it finds
+    /// opens its tab without showing it.
+    settle: bool,
+}
+
+impl WorkTab {
+    pub(super) fn new(dir: PathBuf) -> Self {
+        Self {
+            view: WorkView::default(),
+            dir,
+            reading: Job::default(),
+            settle: true,
+        }
+    }
+
+    /// Points the tab at the directory of the session the app is on, and
+    /// reads it as already there.
+    pub(super) fn for_session(&mut self, dir: PathBuf) {
+        self.dir = dir;
+        self.settle = true;
+        self.read();
     }
 
     /// Reads the plan in the background; a tool may just have written it.
-    pub(super) fn read_work(&mut self) {
-        let dir = self.work_dir.clone();
-        self.work_reading.start_or_queue(|_| {
+    pub(super) fn read(&mut self) {
+        let dir = self.dir.clone();
+        self.reading.start_or_queue(|_| {
             // A plan that can't be read shows as none, as the plan file does.
             tokio::spawn(async move {
                 let plan = Store::new(dir.clone()).load().await.ok().flatten();
@@ -34,45 +58,56 @@ impl App {
         });
     }
 
-    /// The plan as read from `dir`: its tab shows when the plan is first
-    /// written, stays open while there is one, and closes once there is
-    /// none. A read of a session the app has since left is dropped; the
-    /// one queued behind it reads this one's.
-    pub(super) fn work_read(&mut self, (dir, plan): (PathBuf, Option<Plan>)) {
-        if dir != self.work_dir {
-            if self.work_reading.take_again() {
-                self.read_work();
-            }
-            return;
+    /// The read running, once it is back; never while none runs.
+    pub(super) async fn next(&mut self) -> Result<Read, JoinError> {
+        self.reading.join().await
+    }
+
+    /// Takes in the plan as read from `dir`, and says what that did to it;
+    /// `None` for a read of a session the app has since left, whose
+    /// queued read reads this one's.
+    fn took(&mut self, (dir, plan): Read) -> Option<Change> {
+        if dir != self.dir {
+            return None;
         }
-        let settle = std::mem::take(&mut self.work_settle);
-        let existed = self.work.exists();
-        self.work.update(plan);
-        if !settle && !existed && self.work.exists() {
-            // The first work plan is what you will want to watch, and it
-            // comes in after a blank like a tab the model shows you.
-            self.content.open(Tab::Work);
-            self.flash = Some(Flash::new());
-        } else if self.work.exists() {
-            // Progress opens the tab unfocused, so the reply the model is
-            // writing stays in view.
-            self.content.add(Tab::Work);
+        let settle = std::mem::take(&mut self.settle);
+        let existed = self.view.exists();
+        self.view.update(plan);
+        Some(if !settle && !existed && self.view.exists() {
+            Change::Created
+        } else if self.view.exists() {
+            Change::Present
         } else {
-            self.content.remove(Tab::Work);
+            Change::Gone
+        })
+    }
+
+    /// The work directory as the tab names it: relative to `cwd`.
+    fn place(&self, cwd: &Path) -> String {
+        self.dir
+            .strip_prefix(cwd)
+            .unwrap_or(&self.dir)
+            .display()
+            .to_string()
+    }
+}
+
+impl App {
+    /// The plan as read: its tab shows when the plan is first written,
+    /// stays open while there is one, and closes once there is none.
+    pub(super) fn work_read(&mut self, read: Read) {
+        if let Some(change) = self.work.took(read) {
+            self.tab_read(Tab::Work, change);
         }
-        if self.work_reading.take_again() {
-            self.read_work();
+        if self.work.reading.take_again() {
+            self.work.read();
         }
     }
 
     /// The work directory as the tab names it: relative to the working
     /// directory.
     pub(super) fn work_place(&self) -> String {
-        self.work_dir
-            .strip_prefix(&self.cwd)
-            .unwrap_or(&self.work_dir)
-            .display()
-            .to_string()
+        self.work.place(&self.cwd)
     }
 
     /// This run's subagents on work items, by the item, from their tabs.
@@ -114,7 +149,7 @@ mod tests {
         // Under the working directory, so the header names it short on
         // any platform's temporary directory.
         app.cwd = dir.path().to_path_buf();
-        app.work_dir = dir.path().join("work");
+        app.work.dir = dir.path().join("work");
         (app, dir)
     }
 
@@ -139,12 +174,12 @@ mod tests {
             task,
             ..Item::pending(at, slug, "Do it.", todos)
         };
-        Store::new(app.work_dir.clone()).write(&item).await.unwrap();
+        Store::new(app.work.dir.clone()).write(&item).await.unwrap();
     }
 
     async fn read(app: &mut App) {
-        app.read_work();
-        let read = app.work_reading.join().await.unwrap();
+        app.work.read();
+        let read = app.work.reading.join().await.unwrap();
         app.work_read(read);
     }
 
@@ -181,7 +216,7 @@ mod tests {
         assert_eq!(shown(&top[4]), " ▎ ✓ 1 a  1/1");
         assert_eq!(shown(&top[5]), " ▎   ✓ store  1/2");
         assert_eq!(shown(&top[7]), " ▎ → 2 b  0/1");
-        app.work.jump_bottom();
+        app.work.view.pager.jump_bottom();
         let bottom = rows(&mut app);
         assert!(
             bottom.iter().any(|r| shown(r) == " ▎   ● tab  1/2"),
@@ -227,15 +262,15 @@ mod tests {
             id: 1,
             event: tool_finished("work_todo"),
         });
-        assert!(app.work_reading.is_running(), "a ticked todo is read");
-        app.work_reading.join().await.unwrap();
+        assert!(app.work.reading.is_running(), "a ticked todo is read");
+        app.work.reading.join().await.unwrap();
         app.on_subagent(SubagentEvent::TurnEnded {
             id: 1,
             outcome: TaskOutcome::Completed("ok".into()),
             elapsed: std::time::Duration::from_secs(1),
             model: "glm".into(),
         });
-        assert!(app.work_reading.is_running(), "and so is a return");
+        assert!(app.work.reading.is_running(), "and so is a return");
     }
 
     #[tokio::test]
@@ -253,8 +288,8 @@ mod tests {
         );
 
         app.on_session(tool_finished("work_item"));
-        assert!(app.work_reading.is_running());
-        app.work_reading.join().await.unwrap();
+        assert!(app.work.reading.is_running());
+        app.work.reading.join().await.unwrap();
         std::fs::remove_dir_all(dir.path().join("work")).unwrap();
         read(&mut app).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
@@ -295,14 +330,14 @@ mod tests {
     async fn a_read_of_a_session_left_is_dropped() {
         let (mut app, dir) = app_with_work();
         write(&app, "01-a", "store", Status::Pending, None).await;
-        app.read_work();
-        app.work_for_session(dir.path().join("other"));
+        app.work.read();
+        app.work.for_session(dir.path().join("other"));
 
-        let stale = app.work_reading.join().await.unwrap();
+        let stale = app.work.reading.join().await.unwrap();
         app.work_read(stale);
 
         assert_eq!(app.content.tabs(), [Tab::Chat], "the old plan never showed");
-        assert!(app.work_reading.is_running(), "the new one is read");
+        assert!(app.work.reading.is_running(), "the new one is read");
     }
 
     #[tokio::test]

@@ -10,11 +10,13 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Paragraph, ScrollbarState},
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{rich, theme};
+use crate::{
+    pager::{Cache, Pager},
+    rich, theme,
+};
 
 /// Which file tab a read is for.
 pub type FileId = u32;
@@ -32,12 +34,8 @@ pub struct FileView {
     text: Option<String>,
     /// The watcher has reported at least once.
     read: bool,
-    /// The first line in view, and how far it can go, as of the last draw.
-    top: usize,
-    max_top: usize,
-    height: usize,
-    /// The file as drawn last, and the width it was wrapped for.
-    rendered: Option<(usize, Vec<Line<'static>>)>,
+    pub pager: Pager,
+    cache: Cache,
     _watcher: Watcher,
 }
 
@@ -49,10 +47,8 @@ impl FileView {
             path,
             text: None,
             read: false,
-            top: 0,
-            max_top: 0,
-            height: 0,
-            rendered: None,
+            pager: Pager::default(),
+            cache: Cache::default(),
         }
     }
 
@@ -66,7 +62,7 @@ impl FileView {
         self.read = true;
         if text != self.text {
             self.text = text;
-            self.rendered = None;
+            self.cache.invalidate();
         }
     }
 
@@ -78,52 +74,15 @@ impl FileView {
         )
     }
 
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.top = self.top.saturating_sub(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.top = (self.top + lines).min(self.max_top);
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.height.max(1));
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.height.max(1));
-    }
-
-    pub fn jump_top(&mut self) {
-        self.top = 0;
-    }
-
-    pub fn jump_bottom(&mut self) {
-        self.top = self.max_top;
-    }
-
-    /// Where the view sits in the file, while it is longer than the tab.
-    pub fn scrollbar(&self) -> Option<ScrollbarState> {
-        (self.max_top > 0).then(|| {
-            ScrollbarState::new(self.max_top + 1)
-                .position(self.top)
-                .viewport_content_length(self.height)
-        })
-    }
-
     /// `place` is the file as the header names it.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, place: &str) {
         let width = usize::from(area.width);
-        let lines = match self.rendered.take() {
-            Some((drawn, lines)) if drawn == width => lines,
-            _ => self.lines(place, width),
+        let lines = match self.cache.take(width) {
+            Some(lines) => lines,
+            None => self.lines(place, width),
         };
-        self.height = usize::from(area.height);
-        self.max_top = lines.len().saturating_sub(self.height);
-        self.top = self.top.min(self.max_top);
-        let top = u16::try_from(self.top).unwrap_or(u16::MAX);
-        frame.render_widget(Paragraph::new(lines.clone()).scroll((top, 0)), area);
-        self.rendered = Some((width, lines));
+        self.pager.render(frame, area, lines.clone());
+        self.cache.keep(width, lines);
     }
 
     /// A header naming the file, then the file wrapped to `width`.
@@ -274,15 +233,15 @@ mod tests {
         terminal
             .draw(|frame| view.draw(frame, frame.area(), "a.txt"))
             .expect("draws");
-        view.scroll_down(5);
-        assert!(view.scrollbar().is_some());
+        view.pager.scroll_down(5);
+        assert!(view.pager.scrollbar().is_some());
 
         view.update(Some("more\n".repeat(40)));
         terminal
             .draw(|frame| view.draw(frame, frame.area(), "a.txt"))
             .expect("draws");
 
-        assert_eq!(view.top, 5);
+        assert_eq!(view.pager.top(), 5);
     }
 
     #[tokio::test]
