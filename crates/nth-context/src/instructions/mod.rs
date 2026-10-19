@@ -3,6 +3,9 @@
 //! the files from the working directory up to the home directory (or the
 //! project root, outside home) go into the system prompt; files deeper in
 //! the tree are attached when the model reads something next to them.
+//! Each brings the files it imports with `@path` (`imports`).
+
+mod imports;
 
 use std::{
     collections::BTreeSet,
@@ -35,10 +38,22 @@ pub(crate) fn discover(
         .into_iter()
         .filter(|path| Some(path) != global.as_ref());
     let found: Vec<PathBuf> = global.iter().cloned().chain(project).collect();
-    let instructions = found
-        .into_iter()
-        .filter_map(|path| read(path, warnings))
-        .collect();
+    // A file the walk found comes in its own place, never as an import.
+    let mut seen: BTreeSet<PathBuf> = found.iter().cloned().collect();
+    let mut instructions = Vec::new();
+    for path in found {
+        let Some(instruction) = read(path, warnings) else {
+            continue;
+        };
+        let imported = imports::expand(
+            &instruction,
+            paths.home.as_deref(),
+            &mut imports::once(&mut seen),
+            warnings,
+        );
+        instructions.push(instruction);
+        instructions.extend(imported);
+    }
     (instructions, name)
 }
 
@@ -128,20 +143,22 @@ fn first(dir: &Path, names: &[&str]) -> Option<PathBuf> {
 /// files called `name` count when the project has one (the name `discover`
 /// settled on); without one the first name found in each directory does.
 /// The root's own files are already in the system prompt, so the walk stops
-/// below it.
+/// below it. Each file comes with its imports, claimed in `loaded` too.
 pub async fn nested(
     dir: PathBuf,
     cwd: PathBuf,
     name: Option<&'static str>,
     loaded: Arc<Mutex<BTreeSet<PathBuf>>>,
 ) -> Vec<Instruction> {
-    crate::blocking(move || nested_blocking(&dir, &cwd, name, &loaded)).await
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    crate::blocking(move || nested_blocking(&dir, &cwd, name, home.as_deref(), &loaded)).await
 }
 
 fn nested_blocking(
     dir: &Path,
     cwd: &Path,
     name: Option<&'static str>,
+    home: Option<&Path>,
     loaded: &Mutex<BTreeSet<PathBuf>>,
 ) -> Vec<Instruction> {
     let cwd = normalize(cwd);
@@ -155,20 +172,34 @@ fn nested_blocking(
         .ancestors()
         .take_while(|dir| *dir != root && dir.starts_with(&root))
         .filter_map(|dir| first(dir, names))
-        .filter(|path| {
-            // Claimed before reading, so a parallel read never takes it too.
-            loaded
-                .lock()
-                .expect("only poisoned if a holder panicked")
-                .insert(path.clone())
-        })
+        .filter(|path| claim(loaded, path))
         .collect();
     found.reverse();
     let mut ignored = Vec::new();
-    found
-        .into_iter()
-        .filter_map(|path| read(path, &mut ignored))
-        .collect()
+    let mut instructions = Vec::new();
+    for path in found {
+        let Some(instruction) = read(path, &mut ignored) else {
+            continue;
+        };
+        let imported = imports::expand(
+            &instruction,
+            home,
+            &mut |path| claim(loaded, path),
+            &mut ignored,
+        );
+        instructions.push(instruction);
+        instructions.extend(imported);
+    }
+    instructions
+}
+
+/// Takes `path` for this read; false when another has it. Claimed before
+/// reading, so a parallel read never takes it too.
+fn claim(loaded: &Mutex<BTreeSet<PathBuf>>, path: &Path) -> bool {
+    loaded
+        .lock()
+        .expect("only poisoned if a holder panicked")
+        .insert(path.to_path_buf())
 }
 
 /// Resolves `.` and `..` without touching the file system, so paths the
@@ -541,6 +572,131 @@ mod tests {
         );
 
         assert_eq!(x.len() + y.len(), 1, "{x:?} {y:?}");
+    }
+
+    #[test]
+    fn imports_follow_the_file_that_names_them() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "root @docs/style.md and @agents\nmore")
+            .file("repo/docs/style.md", "style @../RULES.md")
+            .file("repo/RULES.md", "rules")
+            .file("repo/sub/AGENTS.md", "sub");
+
+        assert_eq!(
+            tree.discover("repo/sub", &no_globals()),
+            pairs(&[
+                ("repo/AGENTS.md", "root @docs/style.md and @agents\nmore"),
+                ("repo/docs/style.md", "style @../RULES.md"),
+                ("repo/RULES.md", "rules"),
+                ("repo/sub/AGENTS.md", "sub"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_tilde_import_is_read_from_home() {
+        let tree = Tree::new();
+        tree.file("home/.claude/CLAUDE.md", "@RTK.md\n@~/notes/me.md")
+            .file("home/.claude/RTK.md", "rtk")
+            .file("home/notes/me.md", "me");
+        let paths = Paths {
+            config_home: Some(tree.path("home/.config")),
+            ..home(&tree)
+        };
+
+        assert_eq!(
+            tree.discover("home", &paths),
+            pairs(&[
+                ("home/.claude/CLAUDE.md", "@RTK.md\n@~/notes/me.md"),
+                ("home/.claude/RTK.md", "rtk"),
+                ("home/notes/me.md", "me"),
+            ])
+        );
+    }
+
+    #[test]
+    fn imports_stop_four_files_deep() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "@1.md")
+            .file("repo/1.md", "@2.md")
+            .file("repo/2.md", "@3.md")
+            .file("repo/3.md", "@4.md")
+            .file("repo/4.md", "@5.md")
+            .file("repo/5.md", "too deep");
+
+        let found: Vec<String> = tree
+            .discover("repo", &no_globals())
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "repo/AGENTS.md",
+                "repo/1.md",
+                "repo/2.md",
+                "repo/3.md",
+                "repo/4.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_comes_once_however_often_it_is_named() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", "@a.md @b.md @AGENTS.md")
+            .file("repo/a.md", "@b.md")
+            .file("repo/b.md", "@a.md");
+
+        assert_eq!(
+            tree.discover("repo", &no_globals()),
+            pairs(&[
+                ("repo/AGENTS.md", "@a.md @b.md @AGENTS.md"),
+                ("repo/a.md", "@b.md"),
+                ("repo/b.md", "@a.md"),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nested_file_brings_its_imports_once() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/a/AGENTS.md", "a @notes.md")
+            .file("repo/a/notes.md", "notes")
+            .file("repo/a/b/AGENTS.md", "b @../notes.md")
+            .file("repo/a/b/x.rs", "");
+        let loaded = loaded(&[]);
+
+        assert_eq!(
+            nested_in(&tree, "a/b", &loaded).await,
+            pairs(&[
+                ("repo/a/AGENTS.md", "a @notes.md"),
+                ("repo/a/notes.md", "notes"),
+                ("repo/a/b/AGENTS.md", "b @../notes.md"),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_reads_attach_an_import_once() {
+        let tree = Tree::new();
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/a/AGENTS.md", "@../shared.md")
+            .file("repo/b/AGENTS.md", "@../shared.md")
+            .file("repo/shared.md", "shared");
+        let loaded = loaded(&[]);
+
+        let (a, b) = tokio::join!(
+            nested_in(&tree, "a", &loaded),
+            nested_in(&tree, "b", &loaded)
+        );
+
+        let shared = a.iter().chain(&b).filter(|(p, _)| p == "repo/shared.md");
+        assert_eq!(shared.count(), 1, "{a:?} {b:?}");
     }
 
     #[test]
