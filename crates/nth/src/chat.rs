@@ -105,6 +105,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         formatters: post_write.formatters().clone(),
         rtk: config.tools.bash.rtk,
     };
+    let chatgpt = crate::chatgpt(&paths)?;
     let provider: Arc<dyn Provider> = Arc::new(provider);
     // The subagents the task tool starts report to the chat, a tab each.
     let (subagent_tx, subagent_rx) = tokio::sync::mpsc::channel(256);
@@ -138,7 +139,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
                 tool_output: config.chat.tool_output,
             },
             split_width: config.layout.split_width,
-            chatgpt: crate::chatgpt()?,
+            chatgpt,
         },
     )
     .await;

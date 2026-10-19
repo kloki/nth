@@ -328,7 +328,7 @@ fn pick(mut listing: Listing) -> Result<String> {
 /// is an error naming every variable; so is a model, the config's or a
 /// mode's, on a provider whose key is not set or that is not connected.
 fn providers(config: &Config) -> Result<Providers> {
-    let chatgpt = chatgpt()?;
+    let chatgpt = chatgpt(&config.paths())?;
     let mut endpoints = Vec::new();
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
@@ -381,8 +381,11 @@ fn providers(config: &Config) -> Result<Providers> {
 }
 
 /// The ChatGPT login, kept in nth's `auth.json`.
-fn chatgpt() -> Result<nth_auth::ChatGpt> {
-    Ok(nth_auth::ChatGpt::new(nth_auth::Store::new()?)?)
+fn chatgpt(paths: &Paths) -> Result<nth_auth::ChatGpt> {
+    let dir = paths
+        .nth_data()
+        .context("neither XDG_DATA_HOME nor HOME is set, so nth has nowhere to keep credentials")?;
+    Ok(nth_auth::ChatGpt::new(nth_auth::Store::new(&dir))?)
 }
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands

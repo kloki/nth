@@ -10,6 +10,7 @@ use std::{
 };
 
 use base64::Engine;
+use nth_context::Paths;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -62,13 +63,7 @@ struct Head {
 /// Where nth keeps what it saves: `$XDG_DATA_HOME/nth`, or
 /// `~/.local/share/nth` when that is unset.
 pub fn data_dir() -> Result<PathBuf, Error> {
-    let data = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-        Some(data) => PathBuf::from(data),
-        None => {
-            PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoDataDir)?).join(".local/share")
-        }
-    };
-    Ok(data.join("nth"))
+    Paths::from_env().nth_data().ok_or(Error::NoDataDir)
 }
 
 #[derive(Debug, Clone)]

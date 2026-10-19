@@ -392,7 +392,7 @@ mod tests {
             Paths {
                 home: Some(self.path("home")),
                 config_home: Some(self.path("home/.config")),
-                skill_paths: Vec::new(),
+                ..Paths::default()
             }
         }
 

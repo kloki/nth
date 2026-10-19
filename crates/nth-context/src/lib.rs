@@ -25,6 +25,9 @@ pub struct Paths {
     /// `$XDG_CONFIG_HOME`, or `~/.config` when that is unset. nth's own
     /// files are under `nth/` in it, opencode's under `opencode/`.
     pub config_home: Option<PathBuf>,
+    /// `$XDG_DATA_HOME`, or `~/.local/share` when that is unset. nth keeps
+    /// what it saves under `nth/` in it.
+    pub data_home: Option<PathBuf>,
     /// Extra skill folders from the config. Relative ones are resolved
     /// against the working directory.
     pub skill_paths: Vec<PathBuf>,
@@ -39,9 +42,14 @@ impl Paths {
             .filter(|c| !c.is_empty())
             .map(PathBuf::from)
             .or_else(|| home.as_ref().map(|h| h.join(".config")));
+        let data_home = std::env::var_os("XDG_DATA_HOME")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(".local/share")));
         Self {
             home,
             config_home,
+            data_home,
             skill_paths: Vec::new(),
         }
     }
@@ -49,6 +57,11 @@ impl Paths {
     /// nth's own config directory.
     pub fn config_dir(&self) -> Option<PathBuf> {
         self.config_home.as_ref().map(|c| c.join("nth"))
+    }
+
+    /// Where nth keeps what it saves: sessions, credentials, history.
+    pub fn nth_data(&self) -> Option<PathBuf> {
+        self.data_home.as_ref().map(|d| d.join("nth"))
     }
 }
 

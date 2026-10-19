@@ -659,7 +659,7 @@ mod tests {
         let paths = nth_context::Paths {
             home: Some(dir.path().to_path_buf()),
             config_home: Some(dir.path().join(".config")),
-            skill_paths: Vec::new(),
+            ..nth_context::Paths::default()
         };
         let context = Context::discover(dir.path(), &paths);
         let mut facts = facts(&context, &[]);

@@ -13,8 +13,6 @@ pub use store::{OAuth, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("neither XDG_DATA_HOME nor HOME is set, so nth has nowhere to keep credentials")]
-    NoDataDir,
     #[error("{}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
     #[error("{}: {source}", path.display())]
