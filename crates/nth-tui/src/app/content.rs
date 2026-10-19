@@ -281,7 +281,7 @@ impl App {
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
             Tab::Plan => self.plan.label(),
-            Tab::Work => self.work.label(),
+            Tab::Work => self.work.view.label(),
             Tab::File(id) => self
                 .file_tabs
                 .views
@@ -316,7 +316,7 @@ impl App {
     /// Closes the tab showing, unless it is a monitor or subagent still
     /// running, or the plan or the work plan, which show while there is one.
     pub(super) fn close_content(&mut self) {
-        if self.content.active() == Tab::Work && self.work.exists() {
+        if self.content.active() == Tab::Work && self.work.view.exists() {
             self.hint = Some("the work tab stays while there is a plan".into());
             return;
         }
@@ -360,13 +360,40 @@ impl App {
             Tab::Chat => self.last_turn,
             Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
             Tab::Plan => self.plan.state(),
-            Tab::Work => self.work.state(&self.live_work()),
+            Tab::Work => self.work.view.state(&self.live_work()),
             // Its tab closes once the process stops.
             Tab::Monitor(_) => TabState::Working,
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
                 .map_or(TabState::Idle, SubagentView::state),
+        }
+    }
+}
+
+/// What a read did to a tab that shows while its file does: the plan's
+/// and the work plan's.
+pub(super) enum Change {
+    /// The file is new.
+    Created,
+    /// The file is there, maybe revised.
+    Present,
+    Gone,
+}
+
+impl App {
+    /// Opens, keeps or closes `tab` after a read of its file. A new one is
+    /// what you will want to see, and it comes in after a blank like a tab
+    /// the model shows you; a revision opens the tab unfocused, so the
+    /// reply the model is writing stays in view.
+    pub(super) fn tab_read(&mut self, tab: Tab, change: Change) {
+        match change {
+            Change::Created => {
+                self.content.open(tab);
+                self.flash = Some(super::flash::Flash::new());
+            }
+            Change::Present => self.content.add(tab),
+            Change::Gone => self.content.remove(tab),
         }
     }
 }
@@ -450,7 +477,7 @@ impl App {
             Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
             Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
             Tab::Plan => &mut self.plan.pager,
-            Tab::Work => &mut self.work.pager,
+            Tab::Work => &mut self.work.view.pager,
             Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,
         })
     }

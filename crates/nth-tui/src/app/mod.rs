@@ -101,7 +101,6 @@ use crate::{
     spinner, status,
     subagent::SubagentView,
     usage::UsageView,
-    work::WorkView,
 };
 
 /// How often the app redraws with nothing else happening, while a turn
@@ -306,14 +305,7 @@ pub struct App {
     /// The next read is of a session just opened, so it marks nothing as
     /// changed.
     plan_settle: bool,
-    /// The session's work plan and what the work tab shows of it.
-    work: WorkView,
-    work_dir: PathBuf,
-    /// Reads of the work plan, with the directory each read.
-    work_reading: Job<(PathBuf, Option<nth_session::work::Plan>)>,
-    /// The next read is of a session just opened, so a plan it finds
-    /// opens its tab without showing it.
-    work_settle: bool,
+    work: work::WorkTab,
     /// Where monitors log, one folder per session under it.
     monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
@@ -542,10 +534,7 @@ impl App {
             plan_path,
             plan_reading: Job::default(),
             plan_settle: true,
-            work: WorkView::default(),
-            work_dir,
-            work_reading: Job::default(),
-            work_settle: true,
+            work: work::WorkTab::new(work_dir),
             monitor_root,
             notices_due: None,
             hold_notices: false,
@@ -632,7 +621,7 @@ impl App {
         self.load_pr();
         self.list_llms();
         self.read_plan();
-        self.read_work();
+        self.work.read();
 
         while !self.quit {
             if self.pending_editor.is_some() {
@@ -679,7 +668,7 @@ impl App {
                 saved = self.session_saving.join() => Step::SessionSaved(saved),
                 saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
                 plan = self.plan_reading.join() => Step::PlanRead(plan),
-                plan = self.work_reading.join() => Step::WorkRead(plan),
+                plan = self.work.next() => Step::WorkRead(plan),
                 servers = self.servers_lookup.join() => Step::ServersFound(servers),
                 tools = self.tools_lookup.join() => Step::ToolsFound(tools),
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
@@ -906,8 +895,8 @@ impl App {
             Tab::Work => {
                 let place = self.work_place();
                 let live = self.live_work();
-                self.work.draw(frame, area, &place, &live);
-                if let Some(state) = self.work.pager.scrollbar() {
+                self.work.view.draw(frame, area, &place, &live);
+                if let Some(state) = self.work.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -1034,7 +1023,7 @@ impl App {
                 }
             }
             Event::ToolFinished { call, .. } if tool_names::touches_work(&call.name) => {
-                self.read_work()
+                self.work.read()
             }
             Event::Usage(usage) => {
                 self.usage = Some(*usage);
@@ -1104,7 +1093,7 @@ impl App {
         self.usage = None;
         self.spent = Spent::default();
         self.plan_for_session(plan_path);
-        self.work_for_session(work_dir);
+        self.work.for_session(work_dir);
         self.left_session();
     }
 

@@ -63,7 +63,7 @@ impl App {
                 if let Event::ToolFinished { call, .. } = &event
                     && call.name == tool_names::WORK_TODO
                 {
-                    self.read_work();
+                    self.work.read();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
@@ -79,8 +79,8 @@ impl App {
             } => {
                 self.spent.subagent_ended(id);
                 // A work item's subagent returned it.
-                if self.work.exists() {
-                    self.read_work();
+                if self.work.view.exists() {
+                    self.work.read();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.ended(&outcome, elapsed, &model);

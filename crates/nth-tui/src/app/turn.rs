@@ -475,9 +475,9 @@ impl App {
             true => self.plan_for_session(plan_path),
             false => self.read_plan(),
         }
-        match work_dir != self.work_dir {
-            true => self.work_for_session(work_dir),
-            false => self.read_work(),
+        match work_dir != self.work.dir {
+            true => self.work.for_session(work_dir),
+            false => self.work.read(),
         }
         // Notices that came after the model's last step go with the next
         // prompt once you stopped it, else wake it on their own: a turn
