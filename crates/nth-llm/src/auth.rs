@@ -13,26 +13,6 @@ pub enum Credentials {
     ChatGpt(nth_auth::ChatGpt),
 }
 
-impl Credentials {
-    /// Whether a request could be signed now. Asks the ChatGPT login each
-    /// time, so connecting mid-run needs nothing rebuilt.
-    pub(crate) fn connected(&self) -> bool {
-        match self {
-            Self::Key(_) => true,
-            Self::ChatGpt(chatgpt) => chatgpt.connected(),
-        }
-    }
-
-    /// What the next request is signed with, refreshing a ChatGPT token
-    /// that is running out.
-    pub(crate) async fn resolve(&self) -> Result<Auth, nth_auth::Error> {
-        Ok(match self {
-            Self::Key(key) => Auth::Key(key.clone()),
-            Self::ChatGpt(chatgpt) => Auth::ChatGpt(chatgpt.credentials().await?),
-        })
-    }
-}
-
 /// Credentials resolved for one request.
 pub(crate) enum Auth {
     Key(String),
