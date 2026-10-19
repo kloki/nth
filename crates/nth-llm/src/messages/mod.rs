@@ -198,8 +198,6 @@ impl Protocol for State {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use futures::StreamExt;
     use nth_protocol::{ContextOverflow, Retry};
 
@@ -450,60 +448,9 @@ mod tests {
         );
     }
 
-    /// The refusal phrased in a nested field, and as plain text: the
-    /// classification reads the whole body, not one field of it.
-    const NESTED_OVERFLOW: &[u8] = br#"{"error":{"message":"Request failed","detail":{"reason":"maximum context length exceeded"}}}"#;
-    const PLAIN_OVERFLOW: &[u8] = b"Input is too long for requested model";
     /// An ordinary refusal that says nothing about a limit.
     const ORDINARY: &[u8] =
         br#"{"error":{"type":"invalid_request_error","message":"invalid model"}}"#;
-
-    #[tokio::test]
-    async fn any_overflow_phrasing_on_a_400_413_or_422_becomes_a_context_overflow() {
-        for status in [400, 413, 422] {
-            for body in [NESTED_OVERFLOW, PLAIN_OVERFLOW] {
-                let (url, _) = serve_status(status, body).await;
-                let client = Client::new(reqwest::Client::new(), url);
-                let error = client
-                    .stream(request(), None, &Auth::Key("key".into()))
-                    .await
-                    .err()
-                    .expect("refused");
-                assert!(
-                    error.downcast_ref::<ContextOverflow>().is_some(),
-                    "{status} with {}: {error}",
-                    String::from_utf8_lossy(body)
-                );
-                assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn an_overflow_body_on_a_transient_status_stays_a_status_error() {
-        for status in [429, 500] {
-            let (url, _) = serve_status(status, OVERFLOW).await;
-            let client = Client::new(reqwest::Client::new(), url);
-            let error = client
-                .stream(request(), None, &Auth::Key("key".into()))
-                .await
-                .err()
-                .expect("refused");
-            assert!(
-                error.downcast_ref::<ContextOverflow>().is_none(),
-                "{status}: {error}"
-            );
-            let expected = reqwest::StatusCode::from_u16(status).expect("a status");
-            assert!(
-                matches!(
-                    error.downcast_ref::<Error>(),
-                    Some(Error::Status { status, .. }) if *status == expected
-                ),
-                "{error}"
-            );
-            assert!(retry(&error).is_some(), "{status} is worth retrying");
-        }
-    }
 
     #[tokio::test]
     async fn an_ordinary_400_stays_a_status_error() {
@@ -527,98 +474,15 @@ mod tests {
         assert_eq!(retry(&error), None);
     }
 
-    #[test]
-    fn only_an_overflow_body_on_an_overflow_status_is_marked() {
-        let bad_request = reqwest::StatusCode::BAD_REQUEST;
-        let marked = |status, body: &str| {
-            stream::status_error::<Provider>(status, body.to_string(), None)
-                .downcast_ref::<ContextOverflow>()
-                .is_some()
-        };
-
-        assert!(marked(
-            bad_request,
-            "prompt is too long: 213866 tokens > 200000 maximum"
-        ));
-        assert!(marked(bad_request, r#"{"code":"context_length_exceeded"}"#));
-        assert!(marked(
-            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
-            "input is too long"
-        ));
-        assert!(marked(
-            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-            "PROMPT IS TOO LONG"
-        ));
-
-        assert!(!marked(bad_request, "invalid model"));
-        assert!(!marked(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "maximum context length is 8192 tokens"
-        ));
-        assert!(!marked(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            "prompt is too long"
-        ));
-
-        let ordinary = stream::status_error::<Provider>(
-            bad_request,
-            r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid model"}}"#
-                .into(),
-            None,
-        );
-        let status = ordinary.downcast_ref::<Error>().expect("the status error");
-        assert!(
-            matches!(status, Error::Status { status, message, .. }
-                if *status == bad_request && message == "invalid model"),
-            "the body still parses to its message"
-        );
-        assert_eq!(retry(&ordinary), None);
-
-        let limited = stream::status_error::<Provider>(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            String::new(),
-            None,
-        );
-        assert_eq!(retry(&limited), Some(Retry { after: None }));
-    }
-
+    /// The payload's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
-        let boxed = |error: Error| -> BoxError { Box::new(error) };
-        let status = |status, retry_after| {
-            boxed(Error::Status {
-                status,
-                message: String::new(),
-                retry_after,
-            })
-        };
-        let in_stream = |kind: &str| {
-            boxed(Error::Provider(Provider {
+        let in_stream = |kind: &str| -> BoxError {
+            Box::new(Error::Provider(Provider {
                 kind: kind.into(),
                 message: String::new(),
             }))
         };
-
-        assert_eq!(
-            retry(&status(
-                reqwest::StatusCode::TOO_MANY_REQUESTS,
-                Some(Duration::from_secs(7))
-            )),
-            Some(Retry {
-                after: Some(Duration::from_secs(7))
-            })
-        );
-        let overloaded = reqwest::StatusCode::from_u16(529).expect("valid status");
-        assert_eq!(
-            retry(&status(overloaded, None)),
-            Some(Retry { after: None })
-        );
-        assert_eq!(retry(&status(reqwest::StatusCode::BAD_REQUEST, None)), None);
-        assert_eq!(
-            retry(&status(reqwest::StatusCode::UNAUTHORIZED, None)),
-            None
-        );
-
         for kind in ["overloaded_error", "rate_limit_error", "api_error"] {
             assert_eq!(
                 retry(&in_stream(kind)),
@@ -628,18 +492,6 @@ mod tests {
         }
         assert_eq!(retry(&in_stream("invalid_request_error")), None);
 
-        let overflow: BoxError = Box::new(ContextOverflow);
-        assert_eq!(
-            retry(&overflow),
-            None,
-            "compacting, not retrying, is the fix"
-        );
-
-        assert_eq!(
-            retry(&boxed(Error::Incomplete)),
-            Some(Retry { after: None })
-        );
-        assert_eq!(retry(&boxed(Error::Truncated)), None);
         let other: BoxError = Box::new(crate::chat_completions::Error::Incomplete);
         assert_eq!(retry(&other), None, "another protocol's error");
     }

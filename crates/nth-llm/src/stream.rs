@@ -122,7 +122,7 @@ async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Res
 
 /// A failed response as its stream's error; apart from `success` so the
 /// classification is testable without an HTTP response in hand.
-pub(crate) fn status_error<P: Payload>(
+fn status_error<P: Payload>(
     status: reqwest::StatusCode,
     body: String,
     retry_after: Option<Duration>,
@@ -283,4 +283,225 @@ where
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::serve_status;
+
+    /// A protocol with no events of its own, for what every protocol
+    /// shares: how a refused request and a failed stream are classified.
+    #[derive(Default)]
+    struct Null;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("fault {kind}")]
+    struct Fault {
+        kind: &'static str,
+    }
+
+    impl Payload for Fault {
+        fn retryable(&self) -> bool {
+            self.kind == "busy"
+        }
+    }
+
+    impl Protocol for Null {
+        type Provider = Fault;
+        type Event = ();
+        const ROUTE: &'static str = "/null";
+
+        fn parse(_line: &str) -> Result<Vec<()>, Error<Fault>> {
+            Ok(Vec::new())
+        }
+
+        fn apply(&mut self, _event: (), _out: &mut Out<Fault>) -> Flow {
+            Flow::Continue
+        }
+    }
+
+    fn retry(error: &BoxError) -> Option<Retry> {
+        super::retry::<Fault>(error)
+    }
+
+    /// The error a request refused with `status` and `body` becomes.
+    async fn refused(status: u16, body: &'static [u8]) -> BoxError {
+        let (url, _) = serve_status(status, body).await;
+        let client = Client::<Null>::new(reqwest::Client::new(), url);
+        let request = Request {
+            model: "test-model",
+            session_id: "ses_test",
+            parent_session_id: None,
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        };
+        send::<Null>(client.post(), &request)
+            .await
+            .err()
+            .expect("refused")
+    }
+
+    /// OpenAI's refusal, as its API sends it.
+    const OVERFLOW: &[u8] = br#"{"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 8896 tokens (8896 in the messages, 0 in the completion). Please reduce the length of the messages.","type":"invalid_request_error","param":null,"code":"context_length_exceeded"}}"#;
+    /// The refusal phrased in a nested field, and as plain text: the
+    /// classification reads the whole body, not one field of it.
+    const NESTED_OVERFLOW: &[u8] = br#"{"error":{"message":"Request failed","detail":{"reason":"maximum context length exceeded"}}}"#;
+    const PLAIN_OVERFLOW: &[u8] = b"Input is too long for requested model";
+
+    #[tokio::test]
+    async fn any_overflow_phrasing_on_a_400_413_or_422_becomes_a_context_overflow() {
+        for status in [400, 413, 422] {
+            for body in [NESTED_OVERFLOW, PLAIN_OVERFLOW] {
+                let error = refused(status, body).await;
+                assert!(
+                    error.downcast_ref::<ContextOverflow>().is_some(),
+                    "{status} with {}: {error}",
+                    String::from_utf8_lossy(body)
+                );
+                assert_eq!(retry(&error), None, "compacting, not retrying, is the fix");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_overflow_body_on_a_transient_status_stays_a_status_error() {
+        for status in [429, 500] {
+            let error = refused(status, OVERFLOW).await;
+            assert!(
+                error.downcast_ref::<ContextOverflow>().is_none(),
+                "{status}: {error}"
+            );
+            let expected = reqwest::StatusCode::from_u16(status).expect("a status");
+            assert!(
+                matches!(
+                    error.downcast_ref::<Error<Fault>>(),
+                    Some(Error::Status { status, .. }) if *status == expected
+                ),
+                "{error}"
+            );
+            assert!(retry(&error).is_some(), "{status} is worth retrying");
+        }
+    }
+
+    #[test]
+    fn only_an_overflow_body_on_an_overflow_status_is_marked() {
+        let bad_request = reqwest::StatusCode::BAD_REQUEST;
+        let marked = |status, body: &str| {
+            status_error::<Fault>(status, body.to_string(), None)
+                .downcast_ref::<ContextOverflow>()
+                .is_some()
+        };
+
+        assert!(marked(
+            bad_request,
+            "This model's maximum context length is 8192 tokens"
+        ));
+        assert!(marked(
+            bad_request,
+            "prompt is too long: 213866 tokens > 200000 maximum"
+        ));
+        assert!(marked(bad_request, r#"{"code":"context_length_exceeded"}"#));
+        assert!(marked(
+            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            "input is too long"
+        ));
+        assert!(marked(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "PROMPT IS TOO LONG"
+        ));
+
+        assert!(!marked(
+            bad_request,
+            r#"{"error":{"message":"invalid model"}}"#
+        ));
+        assert!(!marked(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "maximum context length is 8192 tokens"
+        ));
+        assert!(!marked(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "prompt is too long"
+        ));
+
+        let body = r#"{"error":{"message":"invalid model"}}"#;
+        let ordinary = status_error::<Fault>(bad_request, body.into(), None);
+        assert!(
+            matches!(
+                ordinary.downcast_ref::<Error<Fault>>(),
+                Some(Error::Status { status, message, .. })
+                    if *status == bad_request && message == body
+            ),
+            "a payload that does not read the body keeps all of it"
+        );
+        assert_eq!(retry(&ordinary), None);
+
+        let limited =
+            status_error::<Fault>(reqwest::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
+        assert_eq!(retry(&limited), Some(Retry { after: None }));
+    }
+
+    #[test]
+    fn only_transient_errors_are_retryable() {
+        let boxed = |error: Error<Fault>| -> BoxError { Box::new(error) };
+        let status = |status, retry_after| {
+            boxed(Error::Status {
+                status,
+                message: String::new(),
+                retry_after,
+            })
+        };
+
+        assert_eq!(
+            retry(&status(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                Some(Duration::from_secs(7))
+            )),
+            Some(Retry {
+                after: Some(Duration::from_secs(7))
+            })
+        );
+        assert_eq!(
+            retry(&status(reqwest::StatusCode::SERVICE_UNAVAILABLE, None)),
+            Some(Retry { after: None })
+        );
+        let overloaded = reqwest::StatusCode::from_u16(529).expect("valid status");
+        assert_eq!(
+            retry(&status(overloaded, None)),
+            Some(Retry { after: None })
+        );
+        assert_eq!(retry(&status(reqwest::StatusCode::BAD_REQUEST, None)), None);
+        assert_eq!(
+            retry(&status(reqwest::StatusCode::UNAUTHORIZED, None)),
+            None
+        );
+
+        assert_eq!(
+            retry(&boxed(Error::Provider(Fault { kind: "busy" }))),
+            Some(Retry { after: None }),
+            "as the payload says"
+        );
+        assert_eq!(retry(&boxed(Error::Provider(Fault { kind: "nope" }))), None);
+
+        let overflow: BoxError = Box::new(ContextOverflow);
+        assert_eq!(
+            retry(&overflow),
+            None,
+            "compacting, not retrying, is the fix"
+        );
+
+        assert_eq!(
+            retry(&boxed(Error::Incomplete)),
+            Some(Retry { after: None })
+        );
+        assert_eq!(retry(&boxed(Error::Stalled)), Some(Retry { after: None }));
+        assert_eq!(retry(&boxed(Error::Truncated)), None);
+
+        let bad_url = reqwest::Client::new()
+            .get("not a url")
+            .build()
+            .expect_err("not a url");
+        assert_eq!(retry(&boxed(Error::Http(bad_url))), None);
+    }
 }
