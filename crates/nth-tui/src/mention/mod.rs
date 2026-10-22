@@ -1,7 +1,9 @@
 //! Mentions: an `@` starting any word of the prompt, completed to an agent
 //! the model can delegate to, or by fuzzy matching to a file under the
 //! working directory. Agents come first: there are few, and one is what
-//! `@` at the start of a prompt usually means.
+//! `@` at the start of a prompt usually means. A mention that starts
+//! outside the working directory (`../`, `./`, `/`, `~`) browses the
+//! filesystem from there instead, a directory at a time.
 
 mod index;
 
@@ -54,6 +56,15 @@ pub fn items(agents: &Agents, files: &[String], query: &str) -> Vec<Item> {
     let room = LIMIT.saturating_sub(items.len());
     items.extend(matches(files, query, room).into_iter().map(Item::File));
     items
+}
+
+/// Whether `query` names a path to browse rather than one to look up in
+/// the working directory's index, which holds none of these.
+pub fn browses(query: &str) -> bool {
+    ["../", "./", "/", "~/"]
+        .iter()
+        .any(|start| query.starts_with(start))
+        || query == "~"
 }
 
 /// How `items` show in the popup: `@name` with the description lined up
@@ -173,6 +184,16 @@ mod tests {
             })
         );
         assert_eq!(find("see @keys and more", 12), None);
+    }
+
+    #[test]
+    fn browses_paths_that_leave_the_index() {
+        for query in ["../", "../src/x", "./", "/tmp", "~", "~/repos"] {
+            assert!(browses(query), "{query}");
+        }
+        for query in ["", "ke", "src/x", "~other", ".gitignore", ".."] {
+            assert!(!browses(query), "{query}");
+        }
     }
 
     #[test]

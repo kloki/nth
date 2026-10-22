@@ -4,7 +4,7 @@
 
 mod add_dir;
 
-pub(crate) use add_dir::{argument, complete, expand};
+pub(crate) use add_dir::{argument, complete};
 use nth_context::Skills;
 
 use crate::popup::Popup;

@@ -16,6 +16,7 @@ mod llm_picker;
 mod mention;
 mod monitor;
 mod pager;
+mod path;
 mod plan;
 mod popup;
 mod prompt;

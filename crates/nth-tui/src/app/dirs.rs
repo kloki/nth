@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use nth_session::store;
 
 use super::App;
-use crate::{command, status};
+use crate::{path, status};
 
 impl App {
     /// Adds the directory `arg` names to the session's working directories,
@@ -22,7 +22,7 @@ impl App {
             self.hint = Some("usage: /add-dir <directory>".into());
             return;
         }
-        let spelled = command::expand(&self.cwd, self.home.as_deref(), arg);
+        let spelled = path::expand(&self.cwd, self.home.as_deref(), arg);
         let dir: PathBuf = match std::fs::canonicalize(&spelled) {
             Ok(dir) if dir.is_dir() => dir,
             Ok(_) => {
