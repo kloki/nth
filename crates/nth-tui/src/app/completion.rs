@@ -10,7 +10,7 @@ use ratatui::{
 use super::App;
 use crate::{
     command::{self, Entry},
-    mention,
+    mention, path,
     popup::{self, Popup},
 };
 
@@ -92,7 +92,17 @@ impl App {
                     Some(_) => &none,
                     None => &self.context.agents,
                 };
-                let items = mention::items(agents, &self.files, mention.query);
+                let items = if mention::browses(mention.query) {
+                    let paths = path::candidates(
+                        &self.cwd,
+                        self.home.as_deref(),
+                        mention.query,
+                        path::Entries::Visible,
+                    );
+                    paths.into_iter().map(mention::Item::File).collect()
+                } else {
+                    mention::items(agents, &self.files, mention.query)
+                };
                 Some(Completion::Mention {
                     popup: Popup::new(items)?,
                     start: mention.start,
@@ -141,7 +151,7 @@ impl App {
                 let end = self.prompt.text().len();
                 let arg = self.prompt.text()[start..].to_string();
                 let named = arg.ends_with('/')
-                    && command::expand(&self.cwd, self.home.as_deref(), &arg).is_dir();
+                    && path::expand(&self.cwd, self.home.as_deref(), &arg).is_dir();
                 if submit && named {
                     self.prompt.clear();
                     self.add_dir(&arg);
@@ -151,10 +161,15 @@ impl App {
             }
             Completion::Mention { popup, start } => {
                 let end = self.prompt.cursor();
+                let name = popup.selected().name();
+                // A directory is walked into: the popup lists it next.
+                if name.ends_with('/') {
+                    self.prompt.replace(start..end, &format!("@{name}"));
+                    return self.refresh_completion();
+                }
                 let spaced = self.prompt.text()[end..].starts_with(char::is_whitespace);
                 let gap = if spaced { "" } else { " " };
-                self.prompt
-                    .replace(start..end, &format!("@{}{gap}", popup.selected().name()));
+                self.prompt.replace(start..end, &format!("@{name}{gap}"));
             }
         }
     }
@@ -224,6 +239,29 @@ mod tests {
             "lined up with the @"
         );
         assert!(rows[10].starts_with(" ▎ see @ke"));
+    }
+
+    #[test]
+    fn a_mention_outside_the_working_directory_walks_down_to_a_file() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let repo = base.path().join("repo");
+        let other = base.path().join("other");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        std::fs::create_dir_all(&other).expect("mkdir");
+        std::fs::write(other.join("main.rs"), "").expect("file");
+        let mut app = app();
+        app.cwd = repo;
+        for c in "see @../o".chars() {
+            app.apply(Action::Insert(c));
+        }
+
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "see @../other/", "no space: walked into");
+        let rows = rows(&mut app);
+        assert!(rows[9].contains("../other/main.rs"), "{rows:#?}");
+
+        app.apply(Action::Accept);
+        assert_eq!(app.prompt.text(), "see @../other/main.rs ");
     }
 
     #[test]
