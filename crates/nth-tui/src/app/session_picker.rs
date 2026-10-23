@@ -107,9 +107,14 @@ impl App {
         self.context = session.context().clone();
         self.session_since = session.created_at;
         self.session_id = session.id;
-        // The session's model and effort are its mode's now; the other mode
-        // keeps what it had.
+        // The session's model and effort are its mode's or its agent's now;
+        // the rest keep what they had. An agent no longer found leaves the
+        // session in its mode.
         self.mode = session.mode;
+        self.agent = session.primary().map(|agent| agent.name.clone());
+        if let Some(gone) = session.agent.as_ref().filter(|_| self.agent.is_none()) {
+            self.hint = Some(format!("agent {gone} is gone, back to {}", self.mode).into());
+        }
         self.model = session.model.clone();
         self.effort = session.effort;
         self.save_llm();

@@ -44,7 +44,7 @@ pub fn items(agents: &Agents, files: &[String], query: &str) -> Vec<Item> {
         let query = query.to_lowercase();
         items.extend(
             agents
-                .iter()
+                .subagents()
                 .filter(|agent| !agent.hidden && agent.name.to_lowercase().starts_with(&query))
                 .take(LIMIT)
                 .map(|agent| Item::Agent {
@@ -223,27 +223,28 @@ mod tests {
         let files: Vec<String> = ["explorer.rs", "src/general.rs"].map(String::from).into();
 
         let all = items(&agents, &files, "");
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 6);
         assert!(matches!(&all[0], Item::Agent { name, .. } if name == "clerk"));
-        assert!(matches!(&all[1], Item::Agent { name, .. } if name == "explore"));
-        assert!(matches!(&all[2], Item::Agent { name, .. } if name == "general"));
-        assert_eq!(all[3], Item::File("explorer.rs".into()));
+        assert!(matches!(&all[1], Item::Agent { name, .. } if name == "experimenter"));
+        assert!(matches!(&all[2], Item::Agent { name, .. } if name == "explore"));
+        assert!(matches!(&all[3], Item::Agent { name, .. } if name == "general"));
+        assert_eq!(all[4], Item::File("explorer.rs".into()));
         let rows = rows(&all);
-        assert_eq!(rows[1].0, "@explore  ", "names lined up, then a space");
+        assert_eq!(rows[2].0, "@explore       ", "names lined up, then a space");
         assert!(
-            rows[1]
+            rows[2]
                 .1
                 .starts_with("Fast agent specialized for exploring codebases.")
         );
-        assert_eq!(rows[3], ("explorer.rs".to_string(), ""));
+        assert_eq!(rows[4], ("explorer.rs".to_string(), ""));
 
-        let ex = items(&agents, &files, "ex");
+        let ex = items(&agents, &files, "expl");
         assert!(matches!(&ex[0], Item::Agent { name, .. } if name == "explore"));
         assert_eq!(ex[1], Item::File("explorer.rs".into()));
         // An agent's name matches whatever the case; a file's follows the
         // fuzzy matcher's smart case.
         assert!(matches!(
-            &items(&agents, &files, "Ex")[0],
+            &items(&agents, &files, "Expl")[0],
             Item::Agent { .. }
         ));
         assert_eq!(

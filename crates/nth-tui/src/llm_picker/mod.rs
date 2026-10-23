@@ -1,6 +1,7 @@
 //! The LLM picker: which LLM later turns go to, and how hard it
 //! reasons. Opened over the prompt, it waits for the list if it isn't in yet.
-//! Tab picks what the choice is for: plan, act, the subagents or the clerk.
+//! Tab picks what the choice is for: plan, act, the primary agent running
+//! in place of the mode, the subagents or the clerk.
 
 pub mod usage;
 mod view;
@@ -17,13 +18,30 @@ use crate::fuzzy::Filter;
 pub enum Target {
     Plan,
     Act,
+    /// The primary agent running in place of the mode; offered only while
+    /// one does.
+    Agent,
     Subagent,
     /// The built-in clerk.
     Clerk,
 }
 
 impl Target {
-    pub const ALL: [Target; 4] = [Target::Plan, Target::Act, Target::Subagent, Target::Clerk];
+    pub const ALL: [Target; 5] = [
+        Target::Plan,
+        Target::Act,
+        Target::Agent,
+        Target::Subagent,
+        Target::Clerk,
+    ];
+
+    /// The ones offered: the agent's only while one runs.
+    pub fn offered(agent: bool) -> Vec<Target> {
+        Self::ALL
+            .into_iter()
+            .filter(|&t| agent || t != Target::Agent)
+            .collect()
+    }
 
     /// The one for what `mode` runs with.
     pub fn of(mode: Mode) -> Self {
@@ -37,21 +55,24 @@ impl Target {
         match self {
             Target::Plan => "plan",
             Target::Act => "act",
+            Target::Agent => "agent",
             Target::Subagent => "subagent",
             Target::Clerk => "clerk",
         }
     }
 
-    /// The next one, wrapping, as Tab moves.
-    pub fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+    /// The next one offered, wrapping, as Tab moves.
+    pub fn next(self, agent: bool) -> Self {
+        let offered = Self::offered(agent);
+        let i = offered.iter().position(|&t| t == self).unwrap_or(0);
+        offered[(i + 1) % offered.len()]
     }
 
-    /// The previous one, wrapping, as shift+Tab moves.
-    pub fn prev(self) -> Self {
-        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
-        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    /// The previous one offered, wrapping, as shift+Tab moves.
+    pub fn prev(self, agent: bool) -> Self {
+        let offered = Self::offered(agent);
+        let i = offered.iter().position(|&t| t == self).unwrap_or(0);
+        offered[(i + offered.len() - 1) % offered.len()]
     }
 }
 
@@ -59,6 +80,8 @@ impl Target {
 pub struct LlmPicker {
     /// What the pick goes to.
     target: Target,
+    /// Whether a primary agent runs, so `Target::Agent` is offered.
+    agent: bool,
     /// What the target runs on now, marked in the list.
     current: String,
     /// The effort last picked, kept while a model that takes fewer levels
@@ -92,6 +115,7 @@ impl LlmPicker {
     pub fn new(target: Target, current: &str, effort: Effort) -> Self {
         Self {
             target,
+            agent: target == Target::Agent,
             current: current.to_string(),
             effort,
             state: State::Loading,
@@ -100,6 +124,12 @@ impl LlmPicker {
 
     pub fn target(&self) -> Target {
         self.target
+    }
+
+    /// Whether `Target::Agent` is offered, which it is when the picker
+    /// opens on it.
+    pub fn offers_agent(&self) -> bool {
+        self.agent
     }
 
     /// Points the pick at `target`, which runs on `current` at `effort`:
@@ -406,11 +436,13 @@ pub(crate) mod tests {
 
     #[test]
     fn tab_cycles_the_targets_and_wraps() {
-        assert_eq!(Target::of(Mode::Plan).next(), Target::Act);
-        assert_eq!(Target::Act.next(), Target::Subagent);
-        assert_eq!(Target::Subagent.next(), Target::Clerk);
-        assert_eq!(Target::Clerk.next(), Target::Plan);
-        assert_eq!(Target::Plan.prev(), Target::Clerk);
+        assert_eq!(Target::of(Mode::Plan).next(false), Target::Act);
+        assert_eq!(Target::Act.next(false), Target::Subagent);
+        assert_eq!(Target::Subagent.next(false), Target::Clerk);
+        assert_eq!(Target::Clerk.next(false), Target::Plan);
+        assert_eq!(Target::Plan.prev(false), Target::Clerk);
+        assert_eq!(Target::Act.next(true), Target::Agent, "while one runs");
+        assert_eq!(Target::Agent.next(true), Target::Subagent);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use nth_context::{Context, instructions::Watch};
+use nth_context::{Agent, Context, instructions::Watch};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -50,6 +50,9 @@ pub struct ToolContext {
     /// The files the tools may write: all of them, or in plan mode only
     /// the plan file.
     pub writable: Writable,
+    /// The primary agent the session runs as, in place of plan or act:
+    /// the model is offered only the tools it allows.
+    pub agent: Option<Agent>,
     /// The model and effort the session runs on, for a tool that starts
     /// another session on the same.
     pub llm: Llm,
@@ -114,6 +117,7 @@ impl ToolContext {
             monitors: Monitors::default(),
             inbox: Inbox::default(),
             writable: Writable::Any,
+            agent: None,
             llm: Llm::default(),
             subagent: None,
             clerk: None,
@@ -144,6 +148,7 @@ impl ToolContext {
             monitors: self.monitors.clone(),
             inbox: self.inbox.clone(),
             writable: self.writable.clone(),
+            agent: self.agent.clone(),
             llm: self.llm.clone(),
             subagent: self.subagent.clone(),
             clerk: self.clerk.clone(),

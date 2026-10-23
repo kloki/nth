@@ -18,10 +18,9 @@ use super::{
 use crate::{Error, work::ORCHESTRATOR_TOOLS};
 
 /// Tools a subagent never gets: another task would nest without end, the
-/// worktree tools would take it out of its parent's directory, the work
-/// plan is its parent's to run, and the rest need the front-end, which
-/// belongs to the parent.
-pub(super) const WITHHELD: [&str; 13] = [
+/// work plan is its parent's to run, and the rest need the front-end,
+/// which belongs to the parent.
+pub(super) const WITHHELD: [&str; 11] = [
     "task",
     "task_stop",
     "question",
@@ -29,13 +28,17 @@ pub(super) const WITHHELD: [&str; 13] = [
     "show_user",
     "monitor",
     "monitor_stop",
-    "enter_worktree",
-    "exit_worktree",
     ORCHESTRATOR_TOOLS[0],
     ORCHESTRATOR_TOOLS[1],
     ORCHESTRATOR_TOOLS[2],
     ORCHESTRATOR_TOOLS[3],
 ];
+
+/// Tools a subagent gets only when its agent's own tool list names them:
+/// the worktree tools, for an agent such as the experimenter that works in
+/// a worktree of its own. Each turn moves only its own session, so its
+/// parent stays where it is.
+pub(super) const OPT_IN: [&str; 2] = ["enter_worktree", "exit_worktree"];
 
 pub struct Task {
     spawner: Spawner,
@@ -300,6 +303,7 @@ mod tests {
             "monitor_stop",
             "work_item",
             "work_status",
+            "enter_worktree",
         ];
         let task = Task::new(
             Arc::new(Scripted::new(vec![])),
@@ -327,6 +331,19 @@ mod tests {
         assert_eq!(
             names(&task.spawner.tools_for(explore, &Writable::Any)),
             ["read", "grep"]
+        );
+        let experimenter = agents.agents.get("experimenter").unwrap();
+        assert_eq!(
+            names(&task.spawner.tools_for(experimenter, &Writable::Any)),
+            [
+                "read",
+                "write",
+                "edit",
+                "apply_patch",
+                "grep",
+                "enter_worktree"
+            ],
+            "only an agent naming the worktree tools gets them"
         );
     }
 
@@ -402,7 +419,7 @@ mod tests {
         let unknown = json!({ "description": "d", "prompt": "p", "subagent_type": "nobody" });
         assert_eq!(
             task.call(unknown, &ctx()).await.unwrap_err(),
-            "Agent \"nobody\" not found. Available agents: clerk, explore, general"
+            "Agent \"nobody\" not found. Available agents: clerk, experimenter, explore, general"
         );
         let stale =
             json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "task_id": 7 });

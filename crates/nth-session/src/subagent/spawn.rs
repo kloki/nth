@@ -8,11 +8,12 @@ use nth_protocol::{Provider, Tool, ToolContext, Writable};
 
 use super::{Limits, SubagentId, Subagents, child_session, tools_for};
 
-/// The agent the model named, or the refusal listing the ones there are.
+/// The subagent the model named, or the refusal listing the ones there
+/// are.
 pub(crate) fn find_agent<'a>(ctx: &'a ToolContext, name: &str) -> Result<&'a Agent, String> {
     let agents = &ctx.context.agents;
-    agents.get(name).ok_or_else(|| {
-        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+    agents.subagent(name).ok_or_else(|| {
+        let names: Vec<_> = agents.subagents().map(|a| a.name.as_str()).collect();
         format!(
             "Agent \"{name}\" not found. Available agents: {}",
             names.join(", ")

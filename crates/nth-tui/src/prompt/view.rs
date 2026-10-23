@@ -13,8 +13,8 @@ use ratatui::{
 
 use super::Prompt;
 use crate::theme::{
-    BAR, BAR_WIDTH, PROVIDER_COLOUR, SHELL_COLOUR, SUBAGENT_COLOUR, dim, mode_colour, panel_row,
-    panel_title,
+    AGENT_COLOUR, BAR, BAR_WIDTH, PROVIDER_COLOUR, SHELL_COLOUR, SUBAGENT_COLOUR, dim, mode_colour,
+    panel_row, panel_title,
 };
 
 const PLACEHOLDER: &str = "Ask anything.";
@@ -31,11 +31,13 @@ const TEXT_ROWS: u16 = 3;
 const MODE_WIDTH: usize = 4;
 
 /// What the label row says besides the mode: the spinner while a turn
-/// runs, the subagent the prompt talks to, the model the next turn runs
-/// with, and the profile it comes from while one is active.
+/// runs, the subagent the prompt talks to, the primary agent running in
+/// place of the mode, the model the next turn runs with, and the profile
+/// it comes from while one is active.
 pub struct Runs<'a> {
     pub spinner: Option<&'a str>,
     pub target: Option<&'a str>,
+    pub agent: Option<&'a str>,
     pub llm: &'a Llm,
     pub profile: Option<&'a str>,
 }
@@ -43,14 +45,18 @@ pub struct Runs<'a> {
 /// `runs.spinner` replaces the mode's label while a turn runs, and the
 /// label row says how to cancel. The text stays as it is: Enter queues
 /// it. A command to run shows as `cmd` in yellow instead of the mode, and
-/// on a subagent's tab the label names the subagent, `target`, in cyan.
+/// on a subagent's tab the label names the subagent, `target`, in cyan. A
+/// primary agent running in place of the mode names itself in green.
 /// After the mode, a model with its provider and effort, and the profile
 /// it comes from while one is active: ` · opencode/glm-5.3 · high · go`.
 pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, runs: Runs<'_>) {
     let (label, colour, placeholder) = match (prompt.shell(), runs.target) {
         (true, _) => (SHELL_LABEL, SHELL_COLOUR, SHELL_PLACEHOLDER),
         (false, Some(agent)) => (agent, SUBAGENT_COLOUR, PLACEHOLDER),
-        (false, None) => (mode.label(), mode_colour(mode), PLACEHOLDER),
+        (false, None) => match runs.agent {
+            Some(agent) => (agent, AGENT_COLOUR, PLACEHOLDER),
+            None => (mode.label(), mode_colour(mode), PLACEHOLDER),
+        },
     };
     // A command and a subagent run without this session's model.
     let running_with = !prompt.shell() && runs.target.is_none();

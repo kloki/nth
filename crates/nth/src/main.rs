@@ -56,6 +56,10 @@ enum Command {
         /// plan only writes a plan file; act may change anything
         #[arg(long, default_value = "act", value_parser = ["plan", "act"])]
         mode: String,
+        /// Run as this primary agent in place of the mode (`nth agents`
+        /// lists them), on its own model or else act's
+        #[arg(long, conflicts_with = "mode")]
+        agent: Option<String>,
     },
     /// List the models the configured providers serve
     Models {
@@ -187,8 +191,12 @@ async fn dispatch(
     // the file may not exist yet, or be the broken one --force replaces.
     let config = || load(config_path.as_deref(), model.clone());
     match command {
-        Command::Run { prompt, mode } => match mode.parse() {
-            Ok(mode) => run::run(prompt, mode, config()?).await,
+        Command::Run {
+            prompt,
+            mode,
+            agent,
+        } => match mode.parse() {
+            Ok(mode) => run::run(prompt, mode, agent, config()?).await,
             Err(e) => Err(anyhow::anyhow!(e)),
         },
         Command::Models { json } => models::run(json, config()?).await,

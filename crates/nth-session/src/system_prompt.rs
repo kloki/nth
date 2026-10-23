@@ -59,18 +59,21 @@ fn template(model: &str) -> &'static str {
         .map_or(TEMPLATE, |(_, template)| *template)
 }
 
-/// The system prompt of a session run for you: the model's persona, the
+/// The system prompt of a session run for you: the model's persona, or
+/// `persona`, the prompt of the primary agent it runs as; then the
 /// environment, the working directories added with `/add-dir`, the
-/// instruction files and the skills. `session` is named in the environment,
-/// so the model can tell its tools which session it is.
+/// instruction files, the memory, the skills and the agents. `session` is
+/// named in the environment, so the model can tell its tools which session
+/// it is.
 pub fn system_prompt(
+    persona: Option<&str>,
     session: Uuid,
     model: &str,
     cwd: &Path,
     dirs: &[PathBuf],
     context: &Context,
 ) -> String {
-    render(None, session, model, cwd, dirs, context)
+    render(persona, false, session, model, cwd, dirs, context)
 }
 
 /// The system prompt of a subagent's session: `persona` in place of the
@@ -86,13 +89,14 @@ pub fn subagent_system_prompt(
     dirs: &[PathBuf],
     context: &Context,
 ) -> String {
-    render(Some(persona), session, model, cwd, dirs, context)
+    render(persona, true, session, model, cwd, dirs, context)
 }
 
-/// `role` is `None` for your own session and `Some(persona)` for a
-/// subagent's.
+/// `persona` replaces the model's; `subagent` leaves out the memory and the
+/// agents, which only your own session's model keeps and delegates to.
 fn render(
-    role: Option<Option<&str>>,
+    persona: Option<&str>,
+    subagent: bool,
     session: Uuid,
     model: &str,
     cwd: &Path,
@@ -113,11 +117,11 @@ fn render(
         .replace("{platform}", std::env::consts::OS)
         .replace("{today}", &today());
     // The meta persona names the model itself; every other one leaves it out.
-    let persona = match role {
+    let persona = match persona {
         // Ends in a newline as the template files do, so the environment
         // block follows after a blank line either way.
-        Some(Some(persona)) => format!("{}\n", persona.trim()),
-        _ => template(model).replace("{{MODEL_NAME}}", model),
+        Some(persona) => format!("{}\n", persona.trim()),
+        None => template(model).replace("{{MODEL_NAME}}", model),
     };
     let mut prompt = format!("{persona}\n{env}");
     if !dirs.is_empty() {
@@ -140,9 +144,7 @@ fn render(
         );
     }
     // A subagent works for another model, which keeps the memory.
-    if role.is_none()
-        && let Some(memory) = &context.memory
-    {
+    if !subagent && let Some(memory) = &context.memory {
         prompt.push('\n');
         prompt.push_str(&memory_section(memory));
     }
@@ -166,7 +168,7 @@ fn render(
     // An agent without a description gives the model nothing to choose by.
     let agents: Vec<String> = context
         .agents
-        .iter()
+        .subagents()
         .filter_map(|agent| {
             let description = agent.description.as_deref()?;
             Some(
@@ -176,7 +178,7 @@ fn render(
             )
         })
         .collect();
-    if role.is_none() && !agents.is_empty() {
+    if !subagent && !agents.is_empty() {
         prompt.push_str(&AGENTS.replace("{agents}", agents.concat().trim_end()));
     }
     prompt
@@ -261,7 +263,7 @@ mod tests {
             ..Context::default()
         };
 
-        let prompt = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+        let prompt = system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         assert_eq!(
@@ -286,7 +288,7 @@ mod tests {
     fn the_memory_index_follows_the_instructions() {
         let context = with_memory("- [Terse](terse.md) — short commits\n", false);
 
-        let prompt = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+        let prompt = system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
 
         assert!(
             prompt.contains("persistent memory for this project at `/repo/.nth/memory`"),
@@ -303,6 +305,7 @@ mod tests {
     #[test]
     fn an_empty_memory_says_so() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -321,6 +324,7 @@ mod tests {
     #[test]
     fn a_cut_index_asks_to_be_shortened() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -337,6 +341,7 @@ mod tests {
         let subagent =
             subagent_system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
         let without = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -362,7 +367,7 @@ mod tests {
         }
         let context = Context::discover(dir.path(), &nth_context::Paths::default());
 
-        let prompt = system_prompt(Uuid::nil(), "glm", dir.path(), &[], &context);
+        let prompt = system_prompt(None, Uuid::nil(), "glm", dir.path(), &[], &context);
 
         let tail = prompt.split("</env>\n").nth(1).expect("env block");
         let (skills, agents) = tail
@@ -419,7 +424,7 @@ mod tests {
             &nth_context::Paths::default(),
         );
 
-        let own = system_prompt(Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
+        let own = system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
         let child =
             subagent_system_prompt(None, Uuid::nil(), "glm", "/repo".as_ref(), &[], &context);
 
@@ -428,8 +433,35 @@ mod tests {
     }
 
     #[test]
+    fn a_primary_agent_replaces_the_persona_and_keeps_memory_and_agents() {
+        let context = Context {
+            agents: Context::discover(
+                std::path::Path::new("/nowhere"),
+                &nth_context::Paths::default(),
+            )
+            .agents,
+            ..with_memory("- [Terse](terse.md) — short commits\n", false)
+        };
+
+        let prompt = system_prompt(
+            Some("You research.\n"),
+            Uuid::nil(),
+            "claude-sonnet-4",
+            "/repo".as_ref(),
+            &[],
+            &context,
+        );
+
+        assert!(prompt.starts_with("You research.\n\n"), "{prompt}");
+        assert!(!prompt.contains("the best coding agent"), "{prompt}");
+        assert!(prompt.contains("/repo/.nth/memory"), "{prompt}");
+        assert!(prompt.contains("<available_agents>"), "{prompt}");
+    }
+
+    #[test]
     fn without_instructions_the_prompt_ends_at_the_environment() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -445,6 +477,7 @@ mod tests {
         let dirs = ["/elsewhere".to_string(), "/home/k/reference".to_string()];
         let dirs: Vec<_> = dirs.iter().map(PathBuf::from).collect();
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -455,6 +488,7 @@ mod tests {
         // The block is left out entirely when there is nothing added.
         assert!(
             !system_prompt(
+                None,
                 Uuid::nil(),
                 "glm",
                 "/repo".as_ref(),
@@ -488,6 +522,7 @@ mod tests {
 
         let session = Uuid::new_v4();
         let prompt = system_prompt(
+            None,
             session,
             "glm",
             &dir.path().join("sub"),
@@ -520,6 +555,7 @@ mod tests {
     #[test]
     fn a_prompt_names_today_until_the_day_changes() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "glm",
             "/repo".as_ref(),
@@ -562,6 +598,7 @@ mod tests {
     #[test]
     fn the_meta_prompt_is_named_for_the_model() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "muse-glimmer",
             "/repo".as_ref(),
@@ -600,6 +637,7 @@ mod tests {
         assert_eq!(
             models,
             system_prompt(
+                None,
                 Uuid::nil(),
                 "kimi-k3",
                 "/repo".as_ref(),
@@ -613,6 +651,7 @@ mod tests {
     fn only_claude_is_told_how_to_comment() {
         let prompt = |model| {
             system_prompt(
+                None,
                 Uuid::nil(),
                 model,
                 "/repo".as_ref(),
@@ -637,6 +676,7 @@ mod tests {
     #[test]
     fn a_family_prompt_still_carries_the_environment_block() {
         let prompt = system_prompt(
+            None,
             Uuid::nil(),
             "kimi-k3",
             "/repo".as_ref(),

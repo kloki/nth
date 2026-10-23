@@ -162,13 +162,13 @@ impl App {
     /// the model's inbox at its next step, pre-empting the tool calls it
     /// was about to run. A skill is filled in when its own turn starts,
     /// what already waits keeps its place ahead, and a prompt for another
-    /// mode or model than the running turn's runs on its own, so those
-    /// queue.
+    /// mode, agent or model than the running turn's runs on its own, so
+    /// those queue.
     pub(super) fn send(&mut self, next: Queued) {
         if let Queued::Prompt(text) = &next
             && self.is_busy()
             && self.queue.is_empty()
-            && self.steerable == Some((self.mode, self.llm(self.mode)))
+            && self.steerable == Some(self.runs_as())
             && nth_context::skills::parse(text, &self.context.skills).is_none()
         {
             self.inbox.post_prompt(text.clone());
@@ -312,7 +312,10 @@ impl App {
         self.save_llm_usage();
         self.spent.turn_started(&self.model);
         session.mode = self.mode;
-        self.steerable = Some((self.mode, self.llm(self.mode)));
+        if session.agent != self.agent {
+            session.set_agent(self.agent.clone());
+        }
+        self.steerable = Some(self.runs_as());
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }

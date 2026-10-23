@@ -22,7 +22,7 @@ pub fn resolve(text: &str, agents: &Agents, cwd: &Path) -> Option<String> {
         };
         // `@explore,` or `@explore.` at the end of a sentence.
         let name = name.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
-        if name.is_empty() || named.contains(&name) || agents.get(name).is_none() {
+        if name.is_empty() || named.contains(&name) || agents.subagent(name).is_none() {
             continue;
         }
         if cwd.join(name).exists() {

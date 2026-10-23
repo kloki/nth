@@ -87,14 +87,16 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
         clerk: config.clerk_for().map(llm),
     };
     // A resumed session keeps its model; the other mode starts on the
-    // config's.
+    // config's. One running as an agent keeps it for the agent, which the
+    // chat takes from the session.
     let current = Llm {
         model: session.model.clone(),
         effort: session.effort,
     };
-    match session.mode {
-        Mode::Plan => mode_llms.plan = current,
-        Mode::Act => mode_llms.act = current,
+    match (session.primary(), session.mode) {
+        (Some(_), _) => {}
+        (None, Mode::Plan) => mode_llms.plan = current,
+        (None, Mode::Act) => mode_llms.act = current,
     }
     let post_write = post_write(&config);
     // From the same servers the tools use, so the status bar shows what

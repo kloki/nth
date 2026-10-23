@@ -133,6 +133,7 @@ impl App {
         match &self.input {
             Input::LlmPicker(_) => return self.key_llm_picker(action),
             Input::SessionPicker(_) => return self.key_session_picker(action),
+            Input::AgentPicker(_) => return self.key_agent_picker(action),
             Input::Settings(_) => return self.key_settings(action),
             Input::Connect(_) => return self.key_connect(action),
             Input::Question(_) => return self.key_question(action),
@@ -170,7 +171,7 @@ impl App {
             // nor does a subagent, whose tab the prompt talks to.
             Action::NextTab | Action::PrevTab
                 if self.prompt.shell() || self.showing_subagent().is_some() => {}
-            Action::NextTab | Action::PrevTab => self.set_mode(self.mode.toggled()),
+            Action::NextTab | Action::PrevTab => self.toggle_mode(),
             // Taken before any input panel sees them.
             Action::NextContent
             | Action::PrevContent
@@ -371,8 +372,8 @@ mod tests {
     fn arrows_cycle_without_touching_the_prompt() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
-        assert_eq!(selected(&app), Command::Approve);
-        for _ in 0..15 {
+        assert_eq!(selected(&app), Command::Agents);
+        for _ in 0..16 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -386,7 +387,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
-        assert_eq!(app.prompt.text(), "/approve");
+        assert_eq!(app.prompt.text(), "/agents");
         assert!(app.completion.is_some());
     }
 
@@ -408,6 +409,7 @@ mod tests {
             names(&app),
             [
                 "add-dir",
+                "agents",
                 "approve",
                 "clear",
                 "close",

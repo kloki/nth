@@ -2,6 +2,7 @@ mod agent_loop;
 mod compaction;
 mod memory;
 pub mod plan;
+mod primary;
 mod session;
 pub mod store;
 pub mod subagent;
