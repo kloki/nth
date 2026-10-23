@@ -590,10 +590,11 @@ mod tests {
             .position(|l| l == "▎ agents")
             .expect("agents section");
         assert!(text[..agents].contains(&"▎ skills".to_string()));
-        assert_eq!(text[agents + 1], "▎   ↳ clerk     builtin");
-        assert_eq!(text[agents + 2], "▎   ↳ explore   builtin");
-        assert_eq!(text[agents + 3], "▎   ↳ general   builtin");
-        assert_eq!(text[agents + 4], "▎   ↳ research  builtin");
+        assert_eq!(text[agents + 1], "▎   ↳ clerk         builtin");
+        assert_eq!(text[agents + 2], "▎   ↳ experimenter  builtin");
+        assert_eq!(text[agents + 3], "▎   ↳ explore       builtin");
+        assert_eq!(text[agents + 4], "▎   ↳ general       builtin");
+        assert_eq!(text[agents + 5], "▎   ↳ research      builtin");
     }
 
     #[test]
