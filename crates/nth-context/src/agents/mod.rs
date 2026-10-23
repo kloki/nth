@@ -69,7 +69,7 @@ pub enum Mode {
     /// The model delegates to it.
     #[default]
     Subagent,
-    /// You run a session as it, picked with `/agent` in place of plan or
+    /// You run a session as it, picked with `/agents` in place of plan or
     /// act.
     Primary,
     /// Both.
@@ -178,7 +178,7 @@ impl Agents {
         self.get(name).filter(|a| a.is_subagent())
     }
 
-    /// The ones `/agent` offers, in name order: opencode's `hidden` leaves
+    /// The ones `/agents` offers, in name order: opencode's `hidden` leaves
     /// one out.
     pub fn primaries(&self) -> impl Iterator<Item = &Agent> {
         self.iter().filter(|a| a.is_primary() && !a.hidden)
