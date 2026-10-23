@@ -1,6 +1,7 @@
 //! Agents: the subagents the model delegates to with the task tool
 //! (opencode's built-in `general` and `explore`, nth's `clerk`) and the
-//! primary agents you run a session as in place of plan or act, plus one
+//! primary agents you run a session as in place of plan or act (nth's
+//! `research`), plus one
 //! markdown file per agent of your own, read where Claude Code and opencode
 //! keep them, so an agent written for either works here too. The
 //! frontmatter names and describes the agent and may pick its mode, model
@@ -21,9 +22,12 @@ use crate::{Paths, frontmatter, project_root};
 const EXPLORE: &str = include_str!("explore.md");
 /// The clerk's prompt, nth's own.
 const CLERK: &str = include_str!("clerk.md");
+/// The research agent's prompt, nth's own.
+const RESEARCH: &str = include_str!("research.md");
 /// opencode's descriptions, `agent/agent.ts`.
 const GENERAL_DESCRIPTION: &str = "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.";
 const EXPLORE_DESCRIPTION: &str = "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.";
+const RESEARCH_DESCRIPTION: &str = "Long-running research: splits a question across subagents, has the experimenter test claims, and keeps its findings in a notes file shown in a tab.";
 const CLERK_DESCRIPTION: &str = "Cheap, fast agent for small one-off tasks with a clear result: writing a commit message, a pull request title or description, summarising a diff or a file, a quick lookup. Give it everything it needs in the prompt. Use general instead for anything that takes several steps or judgement.";
 /// What opencode's explore may do, in nth's tool names.
 const EXPLORE_TOOLS: [&str; 6] = ["read", "glob", "grep", "bash", "webfetch", "websearch"];
@@ -220,7 +224,7 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
     agents
 }
 
-fn builtin() -> [Agent; 3] {
+fn builtin() -> [Agent; 4] {
     [
         Agent {
             name: "general".into(),
@@ -259,6 +263,20 @@ fn builtin() -> [Agent; 3] {
             denied: Vec::new(),
             model: None,
             clerk: true,
+            hidden: false,
+            path: None,
+            source: Source::Builtin,
+            root: None,
+        },
+        Agent {
+            name: "research".into(),
+            mode: Mode::Primary,
+            description: Some(RESEARCH_DESCRIPTION.into()),
+            prompt: Some(RESEARCH.trim().into()),
+            tools: None,
+            denied: Vec::new(),
+            model: None,
+            clerk: false,
             hidden: false,
             path: None,
             source: Source::Builtin,
@@ -507,7 +525,16 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["clerk", "explore", "general"]);
+        assert_eq!(names, ["clerk", "explore", "general", "research"]);
+        let research = agents.primary("research").expect("research");
+        assert_eq!(agents.subagent("research"), None, "only run as");
+        assert!(
+            research
+                .prompt
+                .as_deref()
+                .is_some_and(|p| p.contains(".nth/research/<session>.md"))
+        );
+        assert!(research.allows("task") && research.allows("show_user"));
         let explore = agents.get("explore").expect("explore");
         assert!(
             explore
@@ -730,7 +757,7 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["clerk", "general", "secret"]);
+        assert_eq!(names, ["clerk", "general", "research", "secret"]);
         assert!(agents.get("secret").expect("secret").hidden);
     }
 
@@ -756,7 +783,11 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let primaries: Vec<_> = agents.primaries().map(|a| a.name.as_str()).collect();
-        assert_eq!(primaries, ["both", "review"], "hidden ones are not offered");
+        assert_eq!(
+            primaries,
+            ["both", "research", "review"],
+            "hidden ones are not offered"
+        );
         let subagents: Vec<_> = agents.subagents().map(|a| a.name.as_str()).collect();
         assert_eq!(subagents, ["both", "clerk", "explore", "general"]);
         assert_eq!(agents.subagent("review"), None);

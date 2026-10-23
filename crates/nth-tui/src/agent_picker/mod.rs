@@ -156,13 +156,19 @@ mod tests {
         let mut picker = AgentPicker::new(&agents, Choice::Mode(Mode::Act));
 
         let names: Vec<_> = picker.items.iter().map(Item::name).collect();
-        assert_eq!(names, ["plan", "act", "review"], "no subagents");
+        assert_eq!(names, ["plan", "act", "research", "review"], "no subagents");
         assert_eq!(picker.chosen(), Some(Choice::Mode(Mode::Act)));
 
         picker.next();
-        assert_eq!(picker.chosen(), Some(Choice::Agent("review".into())));
-        picker.next();
-        assert_eq!(picker.chosen(), Some(Choice::Mode(Mode::Plan)), "wraps");
+        assert_eq!(picker.chosen(), Some(Choice::Agent("research".into())));
+        picker.prev();
+        picker.prev();
+        picker.prev();
+        assert_eq!(
+            picker.chosen(),
+            Some(Choice::Agent("review".into())),
+            "wraps"
+        );
     }
 
     #[test]
@@ -176,6 +182,6 @@ mod tests {
         assert_eq!(picker.chosen(), Some(Choice::Agent("review".into())));
         assert!(picker.clear_query());
         assert!(!picker.clear_query());
-        assert_eq!(picker.shown.len(), 3);
+        assert_eq!(picker.shown.len(), 4);
     }
 }
