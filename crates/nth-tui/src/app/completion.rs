@@ -189,16 +189,16 @@ mod tests {
         let rows = rows(&mut app);
 
         assert!(rows[0].starts_with("  /add-dir "), "{rows:#?}");
-        assert!(rows[1].starts_with("  /approve "));
-        assert!(rows[2].starts_with("  /clear "));
-        assert!(rows[3].starts_with("  /close "));
-        assert!(rows[4].starts_with("  /compact "));
-        assert!(rows[5].starts_with("  /connect "));
-        assert!(rows[6].starts_with("  /copy-id "));
-        assert!(rows[7].starts_with("  /diagnostics "));
-        assert!(rows[8].starts_with("  /exit "));
+        assert!(rows[1].starts_with("  /agent "));
+        assert!(rows[2].starts_with("  /approve "));
+        assert!(rows[3].starts_with("  /clear "));
+        assert!(rows[4].starts_with("  /close "));
+        assert!(rows[5].starts_with("  /compact "));
+        assert!(rows[6].starts_with("  /connect "));
+        assert!(rows[7].starts_with("  /copy-id "));
+        assert!(rows[8].starts_with("  /diagnostics "));
         assert!(
-            rows[9].starts_with("  /memory "),
+            rows[9].starts_with("  /exit "),
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));

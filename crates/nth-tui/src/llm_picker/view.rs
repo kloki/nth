@@ -25,7 +25,11 @@ const ACCENT: Color = Color::Magenta;
 
 pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
     let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    let title = targets(panel_title(TITLE, ACCENT), picker.target());
+    let title = targets(
+        panel_title(TITLE, ACCENT),
+        picker.target(),
+        picker.offers_agent(),
+    );
     let title_width = title.width();
     frame.render_widget(Paragraph::new(title), header);
     // Dropped rather than drawn over the title when the row is too narrow.
@@ -84,9 +88,9 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &LlmPicker) {
 }
 
 /// The title, then what the pick goes to, Tab's choice picked out.
-fn targets(mut title: Line<'static>, target: Target) -> Line<'static> {
+fn targets(mut title: Line<'static>, target: Target, agent: bool) -> Line<'static> {
     title.spans.push(Span::raw("  "));
-    for (i, each) in Target::ALL.into_iter().enumerate() {
+    for (i, each) in Target::offered(agent).into_iter().enumerate() {
         if i > 0 {
             title.spans.push(Span::styled(" · ", dim()));
         }
