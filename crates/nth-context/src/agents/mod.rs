@@ -1,8 +1,10 @@
-//! Agents the model delegates to with the task tool: opencode's built-in
-//! `general` and `explore`, nth's `clerk`, and one markdown file per agent of your own,
-//! read where Claude Code and opencode keep them, so an agent written for
-//! either works here too. The frontmatter names and describes the agent
-//! and may pick its model and tools; the body is its system prompt.
+//! Agents: the subagents the model delegates to with the task tool
+//! (opencode's built-in `general` and `explore`, nth's `clerk`) and the
+//! primary agents you run a session as in place of plan or act, plus one
+//! markdown file per agent of your own, read where Claude Code and opencode
+//! keep them, so an agent written for either works here too. The
+//! frontmatter names and describes the agent and may pick its mode, model
+//! and tools; the body is its system prompt.
 
 pub mod tool_names;
 
@@ -60,9 +62,47 @@ impl Source {
     }
 }
 
+/// opencode's `mode`: who runs the agent. A file without one is a
+/// subagent, as every Claude Code agent is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// The model delegates to it.
+    #[default]
+    Subagent,
+    /// You run a session as it, picked with `/agent` in place of plan or
+    /// act.
+    Primary,
+    /// Both.
+    All,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Subagent => "subagent",
+            Mode::Primary => "primary",
+            Mode::All => "all",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "subagent" => Ok(Mode::Subagent),
+            "primary" => Ok(Mode::Primary),
+            "all" => Ok(Mode::All),
+            other => Err(format!("mode {other:?} is not subagent, primary or all")),
+        }
+    }
+}
+
+/// What a primary agent may not be called: plan and act are nth's modes,
+/// which Tab switches between.
+pub const MODES: [&str; 2] = ["plan", "act"];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
     pub name: String,
+    pub mode: Mode,
     /// What the model reads to decide whether to delegate to the agent. An
     /// agent without one can be named by the user but is not offered to the
     /// model.
@@ -93,6 +133,16 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Whether the model may delegate to it.
+    pub fn is_subagent(&self) -> bool {
+        self.mode != Mode::Primary
+    }
+
+    /// Whether you may run a session as it.
+    pub fn is_primary(&self) -> bool {
+        self.mode != Mode::Subagent
+    }
+
     /// Whether the agent may use the tool called `name`.
     pub fn allows(&self, name: &str) -> bool {
         !self.denied.iter().any(|t| t == name)
@@ -113,9 +163,30 @@ impl Agents {
         self.0.get(name)
     }
 
-    /// In name order.
+    /// In name order, primary ones too.
     pub fn iter(&self) -> impl Iterator<Item = &Agent> {
         self.0.values()
+    }
+
+    /// The ones the model may delegate to, in name order.
+    pub fn subagents(&self) -> impl Iterator<Item = &Agent> {
+        self.iter().filter(|a| a.is_subagent())
+    }
+
+    /// The subagent called `name`.
+    pub fn subagent(&self, name: &str) -> Option<&Agent> {
+        self.get(name).filter(|a| a.is_subagent())
+    }
+
+    /// The ones `/agent` offers, in name order: opencode's `hidden` leaves
+    /// one out.
+    pub fn primaries(&self) -> impl Iterator<Item = &Agent> {
+        self.iter().filter(|a| a.is_primary() && !a.hidden)
+    }
+
+    /// The primary agent called `name`, hidden or not.
+    pub fn primary(&self, name: &str) -> Option<&Agent> {
+        self.get(name).filter(|a| a.is_primary())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -142,7 +213,6 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
                 Ok(Read::Agent(agent)) => agents.insert(agent),
                 // opencode's `disable` takes an agent away, a built-in too.
                 Ok(Read::Disabled(name)) => agents.remove(&name),
-                Ok(Read::Primary) => {}
                 Err(e) => warnings.push(format!("skipped agent {}: {e}", file.display())),
             }
         }
@@ -154,6 +224,7 @@ fn builtin() -> [Agent; 3] {
     [
         Agent {
             name: "general".into(),
+            mode: Mode::Subagent,
             description: Some(GENERAL_DESCRIPTION.into()),
             prompt: None,
             tools: None,
@@ -167,6 +238,7 @@ fn builtin() -> [Agent; 3] {
         },
         Agent {
             name: "explore".into(),
+            mode: Mode::Subagent,
             description: Some(EXPLORE_DESCRIPTION.into()),
             prompt: Some(EXPLORE.trim().into()),
             tools: Some(EXPLORE_TOOLS.iter().map(|t| t.to_string()).collect()),
@@ -180,6 +252,7 @@ fn builtin() -> [Agent; 3] {
         },
         Agent {
             name: "clerk".into(),
+            mode: Mode::Subagent,
             description: Some(CLERK_DESCRIPTION.into()),
             prompt: Some(CLERK.trim().into()),
             tools: None,
@@ -255,17 +328,11 @@ enum Read {
     Agent(Agent),
     /// opencode's `disable: true`, for the agent of this name.
     Disabled(String),
-    /// opencode's primary agents replace build and plan, which nth calls
-    /// modes; they are not subagents.
-    Primary,
 }
 
 fn read(file: &Path, root: &Path, source: Source) -> Result<Read, String> {
     let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
     let (front, body) = frontmatter::parse(&text)?;
-    if frontmatter::field(&front, "mode").as_deref() == Some("primary") {
-        return Ok(Read::Primary);
-    }
     let name = match frontmatter::field(&front, "name") {
         Some(name) => name,
         None => file
@@ -280,6 +347,15 @@ fn read(file: &Path, root: &Path, source: Source) -> Result<Read, String> {
     if front.get("disable").and_then(Value::as_bool) == Some(true) {
         return Ok(Read::Disabled(name));
     }
+    let mode = match frontmatter::field(&front, "mode") {
+        Some(mode) => Mode::parse(&mode)?,
+        None => Mode::default(),
+    };
+    if mode != Mode::Subagent && MODES.contains(&name.as_str()) {
+        return Err(format!(
+            "{name} is one of nth's modes, so it cannot be a primary agent"
+        ));
+    }
     let prompt = Some(body.trim())
         .filter(|b| !b.is_empty())
         .map(String::from);
@@ -289,6 +365,7 @@ fn read(file: &Path, root: &Path, source: Source) -> Result<Read, String> {
     denied.dedup();
     Ok(Read::Agent(Agent {
         name,
+        mode,
         description: frontmatter::field(&front, "description"),
         prompt,
         tools,
@@ -658,11 +735,52 @@ mod tests {
     }
 
     #[test]
-    fn primary_agents_are_not_subagents_and_bad_names_warn() {
+    fn primary_agents_are_kept_apart_from_subagents() {
         let tree = Tree::new();
         tree.agent(
-            "repo/.opencode/agent/build.md",
-            "description: b\nmode: primary",
+            "repo/.opencode/agent/review.md",
+            "description: r\nmode: primary",
+            "You review.",
+        )
+        .agent(
+            "repo/.opencode/agent/both.md",
+            "description: b\nmode: all",
+            "",
+        )
+        .agent(
+            "repo/.opencode/agent/quiet.md",
+            "description: q\nmode: primary\nhidden: true",
+            "",
+        );
+
+        let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
+
+        let primaries: Vec<_> = agents.primaries().map(|a| a.name.as_str()).collect();
+        assert_eq!(primaries, ["both", "review"], "hidden ones are not offered");
+        let subagents: Vec<_> = agents.subagents().map(|a| a.name.as_str()).collect();
+        assert_eq!(subagents, ["both", "clerk", "explore", "general"]);
+        assert_eq!(agents.subagent("review"), None);
+        assert!(
+            agents.primary("quiet").is_some(),
+            "named, a hidden one runs"
+        );
+        assert_eq!(agents.primary("explore"), None);
+        let review = agents.get("review").expect("review");
+        assert_eq!(review.mode, Mode::Primary);
+        assert_eq!(review.prompt.as_deref(), Some("You review."));
+    }
+
+    #[test]
+    fn modes_are_not_primary_agents_and_bad_names_warn() {
+        let tree = Tree::new();
+        tree.agent(
+            "repo/.opencode/agent/plan.md",
+            "description: p\nmode: primary",
+            "",
+        )
+        .agent(
+            "repo/.opencode/agent/odd.md",
+            "description: o\nmode: sometimes",
             "",
         )
         .agent(
@@ -674,10 +792,13 @@ mod tests {
         let (agents, warnings) = tree.discover("repo");
 
         assert_eq!(agents, Vec::new());
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("one of nth's modes")));
         assert!(
-            warnings[0].contains("has spaces or slashes"),
-            "{warnings:?}"
+            warnings
+                .iter()
+                .any(|w| w.contains("not subagent, primary or all"))
         );
+        assert!(warnings.iter().any(|w| w.contains("has spaces or slashes")));
     }
 }

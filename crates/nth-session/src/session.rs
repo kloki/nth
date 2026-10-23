@@ -5,7 +5,7 @@ use std::{
     time::SystemTime,
 };
 
-use nth_context::{Context, instructions::Watch};
+use nth_context::{Agent, Context, instructions::Watch};
 use nth_protocol::{
     AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
     Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
@@ -20,7 +20,7 @@ use crate::{
     agent_loop::{emit, run_call},
     memory,
     plan::{self, Approver},
-    subagent, system_prompt, work,
+    primary, subagent, system_prompt, work,
 };
 
 fn first_line(text: &str) -> &str {
@@ -55,9 +55,18 @@ pub struct Session {
     #[serde(default)]
     pub mode: Mode,
     /// The mode the last turn ran in, so the model is told when it enters
-    /// plan mode or leaves it; `None` before the first turn.
+    /// plan mode or leaves it; `None` before the first turn and after one
+    /// run as a primary agent.
     #[serde(default)]
     last_turn_mode: Option<Mode>,
+    /// The primary agent the session runs as, in place of `mode`; `None`
+    /// runs in `mode`. An agent no longer found runs in `mode` too.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The primary agent the last turn ran as, so the model is told when
+    /// it enters one or leaves it.
+    #[serde(default)]
+    last_turn_agent: Option<String>,
     pub created_at: SystemTime,
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
@@ -144,6 +153,7 @@ impl Session {
         let context = Arc::<Context>::default();
         let id = Uuid::new_v4();
         let messages = vec![Message::System(system_prompt(
+            None,
             id,
             &model,
             &cwd,
@@ -160,6 +170,8 @@ impl Session {
             effort: Effort::default(),
             mode: Mode::default(),
             last_turn_mode: None,
+            agent: None,
+            last_turn_agent: None,
             created_at: now,
             updated_at: now,
             messages,
@@ -229,6 +241,29 @@ impl Session {
 
     pub fn context(&self) -> &Arc<Context> {
         &self.context
+    }
+
+    /// Runs later turns as the primary agent `agent`, or in `mode` when
+    /// `None`. The agent's prompt replaces the model's persona.
+    pub fn set_agent(&mut self, agent: Option<String>) {
+        self.agent = agent;
+        self.rewrite_system_prompt();
+    }
+
+    /// The primary agent the session runs as, when it is still found; a
+    /// subagent runs as none.
+    pub fn primary(&self) -> Option<&Agent> {
+        let name = self.agent.as_deref().filter(|_| !self.subagent)?;
+        self.context.agents.primary(name)
+    }
+
+    /// The mode the session's tools follow: a primary agent acts, and what
+    /// it may change is up to its tools and its prompt.
+    fn tools_mode(&self) -> Mode {
+        match self.primary() {
+            Some(_) => Mode::Act,
+            None => self.mode,
+        }
     }
 
     /// Nothing has been asked yet.
@@ -301,6 +336,7 @@ impl Session {
                 &self.context,
             ),
             false => system_prompt(
+                self.primary().and_then(|agent| agent.prompt.as_deref()),
                 self.id,
                 &self.model,
                 &self.cwd,
@@ -343,7 +379,8 @@ impl Session {
             text.push_str(&mention);
         }
         let plan_path = self.plan_path();
-        if self.mode == Mode::Plan {
+        let agent = self.primary().map(|agent| agent.name.clone());
+        if self.tools_mode() == Mode::Plan {
             // The `.nth` directory, with the `.gitignore` that keeps plan
             // files out of git, is ready before the model writes the plan.
             let _ = plan::ensure_dir(&self.cwd).await;
@@ -356,14 +393,23 @@ impl Session {
             true => Approver::User,
             false => Approver::Nobody,
         };
-        if let Some(reminder) = plan::reminder(
-            self.mode,
-            self.last_turn_mode,
-            &plan_path,
-            self.memory_dir().as_deref(),
-            approver,
-        )
-        .await
+        let first = !self.messages.iter().any(|m| matches!(m, Message::User(_)));
+        if let Some(reminder) =
+            primary::reminder(agent.as_deref(), self.last_turn_agent.as_deref(), first)
+        {
+            text = format!("{text}\n\n{reminder}");
+        }
+        // A primary agent's own prompt says how it works; plan mode's
+        // reminders are for plan and act.
+        if agent.is_none()
+            && let Some(reminder) = plan::reminder(
+                self.mode,
+                self.last_turn_mode,
+                &plan_path,
+                self.memory_dir().as_deref(),
+                approver,
+            )
+            .await
         {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
@@ -376,7 +422,11 @@ impl Session {
             text = format!("{changed}\n{text}");
             emit(events, Event::Notice(changed)).await;
         }
-        self.last_turn_mode = Some(self.mode);
+        self.last_turn_mode = match agent {
+            Some(_) => None,
+            None => Some(self.mode),
+        };
+        self.last_turn_agent = agent;
         self.refresh_system_prompt();
         match self.messages.last_mut() {
             // A turn that failed before the model said anything left the
@@ -465,7 +515,8 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: plan::writable(self.mode, self.plan_path(), self.memory_dir()),
+            writable: plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir()),
+            agent: self.primary().cloned(),
             llm: Llm {
                 model: self.model.clone(),
                 effort: self.effort,
@@ -620,6 +671,7 @@ pub(crate) mod tests {
             session.messages,
             [
                 Message::System(system_prompt(
+                    None,
                     session.id,
                     "kimi-k3",
                     ".".as_ref(),
@@ -680,6 +732,7 @@ pub(crate) mod tests {
         assert_eq!(
             session.messages[0],
             Message::System(system_prompt(
+                None,
                 session.id,
                 "kimi-k3",
                 "/repo".as_ref(),
@@ -988,6 +1041,88 @@ pub(crate) mod tests {
         assert_eq!(subagent.memory_dir(), None, "the parent keeps it");
     }
 
+    /// A project with the primary agent `review`, which may only read and
+    /// echo.
+    fn with_reviewer(dir: &std::path::Path) -> Arc<Context> {
+        std::fs::create_dir(dir.join(".git")).expect("dir");
+        let agents = dir.join(".nth/agents");
+        std::fs::create_dir_all(&agents).expect("dir");
+        std::fs::write(
+            agents.join("review.md"),
+            "---\ndescription: Reviews\nmode: primary\ntools: read, echo\n---\nYou review.\n",
+        )
+        .expect("writes");
+        Arc::new(Context::discover(dir, &nth_context::Paths::default()))
+    }
+
+    #[tokio::test]
+    async fn a_primary_agent_runs_in_place_of_the_mode() {
+        use crate::agent_loop::tests::{Echo, Named, Scripted};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut session = Session::new("glm-5.3", dir.path().to_path_buf())
+            .with_context(with_reviewer(dir.path()));
+        session.mode = Mode::Plan;
+        session.set_agent(Some("review".into()));
+
+        let Message::System(system) = &session.messages[0] else {
+            panic!("a system prompt first");
+        };
+        assert!(system.starts_with("You review.\n"), "{system}");
+        let ctx = session.tool_context(&FrontEnd::default());
+        assert!(!ctx.writable.planning(), "the agent acts");
+        assert_eq!(ctx.writable.check(&dir.path().join("src/main.rs")), Ok(()));
+        assert_eq!(ctx.agent.as_ref().map(|a| a.name.as_str()), Some("review"));
+
+        let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo), Box::new(Named("bash"))];
+        let (tx, _rx) = mpsc::channel(64);
+        session
+            .prompt(
+                "look",
+                &provider,
+                &tools,
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+        assert_eq!(
+            *provider.tools.lock().expect("not poisoned"),
+            [vec!["echo".to_string()]],
+            "only the tools the agent allows"
+        );
+        assert_eq!(
+            session.messages[1],
+            Message::User("look".into()),
+            "no reminder on the first turn, and no plan mode"
+        );
+
+        session.set_agent(None);
+        let back = send(&mut session, "plan now").await;
+        assert!(
+            back.contains("no longer running as the review agent"),
+            "{back}"
+        );
+        assert!(back.contains("Plan mode is active"), "{back}");
+
+        session.set_agent(Some("review".into()));
+        let again = send(&mut session, "review again").await;
+        assert!(again.contains("now running as the review agent"), "{again}");
+        assert!(!again.contains("Plan mode"), "{again}");
+    }
+
+    #[test]
+    fn an_agent_that_is_gone_runs_in_the_mode() {
+        let mut session = Session::new("glm-5.3", "/repo".into());
+        session.mode = Mode::Plan;
+        session.set_agent(Some("missing".into()));
+
+        assert_eq!(session.primary(), None);
+        assert_eq!(session.tools_mode(), Mode::Plan);
+    }
+
     #[test]
     fn the_work_plan_stays_in_the_main_checkout() {
         let mut session = Session::new("glm", "/repo".into());
@@ -1034,6 +1169,7 @@ pub(crate) mod tests {
         let mut session = Session::new("glm-5.3", "/repo".into());
         let current = session.messages[0].clone();
         let stale = system_prompt(
+            None,
             session.id,
             "glm-5.3",
             "/repo".as_ref(),

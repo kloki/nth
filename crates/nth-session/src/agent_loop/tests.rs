@@ -209,6 +209,27 @@ impl Tool for Echo {
     }
 }
 
+/// A tool that is only its name, for tests of which tools are offered.
+pub(crate) struct Named(pub &'static str);
+
+impl Tool for Named {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: self.0,
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        }
+    }
+
+    fn call<'a>(
+        &'a self,
+        _args: serde_json::Value,
+        _ctx: &'a ToolContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        async { Ok(String::new()) }.boxed()
+    }
+}
+
 /// A spend for a turn whose usage the test does not look at.
 pub(crate) fn spend() -> Spend {
     Spend::new("scripted", None)

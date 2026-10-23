@@ -44,7 +44,7 @@ pub fn items(agents: &Agents, files: &[String], query: &str) -> Vec<Item> {
         let query = query.to_lowercase();
         items.extend(
             agents
-                .iter()
+                .subagents()
                 .filter(|agent| !agent.hidden && agent.name.to_lowercase().starts_with(&query))
                 .take(LIMIT)
                 .map(|agent| Item::Agent {

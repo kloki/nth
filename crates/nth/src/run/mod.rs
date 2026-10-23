@@ -17,9 +17,30 @@ use tokio::sync::mpsc;
 
 use crate::{apply_context, config::Config, post_write, setup};
 
-pub async fn run(prompt: String, mode: Mode, mut config: Config) -> Result<()> {
+pub async fn run(
+    prompt: String,
+    mode: Mode,
+    agent: Option<String>,
+    mut config: Config,
+) -> Result<()> {
     let paths = config.paths();
     let (mut session, provider) = setup(&mut config, &paths, mode).await?;
+    if let Some(name) = agent {
+        let agents = &session.context().agents;
+        let Some(agent) = agents.primary(&name) else {
+            let names: Vec<_> = agents.primaries().map(|a| a.name.as_str()).collect();
+            let there = match names.is_empty() {
+                true => "there are none".to_string(),
+                false => format!("there are: {}", names.join(", ")),
+            };
+            return Err(anyhow!("no primary agent {name:?}; {there}"));
+        };
+        // Its own model, else act's, which setup picked as the mode is act.
+        if let Some(model) = agent.model.clone() {
+            session.set_model(provider.qualify(&model));
+        }
+        session.set_agent(Some(name));
+    }
     // The model is final now: take the configured compaction policy and the
     // limits its listing names, so a long turn compacts itself.
     apply_context(&mut session, &config, &provider).await;

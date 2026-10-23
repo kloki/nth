@@ -1,5 +1,5 @@
-//! `nth agents`: the agents the model can delegate to for the working
-//! directory, grouped by where they came from.
+//! `nth agents`: the agents for the working directory, those the model can
+//! delegate to and those you can run as, grouped by where they came from.
 
 use std::{
     collections::BTreeMap,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use nth_context::agents::{Agent, Agents, Source};
+use nth_context::agents::{Agent, Agents, Mode, Source};
 use owo_colors::OwoColorize;
 
 use crate::{config::Config, context, text::shorten};
@@ -23,6 +23,7 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
         for agent in context.agents.iter() {
             let line = serde_json::json!({
                 "name": agent.name,
+                "mode": agent.mode.name(),
                 "description": agent.description,
                 "model": agent.model,
                 "tools": agent.tools,
@@ -65,13 +66,19 @@ pub async fn run(json: bool, config: &Config) -> Result<()> {
             };
             let about = match &agent.description {
                 Some(d) => shorten(d).dimmed().to_string(),
-                None => "no description, so the model is not offered it"
+                None if agent.is_subagent() => "no description, so the model is not offered it"
                     .yellow()
                     .to_string(),
+                None => String::new(),
+            };
+            // A subagent is the usual kind; the others say what they are.
+            let mode = match agent.mode {
+                Mode::Subagent => String::new(),
+                mode => format!("  {}", mode.name().magenta()),
             };
             writeln!(
                 out,
-                "{} {:width$}{nested}  {about}",
+                "{} {:width$}{mode}{nested}  {about}",
                 branch.dimmed(),
                 agent.name.cyan()
             )?;
