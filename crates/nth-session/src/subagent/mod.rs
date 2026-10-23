@@ -118,9 +118,10 @@ pub struct Job {
 /// that writes, but bash could still change files.
 pub(crate) const PLANNING: &str = "<system-reminder>\nThe agent that sent you this task is planning and may not change the project. Do not change any file, with bash or otherwise: research, then report what you found.\n</system-reminder>";
 
-/// The tools `agent` gets out of `all`: never the withheld ones, no
-/// writers while the parent may only write its plan, and only the agent's
-/// own list when it has one.
+/// The tools `agent` gets out of `all`: never the withheld ones, the
+/// opt-in ones only when its own list names them, no writers while the
+/// parent may only write its plan, and only the agent's own list when it
+/// has one.
 pub(crate) fn tools_for(
     all: &[Arc<dyn Tool>],
     agent: &Agent,
@@ -131,6 +132,7 @@ pub(crate) fn tools_for(
         .filter(|tool| {
             let name = tool.spec().name;
             !task::WITHHELD.contains(&name)
+                && (!task::OPT_IN.contains(&name) || agent.names(name))
                 && !(planning && tool_names::writes_files(name))
                 && agent.allows(name)
         })

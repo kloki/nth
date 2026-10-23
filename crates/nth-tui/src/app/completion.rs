@@ -212,7 +212,7 @@ mod tests {
             &nth_context::Paths::default(),
         ));
         app.files = vec!["src/explorer.rs".into()];
-        for c in "ask @ex".chars() {
+        for c in "ask @expl".chars() {
             app.apply(Action::Insert(c));
         }
         let rows = rows(&mut app);
