@@ -35,11 +35,15 @@ impl App {
         }
     }
 
-    /// Opens the picker on the current mode's LLM, listing LLMs the first
-    /// time, and again while a provider is missing from the list.
+    /// Opens the picker on what the next turn runs with, listing LLMs the
+    /// first time, and again while a provider is missing from the list.
     pub(super) fn open_llm_picker(&mut self) {
         self.completion = None;
-        let mut picker = LlmPicker::new(Target::of(self.mode), &self.model, self.effort);
+        let target = match self.agent {
+            Some(_) => Target::Agent,
+            None => Target::of(self.mode),
+        };
+        let mut picker = LlmPicker::new(target, &self.model, self.effort);
         // The answer fills this picker when it comes, over what it shows.
         if let Some(llms) = &self.llms {
             picker.load(Ok(llms.clone()));
@@ -158,9 +162,10 @@ impl App {
         let Input::LlmPicker(picker) = &self.input else {
             return;
         };
+        let agent = picker.offers_agent();
         let target = match back {
-            false => picker.target().next(),
-            true => picker.target().prev(),
+            false => picker.target().next(agent),
+            true => picker.target().prev(agent),
         };
         let llm = self.llm_of(target);
         if let Input::LlmPicker(picker) = &mut self.input {
@@ -191,6 +196,7 @@ fn set_hint(target: Target, model: &str, effort: Effort) -> String {
     let what = match target {
         Target::Plan => "Plan",
         Target::Act => "Act",
+        Target::Agent => "The agent",
         Target::Subagent => "Subagents",
         Target::Clerk => "Clerk",
     };

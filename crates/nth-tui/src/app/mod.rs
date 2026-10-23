@@ -3,6 +3,7 @@
 //! and the status bar. Row heights never depend on content, so nothing
 //! shifts while a turn runs.
 
+mod agent_picker;
 mod completion;
 mod connect;
 mod content;
@@ -55,6 +56,7 @@ use diagnostics::lsp_changed;
 use futures::StreamExt;
 use input::Input;
 use job::Job;
+use mode::Steerable;
 pub use mode::{Llm, ModeLlms};
 use monitor::due;
 use nth_context::{Context as ProjectContext, Paths};
@@ -122,8 +124,13 @@ fn next_minute() -> tokio::time::Instant {
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
-    /// The mode the next turn runs in.
+    /// The mode the next turn runs in, unless `agent` runs in its place.
     pub mode: Mode,
+    /// The primary agent the next turn runs as, in place of `mode`.
+    pub agent: Option<String>,
+    /// What each primary agent runs with, once it ran or was picked a
+    /// model for in this run.
+    agent_llms: std::collections::BTreeMap<String, Llm>,
     /// The model and effort each mode runs with; the current mode's are
     /// `model` and `effort`, which it is synced with on a switch.
     mode_llms: ModeLlms,
@@ -158,7 +165,7 @@ pub struct App {
     /// The mode, model and effort the running model turn has, which a
     /// prompt sent mid-turn steers into only while they are still yours;
     /// `None` while idle or running a command.
-    steerable: Option<(Mode, mode::Llm)>,
+    steerable: Option<Steerable>,
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
@@ -436,6 +443,20 @@ impl App {
             chat,
             prompt: Prompt::default(),
             mode: session.mode,
+            // A session saved running as an agent goes on as it, on its
+            // model; one whose agent is gone runs in its mode.
+            agent: session.primary().map(|agent| agent.name.clone()),
+            agent_llms: session
+                .primary()
+                .map(|agent| {
+                    let llm = Llm {
+                        model: session.model.clone(),
+                        effort: session.effort,
+                    };
+                    (agent.name.clone(), llm)
+                })
+                .into_iter()
+                .collect(),
             mode_llms: ModeLlms::same(Llm {
                 model: session.model.clone(),
                 effort: session.effort,
@@ -833,7 +854,8 @@ impl App {
                     prompt::Runs {
                         spinner,
                         target,
-                        llm: &self.llm(self.mode),
+                        agent: self.agent.as_deref(),
+                        llm: &self.current_llm(),
                         profile: self.profile_name(),
                     },
                 );
@@ -847,6 +869,7 @@ impl App {
             }
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
+            Input::AgentPicker(picker) => crate::agent_picker::draw(frame, input, picker),
             Input::Question(panel) => crate::question::draw(frame, input, panel),
             Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
@@ -904,8 +927,10 @@ impl App {
                     current,
                     inherits,
                 };
-                let [plan, act] = Mode::ALL
-                    .map(|mode| row(mode.label(), self.llm(mode), mode == self.mode, None));
+                let [plan, act] = Mode::ALL.map(|mode| {
+                    let current = mode == self.mode && self.agent.is_none();
+                    row(mode.label(), self.llm(mode), current, None)
+                });
                 let subagent = row(
                     "subagent",
                     self.subagent_llm(),
@@ -1036,6 +1061,7 @@ impl App {
                 self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),
+            Command::Agents => self.open_agent_picker(),
             Command::Connect => self.open_connect(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
@@ -1069,6 +1095,7 @@ impl App {
             Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
         session.effort = self.effort;
         session.mode = self.mode;
+        session.set_agent(self.agent.clone());
         session.max_steps = self.max_steps;
         session.compaction = self.compaction;
         session.set_extra_dirs(self.extra_dirs.clone());

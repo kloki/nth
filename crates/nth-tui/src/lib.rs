@@ -1,6 +1,7 @@
 //! The interactive chat: the content panel, the chat history by default,
 //! above the input panel and the status bar.
 
+mod agent_picker;
 mod app;
 mod chat;
 mod command;

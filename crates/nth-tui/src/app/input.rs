@@ -5,6 +5,7 @@
 use ratatui::layout::Rect;
 
 use crate::{
+    agent_picker::AgentPicker,
     connect::ConnectPanel,
     llm_picker::LlmPicker,
     prompt,
@@ -18,6 +19,7 @@ pub(super) enum Input {
     Prompt,
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
+    AgentPicker(AgentPicker),
     Question(QuestionPanel),
     Settings(SettingsPanel),
     Connect(ConnectPanel),
@@ -31,7 +33,9 @@ impl Input {
     pub(super) fn rows(&self, screen: Rect) -> u16 {
         match self {
             Input::Prompt => prompt::ROWS,
-            Input::LlmPicker(_) | Input::SessionPicker(_) => picker_rows(screen),
+            Input::LlmPicker(_) | Input::SessionPicker(_) | Input::AgentPicker(_) => {
+                picker_rows(screen)
+            }
             Input::Question(panel) => question::rows(panel, screen),
             Input::Settings(_) => settings::ROWS,
             Input::Connect(panel) => panel.rows(),
