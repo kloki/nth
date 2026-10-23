@@ -1,7 +1,7 @@
 //! Plan and act: Tab switches between them, and each keeps its own model
 //! and effort, so planning can run on a different model than acting.
 //! Subagents have a third, which by default is the parent's. A primary
-//! agent picked with `/agent` runs in place of the mode, on a model of its
+//! agent picked with `/agents` runs in place of the mode, on a model of its
 //! own for this run, until Tab goes back to the mode.
 
 pub use nth_protocol::Llm;

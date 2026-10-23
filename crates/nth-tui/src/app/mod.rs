@@ -1061,7 +1061,7 @@ impl App {
                 self.start_fresh_session();
             }
             Command::Models => self.open_llm_picker(),
-            Command::Agent => self.open_agent_picker(),
+            Command::Agents => self.open_agent_picker(),
             Command::Connect => self.open_connect(),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),

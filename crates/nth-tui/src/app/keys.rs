@@ -372,7 +372,7 @@ mod tests {
     fn arrows_cycle_without_touching_the_prompt() {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
-        assert_eq!(selected(&app), Command::Agent);
+        assert_eq!(selected(&app), Command::Agents);
         for _ in 0..16 {
             app.apply(Action::SelectNext);
         }
@@ -387,7 +387,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         app.apply(Action::Accept);
-        assert_eq!(app.prompt.text(), "/agent");
+        assert_eq!(app.prompt.text(), "/agents");
         assert!(app.completion.is_some());
     }
 
@@ -409,7 +409,7 @@ mod tests {
             names(&app),
             [
                 "add-dir",
-                "agent",
+                "agents",
                 "approve",
                 "clear",
                 "close",

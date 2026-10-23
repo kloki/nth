@@ -1,4 +1,4 @@
-//! `/agent`: picking what later turns run as, a mode or a primary agent.
+//! `/agents`: picking what later turns run as, a mode or a primary agent.
 
 use super::{App, input::Input, keys::Action};
 use crate::agent_picker::{AgentPicker, Choice};
@@ -59,7 +59,7 @@ mod tests {
     fn picking_an_agent_runs_it_until_tab_goes_back_to_the_mode() {
         let mut app = app();
         app.mode = Mode::Plan;
-        app.run_command(crate::command::Command::Agent);
+        app.run_command(crate::command::Command::Agents);
         assert!(matches!(app.input, Input::AgentPicker(_)));
         let shown = rows(&mut app).join("\n");
         assert!(shown.contains("run as"), "{shown}");

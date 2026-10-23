@@ -17,7 +17,7 @@ const LIMIT: usize = Command::ALL.len();
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     AddDir,
-    Agent,
+    Agents,
     Approve,
     Clear,
     Close,
@@ -38,7 +38,7 @@ pub enum Command {
 impl Command {
     const ALL: [Command; 17] = [
         Command::AddDir,
-        Command::Agent,
+        Command::Agents,
         Command::Approve,
         Command::Clear,
         Command::Close,
@@ -59,7 +59,7 @@ impl Command {
     pub fn name(self) -> &'static str {
         match self {
             Command::AddDir => "add-dir",
-            Command::Agent => "agent",
+            Command::Agents => "agents",
             Command::Approve => "approve",
             Command::Clear => "clear",
             Command::Close => "close",
@@ -81,7 +81,7 @@ impl Command {
     pub fn about(self) -> &'static str {
         match self {
             Command::AddDir => "add a working directory",
-            Command::Agent => "run as a mode or primary agent",
+            Command::Agents => "run as a mode or primary agent",
             Command::Approve => "act on the plan",
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(Entry::matching("/", &none), builtins(&Command::ALL));
         assert_eq!(
             Entry::matching("/a", &none),
-            builtins(&[Command::AddDir, Command::Agent, Command::Approve])
+            builtins(&[Command::AddDir, Command::Agents, Command::Approve])
         );
         assert_eq!(Entry::matching("/add", &none), builtins(&[Command::AddDir]));
         assert_eq!(
@@ -289,7 +289,7 @@ mod tests {
             names("/"),
             [
                 "add-dir",
-                "agent",
+                "agents",
                 "approve",
                 "clear",
                 "close",

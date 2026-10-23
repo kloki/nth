@@ -1,5 +1,5 @@
 //! The agent picker: what later turns run as. Opened over the prompt by
-//! `/agent`, it lists plan and act, which Tab also switches between, then
+//! `/agents`, it lists plan and act, which Tab also switches between, then
 //! the primary agents, which run in their place until Tab or the picker
 //! goes back to a mode.
 

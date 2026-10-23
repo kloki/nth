@@ -189,7 +189,7 @@ mod tests {
         let rows = rows(&mut app);
 
         assert!(rows[0].starts_with("  /add-dir "), "{rows:#?}");
-        assert!(rows[1].starts_with("  /agent "));
+        assert!(rows[1].starts_with("  /agents "));
         assert!(rows[2].starts_with("  /approve "));
         assert!(rows[3].starts_with("  /clear "));
         assert!(rows[4].starts_with("  /close "));
