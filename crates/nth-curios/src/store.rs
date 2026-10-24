@@ -54,6 +54,73 @@ struct Receipt {
     result: serde_json::Value,
 }
 
+/// What a request's receipt keeps of its result, and the result a retry of
+/// it gets back. A whole thread per reply would grow the state with the
+/// square of the thread's length, so a thread is kept as it stood but with
+/// only the message the request added, and a batch, which the state keeps
+/// anyway, by its id.
+trait Replay: Serialize + DeserializeOwned {
+    fn receipt(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(self)?)
+    }
+    fn replay(_: &State, receipt: serde_json::Value) -> Result<Self> {
+        Ok(serde_json::from_value(receipt)?)
+    }
+}
+
+impl Replay for Published {}
+
+#[derive(Serialize, Deserialize)]
+struct ThreadReceipt {
+    /// The thread as the request left it, holding only its last message.
+    thread: Thread,
+    messages: usize,
+}
+
+impl Replay for Thread {
+    fn receipt(&self) -> Result<serde_json::Value> {
+        let mut thread = self.clone();
+        let messages = thread.messages.len();
+        thread.messages.drain(..messages.saturating_sub(1));
+        Ok(serde_json::to_value(ThreadReceipt { thread, messages })?)
+    }
+    fn replay(state: &State, receipt: serde_json::Value) -> Result<Self> {
+        let ThreadReceipt {
+            mut thread,
+            messages,
+        } = serde_json::from_value(receipt)?;
+        // Messages are only ever appended, so the ones before the request's
+        // own are those the thread holds now.
+        let earlier = state
+            .curios
+            .values()
+            .flat_map(|entry| &entry.threads)
+            .find(|current| current.id == thread.id)
+            .ok_or_else(|| Error::NotFound("Thread not found".into()))?
+            .messages
+            .iter()
+            .take(messages.saturating_sub(thread.messages.len()))
+            .cloned();
+        thread.messages.splice(..0, earlier);
+        Ok(thread)
+    }
+}
+
+impl Replay for Batch {
+    fn receipt(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({ "batch": self.id }))
+    }
+    fn replay(state: &State, receipt: serde_json::Value) -> Result<Self> {
+        let id = receipt["batch"].as_str();
+        state
+            .batches
+            .iter()
+            .find(|batch| Some(batch.id.as_str()) == id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("Batch not found".into()))
+    }
+}
+
 pub fn repository_root(cwd: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
@@ -313,7 +380,7 @@ impl Store {
         }
         atomic(&self.path().join("state.json"), &bytes)
     }
-    fn mutate<T: Serialize + DeserializeOwned>(
+    fn mutate<T: Replay>(
         &self,
         request: &str,
         input: impl Serialize,
@@ -329,7 +396,7 @@ impl Store {
                     "Request ID reused with different input".into(),
                 ));
             }
-            return Ok(serde_json::from_value(receipt.result.clone())?);
+            return T::replay(&state, receipt.result.clone());
         }
         if state.requests.len() >= 20000 {
             return Err(Error::Invalid("Session request limit reached".into()));
@@ -339,7 +406,7 @@ impl Store {
             request.into(),
             Receipt {
                 fingerprint,
-                result: serde_json::to_value(&result)?,
+                result: result.receipt()?,
             },
         );
         self.save(&mut state)?;

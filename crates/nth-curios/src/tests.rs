@@ -118,6 +118,55 @@ fn durable_review_retry_and_history() {
 }
 
 #[test]
+fn receipts_keep_one_message_so_state_grows_with_the_thread() {
+    let (_dir, store) = setup();
+    let cid = store.publish(publication("publish")).unwrap().curio.id;
+    let mut thread = store.comment(&cid, comment("comment")).unwrap();
+    let body = "x".repeat(1000);
+    let mut first = None;
+    for n in 0..150 {
+        thread = store
+            .reply(
+                &cid,
+                &thread.id,
+                Reply {
+                    request_id: format!("reply-{n}"),
+                    expected_version: thread.version,
+                    body: body.clone(),
+                    mark_addressed: false,
+                    revision: Some(1),
+                },
+                Author::Agent,
+            )
+            .unwrap();
+        first.get_or_insert_with(|| thread.clone());
+    }
+    let state = std::fs::metadata(store.path().join("state.json")).unwrap();
+    assert!(state.len() < 3 * 150 * 1000, "state is {} bytes", state.len());
+    // A retry still gets the thread as that request left it.
+    let retried = store
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "reply-0".into(),
+                expected_version: 1,
+                body: body.clone(),
+                mark_addressed: false,
+                revision: Some(1),
+            },
+            Author::Agent,
+        )
+        .unwrap();
+    let first = first.unwrap();
+    assert_eq!(retried.version, first.version);
+    assert_eq!(
+        serde_json::to_value(&retried.messages).unwrap(),
+        serde_json::to_value(&first.messages).unwrap()
+    );
+}
+
+#[test]
 fn actual_uuid_owner_ignore_exceptions_are_rejected_without_rewriting() {
     let (dir, _) = setup();
     let owner = "d7811ce2-b442-4bd5-a2e4-bb0dc390d95d";
