@@ -472,6 +472,7 @@ impl App {
                 transcript.finish_turn(result.map_err(|e| e.to_string()), &session.model, elapsed)
             }
         }
+        self.curios.saved = saved.is_ok();
         if let Err(e) = saved {
             transcript.push_error(format!("session not saved: {e}"));
         }

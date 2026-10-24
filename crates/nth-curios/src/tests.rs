@@ -15,6 +15,17 @@ fn setup() -> (tempfile::TempDir, Store) {
     let store = Store::new(dir.path(), "session-one").unwrap();
     (dir, store)
 }
+/// What needs a lease just dropped: a child another test forks shares the
+/// lock until it execs, so it may stay held a moment longer.
+fn released<T>(attempt: impl Fn() -> Result<T>) -> Result<T> {
+    for _ in 0..50 {
+        if let Ok(done) = attempt() {
+            return Ok(done);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    attempt()
+}
 fn publication(request: &str) -> Publish {
     Publish {
         request_id: request.into(),
@@ -514,7 +525,7 @@ fn ownership_conflicts_and_bounds() {
     let lease = store.claim_delivery().unwrap();
     assert!(matches!(store.claim_delivery(), Err(Error::Conflict(_))));
     drop(lease);
-    assert!(store.claim_delivery().is_ok());
+    assert!(released(|| store.claim_delivery()).is_ok());
     let cid = store.publish(publication("p")).unwrap().curio.id;
     let thread = store.comment(&cid, comment("c")).unwrap();
     assert!(matches!(
@@ -743,4 +754,40 @@ async fn host_capability_csp_and_shutdown() {
     assert!(csp.contains("sandbox allow-same-origin"));
     host.stop().await.unwrap();
     assert!(client.get(base).send().await.is_err());
+}
+
+#[test]
+fn acknowledgment_keeps_the_version_the_notice_carried() {
+    let (_dir, store) = setup();
+    let cid = store.publish(publication("publish")).unwrap().curio.id;
+    let thread = store.comment(&cid, comment("comment")).unwrap();
+    let batch = store
+        .send(
+            &cid,
+            Send {
+                request_id: "send".into(),
+                message_ids: vec![thread.messages[0].id.clone()],
+            },
+        )
+        .unwrap();
+    store
+        .acknowledge_recorded(std::slice::from_ref(&batch.id))
+        .unwrap();
+    let snapshot = store.snapshot(&cid, None).unwrap();
+    assert_eq!(snapshot.threads[0].messages[0].delivery, Delivery::Recorded);
+    // The model answers in a later turn, after the save acknowledged it.
+    store
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "answer".into(),
+                expected_version: batch.messages[0].thread_version,
+                body: "Done".into(),
+                mark_addressed: true,
+                revision: None,
+            },
+            Author::Agent,
+        )
+        .unwrap();
 }

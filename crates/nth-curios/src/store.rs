@@ -810,6 +810,8 @@ impl Store {
             .collect())
     }
     /// Call only after the owning session, including its receipt IDs, was saved.
+    /// Delivery is not content, so threads keep their version: a reply the
+    /// model writes after this still matches the version its notice carried.
     pub fn acknowledge_recorded(&self, batch_ids: &[String]) -> Result<()> {
         let _lock = self.lock()?;
         let mut state = self.load()?;
@@ -817,23 +819,15 @@ impl Store {
             if batch_ids.contains(&batch.id) {
                 batch.recorded = true;
                 if let Some(entry) = state.curios.get_mut(&batch.curio_id) {
-                    for thread in &mut entry.threads {
-                        let mut changed = false;
-                        for message in &mut thread.messages {
-                            if batch.messages.iter().any(|m| m.message.id == message.id)
-                                && message.delivery == Delivery::Queued
-                            {
-                                message.delivery =
-                                    if state.answered_message_ids.contains(&message.id) {
-                                        Delivery::Answered
-                                    } else {
-                                        Delivery::Recorded
-                                    };
-                                changed = true;
-                            }
-                        }
-                        if changed {
-                            thread.version += 1;
+                    for message in entry.threads.iter_mut().flat_map(|t| &mut t.messages) {
+                        if batch.messages.iter().any(|m| m.message.id == message.id)
+                            && message.delivery == Delivery::Queued
+                        {
+                            message.delivery = if state.answered_message_ids.contains(&message.id) {
+                                Delivery::Answered
+                            } else {
+                                Delivery::Recorded
+                            };
                         }
                     }
                 }

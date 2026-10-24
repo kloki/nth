@@ -93,14 +93,33 @@ pub struct CurioDelivery {
     _lease: std::fs::File,
 }
 
+/// What one [`CurioDelivery::poll`] found.
+#[derive(Debug, Default, PartialEq)]
+pub struct Polled {
+    /// Batches newly put in the inbox.
+    pub posted: usize,
+    /// Pending batches the session already recorded: its acknowledgment
+    /// did not reach the store yet.
+    pub unacknowledged: bool,
+}
+
 impl CurioDelivery {
-    /// Polling/enqueueing never acknowledges a batch. Repeated polls dedup in Inbox.
-    pub fn poll(&self, inbox: &crate::Inbox) -> nth_curios::Result<usize> {
-        let mut count = 0;
+    /// Polling/enqueueing never acknowledges a batch. Repeated polls dedup in
+    /// Inbox, and a batch in `recorded` is never posted again.
+    pub fn poll(
+        &self,
+        inbox: &crate::Inbox,
+        recorded: &BTreeSet<String>,
+    ) -> nth_curios::Result<Polled> {
+        let mut polled = Polled::default();
         for batch in self.store.batches(true)? {
-            count += usize::from(inbox.post_curio(CurioNotice { batch }));
+            if recorded.contains(&batch.id) {
+                polled.unacknowledged = true;
+            } else if inbox.post_curio(CurioNotice { batch }) {
+                polled.posted += 1;
+            }
         }
-        Ok(count)
+        Ok(polled)
     }
 }
 

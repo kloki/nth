@@ -17,7 +17,7 @@ mod workdir;
 mod writable;
 
 pub use compaction::Compaction;
-pub use curios::{CurioDelivery, CurioNotice, Curios, nth_curios};
+pub use curios::{CurioDelivery, CurioNotice, Curios, Polled, nth_curios};
 pub use event::{Event, retry_label};
 pub use image::{
     Attachments, Image, MAX_IMAGE_BYTES, REMOVED as IMAGE_REMOVED, too_large as image_too_large,

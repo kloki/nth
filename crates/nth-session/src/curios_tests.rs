@@ -99,8 +99,8 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         .unwrap();
     let inbox = Inbox::new();
     let lease = session.curios().claim_delivery().unwrap();
-    assert_eq!(lease.poll(&inbox).unwrap(), 1);
-    assert_eq!(lease.poll(&inbox).unwrap(), 0);
+    assert_eq!(lease.poll(&inbox, &Default::default()).unwrap().posted, 1);
+    assert_eq!(lease.poll(&inbox, &Default::default()).unwrap().posted, 0);
     assert!(inbox.take_prompts().is_none());
     assert!(inbox.take_notices().is_none());
     let provider =
@@ -268,7 +268,10 @@ fn waiting(count: usize) -> (tempfile::TempDir, Session, Inbox) {
     }
     let inbox = Inbox::new();
     let lease = session.curios().claim_delivery().unwrap();
-    assert_eq!(lease.poll(&inbox).unwrap(), count);
+    assert_eq!(
+        lease.poll(&inbox, &Default::default()).unwrap().posted,
+        count
+    );
     (repo, session, inbox)
 }
 

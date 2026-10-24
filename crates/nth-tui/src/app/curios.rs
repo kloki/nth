@@ -1,5 +1,9 @@
 //! Repository review documents. Capabilities remain inside this front-end.
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use nth_protocol::{
     CurioDelivery,
@@ -20,11 +24,21 @@ use crate::{
     theme::{dim, panel_row, panel_title},
 };
 
+/// How long after a refused claim the delivery lease is tried again.
+const CLAIM_RETRY: Duration = Duration::from_secs(10);
+
 pub(super) struct Curios {
     root: Option<PathBuf>,
     items: Vec<Curio>,
     delivery: Option<CurioDelivery>,
-    tried_delivery: bool,
+    /// When to try for the delivery lease again: another process that holds
+    /// it may exit.
+    next_claim: Instant,
+    /// Whether the hint said another process owns delivery.
+    told_owned: bool,
+    /// Whether the session's receipts are saved, so its feedback may be
+    /// acknowledged: false after a save that failed, until the next works.
+    pub(super) saved: bool,
     hosts: BTreeMap<(String, String), Host>,
     pub(super) opening: super::Job<core::Result<(String, String, Host)>>,
     opening_revision: Option<u64>,
@@ -40,7 +54,9 @@ impl Curios {
                 .or_else(|| core::repository_root(&session.cwd).ok()),
             items: Vec::new(),
             delivery: None,
-            tried_delivery: false,
+            next_claim: Instant::now(),
+            told_owned: false,
+            saved: true,
             hosts: BTreeMap::new(),
             opening: Default::default(),
             opening_revision: None,
@@ -155,41 +171,61 @@ impl App {
         }
         // Feedback exists only once this session published, so its folder
         // is waited for rather than made.
-        if !self.curios.tried_delivery
+        if self.curios.delivery.is_none()
+            && Instant::now() >= self.curios.next_claim
             && let Some(session) = &mut self.session
             && root
                 .join(".nth/curios")
                 .join(session.id.to_string())
                 .is_dir()
         {
-            self.curios.tried_delivery = true;
+            self.curios.next_claim = Instant::now() + CLAIM_RETRY;
             if session.prepare_curios().is_ok() {
                 match session.curios().claim_delivery() {
                     Ok(delivery) => self.curios.delivery = Some(delivery),
-                    Err(_) => {
+                    Err(_) if !self.curios.told_owned => {
+                        self.curios.told_owned = true;
                         self.hint = Some("Curios delivery is owned by another process".into())
                     }
+                    Err(_) => {}
                 }
             }
         }
-        if let Some(delivery) = &self.curios.delivery {
-            match delivery.poll(&self.inbox) {
-                Ok(n) if n > 0 => {
-                    // Unsaved in-memory sessions must not repeatedly wake for
-                    // batches they already recorded. Acknowledgment remains
-                    // exclusively the successful session save's responsibility.
-                    if let Some(session) = &self.session {
-                        for notice in self.inbox.take_curios(&self.session_id.to_string()) {
-                            if !session.curio_receipts.contains(&notice.batch.id) {
-                                self.inbox.post_curio(notice);
-                            }
+        let Some(delivery) = &self.curios.delivery else {
+            return;
+        };
+        // While a turn runs the session is away; its turn hands over what
+        // the inbox holds and its receipts come back with it.
+        let recorded = self
+            .session
+            .as_ref()
+            .map(|s| s.curio_receipts.clone())
+            .unwrap_or_default();
+        match delivery.poll(&self.inbox, &recorded) {
+            Ok(polled) => {
+                // A batch posted while a turn ran that the turn recorded
+                // anyway would otherwise wake the model with nothing.
+                if self.session.is_some() {
+                    for notice in self.inbox.take_curios(&self.session_id.to_string()) {
+                        if !recorded.contains(&notice.batch.id) {
+                            self.inbox.post_curio(notice);
                         }
                     }
+                }
+                if polled.posted > 0 {
                     self.arm_notices();
                 }
-                Ok(_) => {}
-                Err(_) => self.hint = Some("could not read queued Curios feedback".into()),
+                // An acknowledgment that failed after a save is caught up
+                // here, so the viewer stops saying the feedback is on its way.
+                if polled.unacknowledged
+                    && self.curios.saved
+                    && self.store.is_some()
+                    && let Some(session) = &self.session
+                {
+                    let _ = session.acknowledge_curios();
+                }
             }
+            Err(_) => self.hint = Some("could not read queued Curios feedback".into()),
         }
     }
 
@@ -468,6 +504,58 @@ mod tests {
         );
         app.poll_curios();
         assert!(!app.inbox.wakes());
+    }
+
+    #[tokio::test]
+    async fn an_unacknowledged_receipt_is_caught_up_without_waking() {
+        let (dir, mut app, store, c) = fixture();
+        send(&store, &c);
+        app.poll_curios();
+        app.notices_due();
+        let ended = app.turn.join().await.unwrap();
+        // Without a store nothing is saved, so nothing is acknowledged.
+        app.end_turn(ended);
+        assert_eq!(store.batches(true).unwrap().len(), 1);
+        app.store = Some(Arc::new(nth_session::Store::at(
+            dir.path().join("sessions"),
+        )));
+        app.poll_curios();
+        assert!(app.notices_due.is_none());
+        assert!(!app.inbox.wakes());
+        assert!(store.batches(true).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_is_claimed_once_another_owner_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut session = Session::new("glm", dir.path().to_path_buf());
+        session.prepare_curios().unwrap();
+        let other = session.curios().claim_delivery().unwrap();
+        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        app.poll_curios();
+        assert!(app.curios.delivery.is_none());
+        assert!(app.hint.as_deref().unwrap().contains("another process"));
+        drop(other);
+        app.poll_curios();
+        assert!(app.curios.delivery.is_none(), "retries wait a while");
+        // A child another test forks shares the lock until it execs.
+        for _ in 0..50 {
+            app.curios.next_claim = Instant::now();
+            app.poll_curios();
+            if app.curios.delivery.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(app.curios.delivery.is_some());
     }
 
     #[tokio::test]
