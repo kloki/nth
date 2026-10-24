@@ -72,11 +72,7 @@ mod tests {
     use nth_protocol::{MonitorEnd, MonitorEvent};
 
     use super::*;
-    use crate::app::{
-        keys::Action,
-        monitor::tests::start,
-        tests::{app, rows},
-    };
+    use crate::app::{keys::Action, monitor::tests::start, tests::app};
 
     #[tokio::test]
     async fn quitting_with_monitors_running_asks_twice() {
@@ -85,11 +81,10 @@ mod tests {
 
         app.apply(Action::ClearOrQuit);
         assert!(!app.quit);
-        let rows = rows(&mut app);
+        let hint = app.hint.as_deref().unwrap_or_default();
         assert!(
-            rows[15].starts_with(" 1 monitor running · ctrl+c again"),
-            "{}",
-            rows[15]
+            hint.starts_with("1 monitor running · ctrl+c again"),
+            "{hint}"
         );
         app.apply(Action::Insert('x'));
         app.apply(Action::ClearOrQuit);

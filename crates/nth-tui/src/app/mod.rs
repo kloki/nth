@@ -647,7 +647,7 @@ impl App {
                 || self.running_subagents() > 0
                 || self.showing_hero()
                 || self.flash.as_ref().is_some_and(flash::Flash::running)
-                || self.hint.as_ref().is_some_and(hint::Hint::flashing);
+                || self.hint.as_ref().is_some_and(hint::Hint::moving);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 ended = self.editor.join() => Step::EditorClosed(ended),

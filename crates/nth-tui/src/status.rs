@@ -3,8 +3,8 @@
 //! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
 //! and what the session spent on the left, git branch and status on the
 //! right, with the branch's pull request as a clickable `#N`. Line 2 shows
-//! a hint about the last key (flashing as it comes in, gone after a few
-//! seconds) or the queued prompts on the left, and the language servers
+//! a hint about the last key (typed in by a wave, wiped out by one after a
+//! few seconds) or the queued prompts on the left, and the language servers
 //! that check a write on the right: a dot per server, coloured by the
 //! worst of its clients, with how many roots it runs in when more than
 //! one. The right side is cut first when a line is too narrow.
@@ -89,13 +89,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let right = split_line(frame, state, place, summary);
     let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
     let left = match &app.hint {
-        Some(hint) => {
-            let style = match hint.flashing() {
-                true => Style::new().fg(Color::Black).bg(Color::Yellow),
-                false => Style::new().fg(Color::Yellow),
-            };
-            vec![Span::styled(hint.to_string(), style)]
-        }
+        Some(hint) => hint.spans(),
         None => queued(app),
     };
     split_line(frame, checks, left, servers(app));
