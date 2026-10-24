@@ -4,7 +4,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-use nth_protocol::Message;
+use nth_protocol::{
+    Message,
+    nth_curios::{self as core, Author, Comment, Publish, Reply, Target, TargetKind},
+};
 use nth_session::{Session, Store};
 use serde_json::Value;
 
@@ -27,6 +30,153 @@ fn json(repo: &std::path::Path, data: &std::path::Path, args: &[&str]) -> Value 
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn long_thread_mutations_return_bounded_retry_safe_receipts() {
+    let repo = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let store = core::Store::new(repo.path(), "long-thread-owner").unwrap();
+    let source = store.source_dir().join("review.html");
+    std::fs::write(&source, "<p id=title>Review</p>").unwrap();
+    let published = store
+        .publish_file(
+            &source,
+            Publish {
+                request_id: "publish".into(),
+                curio_id: None,
+                expected_revision: None,
+                title: None,
+                html: String::new(),
+            },
+        )
+        .unwrap();
+    let id = &published.curio.id;
+    let body = "private-review-content".repeat(800);
+    let body = &body[..16384];
+    let mut thread = store
+        .comment(
+            id,
+            Comment {
+                request_id: "comment".into(),
+                revision: 1,
+                target: Target {
+                    element_id: None,
+                    kind: TargetKind::Document,
+                    rect: None,
+                    label: String::new(),
+                    quote: String::new(),
+                },
+                body: body.into(),
+            },
+        )
+        .unwrap();
+    for n in 1..16 {
+        thread = store
+            .reply(
+                id,
+                &thread.id,
+                Reply {
+                    request_id: format!("seed-{n}"),
+                    expected_version: thread.version,
+                    body: body.into(),
+                    mark_addressed: false,
+                    revision: None,
+                },
+                Author::Human,
+            )
+            .unwrap();
+    }
+    assert!(serde_json::to_vec(&thread).unwrap().len() > 256 * 1024);
+    let tid = &thread.id;
+    let run = |args: &[&str]| {
+        let output = command(repo.path(), data.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.len() < 4096,
+            "mutation receipt exceeded 4 KiB"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-review-content"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("http://"));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let reply_args = [
+        "curio",
+        "reply",
+        id,
+        tid,
+        body,
+        "--expected-version",
+        "16",
+        "--request-id",
+        "cli-reply",
+        "--json",
+    ];
+    let reply = run(&reply_args);
+    assert_eq!(reply["version"], 17);
+    assert_eq!(reply["message_count"], 17);
+    assert_eq!(reply["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(reply["messages"][0]["delivery"], "saved");
+    assert_eq!(run(&reply_args), reply);
+    let persisted = store.snapshot(id, None).unwrap();
+    assert_eq!(persisted.threads[0].messages.len(), 17);
+    assert_eq!(
+        persisted.threads[0].messages[16].id,
+        reply["messages"][0]["id"]
+    );
+
+    let resolved = run(&["curio", "resolve", id, tid, "--expected-version", "17"]);
+    assert_eq!(resolved["status"], "resolved");
+    assert!(resolved.get("messages").is_none());
+    let reopened = run(&["curio", "reopen", id, tid, "--expected-version", "18"]);
+    assert_eq!(reopened["status"], "open");
+
+    let mut send_args = vec!["curio", "send", id, "--message-ids"];
+    send_args.extend(persisted.threads[0].messages.iter().map(|m| m.id.as_str()));
+    send_args.extend(["--request-id", "cli-send", "--json"]);
+    let sent = run(&send_args);
+    assert_eq!(sent["messages"].as_array().unwrap().len(), 17);
+    assert_eq!(sent["messages"][0]["message"]["delivery"], "queued");
+    assert_eq!(sent["recorded"], false);
+    assert_eq!(run(&send_args), sent);
+    assert_eq!(store.batches(false).unwrap().len(), 1);
+
+    // Retrying after later mutations still identifies the original message/version.
+    assert_eq!(run(&reply_args), reply);
+    assert_eq!(
+        store.snapshot(id, None).unwrap().threads[0].messages.len(),
+        17
+    );
+    let update_args = [
+        "curio",
+        "publish",
+        source.to_str().unwrap(),
+        "--id",
+        id,
+        "--expected-revision",
+        "1",
+        "--request-id",
+        "cli-update",
+    ];
+    let update = run(&update_args);
+    assert_eq!(update["revision"]["number"], 2);
+    assert!(update["revision"].get("anchors").is_none());
+    assert_eq!(run(&update_args), update);
 }
 
 #[tokio::test]

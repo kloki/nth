@@ -200,10 +200,17 @@ fn thread_receipt(thread: core::Thread, include_message: bool) -> Value {
         "status": thread.status, "attachment": thread.attachment,
         "message_count": thread.messages.len()});
     if include_message {
-        receipt["messages"] = json!(thread.messages.last().map(|m| json!({
-            "id": m.id, "author": m.author, "delivery": m.delivery,
-            "created_at": m.created_at
-        })).into_iter().collect::<Vec<_>>());
+        receipt["messages"] = json!(
+            thread
+                .messages
+                .last()
+                .map(|m| json!({
+                    "id": m.id, "author": m.author, "delivery": m.delivery,
+                    "created_at": m.created_at
+                }))
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
     }
     receipt
 }
@@ -323,21 +330,24 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
             } else {
                 TargetKind::Document
             };
-            thread_receipt(store.comment(
-                &id,
-                Comment {
-                    request_id,
-                    revision,
-                    target: Target {
-                        element_id: element,
-                        kind,
-                        rect,
-                        label,
-                        quote,
+            thread_receipt(
+                store.comment(
+                    &id,
+                    Comment {
+                        request_id,
+                        revision,
+                        target: Target {
+                            element_id: element,
+                            kind,
+                            rect,
+                            label,
+                            quote,
+                        },
+                        body,
                     },
-                    body,
-                },
-            )?, true)
+                )?,
+                true,
+            )
         }
         Command::Reply {
             id,
@@ -350,18 +360,21 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
             mark_addressed,
         } => {
             let store = owner(root, prefix, Some(&id)).await?;
-            thread_receipt(store.reply(
-                &id,
-                &thread,
-                Reply {
-                    request_id,
-                    expected_version,
-                    body,
-                    mark_addressed,
-                    revision,
-                },
-                if agent { Author::Agent } else { Author::Human },
-            )?, true)
+            thread_receipt(
+                store.reply(
+                    &id,
+                    &thread,
+                    Reply {
+                        request_id,
+                        expected_version,
+                        body,
+                        mark_addressed,
+                        revision,
+                    },
+                    if agent { Author::Agent } else { Author::Human },
+                )?,
+                true,
+            )
         }
         Command::Send {
             id,
@@ -369,7 +382,11 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
             request_id,
         } => {
             let batch = owner(root, prefix, Some(&id)).await?.send(
-                &id, Send { request_id, message_ids },
+                &id,
+                Send {
+                    request_id,
+                    message_ids,
+                },
             )?;
             json!({"id": batch.id, "session_id": batch.session_id,
                 "curio_id": batch.curio_id, "revision": batch.revision,
@@ -378,27 +395,33 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
                     "thread_id": m.thread_id, "thread_version": m.thread_version,
                     "message": {"id": m.message.id, "delivery": m.message.delivery}
                 })).collect::<Vec<_>>()})
-        },
+        }
         Command::Resolve {
             id,
             thread,
             expected_version,
-        } => thread_receipt(owner(root, prefix, Some(&id)).await?.set_status(
-            &id,
-            &thread,
-            expected_version,
-            Status::Resolved,
-        )?, false),
+        } => thread_receipt(
+            owner(root, prefix, Some(&id)).await?.set_status(
+                &id,
+                &thread,
+                expected_version,
+                Status::Resolved,
+            )?,
+            false,
+        ),
         Command::Reopen {
             id,
             thread,
             expected_version,
-        } => thread_receipt(owner(root, prefix, Some(&id)).await?.set_status(
-            &id,
-            &thread,
-            expected_version,
-            Status::Open,
-        )?, false),
+        } => thread_receipt(
+            owner(root, prefix, Some(&id)).await?.set_status(
+                &id,
+                &thread,
+                expected_version,
+                Status::Open,
+            )?,
+            false,
+        ),
         Command::Serve { id } => {
             let host = core::Host::start(owner(root, prefix, Some(&id)).await?, &id).await?;
             if args.json {
