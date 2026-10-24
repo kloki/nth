@@ -635,10 +635,12 @@ impl Store {
                         Delivery::Answered
                     },
                 });
-                if author == Author::Human {
+                if author == Author::Human
+                    && let Some(revision) = reply.revision
+                {
                     state.reviewed_revisions.insert(
                         thread.messages.last().expect("new reply").id.clone(),
-                        reply.revision.unwrap_or(entry.curio.current_revision),
+                        revision,
                     );
                 }
                 thread.version += 1;

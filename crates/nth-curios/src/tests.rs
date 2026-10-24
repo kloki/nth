@@ -345,6 +345,96 @@ fn mixed_historical_submissions_keep_each_messages_reviewed_revision() {
 }
 
 #[test]
+fn historical_human_replies_preserve_explicit_or_unknown_reviewed_revision() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("p1")).unwrap().curio.id;
+    let thread = store.comment(&cid, comment("comment-r1")).unwrap();
+    let mut update = publication("p2");
+    update.curio_id = Some(cid.clone());
+    update.expected_revision = Some(1);
+    update.html = "<p id='replacement'>Replacement</p>".into();
+    store.publish(update).unwrap();
+    assert_eq!(
+        store.snapshot(&cid, None).unwrap().threads[0].attachment,
+        "detached"
+    );
+    assert_eq!(
+        store.snapshot(&cid, Some(1)).unwrap().threads[0].attachment,
+        "attached"
+    );
+
+    let reply = Reply {
+        request_id: "reply-r1".into(),
+        expected_version: thread.version,
+        body: "Still viewing revision one".into(),
+        mark_addressed: false,
+        revision: Some(1),
+    };
+    let replied = store
+        .reply(&cid, &thread.id, reply.clone(), Author::Human)
+        .unwrap();
+    let retried = store
+        .reply(&cid, &thread.id, reply.clone(), Author::Human)
+        .unwrap();
+    assert_eq!(
+        retried.messages.last().unwrap().id,
+        replied.messages.last().unwrap().id
+    );
+    for revision in [Some(2), None] {
+        assert!(matches!(
+            store.reply(
+                &cid,
+                &thread.id,
+                Reply {
+                    revision,
+                    ..reply.clone()
+                },
+                Author::Human
+            ),
+            Err(Error::Conflict(_))
+        ));
+    }
+    assert!(matches!(
+        store.reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "missing-revision".into(),
+                expected_version: replied.version,
+                revision: Some(3),
+                ..reply.clone()
+            },
+            Author::Human
+        ),
+        Err(Error::NotFound(_))
+    ));
+    let unknown: Reply = serde_json::from_value(serde_json::json!({
+        "request_id": "unknown-revision",
+        "expected_version": replied.version,
+        "body": "No viewed revision supplied"
+    }))
+    .unwrap();
+    let replied = store
+        .reply(&cid, &thread.id, unknown, Author::Human)
+        .unwrap();
+    let resumed = Store::new(dir.path(), "session-one").unwrap();
+    let batch = resumed
+        .send(
+            &cid,
+            Send {
+                request_id: "send-replies".into(),
+                message_ids: replied.messages.iter().map(|m| m.id.clone()).collect(),
+            },
+        )
+        .unwrap();
+    assert_eq!(batch.revision, 2);
+    assert_eq!(batch.messages.len(), 3);
+    assert_eq!(batch.messages[0].reviewed_revision, Some(1));
+    assert_eq!(batch.messages[1].reviewed_revision, Some(1));
+    assert_eq!(batch.messages[2].reviewed_revision, None);
+}
+
+#[test]
 fn static_boundary_and_anchor_validation() {
     for html in [
         "<script>alert(1)</script>",

@@ -737,7 +737,7 @@
     const thread = currentThread(),
       body = $("reply-body").value.trim();
     if (!body || !thread) return;
-    const payload = { expected_version: thread.version, body };
+    const payload = { expected_version: thread.version, revision, body };
     await mutate(
       `/api/threads/${encodeURIComponent(thread.id)}/messages`,
       { request_id: requestId(`reply:${thread.id}`, payload), ...payload },
