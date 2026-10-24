@@ -16,6 +16,8 @@ Call `curio_read` first. Without a curio selector it can list authorized curios 
 
 Author with ordinary `read`, `write`, `edit` or `apply_patch` in the returned source workspace. Curios lives under the repository's `.nth/curios/`; use the actual returned paths rather than guessing session IDs or repository roots. In plan mode only the current session's permitted source workspace is writable for Curios. Private state, comments and immutable revisions are managed by native tools, never by editing JSON or revision files.
 
+A curio the user opened from an earlier session is adopted into this one, with its revisions and threads; `curio_read` names its `adopted_from` session and an `adopted_source`, the current revision's HTML copied into this session's workspace. Edit and publish from that file; the earlier session's source files are not yours to change.
+
 This embedded skill has no filesystem resource directory. If Quiet Folio suits the brief, read the actual `templates/quiet-folio.html` path returned by `curio_read` and copy its contents to a new source HTML file before editing. Leave the starter unpublished and preserve any existing edits to it. If no starter path is returned, author the document directly; do not invent a path relative to this skill.
 
 ## Author a complete static document

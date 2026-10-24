@@ -252,47 +252,65 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
 }
 
 #[tokio::test]
-async fn status_open_prefers_last_opened_then_falls_back_after_its_owner_is_removed() {
+async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let provider = Arc::new(Scripted::default());
-    let (dir, mut app, first_store, first) = fixture(provider);
+    let (dir, mut app, _first_store, first) = fixture(provider);
     app.opener = |_| Ok(());
-    // A second owner also checks that fallback never changes active session ownership.
-    let second_store = core::Store::new(dir.path(), "second-owner").unwrap();
-    let second = second_store
-        .publish(Publish {
-            request_id: "second-publication".into(),
-            curio_id: None,
-            expected_revision: None,
-            title: Some("Second document".into()),
-            html: "<h1>Second</h1>".into(),
-        })
-        .unwrap()
-        .curio;
+    let publish = |owner: &str, title: &str| {
+        let store = core::Store::new(dir.path(), owner).unwrap();
+        let curio = store
+            .publish(Publish {
+                request_id: format!("{owner}-publication"),
+                curio_id: None,
+                expected_revision: None,
+                title: Some(title.into()),
+                html: format!("<h1>{title}</h1>"),
+            })
+            .unwrap()
+            .curio;
+        (store, curio)
+    };
+    let (second_store, second) = publish("second-owner", "Second document");
     app.poll_curios();
     app.open_curio(second.session_id.clone(), second.id.clone(), None);
     let opened = app.curios.opening.join().await.unwrap();
-    assert_eq!(opened.as_ref().unwrap().1, second.id);
+    let adopted = opened.as_ref().unwrap();
+    assert_eq!(adopted.id, second.id);
+    assert_eq!(adopted.owner, first.session_id, "adopted by this session");
+    assert_eq!(
+        adopted.how,
+        crate::app::curios::How::Adopted("second-owner".into())
+    );
     app.curio_opened(opened);
+    assert!(app.hint.as_deref().unwrap().starts_with("adopted Curio"));
+    assert!(second_store.list().unwrap().is_empty());
     app.open_latest_curio();
     assert!(
         !app.curios.opening.is_running(),
         "last-opened host is reused"
     );
-    assert!(app.hint.as_deref().unwrap().contains("owning session"));
-    std::fs::remove_dir_all(second_store.path()).unwrap();
+    assert!(app.hint.as_deref().unwrap().starts_with("opened Curio"));
+    // A session still running keeps its curio.
+    let (third_store, third) = publish("third-owner", "Third document");
+    let running = third_store.claim_delivery().unwrap();
+    app.poll_curios();
+    app.open_curio(third.session_id.clone(), third.id.clone(), None);
+    let opened = app.curios.opening.join().await.unwrap();
+    let kept = opened.as_ref().unwrap();
+    assert_eq!(kept.owner, "third-owner");
+    assert_eq!(kept.how, crate::app::curios::How::Running);
+    app.curio_opened(opened);
+    assert!(app.hint.as_deref().unwrap().contains("runs elsewhere"));
+    drop(running);
+    std::fs::remove_dir_all(third_store.path()).unwrap();
     app.poll_curios();
     app.open_latest_curio();
-    let opened = app.curios.opening.join().await.unwrap();
-    assert_eq!(opened.as_ref().unwrap().0, first.session_id);
-    assert_eq!(opened.as_ref().unwrap().1, first.id);
-    app.curio_opened(opened);
+    // The latest left is this session's own, whose host is reused or made.
+    if app.curios.opening.is_running() {
+        let opened = app.curios.opening.join().await.unwrap();
+        assert_eq!(opened.as_ref().unwrap().owner, first.session_id);
+        app.curio_opened(opened);
+    }
     assert_eq!(app.session_id.to_string(), first.session_id);
-    assert_eq!(
-        first_store
-            .snapshot(&first.id, None)
-            .unwrap()
-            .revision
-            .title,
-        "Original review"
-    );
+    assert!(app.hint.as_deref().unwrap().starts_with("opened Curio"));
 }

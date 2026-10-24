@@ -27,6 +27,25 @@ use crate::{
 /// How long after a refused claim the delivery lease is tried again.
 const CLAIM_RETRY: Duration = Duration::from_secs(10);
 
+/// A curio the opening job hosts.
+pub(super) struct Opened {
+    pub(super) owner: String,
+    pub(super) id: String,
+    host: Host,
+    pub(super) how: How,
+}
+
+/// Whose a curio was when it was opened.
+#[derive(Debug, PartialEq)]
+pub(super) enum How {
+    /// This session's.
+    Own,
+    /// Another session's, adopted from it.
+    Adopted(String),
+    /// Another session's that is running, so it stays there.
+    Running,
+}
+
 pub(super) struct Curios {
     root: Option<PathBuf>,
     items: Vec<Curio>,
@@ -40,7 +59,7 @@ pub(super) struct Curios {
     /// acknowledged: false after a save that failed, until the next works.
     pub(super) saved: bool,
     hosts: BTreeMap<(String, String), Host>,
-    pub(super) opening: super::Job<core::Result<(String, String, Host)>>,
+    pub(super) opening: super::Job<core::Result<Opened>>,
     opening_revision: Option<u64>,
     last: Option<(String, String)>,
 }
@@ -313,13 +332,17 @@ impl App {
         }
     }
 
+    /// Opens a curio in the browser. One from another session is adopted
+    /// first, so the feedback written on it reaches this session; one whose
+    /// session is running elsewhere stays there.
     pub(super) fn open_curio(&mut self, owner: String, id: String, revision: Option<u64>) {
+        let me = self.session_id.to_string();
         let key = (owner.clone(), id.clone());
         let Some(root) = self.curios.root.clone() else {
             self.hint = Some("Curios requires a Git repository".into());
             return;
         };
-        if self.curios.hosts.contains_key(&key) {
+        if owner == me && self.curios.hosts.contains_key(&key) {
             if core::Store::new(&root, &owner)
                 .and_then(|store| store.snapshot(&id, revision))
                 .is_err()
@@ -328,34 +351,63 @@ impl App {
                 return;
             }
             self.curios.last = Some(key);
-            self.present_curio(revision);
+            self.present_curio(revision, How::Own);
             return;
         }
         self.curios.opening_revision = revision;
         self.curios.opening.start(|_| {
             tokio::spawn(async move {
-                let store = core::Store::new(&root, &owner)?;
+                let (store, how) = if owner == me {
+                    (core::Store::new(&root, &owner)?, How::Own)
+                } else {
+                    let store = core::Store::new(&root, &me)?;
+                    match store.adopt(&owner, &id) {
+                        Ok(_) => (store, How::Adopted(owner)),
+                        Err(core::Error::Conflict(_)) => {
+                            (core::Store::new(&root, &owner)?, How::Running)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
                 store.snapshot(&id, revision)?;
+                let owner = store.session_id().to_string();
                 let host = Host::start(store, &id).await?;
-                Ok((owner, id, host))
+                Ok(Opened {
+                    owner,
+                    id,
+                    host,
+                    how,
+                })
             })
         });
     }
 
-    pub(super) fn curio_opened(&mut self, opened: core::Result<(String, String, Host)>) {
+    pub(super) fn curio_opened(&mut self, opened: core::Result<Opened>) {
         let revision = self.curios.opening_revision.take();
         match opened {
-            Ok((owner, id, host)) => {
+            Ok(Opened {
+                owner,
+                id,
+                host,
+                how,
+            }) => {
+                if let How::Adopted(from) = &how {
+                    // Its old host serves a store that no longer has it.
+                    self.curios.hosts.remove(&(from.clone(), id.clone()));
+                    // Its feedback comes here now, so delivery is needed.
+                    self.curios.next_claim = Instant::now();
+                    self.poll_curios();
+                }
                 let key = (owner, id);
                 self.curios.hosts.insert(key.clone(), host);
                 self.curios.last = Some(key);
-                self.present_curio(revision);
+                self.present_curio(revision, how);
             }
             Err(_) => self.hint = Some("could not host Curio".into()),
         }
     }
 
-    fn present_curio(&mut self, revision: Option<u64>) {
+    fn present_curio(&mut self, revision: Option<u64>, how: How) {
         let Some(key) = &self.curios.last else {
             return;
         };
@@ -364,17 +416,21 @@ impl App {
         };
         // Opener errors may contain their arguments: never render them here.
         let url = revision.map_or_else(|| host.url(), |n| host.url_for_revision(n));
-        let opened = (self.opener)(&url).is_ok();
-        self.hint = Some(
-            if !opened {
-                "could not open Curio · /curios then ctrl+y to copy link"
-            } else if key.0 != self.session_id.to_string() {
-                "opened Curio · feedback stays queued for its owning session"
-            } else {
-                "opened Curio · /curios then ctrl+y to copy link"
-            }
+        if (self.opener)(&url).is_err() {
+            self.hint = Some("could not open Curio · /curios then ctrl+y to copy link".into());
+            return;
+        }
+        self.hint = Some(match how {
+            How::Own => "opened Curio · /curios then ctrl+y to copy link".into(),
+            How::Adopted(from) => format!(
+                "adopted Curio from session {} · its feedback comes here",
+                &from[..from.len().min(8)]
+            )
             .into(),
-        );
+            How::Running => {
+                "opened Curio · its session runs elsewhere and gets its feedback".into()
+            }
+        });
     }
 
     fn copy_curio_url(&mut self) {
@@ -556,6 +612,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(app.curios.delivery.is_some());
+    }
+
+    #[tokio::test]
+    async fn feedback_on_an_adopted_curio_reaches_this_session() {
+        let (dir, mut app, store, _) = fixture();
+        let old = core::Store::new(dir.path(), "old-owner").unwrap();
+        let c = old
+            .publish(Publish {
+                request_id: "old".into(),
+                curio_id: None,
+                expected_revision: None,
+                title: Some("Old".into()),
+                html: "<h1 id=title>Old</h1>".into(),
+            })
+            .unwrap()
+            .curio;
+        app.open_curio(c.session_id.clone(), c.id.clone(), None);
+        let opened = app.curios.opening.join().await.unwrap();
+        app.curio_opened(opened);
+        // The viewer now writes to this session's store.
+        send(&store, &c);
+        app.poll_curios();
+        assert!(app.notices_due.is_some());
+        app.notices_due();
+        let ended = app.turn.join().await.unwrap();
+        app.end_turn(ended);
+        assert_eq!(app.session.as_ref().unwrap().curio_receipts.len(), 1);
+        assert!(old.batches(true).unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -95,6 +95,17 @@ pub struct Curio {
     pub title: String,
     pub session_id: String,
     pub current_revision: u64,
+    /// The session this curio was adopted from, when one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted_from: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Adopted {
+    pub curio: Curio,
+    /// The current revision's HTML, copied into the source workspace to
+    /// edit and publish from.
+    pub source: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -379,12 +379,7 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
 }
 
 enum Step {
-    CurioOpened(
-        Result<
-            nth_protocol::nth_curios::Result<(String, String, nth_protocol::nth_curios::Host)>,
-            JoinError,
-        >,
-    ),
+    CurioOpened(Result<nth_protocol::nth_curios::Result<curios::Opened>, JoinError>),
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),

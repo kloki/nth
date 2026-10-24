@@ -301,7 +301,7 @@ fn reply_before_ack_is_durable_without_answering_unsent_or_later_messages() {
     store.reply(&cid, &thread.id, reply, Author::Agent).unwrap();
     assert_eq!(store.send(&cid, send).unwrap().id, batch.id);
     let resumed = Store::new(dir.path(), "session-one").unwrap();
-    crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(true));
+    crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(1));
     assert!(
         resumed
             .acknowledge_recorded(std::slice::from_ref(&batch.id))
@@ -550,7 +550,7 @@ fn failed_commit_is_unpublished_and_recovered() {
     let mut update = publication("second");
     update.curio_id = Some(first.curio.id.clone());
     update.expected_revision = Some(1);
-    crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(true));
+    crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(1));
     assert!(store.publish(update.clone()).is_err());
     assert_eq!(
         store
@@ -790,4 +790,99 @@ fn acknowledgment_keeps_the_version_the_notice_carried() {
             Author::Agent,
         )
         .unwrap();
+}
+
+fn reviewed(store: &Store) -> (String, Batch) {
+    let cid = store.publish(publication("publish")).unwrap().curio.id;
+    let thread = store.comment(&cid, comment("comment")).unwrap();
+    let batch = store
+        .send(
+            &cid,
+            Send {
+                request_id: "send".into(),
+                message_ids: vec![thread.messages[0].id.clone()],
+            },
+        )
+        .unwrap();
+    (cid, batch)
+}
+
+#[test]
+fn adoption_moves_the_curio_and_its_waiting_feedback() {
+    let (dir, old) = setup();
+    let (cid, batch) = reviewed(&old);
+    let new = Store::new(dir.path(), "session-two").unwrap();
+    let adopted = new.adopt("session-one", &cid).unwrap();
+    assert_eq!(adopted.curio.session_id, "session-two");
+    assert_eq!(adopted.curio.adopted_from.as_deref(), Some("session-one"));
+    assert_eq!(
+        std::fs::read_to_string(&adopted.source).unwrap(),
+        old_html()
+    );
+    let waiting = new.batches(true).unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, batch.id);
+    assert_eq!(waiting[0].session_id, "session-two");
+    assert_eq!(
+        waiting[0].messages[0].reviewed_revision,
+        Some(1),
+        "the reviewed revision moves too"
+    );
+    let snapshot = new.snapshot(&cid, None).unwrap();
+    assert_eq!(snapshot.threads.len(), 1);
+    assert!(new.content(&cid, 1).is_ok());
+    assert!(old.list().unwrap().is_empty());
+    assert!(old.batches(true).unwrap().is_empty());
+    assert!(!old.path().join(&cid).exists());
+    let Err(Error::NotFound(gone)) = old.snapshot(&cid, None) else {
+        panic!("the old session no longer has it")
+    };
+    assert!(gone.contains("session-two"));
+    assert!(matches!(
+        old.comment(&cid, comment("late")),
+        Err(Error::NotFound(_))
+    ));
+    // Adopting again changes nothing and keeps edits to the source.
+    std::fs::write(&adopted.source, "edited").unwrap();
+    new.adopt("session-one", &cid).unwrap();
+    assert_eq!(std::fs::read_to_string(&adopted.source).unwrap(), "edited");
+    assert_eq!(new.list().unwrap().len(), 1);
+    assert_eq!(discover(new.repo_root()).unwrap().len(), 1);
+}
+
+fn old_html() -> String {
+    publication("html").html
+}
+
+#[test]
+fn adoption_waits_for_a_running_owner() {
+    let (dir, old) = setup();
+    let (cid, _) = reviewed(&old);
+    let lease = old.claim_delivery().unwrap();
+    let new = Store::new(dir.path(), "session-two").unwrap();
+    assert!(matches!(
+        new.adopt("session-one", &cid),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(old.list().unwrap().len(), 1);
+    drop(lease);
+    released(|| new.adopt("session-one", &cid)).unwrap();
+}
+
+#[test]
+fn adoption_cut_short_is_finished_by_adopting_again() {
+    // The moved mark, this session's take, the old session's release.
+    for step in 1..=3 {
+        let (dir, old) = setup();
+        let (cid, batch) = reviewed(&old);
+        let new = Store::new(dir.path(), "session-two").unwrap();
+        crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(step));
+        assert!(new.adopt("session-one", &cid).is_err(), "step {step}");
+        let new = Store::new(dir.path(), "session-two").unwrap();
+        new.adopt("session-one", &cid).unwrap();
+        assert_eq!(new.batches(true).unwrap()[0].id, batch.id, "step {step}");
+        assert_eq!(new.snapshot(&cid, None).unwrap().threads.len(), 1);
+        assert!(new.content(&cid, 1).is_ok());
+        assert_eq!(discover(new.repo_root()).unwrap().len(), 1, "step {step}");
+    }
 }

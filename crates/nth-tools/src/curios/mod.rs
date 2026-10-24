@@ -224,6 +224,16 @@ struct ReadArgs {
     cursor: Option<String>,
     limit: Option<usize>,
 }
+/// A curio as the model reads it: one adopted from another session names
+/// the copy of its HTML to edit, until that is gone.
+fn curio(store: &core::Store, curio: &core::Curio) -> Value {
+    let mut value = json!(curio);
+    let source = store.adopted_source(&curio.id);
+    if curio.adopted_from.is_some() && source.exists() {
+        value["adopted_source"] = json!(source);
+    }
+    value
+}
 fn list() -> String {
     "list".into()
 }
@@ -235,7 +245,7 @@ fn required(value: Option<&str>, name: &str) -> Result<String, String> {
 
 impl Tool for CurioRead {
     fn spec(&self) -> ToolSpec {
-        ToolSpec { name:"curio_read", description:"Read only this session's curios. list returns source/template paths; get returns current metadata; revisions lists metadata; revision pages anchors; threads lists review/attachment state without messages; thread pages messages and original target context; batches lists immutable sent-batch metadata; batch pages submitted messages including reviewed_revision (null means unknown legacy). Batch revision is the publication current at send time, never a fallback reviewed revision; summary reviewed_revisions lists distinct reviewed revisions including null. Use curio_id for get/revisions/revision/threads/thread, thread_id for thread, batch_id for batch. Pass page.next_cursor unchanged as cursor until null. Cursors are item indexes or index:body_byte_offset. Message bodies are lossless: normally complete, but oversized JSON-escaped bodies use UTF-8-safe chunks. Chunk items have body_chunk:{offset,end,total_bytes} (exclusive byte end); concatenate body (thread) or message.body (batch) for the same message in cursor order. limit is a maximum item count; pages shrink to fit 32 KiB. Other text may clip to 2048 bytes with text_truncated/metadata_truncated flags. No HTML or authentication secrets returned.".into(), parameters:json!({"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["list","get","revisions","revision","threads","thread","batches","batch"]},"curio_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"batch_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}) }
+        ToolSpec { name:"curio_read", description:"Read only this session's curios. list returns source/template paths, and for a curio adopted from another session its adopted_source, the current revision's HTML to edit; get returns current metadata; revisions lists metadata; revision pages anchors; threads lists review/attachment state without messages; thread pages messages and original target context; batches lists immutable sent-batch metadata; batch pages submitted messages including reviewed_revision (null means unknown legacy). Batch revision is the publication current at send time, never a fallback reviewed revision; summary reviewed_revisions lists distinct reviewed revisions including null. Use curio_id for get/revisions/revision/threads/thread, thread_id for thread, batch_id for batch. Pass page.next_cursor unchanged as cursor until null. Cursors are item indexes or index:body_byte_offset. Message bodies are lossless: normally complete, but oversized JSON-escaped bodies use UTF-8-safe chunks. Chunk items have body_chunk:{offset,end,total_bytes} (exclusive byte end); concatenate body (thread) or message.body (batch) for the same message in cursor order. limit is a maximum item count; pages shrink to fit 32 KiB. Other text may clip to 2048 bytes with text_truncated/metadata_truncated flags. No HTML or authentication secrets returned.".into(), parameters:json!({"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["list","get","revisions","revision","threads","thread","batches","batch"]},"curio_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"batch_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}) }
     }
     fn call<'a>(&'a self, value: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
@@ -243,7 +253,7 @@ impl Tool for CurioRead {
             let store = store(ctx, "curio_read")?;
             let mut meta = json!({"source_path":store.source_dir(),"template_path":store.prepare_template().map_err(failure)?});
             let items = match a.action.as_str() {
-                "list" => store.list().map_err(failure)?.into_iter().map(|c| json!(c)).collect(),
+                "list" => store.list().map_err(failure)?.iter().map(|c| curio(&store, c)).collect(),
                 "batches" | "batch" => {
                     let batches = store.batches(false).map_err(failure)?;
                     if a.action == "batch" {
@@ -256,7 +266,7 @@ impl Tool for CurioRead {
                 "get" | "revisions" | "revision" | "threads" | "thread" => {
                     let id = required(a.curio_id.as_deref(), "curio_id")?;
                     let snapshot = store.snapshot(&id, a.revision).map_err(failure)?;
-                    meta["curio"] = json!(snapshot.curio);
+                    meta["curio"] = curio(&store, &snapshot.curio);
                     meta["state_version"] = json!(snapshot.state_version);
                     meta["revision"] = revision(&snapshot.revision);
                     match a.action.as_str() {

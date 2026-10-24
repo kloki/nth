@@ -38,9 +38,29 @@ struct State {
     answered_message_ids: BTreeSet<String>,
     #[serde(default)]
     reviewed_revisions: BTreeMap<String, u64>,
+    /// Curios adopted by another session, by id, to that session. One still
+    /// in `curios` is mid-move and already gone from this store.
+    #[serde(default)]
+    moved: BTreeMap<String, String>,
 }
 fn schema() -> u32 {
     1
+}
+impl State {
+    /// Refuses a curio another session adopted, even one still mid-move.
+    fn here(&self, cid: &str) -> Result<()> {
+        match self.moved.get(cid) {
+            Some(to) => Err(Error::NotFound(format!("Curio moved to session {to}"))),
+            None => Ok(()),
+        }
+    }
+    fn entry(&self, cid: &str) -> Result<&Entry> {
+        self.here(cid)?;
+        self.curios.get(cid).ok_or_else(curio_not_found)
+    }
+}
+fn curio_not_found() -> Error {
+    Error::NotFound("Curio not found".into())
 }
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -236,7 +256,8 @@ fn verify_nested_ignores(repo: &Path, path: &Path, root: bool) -> Result<()> {
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static FAIL_STATE_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fails the n-th save from now; 0 fails none.
+    pub(crate) static FAIL_STATE_COMMIT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 impl Store {
@@ -295,6 +316,12 @@ impl Store {
     }
     pub fn source_dir(&self) -> PathBuf {
         self.path().join("source")
+    }
+    /// Where an adopted curio's HTML was copied to edit; see [`Self::adopt`].
+    pub fn adopted_source(&self, curio_id: &str) -> PathBuf {
+        self.source_dir()
+            .join("adopted")
+            .join(format!("{curio_id}.html"))
     }
     pub fn prepare_template(&self) -> Result<PathBuf> {
         let dir = self.source_dir().join("templates");
@@ -379,7 +406,11 @@ impl Store {
             return Err(Error::Invalid("State exceeds limit".into()));
         }
         #[cfg(test)]
-        if FAIL_STATE_COMMIT.with(|fail| fail.replace(false)) {
+        if FAIL_STATE_COMMIT.with(|fail| {
+            let n = fail.get();
+            fail.set(n.saturating_sub(1));
+            n == 1
+        }) {
             return Err(Error::Io(std::io::Error::other(
                 "Injected pre-commit failure",
             )));
@@ -420,7 +451,13 @@ impl Store {
     }
     pub fn list(&self) -> Result<Vec<Curio>> {
         let _lock = self.lock()?;
-        Ok(self.load()?.curios.into_values().map(|e| e.curio).collect())
+        let state = self.load()?;
+        Ok(state
+            .curios
+            .into_values()
+            .filter(|e| !state.moved.contains_key(&e.curio.id))
+            .map(|e| e.curio)
+            .collect())
     }
     pub fn state_version(&self) -> Result<u64> {
         let _lock = self.lock()?;
@@ -429,10 +466,7 @@ impl Store {
     pub fn snapshot(&self, curio_id: &str, revision: Option<u64>) -> Result<Snapshot> {
         let _lock = self.lock()?;
         let state = self.load()?;
-        let entry = state
-            .curios
-            .get(curio_id)
-            .ok_or_else(|| Error::NotFound("Curio not found".into()))?;
+        let entry = state.entry(curio_id)?;
         let number = revision.unwrap_or(entry.curio.current_revision);
         let rev = entry
             .revisions
@@ -492,6 +526,7 @@ impl Store {
         self.mutate(&publish.request_id, ("publish", &publish), |state| {
             let cid = publish.curio_id.clone().unwrap_or_else(id);
             component(&cid)?;
+            state.here(&cid)?;
             let current = state.curios.get(&cid).map(|e| e.curio.current_revision);
             if current != publish.expected_revision {
                 return Err(Error::Conflict(
@@ -539,6 +574,7 @@ impl Store {
                     title: title.clone(),
                     session_id: self.session.clone(),
                     current_revision: 0,
+                    adopted_from: None,
                 },
                 revisions: vec![],
                 threads: vec![],
@@ -595,10 +631,8 @@ impl Store {
             return Err(Error::Invalid("Target context exceeds limit".into()));
         }
         self.mutate(&comment.request_id, ("comment", cid, &comment), |state| {
-            let entry = state
-                .curios
-                .get_mut(cid)
-                .ok_or_else(|| Error::NotFound("Curio not found".into()))?;
+            state.here(cid)?;
+            let entry = state.curios.get_mut(cid).ok_or_else(curio_not_found)?;
             let rev = entry
                 .revisions
                 .iter()
@@ -661,10 +695,8 @@ impl Store {
             &reply.request_id,
             ("reply", cid, tid, &reply, &author),
             |state| {
-                let entry = state
-                    .curios
-                    .get_mut(cid)
-                    .ok_or_else(|| Error::NotFound("Curio not found".into()))?;
+                state.here(cid)?;
+                let entry = state.curios.get_mut(cid).ok_or_else(curio_not_found)?;
                 if reply
                     .revision
                     .is_some_and(|n| !entry.revisions.iter().any(|r| r.number == n))
@@ -733,6 +765,7 @@ impl Store {
         }
         let _lock = self.lock()?;
         let mut state = self.load()?;
+        state.here(cid)?;
         let thread = state
             .curios
             .get_mut(cid)
@@ -752,10 +785,8 @@ impl Store {
             return Err(Error::Invalid("Send requires 1–200 messages".into()));
         }
         self.mutate(&send.request_id, ("send", cid, &send), |state| {
-            let entry = state
-                .curios
-                .get_mut(cid)
-                .ok_or_else(|| Error::NotFound("Curio not found".into()))?;
+            state.here(cid)?;
+            let entry = state.curios.get_mut(cid).ok_or_else(curio_not_found)?;
             let unique: std::collections::HashSet<_> = send.message_ids.iter().collect();
             if unique.len() != send.message_ids.len() {
                 return Err(Error::Invalid("Duplicate message IDs".into()));
@@ -847,6 +878,142 @@ impl Store {
         file.try_lock_exclusive()
             .map_err(|_| Error::Conflict("Session already has a delivery owner".into()))?;
         Ok(file)
+    }
+    /// Moves `curio_id` from session `from` into this one, with its
+    /// revisions, threads and batches, so its feedback reaches this session.
+    /// Refused while `from` is running, since it would take its feedback.
+    ///
+    /// The old store marks the curio moved first, which hides it there, then
+    /// this one takes it, then the old one lets it go: a move cut short at
+    /// any point is finished by adopting again.
+    pub fn adopt(&self, from: &str, curio_id: &str) -> Result<Adopted> {
+        component(from)?;
+        component(curio_id)?;
+        if from == self.session {
+            return Err(Error::Invalid("Curio is already this session's".into()));
+        }
+        let old = Self {
+            root: self.root.clone(),
+            session: from.into(),
+        };
+        no_symlinks(&old.path())?;
+        if !old.path().join("state.json").exists() {
+            return Err(curio_not_found());
+        }
+        let _owner = old
+            .claim_delivery()
+            .map_err(|_| Error::Conflict("Curio is owned by a running session".into()))?;
+        // Both locks, always in the same order, so two adoptions never wait
+        // on each other.
+        let _locks = if old.session < self.session {
+            (old.lock()?, self.lock()?)
+        } else {
+            (self.lock()?, old.lock()?)
+        };
+        let mut from_state = old.load()?;
+        match from_state.moved.get(curio_id) {
+            Some(to) if *to != self.session => from_state.here(curio_id)?,
+            Some(_) => {}
+            None => {
+                from_state.entry(curio_id)?;
+                from_state
+                    .moved
+                    .insert(curio_id.into(), self.session.clone());
+                old.save(&mut from_state)?;
+            }
+        }
+        let mut state = self.load()?;
+        if !state.curios.contains_key(curio_id) {
+            let entry = from_state
+                .curios
+                .get(curio_id)
+                .ok_or_else(curio_not_found)?;
+            if state.curios.len() >= 100 {
+                return Err(Error::Invalid("Curio limit reached".into()));
+            }
+            let dir = self.path().join(curio_id);
+            no_symlinks(&dir)?;
+            // What an earlier attempt copied before it was cut short.
+            if dir.exists() {
+                fs::remove_dir_all(&dir)?;
+            }
+            let staging = tempfile::tempdir_in(self.path())?;
+            for revision in &entry.revisions {
+                let number = revision.number.to_string();
+                let source = old.path().join(curio_id).join("revisions").join(&number);
+                no_symlinks(&source)?;
+                let target = staging.path().join("revisions").join(&number);
+                fs::create_dir_all(&target)?;
+                for file in ["index.html", "revision.json"] {
+                    atomic(&target.join(file), &fs::read(source.join(file))?)?;
+                }
+            }
+            fs::rename(staging.path(), &dir)?;
+            File::open(self.path())?.sync_all()?;
+            let mut curio = entry.curio.clone();
+            curio.session_id = self.session.clone();
+            curio.adopted_from = Some(from.into());
+            let messages: BTreeSet<_> = entry
+                .threads
+                .iter()
+                .flat_map(|t| &t.messages)
+                .map(|m| m.id.clone())
+                .collect();
+            for id in &messages {
+                if let Some(&revision) = from_state.reviewed_revisions.get(id) {
+                    state.reviewed_revisions.insert(id.clone(), revision);
+                }
+                if from_state.answered_message_ids.contains(id) {
+                    state.answered_message_ids.insert(id.clone());
+                }
+            }
+            state.batches.extend(
+                from_state
+                    .batches
+                    .iter()
+                    .filter(|b| b.curio_id == curio_id)
+                    .map(|b| Batch {
+                        session_id: self.session.clone(),
+                        ..b.clone()
+                    }),
+            );
+            state.curios.insert(
+                curio_id.into(),
+                Entry {
+                    curio,
+                    revisions: entry.revisions.clone(),
+                    threads: entry.threads.clone(),
+                },
+            );
+            self.save(&mut state)?;
+        }
+        if from_state.curios.remove(curio_id).is_some() {
+            from_state.batches.retain(|b| b.curio_id != curio_id);
+            old.save(&mut from_state)?;
+        }
+        let gone = old.path().join(curio_id);
+        if gone.exists() {
+            fs::remove_dir_all(gone)?;
+        }
+        let entry = &state.curios[curio_id];
+        let source = self.adopted_source(curio_id);
+        no_symlinks(&source)?;
+        // The model may have edited it since an earlier adoption.
+        if !source.exists() {
+            fs::create_dir_all(source.parent().expect("adopted folder"))?;
+            let html = fs::read(
+                self.path()
+                    .join(curio_id)
+                    .join("revisions")
+                    .join(entry.curio.current_revision.to_string())
+                    .join("index.html"),
+            )?;
+            atomic(&source, &html)?;
+        }
+        Ok(Adopted {
+            curio: entry.curio.clone(),
+            source,
+        })
     }
 }
 
