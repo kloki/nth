@@ -9,7 +9,7 @@ mod tests;
 
 pub use host::Host;
 pub use model::*;
-pub use store::{Store, discover, repository_root};
+pub use store::{Discovery, Stamp, Store, discover, repository_root};
 pub use validation::{MAX_HTML_BYTES, validate};
 
 #[derive(Debug, thiserror::Error)]

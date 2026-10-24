@@ -315,16 +315,21 @@ async fn send(State(s): State<Arc<Service>>, Json(input): Json<Send>) -> Result<
 async fn events(
     State(s): State<Arc<Service>>,
 ) -> Sse<impl futures::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
-    let stream = stream::unfold((s, None), |(s, mut last)| async move {
+    // The state is read only when its file changed, not every tick.
+    let stream = stream::unfold((s, None, None), |(s, mut stamp, mut last)| async move {
         loop {
-            if let Ok(version) = s.store.state_version()
-                && last != Some(version)
-            {
-                last = Some(version);
-                return Some((
-                    Ok(Event::default().event("change").data(version.to_string())),
-                    (s, last),
-                ));
+            let now = s.store.stamp();
+            if stamp.is_none() || now != stamp {
+                stamp = now;
+                if let Ok(version) = s.store.state_version()
+                    && last != Some(version)
+                {
+                    last = Some(version);
+                    return Some((
+                        Ok(Event::default().event("change").data(version.to_string())),
+                        (s, stamp, last),
+                    ));
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }

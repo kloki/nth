@@ -49,6 +49,7 @@ pub(super) enum How {
 pub(super) struct Curios {
     root: Option<PathBuf>,
     items: Vec<Curio>,
+    discovery: core::Discovery,
     delivery: Option<CurioDelivery>,
     /// When to try for the delivery lease again: another process that holds
     /// it may exit.
@@ -72,6 +73,7 @@ impl Curios {
                 .clone()
                 .or_else(|| core::repository_root(&session.cwd).ok()),
             items: Vec::new(),
+            discovery: core::Discovery::default(),
             delivery: None,
             next_claim: Instant::now(),
             told_owned: false,
@@ -170,7 +172,7 @@ impl App {
         let Some(root) = &self.curios.root else {
             return;
         };
-        self.curios.items = core::discover(root).unwrap_or_default();
+        self.curios.items = self.curios.discovery.refresh(root).unwrap_or_default();
         // The store has no update timestamp API; use its durable state mtime.
         self.curios.items.sort_by_key(|c| {
             std::fs::metadata(

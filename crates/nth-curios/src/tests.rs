@@ -904,3 +904,28 @@ fn snapshot_says_whether_a_session_listens() {
     .unwrap();
     assert!(store.claim_delivery().is_ok());
 }
+
+#[test]
+fn discovery_reads_a_session_again_only_once_it_changed() {
+    let (dir, old) = setup();
+    let mut discovery = Discovery::default();
+    let (cid, _) = reviewed(&old);
+    let found = discovery.refresh(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    let stamp = old.stamp();
+    assert_eq!(discovery.refresh(dir.path()).unwrap().len(), 1);
+    assert_eq!(old.stamp(), stamp, "refreshing writes nothing");
+    let mut update = publication("update");
+    update.curio_id = Some(cid.clone());
+    update.expected_revision = Some(1);
+    old.publish(update).unwrap();
+    assert_eq!(
+        discovery.refresh(dir.path()).unwrap()[0].current_revision,
+        2
+    );
+    let new = Store::new(dir.path(), "session-two").unwrap();
+    new.adopt("session-one", &cid).unwrap();
+    let found = discovery.refresh(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].session_id, "session-two");
+}

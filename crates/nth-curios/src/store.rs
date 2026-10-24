@@ -1027,24 +1027,73 @@ impl Store {
     }
 }
 
+/// What a state file looked like when last read: an atomic save replaces
+/// the file, so a save changes it even within one tick of the clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        Some(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+            #[cfg(unix)]
+            inode: std::os::unix::fs::MetadataExt::ino(&metadata),
+        })
+    }
+}
+
+impl Store {
+    /// A cheap look at the state, to read it again only when it changed.
+    pub fn stamp(&self) -> Option<Stamp> {
+        Stamp::of(&self.path().join("state.json"))
+    }
+}
+
 pub fn discover(repo_root: &Path) -> Result<Vec<Curio>> {
-    let base = repo_root.join(".nth/curios");
-    if !base.exists() {
-        return Ok(vec![]);
-    }
-    no_symlinks(&base)?;
-    let mut result = Vec::new();
-    for item in fs::read_dir(base)?.take(1000) {
-        let item = item?;
-        if item.file_type()?.is_dir() {
-            let session = item.file_name().to_string_lossy().into_owned();
-            component(&session)?;
-            let store = Store {
-                root: repo_root.to_owned(),
-                session,
-            };
-            result.extend(store.list()?);
+    Discovery::default().refresh(repo_root)
+}
+
+/// [`discover`] for one who asks again and again: a session's curios are
+/// read again only once its state changed.
+#[derive(Debug, Default)]
+pub struct Discovery {
+    seen: BTreeMap<String, (Option<Stamp>, Vec<Curio>)>,
+}
+
+impl Discovery {
+    pub fn refresh(&mut self, repo_root: &Path) -> Result<Vec<Curio>> {
+        let base = repo_root.join(".nth/curios");
+        if !base.exists() {
+            self.seen.clear();
+            return Ok(vec![]);
         }
+        no_symlinks(&base)?;
+        let mut seen = BTreeMap::new();
+        for item in fs::read_dir(base)?.take(1000) {
+            let item = item?;
+            if item.file_type()?.is_dir() {
+                let session = item.file_name().to_string_lossy().into_owned();
+                component(&session)?;
+                let store = Store {
+                    root: repo_root.to_owned(),
+                    session,
+                };
+                let stamp = store.stamp();
+                let curios = match self.seen.remove(&store.session) {
+                    Some((before, curios)) if before == stamp => curios,
+                    _ => store.list()?,
+                };
+                seen.insert(store.session, (stamp, curios));
+            }
+        }
+        self.seen = seen;
+        Ok(self.seen.values().flat_map(|(_, c)| c.clone()).collect())
     }
-    Ok(result)
 }
