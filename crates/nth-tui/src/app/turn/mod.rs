@@ -16,11 +16,13 @@ use super::{App, TabState};
 use crate::{command::Command, status};
 
 /// What a turn task hands back: the session, how its turn ended, and
-/// whether saving it afterwards worked.
+/// whether saving it afterwards, and then acknowledging the Curios
+/// feedback it recorded, worked.
 pub(super) struct Ended {
     session: Session,
     result: Result<(), nth_session::Error>,
     saved: Result<(), store::Error>,
+    acknowledged: nth_protocol::nth_curios::Result<()>,
     ran: Ran,
 }
 
@@ -58,10 +60,16 @@ async fn ended(
         Some(store) => store.save(&session).await,
         None => Ok(()),
     };
+    // Only a saved session may tell the store its feedback is recorded.
+    let acknowledged = match (&store, &saved) {
+        (Some(_), Ok(())) => session.acknowledge_curios(),
+        _ => Ok(()),
+    };
     Ended {
         session,
         result,
         saved,
+        acknowledged,
         ran,
     }
 }
@@ -428,6 +436,7 @@ impl App {
             session,
             result,
             saved,
+            acknowledged,
             ran,
         }: Ended,
     ) {
@@ -465,6 +474,9 @@ impl App {
         }
         if let Err(e) = saved {
             transcript.push_error(format!("session not saved: {e}"));
+        }
+        if let Err(e) = acknowledged {
+            transcript.push_error(format!("Curios feedback not acknowledged: {e}"));
         }
         // `Moved` has normally been followed already; this catches a move
         // whose event never arrived.

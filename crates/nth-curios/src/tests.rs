@@ -142,7 +142,11 @@ fn receipts_keep_one_message_so_state_grows_with_the_thread() {
         first.get_or_insert_with(|| thread.clone());
     }
     let state = std::fs::metadata(store.path().join("state.json")).unwrap();
-    assert!(state.len() < 3 * 150 * 1000, "state is {} bytes", state.len());
+    assert!(
+        state.len() < 3 * 150 * 1000,
+        "state is {} bytes",
+        state.len()
+    );
     // A retry still gets the thread as that request left it.
     let retried = store
         .reply(

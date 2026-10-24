@@ -222,7 +222,10 @@ impl Session {
         .await
     }
 
-    pub(crate) fn acknowledge_curios(&self) -> nth_curios::Result<()> {
+    /// Marks the Curios feedback this session recorded as recorded in its
+    /// store too. Call once the session is saved; one missed is caught up by
+    /// the next, since it covers every receipt.
+    pub fn acknowledge_curios(&self) -> nth_curios::Result<()> {
         if self.curio_receipts.is_empty() {
             return Ok(());
         }

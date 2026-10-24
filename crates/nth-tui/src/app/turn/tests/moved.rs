@@ -13,6 +13,7 @@ async fn a_turn_that_moved_the_session_moves_the_app() {
         session,
         result: Ok(()),
         saved: Ok(()),
+        acknowledged: Ok(()),
         ran: Ran::Turn,
     });
 

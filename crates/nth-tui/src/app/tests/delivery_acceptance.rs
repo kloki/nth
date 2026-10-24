@@ -234,6 +234,7 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
     assert_eq!(provider.sent().len(), 1);
     std::fs::remove_file(&blocked).unwrap();
     saves.save(app.session.as_ref().unwrap()).await.unwrap();
+    app.session.as_ref().unwrap().acknowledge_curios().unwrap();
     let resumed = saves.load(app.session_id).await.unwrap();
     assert!(resumed.curio_receipts.contains(&batch.id));
     assert_eq!(review_text(&resumed.messages).len(), 1);
