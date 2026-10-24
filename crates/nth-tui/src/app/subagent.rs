@@ -424,7 +424,8 @@ mod tests {
 
         app.apply(Action::CloseContent);
         assert_eq!(app.content.active(), Tab::Subagent(1));
-        assert!(rows(&mut app)[15].starts_with(" still running · ctrl+w stops it first"));
+        let hint = app.hint.as_deref().unwrap_or_default();
+        assert!(hint.starts_with("still running · ctrl+w stops it first"));
 
         app.apply(Action::Interrupt);
         assert!(!app.interrupted, "the parent's turn is left alone");
@@ -567,10 +568,10 @@ mod tests {
 
         app.apply(Action::ClearOrQuit);
         assert!(!app.quit);
+        let hint = app.hint.as_deref().unwrap_or_default();
         assert!(
-            rows(&mut app)[15].starts_with(" 1 subagent running · ctrl+c again"),
-            "{}",
-            rows(&mut app)[15]
+            hint.starts_with("1 subagent running · ctrl+c again"),
+            "{hint}"
         );
         app.apply(Action::ClearOrQuit);
         assert!(app.quit);

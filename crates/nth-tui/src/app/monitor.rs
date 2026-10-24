@@ -185,11 +185,10 @@ pub(super) mod tests {
 
         app.apply(Action::CloseContent);
         assert_eq!(app.content.active(), Tab::Monitor(1));
-        let rows = rows(&mut app);
+        let hint = app.hint.as_deref().unwrap_or_default();
         assert!(
-            rows[15].starts_with(" still running · ctrl+w stops it first"),
-            "{}",
-            rows[15]
+            hint.starts_with("still running · ctrl+w stops it first"),
+            "{hint}"
         );
         app.run_command(crate::command::Command::Close);
         assert_eq!(app.content.active(), Tab::Monitor(1), "nor with /close");
