@@ -19,9 +19,10 @@
     Number.isSafeInteger(Number(requestedRevision))
       ? Number(requestedRevision)
       : undefined;
-  let state, loadedRevision, selected, target, drag;
-  let mode = "element",
-    busy = false,
+  // `target` is the element a new comment is on; `selected` the thread
+  // the popover shows. At most one of them is set.
+  let state, loadedRevision, selected, target;
+  let busy = false,
     authenticated = false,
     refreshing = false,
     refreshAgain = false;
@@ -30,7 +31,7 @@
   const frame = $("document");
   const drafts = new Map();
   const requests = new Map();
-  const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
+  const HINT = "Click an element to comment.";
   const say = (text, error = false) => {
     $("notice").textContent = text;
     $("notice").classList.toggle("error", error);
@@ -41,7 +42,7 @@
   function readDraft(key) {
     if (drafts.has(key)) return drafts.get(key);
     try {
-      return JSON.parse(sessionStorage.getItem(draftKey(key)) || "null");
+      return sessionStorage.getItem(draftKey(key));
     } catch {
       return null;
     }
@@ -49,7 +50,7 @@
   function writeDraft(key, value) {
     drafts.set(key, value);
     try {
-      if (value) sessionStorage.setItem(draftKey(key), JSON.stringify(value));
+      if (value) sessionStorage.setItem(draftKey(key), value);
       else sessionStorage.removeItem(draftKey(key));
     } catch {
       /* Recovery storage is optional. */
@@ -84,8 +85,13 @@
     }
     return response.status === 204 ? null : response.json();
   }
+  function draftSlot() {
+    if (selected) return `reply:${selected}`;
+    if (target) return `new:${revision}:${target.element_id}`;
+    return null;
+  }
   function editing() {
-    return Boolean(target || drag || $("reply-body").value.trim());
+    return Boolean($("comment-body").value.trim());
   }
   function currentThread() {
     return state?.threads.find((thread) => thread.id === selected);
@@ -96,6 +102,14 @@
       .filter(
         (message) => message.author === "human" && message.delivery === "saved",
       );
+  }
+  // Sent and not answered yet: an agent reply answers what came before it.
+  function working(thread) {
+    const last = thread.messages.at(-1);
+    return (
+      last?.author === "human" &&
+      (last.delivery === "queued" || last.delivery === "recorded")
+    );
   }
   async function refresh() {
     if (refreshing) {
@@ -143,91 +157,63 @@
     picker.disabled = busy;
     $("update").hidden = state.curio.current_revision === revision;
     $("update").textContent = `View latest · r${state.curio.current_revision}`;
-    $("send").textContent = `Send to nth (${pending().length})`;
-    $("send").disabled = busy || !pending().length;
-    $("thread-count").textContent = `${state.threads.length} threads`;
-    $("empty").hidden = Boolean(state.threads.length || target);
-    const anchorPicker = $("anchor"),
-      oldAnchor = anchorPicker.value;
-    if (document.activeElement !== anchorPicker) {
-      anchorPicker.replaceChildren(
-        new Option("Whole document", ""),
-        ...state.revision.anchors.map(
-          (anchor) => new Option(anchor.label || anchor.id, anchor.id),
-        ),
-      );
-      anchorPicker.value = oldAnchor;
-    }
-    const list = $("thread-list");
-    // Keep focused buttons alive across polling, as well as composer text and scroll.
-    const existing = new Map(
-      Array.from(list.children).map((node) => [node.dataset.id, node]),
-    );
-    for (const thread of state.threads) {
-      let button = existing.get(thread.id);
-      if (!button) {
-        button = document.createElement("button");
-        button.className = "thread-card";
-        button.dataset.id = thread.id;
-        button.append(
-          document.createElement("strong"),
-          document.createElement("span"),
-        );
-        button.addEventListener("click", () => selectThread(thread.id, true));
-      }
-      button.setAttribute("aria-current", String(thread.id === selected));
-      button.firstChild.textContent = `#${thread.number} · ${thread.target.label || "Document"}`;
-      button.lastChild.textContent = `${thread.status} · ${thread.attachment}${thread.messages.some((m) => m.delivery === "saved") ? " · not sent" : ""}`;
-      if (button.parentNode !== list) list.append(button);
-      existing.delete(thread.id);
-    }
-    for (const button of existing.values()) button.remove();
-    renderThread();
+    if (selected && !currentThread()) selected = null;
+    renderPopover();
     schedulePins();
   }
-  function renderThread() {
+  function renderPopover() {
     const thread = currentThread();
-    $("thread-detail").hidden = !thread;
-    if (!thread) return;
-    $("thread-title").textContent = `Thread #${thread.number}`;
-    $("thread-context").textContent = [thread.target.label, thread.target.quote]
-      .filter(Boolean)
-      .join(" — ");
-    $("thread-state").textContent =
-      `${thread.status} · ${thread.attachment}${thread.attachment === "detached" ? " — original context retained; no pin on this revision" : ""}`;
-    $("original").hidden = thread.created_revision === revision;
-    $("resolve").textContent =
-      thread.status === "resolved" ? "Reopen thread" : "Resolve thread";
+    $("popover").hidden = !thread && !target;
+    $("submit").disabled = busy;
+    $("submit").textContent = thread ? "Reply" : "Comment";
+    $("resolve").hidden = !thread;
     const messages = $("messages");
-    const signature = JSON.stringify(thread.messages);
+    $("working").hidden = !thread || !working(thread);
+    if (!thread) {
+      messages.replaceChildren();
+      delete messages.dataset.signature;
+      return;
+    }
+    $("resolve").textContent =
+      thread.status === "resolved" ? "Reopen" : "Resolve";
+    // Only the conversation itself: who said what.
+    const signature = JSON.stringify(
+      thread.messages.map((message) => [message.author, message.body]),
+    );
     if (messages.dataset.signature === signature) return;
     messages.dataset.signature = signature;
     messages.replaceChildren(
       ...thread.messages.map((message) => {
         const item = document.createElement("li"),
-          meta = document.createElement("p"),
-          body = document.createElement("p");
-        meta.className = "message-meta";
-        meta.textContent = `${message.author === "agent" ? "nth" : "You"} · ${message.delivery} · ${message.created_at}`;
-        body.className = "message-body";
-        body.textContent = message.body;
-        item.append(meta, body);
+          author = document.createElement("strong");
+        item.className = message.author;
+        author.textContent = message.author === "agent" ? "nth" : "You";
+        item.append(author, document.createTextNode(message.body));
         return item;
       }),
     );
   }
-  function selectThread(id, focus = false) {
-    if (busy) return;
-    if (selected)
-      writeDraft(`reply:${selected}`, $("reply-body").value || null);
-    selected = id;
-    $("reply-body").value = readDraft(`reply:${id}`) || "";
-    render();
-    if (focus) {
-      $("thread-detail").scrollIntoView({ block: "nearest" });
-      $("reply-body").focus({ preventScroll: true });
+  function openPopover(next) {
+    if (busy) return false;
+    if (editing()) {
+      say("Send or clear your comment first.");
+      $("comment-body").focus();
+      return false;
     }
-    schedulePins();
+    selected = next.thread || null;
+    target = next.target || null;
+    $("comment-body").value = readDraft(draftSlot()) || "";
+    say(HINT);
+    render();
+    $("comment-body").focus({ preventScroll: true });
+    return true;
+  }
+  function closePopover() {
+    if (busy) return;
+    selected = null;
+    target = null;
+    $("comment-body").value = "";
+    render();
   }
   function frameDocument() {
     try {
@@ -238,122 +224,32 @@
   }
   function anchorElement(id) {
     const doc = frameDocument();
-    if (!doc) return null;
-    if (!id) return doc.documentElement;
+    if (!doc || !id) return null;
     const matches = Array.from(doc.querySelectorAll("[id]")).filter(
       (element) => element.id === id,
     );
     return matches.length === 1 ? matches[0] : null;
   }
+  // The nearest element with an ID worth commenting on, if any.
   function eligible(element) {
     const ids = new Set(state.revision.anchors.map((anchor) => anchor.id));
     for (let node = element; node?.nodeType === 1; node = node.parentElement)
       if (ids.has(node.id) && anchorElement(node.id) === node) return node;
-    return frameDocument()?.documentElement;
+    return null;
   }
-  function makeTarget(element, kind = "element") {
-    const meaningful =
-      element !== frameDocument()?.documentElement && element?.id;
+  function makeTarget(element) {
     const label = state.revision.anchors.find(
-      (anchor) => anchor.id === element?.id,
+      (anchor) => anchor.id === element.id,
     )?.label;
     return {
-      element_id: meaningful ? element.id : null,
-      kind: meaningful ? kind : kind === "region" ? "region" : "document",
-      label: label || (meaningful ? element.id : "Whole document"),
-      quote: (element?.textContent || "")
+      element_id: element.id,
+      kind: "element",
+      label: label || element.id,
+      quote: (element.textContent || "")
         .trim()
         .replace(/\s+/g, " ")
         .slice(0, 180),
     };
-  }
-  function persistComposer() {
-    if (target)
-      writeDraft(`new:${revision}`, { target, body: $("comment-body").value });
-  }
-  function archiveComposer() {
-    const draft = readDraft(`new:${revision}`);
-    if (draft?.body?.trim()) {
-      const saved = readDraft(`closed:${revision}`) || [];
-      writeDraft(`closed:${revision}`, [...saved, draft]);
-    }
-    writeDraft(`new:${revision}`, null);
-  }
-  function renderRecovery() {
-    let recovery = $("draft-recovery");
-    if (!recovery) {
-      recovery = document.createElement("div");
-      recovery.id = "draft-recovery";
-      $("composer").before(recovery);
-    }
-    const saved = readDraft(`closed:${revision}`) || [];
-    recovery.replaceChildren(
-      ...saved.map((draft, index) => {
-        const button = document.createElement("button");
-        button.textContent = `Recover draft · ${draft.target.label}`;
-        button.addEventListener("click", () => {
-          if (busy || (target && $("comment-body").value.trim())) {
-            say(
-              "Save or cancel your current comment before recovering a draft.",
-            );
-            return;
-          }
-          writeDraft(
-            `closed:${revision}`,
-            saved.filter((_, i) => i !== index),
-          );
-          beginComment(draft.target, true, draft.body);
-        });
-        return button;
-      }),
-    );
-  }
-  function beginComment(nextTarget, focus = true, body = "") {
-    if (busy) return;
-    if (target && $("comment-body").value.trim()) {
-      say(
-        "Save or cancel your current comment before choosing another target.",
-      );
-      return;
-    }
-    if (!target) archiveComposer();
-    target = nextTarget;
-    $("comment-body").value = body;
-    $("composer").hidden = false;
-    $("target-label").textContent = `${target.kind} · ${target.label}`;
-    $("region-fields").hidden = target.kind !== "region";
-    $("region-fields").disabled = target.kind !== "region";
-    if (target.rect)
-      for (const key of ["x", "y", "width", "height"])
-        $(`region-${key}`).value = String(target.rect[key]);
-    persistComposer();
-    renderRecovery();
-    schedulePins();
-    $("empty").hidden = true;
-    if (focus) {
-      $("composer").scrollIntoView({ block: "nearest" });
-      $("comment-body").focus({ preventScroll: true });
-    }
-  }
-  function cancelComment() {
-    target = null;
-    drag = null;
-    $("composer").hidden = true;
-    $("region-fields").disabled = true;
-    $("comment-body").value = "";
-    writeDraft(`new:${revision}`, null);
-    renderRecovery();
-    schedulePins();
-    $("add-comment").focus();
-  }
-  function setMode(next) {
-    mode = next;
-    $("element-mode").setAttribute("aria-pressed", String(mode === "element"));
-    $("region-mode").setAttribute("aria-pressed", String(mode === "region"));
-    $("selection-help").textContent =
-      mode === "region"
-        ? "Drag a region in the document, or choose a target and Add comment to enter bounds with the keyboard."
-        : "Click a document element, or choose a target and Add comment. Escape cancels selection.";
   }
   function loadDocument() {
     frameCleanup();
@@ -411,7 +307,9 @@
           );
         return;
       }
-      if (mode === "element") beginComment(makeTarget(eligible(event.target)));
+      const element = eligible(event.target);
+      if (element) openPopover({ target: makeTarget(element) });
+      else if (!editing()) closePopover();
     });
     listen(doc, "auxclick", (event) => event.preventDefault());
     listen(doc, "submit", (event) => event.preventDefault());
@@ -419,69 +317,12 @@
     listen(doc, "keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        escape();
+        closePopover();
       }
       if (event.key === "Enter" && event.target.closest?.("a[href]")) {
         event.preventDefault();
         event.target.click();
       }
-    });
-    listen(doc, "pointerdown", (event) => {
-      if (mode !== "region" || event.button !== 0 || target) return;
-      event.preventDefault();
-      const element = eligible(event.target),
-        bounds = element.getBoundingClientRect();
-      if (!bounds.width || !bounds.height) return;
-      drag = {
-        element,
-        startX: event.clientX,
-        startY: event.clientY,
-        x: event.clientX,
-        y: event.clientY,
-      };
-      try {
-        event.target.setPointerCapture(event.pointerId);
-      } catch {
-        /* Document listeners still capture in-frame drags. */
-      }
-      schedulePins();
-    });
-    listen(doc, "pointermove", (event) => {
-      if (drag) {
-        drag.x = event.clientX;
-        drag.y = event.clientY;
-        schedulePins();
-      }
-    });
-    listen(doc, "pointerup", (event) => {
-      if (!drag) return;
-      drag.x = event.clientX;
-      drag.y = event.clientY;
-      const bounds = drag.element.getBoundingClientRect();
-      const x = clamp(
-        (Math.min(drag.startX, drag.x) - bounds.left) / bounds.width,
-      );
-      const y = clamp(
-        (Math.min(drag.startY, drag.y) - bounds.top) / bounds.height,
-      );
-      const right = clamp(
-        (Math.max(drag.startX, drag.x) - bounds.left) / bounds.width,
-      );
-      const bottom = clamp(
-        (Math.max(drag.startY, drag.y) - bounds.top) / bounds.height,
-      );
-      const next = makeTarget(drag.element, "region");
-      drag = null;
-      if (right - x < 0.001 || bottom - y < 0.001) {
-        schedulePins();
-        return;
-      }
-      next.rect = { x, y, width: right - x, height: bottom - y };
-      beginComment(next);
-    });
-    listen(doc, "pointercancel", () => {
-      drag = null;
-      schedulePins();
     });
     listen(doc, "scroll", schedulePins);
     listen(doc, "load", schedulePins);
@@ -491,8 +332,6 @@
       abort.abort();
       resize.disconnect();
     };
-    if (!target) archiveComposer();
-    renderRecovery();
     schedulePins();
   });
   function schedulePins() {
@@ -605,6 +444,7 @@
       existing = new Map(
         Array.from(pins.children).map((node) => [node.dataset.id, node]),
       );
+    let anchor = null;
     for (const thread of state.threads) {
       if (
         thread.attachment === "detached" &&
@@ -613,261 +453,167 @@
         continue;
       const box = viewRect(thread.target);
       if (!box || !box.width || !box.height) continue;
-      const x = box.left + Math.min(box.width / 2, 16),
-        y = box.top + Math.min(box.height / 2, 16);
+      const x = box.left + Math.min(box.width / 2, 10),
+        y = box.top + Math.min(box.height / 2, 10);
       let pin = existing.get(thread.id);
       if (!pin) {
         pin = document.createElement("button");
         pin.className = "pin";
         pin.dataset.id = thread.id;
-        pin.addEventListener("click", () => selectThread(thread.id, true));
+        pin.addEventListener("click", () => {
+          if (selected === thread.id) closePopover();
+          else openPopover({ thread: thread.id });
+        });
         pins.append(pin);
       }
       pin.textContent = String(thread.number);
+      pin.classList.toggle("working", working(thread));
+      pin.classList.toggle("resolved", thread.status === "resolved");
       pin.setAttribute(
         "aria-label",
-        `Thread ${thread.number}: ${thread.target.label || "Document"}, ${thread.status}`,
+        `Thread ${thread.number}: ${thread.target.label || "Document"}, ${working(thread) ? "nth is working" : thread.status}`,
       );
       pin.setAttribute("aria-pressed", String(thread.id === selected));
       pin.style.left = `${x}px`;
       pin.style.top = `${y}px`;
-      const halfWidth = pin.offsetWidth / 2,
-        halfHeight = pin.offsetHeight / 2;
-      pin.style.clipPath = `inset(${Math.max(0, box.top - y + halfHeight)}px ${Math.max(0, x + halfWidth - box.left - box.width)}px ${Math.max(0, y + halfHeight - box.top - box.height)}px ${Math.max(0, box.left - x + halfWidth)}px)`;
+      if (thread.id === selected)
+        anchor = { left: x - 11, top: y - 11, width: 22, height: 22 };
       existing.delete(thread.id);
     }
     for (const pin of existing.values()) pin.remove();
-    const box = drag
-      ? visibleRect(drag.element, {
-          left: Math.min(drag.startX, drag.x),
-          top: Math.min(drag.startY, drag.y),
-          width: Math.abs(drag.x - drag.startX),
-          height: Math.abs(drag.y - drag.startY),
-        })
-      : target
-        ? viewRect(target)
-        : null;
+    const box = target ? viewRect(target) : null;
     const overlay = $("selection-box");
     overlay.hidden = !box;
     if (box)
       for (const key of ["left", "top", "width", "height"])
         overlay.style[key] = `${box[key]}px`;
+    placePopover(anchor || box);
   }
-  async function mutate(path, payload, success) {
+  // Below what it is about, or above when that leaves no room, and always
+  // inside the stage.
+  function placePopover(box) {
+    const popover = $("popover");
+    if (popover.hidden || !box) return;
+    const stage = $("overlays"),
+      gap = 8;
+    const width = popover.offsetWidth,
+      height = popover.offsetHeight;
+    let top = box.top + box.height + gap;
+    if (top + height > stage.clientHeight && box.top - gap - height >= 0)
+      top = box.top - gap - height;
+    top = Math.max(gap, Math.min(top, stage.clientHeight - height - gap));
+    const left = Math.max(
+      gap,
+      Math.min(box.left, stage.clientWidth - width - gap),
+    );
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+  }
+  async function mutate(steps) {
     if (busy) return false;
     busy = true;
     render();
-    document.querySelectorAll("form button").forEach((button) => {
-      button.disabled = true;
-    });
-    document
-      .querySelectorAll("textarea, #region-fields input")
-      .forEach((input) => {
-        input.readOnly = true;
-      });
+    $("comment-body").readOnly = true;
     try {
-      await api(path, payload);
-      await success?.();
-      await refresh();
+      await steps();
       return true;
     } catch (error) {
       say(error.message, true);
-      await refresh();
       return false;
     } finally {
       busy = false;
-      document.querySelectorAll("form button").forEach((button) => {
-        button.disabled = false;
-      });
-      document
-        .querySelectorAll("textarea, #region-fields input")
-        .forEach((input) => {
-          input.readOnly = false;
-        });
-      render();
+      $("comment-body").readOnly = false;
+      await refresh();
     }
+  }
+  // Everything saved goes to nth at once, so a send that failed before
+  // goes along with the next comment.
+  // `saved` is the thread just written, newer than `state` may be.
+  async function sendPending(saved) {
+    const ids = new Set(pending().map((message) => message.id));
+    for (const message of saved.messages)
+      if (message.author === "human" && message.delivery === "saved")
+        ids.add(message.id);
+    const payload = { message_ids: [...ids] };
+    if (!payload.message_ids.length) return;
+    await api("/api/send", {
+      request_id: requestId("send", payload),
+      ...payload,
+    });
+    requests.delete("send");
   }
   async function changeRevision(number) {
     if (busy || editing()) {
       $("revision").value = String(revision);
-      say(
-        "Save or cancel the current comment or reply before changing revisions.",
-      );
+      say("Send or clear your comment before changing revisions.");
       return;
     }
-    selected = null;
-    $("reply-body").value = "";
+    closePopover();
     revision = Number(number);
     await refresh();
   }
-  $("comment-body").addEventListener("input", persistComposer);
-  $("reply-body").addEventListener("input", () => {
-    if (selected)
-      writeDraft(`reply:${selected}`, $("reply-body").value || null);
+  $("comment-body").addEventListener("input", () => {
+    const slot = draftSlot();
+    if (slot) writeDraft(slot, $("comment-body").value || null);
   });
   $("comment-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const body = $("comment-body").value.trim();
-    if (!body || !target) {
-      say("Write a comment before saving.");
-      return;
-    }
-    if (target.kind === "region") {
-      const rect = readRegion();
-      if (!rect) {
-        say("Region bounds must fit within 0–1.", true);
-        return;
-      }
-      target.rect = rect;
-    }
-    const payload = { revision, target, body };
-    const ok = await mutate(
-      "/api/comments",
-      { request_id: requestId("comment", payload), ...payload },
-      () => {
-        cancelComment();
-        requests.delete("comment");
-        say("Comment saved. It will reach nth only when you Send.");
-      },
-    );
-    if (ok) schedulePins();
-  });
-  $("reply-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const thread = currentThread(),
-      body = $("reply-body").value.trim();
-    if (!body || !thread) return;
-    const payload = { expected_version: thread.version, revision, body };
-    await mutate(
-      `/api/threads/${encodeURIComponent(thread.id)}/messages`,
-      { request_id: requestId(`reply:${thread.id}`, payload), ...payload },
-      () => {
-        $("reply-body").value = "";
-        writeDraft(`reply:${thread.id}`, null);
-        requests.delete(`reply:${thread.id}`);
-        say("Reply saved. Send to nth when ready.");
-      },
-    );
-  });
-  $("send").addEventListener("click", async () => {
-    const payload = { message_ids: pending().map((message) => message.id) };
-    if (!payload.message_ids.length) return;
-    await mutate(
-      "/api/send",
-      { request_id: requestId("send", payload), ...payload },
-      () => {
-        requests.delete("send");
-        say(
-          "Feedback queued for its owning nth session. Queued does not mean answered.",
+    const slot = draftSlot();
+    if (!body || !slot) return;
+    const thread = currentThread();
+    await mutate(async () => {
+      let saved;
+      if (thread) {
+        const payload = { expected_version: thread.version, revision, body };
+        saved = await api(
+          `/api/threads/${encodeURIComponent(thread.id)}/messages`,
+          { request_id: requestId(slot, payload), ...payload },
         );
-      },
-    );
+      } else {
+        const payload = { revision, target, body };
+        saved = await api("/api/comments", {
+          request_id: requestId(slot, payload),
+          ...payload,
+        });
+        target = null;
+        selected = saved.id;
+      }
+      requests.delete(slot);
+      writeDraft(slot, null);
+      $("comment-body").value = "";
+      await sendPending(saved);
+      say(HINT);
+    });
   });
   $("resolve").addEventListener("click", async () => {
     const thread = currentThread();
     if (!thread) return;
     const status = thread.status === "resolved" ? "open" : "resolved";
-    await mutate(
-      `/api/threads/${encodeURIComponent(thread.id)}/status`,
-      { expected_version: thread.version, status },
-      () =>
-        say(status === "resolved" ? "Thread resolved." : "Thread reopened."),
+    await mutate(() =>
+      api(`/api/threads/${encodeURIComponent(thread.id)}/status`, {
+        expected_version: thread.version,
+        status,
+      }),
     );
   });
-  function readRegion() {
-    const tolerance = 1e-9;
-    const rect = Object.fromEntries(
-      ["x", "y", "width", "height"].map((key) => [
-        key,
-        $(`region-${key}`).value === ""
-          ? NaN
-          : Number($(`region-${key}`).value),
-      ]),
-    );
-    if (
-      Object.values(rect).some((n) => !Number.isFinite(n)) ||
-      rect.width <= 0 ||
-      rect.height <= 0 ||
-      rect.x < -tolerance ||
-      rect.y < -tolerance ||
-      rect.x > 1 + tolerance ||
-      rect.y > 1 + tolerance ||
-      rect.x + rect.width > 1 + tolerance ||
-      rect.y + rect.height > 1 + tolerance
-    ) {
-      return null;
-    }
-    rect.x = clamp(rect.x);
-    rect.y = clamp(rect.y);
-    rect.width = Math.min(rect.width, 1 - rect.x);
-    rect.height = Math.min(rect.height, 1 - rect.y);
-    return rect.width > 0 && rect.height > 0 ? rect : null;
-  }
-  $("region-fields").addEventListener("input", () => {
-    if (!target || target.kind !== "region") return;
-    const rect = readRegion();
-    if (!rect) {
-      say("Region bounds must fit within 0–1.", true);
-      return;
-    }
-    target.rect = rect;
-    persistComposer();
-    schedulePins();
-  });
-  $("add-comment").addEventListener("click", () => {
-    if (!state) return;
-    const next = makeTarget(anchorElement($("anchor").value), mode);
-    if (mode === "region") next.rect = { x: 0, y: 0, width: 1, height: 1 };
-    beginComment(next);
-  });
-  $("element-mode").addEventListener("click", () => setMode("element"));
-  $("region-mode").addEventListener("click", () => setMode("region"));
-  $("cancel-comment").addEventListener("click", cancelComment);
+  $("close").addEventListener("click", closePopover);
   $("revision").addEventListener("change", (event) =>
     changeRevision(event.target.value),
   );
   $("update").addEventListener("click", () =>
     changeRevision(state.curio.current_revision),
   );
-  $("original").addEventListener("click", () =>
-    changeRevision(currentThread().created_revision),
-  );
-  $("close-thread").addEventListener("click", () => {
-    if (!state || busy) return;
-    if (selected)
-      writeDraft(`reply:${selected}`, $("reply-body").value || null);
-    selected = null;
-    $("reply-body").value = "";
-    render();
-    $("add-comment").focus();
-  });
-  function escape() {
-    if (busy || !state) return;
-    if (drag) {
-      drag = null;
-      schedulePins();
-      $("region-mode").focus();
-    } else if (target) {
-      persistComposer();
-      archiveComposer();
-      target = null;
-      $("comment-body").value = "";
-      $("composer").hidden = true;
-      $("region-fields").disabled = true;
-      schedulePins();
-      renderRecovery();
-      $("add-comment").focus();
-      say("Composer closed. Draft retained for recovery.");
-    } else $("close-thread").click();
-  }
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      escape();
+      closePopover();
     }
+    // Enter sends, as in a chat; Shift+Enter is a new line.
     if (
-      (event.ctrlKey || event.metaKey) &&
       event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
       event.target.tagName === "TEXTAREA"
     ) {
       event.preventDefault();
@@ -876,9 +622,6 @@
   });
   window.addEventListener("resize", schedulePins);
   document.addEventListener("scroll", schedulePins, true);
-  window.addEventListener("beforeunload", () => {
-    if (target) persistComposer();
-  });
   // A bounded authoritative poll also reconciles CLI writes and SSE reconnects.
   setInterval(() => {
     if (authenticated && !document.hidden && !busy) refresh();
@@ -939,7 +682,7 @@
       authenticated = true;
       await refresh();
       if (state) {
-        say("Choose an element to comment. Save locally, then Send to nth.");
+        say(HINT);
         events();
       } else {
         authenticated = false;

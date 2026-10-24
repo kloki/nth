@@ -9,138 +9,47 @@
   </head>
   <body>
     <header class="toolbar">
-      <div class="identity">
-        <span class="eyebrow">Curios · review</span>
-        <h1 id="title">Opening curio…</h1>
-      </div>
+      <h1 id="title">Opening curio…</h1>
+      <p id="notice" role="status" aria-live="polite" aria-atomic="true">
+        Connecting…
+      </p>
       <div class="revision-controls">
         <label for="revision">Revision</label
         ><select id="revision" disabled></select
-        ><button id="update" hidden>View latest revision</button>
+        ><button id="update" hidden>View latest</button>
       </div>
-      <button id="send" class="primary" disabled>Send to nth (0)</button>
     </header>
-    <div id="notice" role="status" aria-live="polite" aria-atomic="true">
-      Connecting…
-    </div>
-    <main>
-      <section class="document-panel" aria-label="Curio document">
-        <div class="review-tools" role="group" aria-label="Comment tools">
-          <button id="element-mode" aria-pressed="true">Select element</button>
-          <button id="region-mode" aria-pressed="false">Draw region</button>
-          <label for="anchor">Target</label
-          ><select id="anchor">
-            <option value="">Whole document</option>
-          </select>
-          <button id="add-comment">Add comment</button>
-        </div>
-        <p class="hint" id="selection-help">
-          Click a document element, or choose a target and Add comment. Escape
-          cancels selection.
-        </p>
-        <div id="stage">
-          <iframe
-            id="document"
-            title="Published curio"
-            sandbox="allow-same-origin"
-            referrerpolicy="no-referrer"
-          ></iframe>
-          <div id="overlays" aria-label="Comment pins">
-            <div id="selection-box" hidden></div>
-            <div id="pins"></div>
-          </div>
-        </div>
-      </section>
-      <aside id="review" aria-label="Review threads">
-        <div class="review-heading">
-          <h2>Review</h2>
-          <span id="thread-count"></span>
-        </div>
-        <p class="hint">
-          Save comments here, then explicitly Send to nth. Saved drafts do not
-          start a turn.
-        </p>
-        <section id="composer" hidden aria-labelledby="composer-title">
-          <h3 id="composer-title">New comment</h3>
-          <p id="target-label"></p>
+    <main id="stage">
+      <iframe
+        id="document"
+        title="Published curio"
+        sandbox="allow-same-origin"
+        referrerpolicy="no-referrer"
+      ></iframe>
+      <div id="overlays" aria-label="Comment pins">
+        <div id="selection-box" hidden></div>
+        <div id="pins"></div>
+        <section id="popover" hidden aria-label="Comment">
+          <ol id="messages" aria-label="Thread messages"></ol>
+          <p id="working" hidden>
+            <span class="spinner" aria-hidden="true"></span> nth is working…
+          </p>
           <form id="comment-form">
-            <fieldset id="region-fields" hidden disabled>
-              <legend>Region within target (0–1)</legend>
-              <div class="coordinates">
-                <label
-                  >X<input
-                    id="region-x"
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="any"
-                    value="0"
-                /></label>
-                <label
-                  >Y<input
-                    id="region-y"
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="any"
-                    value="0"
-                /></label>
-                <label
-                  >Width<input
-                    id="region-width"
-                    type="number"
-                    min="0.001"
-                    max="1"
-                    step="any"
-                    value="1"
-                /></label>
-                <label
-                  >Height<input
-                    id="region-height"
-                    type="number"
-                    min="0.001"
-                    max="1"
-                    step="any"
-                    value="1"
-                /></label>
-              </div>
-            </fieldset>
-            <label for="comment-body">Comment</label
-            ><textarea
+            <textarea
               id="comment-body"
-              rows="4"
+              rows="3"
               maxlength="16000"
-              placeholder="What should nth know?"
+              aria-label="Comment"
+              placeholder="Comment for nth… (Shift+Enter for a new line)"
             ></textarea>
             <div class="actions">
-              <button type="submit" class="primary">Save comment</button
-              ><button id="cancel-comment" type="button">Cancel</button>
+              <button type="submit" class="primary" id="submit">Comment</button
+              ><button type="button" id="resolve" hidden></button
+              ><button type="button" id="close">Close</button>
             </div>
           </form>
         </section>
-        <nav id="thread-list" aria-label="Comment threads"></nav>
-        <section id="thread-detail" hidden aria-label="Selected thread">
-          <div class="thread-heading">
-            <h3 id="thread-title"></h3>
-            <button id="close-thread" aria-label="Close thread">Close</button>
-          </div>
-          <p id="thread-context" class="context"></p>
-          <p id="thread-state" class="hint"></p>
-          <button id="original" hidden>View original revision</button>
-          <ol id="messages" aria-label="Thread messages"></ol>
-          <form id="reply-form">
-            <label for="reply-body">Reply</label
-            ><textarea id="reply-body" rows="4" maxlength="16000"></textarea>
-            <div class="actions">
-              <button type="submit" class="primary">Save reply</button
-              ><button type="button" id="resolve">Resolve thread</button>
-            </div>
-          </form>
-        </section>
-        <p id="empty" class="empty">
-          No comments yet. Choose a meaningful element to begin.
-        </p>
-      </aside>
+      </div>
     </main>
     <noscript
       >The trusted Curios review shell needs JavaScript. Published documents do
