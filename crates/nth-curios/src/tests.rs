@@ -886,3 +886,21 @@ fn adoption_cut_short_is_finished_by_adopting_again() {
         assert_eq!(discover(new.repo_root()).unwrap().len(), 1, "step {step}");
     }
 }
+
+#[test]
+fn snapshot_says_whether_a_session_listens() {
+    let (_dir, store) = setup();
+    let cid = store.publish(publication("publish")).unwrap().curio.id;
+    assert!(!store.snapshot(&cid, None).unwrap().listening);
+    let lease = store.claim_delivery().unwrap();
+    assert!(store.snapshot(&cid, None).unwrap().listening);
+    // Asking leaves the lease to its owner.
+    assert!(store.claim_delivery().is_err());
+    drop(lease);
+    released(|| match store.snapshot(&cid, None)?.listening {
+        true => Err(Error::Conflict("still held".into())),
+        false => Ok(()),
+    })
+    .unwrap();
+    assert!(store.claim_delivery().is_ok());
+}

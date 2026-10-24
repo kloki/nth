@@ -115,6 +115,9 @@ pub struct Snapshot {
     pub threads: Vec<Thread>,
     pub revisions: Vec<Revision>,
     pub state_version: u64,
+    /// Whether the owning session runs, so feedback sent now reaches it.
+    #[serde(default)]
+    pub listening: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -104,12 +104,17 @@
       );
   }
   // Sent and not answered yet: an agent reply answers what came before it.
-  function working(thread) {
+  function waiting(thread) {
     const last = thread.messages.at(-1);
     return (
       last?.author === "human" &&
       (last.delivery === "queued" || last.delivery === "recorded")
     );
+  }
+  // Waiting with a session running to answer it; with none, the feedback
+  // waits for the session to run again.
+  function working(thread) {
+    return waiting(thread) && state.listening;
   }
   async function refresh() {
     if (refreshing) {
@@ -168,7 +173,11 @@
     $("submit").textContent = thread ? "Reply" : "Comment";
     $("resolve").hidden = !thread;
     const messages = $("messages");
-    $("working").hidden = !thread || !working(thread);
+    $("working").hidden = !thread || !waiting(thread);
+    $("working").querySelector(".spinner").hidden = !state.listening;
+    $("working-text").textContent = state.listening
+      ? "nth is working…"
+      : "Waiting for nth: its session is not running.";
     if (!thread) {
       messages.replaceChildren();
       delete messages.dataset.signature;
@@ -471,7 +480,7 @@
       pin.classList.toggle("resolved", thread.status === "resolved");
       pin.setAttribute(
         "aria-label",
-        `Thread ${thread.number}: ${thread.target.label || "Document"}, ${working(thread) ? "nth is working" : thread.status}`,
+        `Thread ${thread.number}: ${thread.target.label || "Document"}, ${working(thread) ? "nth is working" : waiting(thread) ? "waiting for nth" : thread.status}`,
       );
       pin.setAttribute("aria-pressed", String(thread.id === selected));
       pin.style.left = `${x}px`;

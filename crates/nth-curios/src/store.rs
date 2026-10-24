@@ -497,6 +497,7 @@ impl Store {
             threads,
             revisions: entry.revisions.clone(),
             state_version: state.version,
+            listening: self.listening(),
         })
     }
     pub fn publish_file(&self, source: &Path, mut publish: Publish) -> Result<Published> {
@@ -865,6 +866,15 @@ impl Store {
             }
         }
         self.save(&mut state)
+    }
+    /// Whether a running session holds [`Self::claim_delivery`]'s lease, in
+    /// this process or another.
+    pub fn listening(&self) -> bool {
+        let Ok(file) = File::open(self.path().join("delivery.lock")) else {
+            return false;
+        };
+        // The lock goes with the file, at once.
+        file.try_lock_shared().is_err()
     }
     /// Holds a process-wide advisory lease until dropped. A second delivery owner fails.
     pub fn claim_delivery(&self) -> Result<File> {
