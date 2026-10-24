@@ -17,7 +17,7 @@ use super::App;
 use crate::spinner;
 
 /// How many ticks a wave takes to cross the hint, whatever its length.
-const TICKS: u32 = 6;
+const TICKS: u32 = 10;
 /// How many columns wide the reversed head is.
 const CREST: f64 = 2.0;
 /// How long a wave runs, in and out alike.
@@ -176,8 +176,8 @@ mod tests {
             "plain once the wave has passed"
         );
 
-        // Two ticks in, the head is on `op`: `c` behind it, `ied` to come.
-        app.hint = Some(said("copied", tick(2)));
+        // Three ticks in, the head is on `op`: `c` behind it, `ied` to come.
+        app.hint = Some(said("copied", tick(3)));
         let wave = cells(&mut app, at);
         assert_eq!((wave[0].0, wave[0].1), PLAIN);
         assert_eq!((wave[1].0, wave[1].1), HEAD);
@@ -188,7 +188,7 @@ mod tests {
         );
 
         // Going, the same head wipes `c` away and leaves `ied` standing.
-        app.hint = Some(said("copied", LIFE + tick(2)));
+        app.hint = Some(said("copied", LIFE + tick(3)));
         let wave = cells(&mut app, at);
         assert_eq!(wave[0].2, " ", "wiped");
         assert_eq!((wave[1].0, wave[1].1), HEAD);
