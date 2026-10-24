@@ -163,12 +163,18 @@ fn text(body: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Refuses a path that goes through a symlink inside `.nth`, the part
+/// Curios makes. What lies above the repository is the system's own: on
+/// macOS the temporary folders sit under `/var`, a symlink to `/private/var`.
 fn no_symlinks(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         if fs::symlink_metadata(ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err(Error::Invalid(
                 "Curios paths must not contain symlinks".into(),
             ));
+        }
+        if ancestor.file_name().is_some_and(|name| name == ".nth") {
+            break;
         }
     }
     Ok(())

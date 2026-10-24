@@ -163,13 +163,17 @@ fn curio_dir(session: &Session) -> Result<Option<PathBuf>> {
     if !root.is_absolute() {
         bail!("saved Curios root must be absolute");
     }
-    let dir = root.join(".nth/curios").join(session.id.to_string());
-    let mut current = PathBuf::new();
-    for part in dir.components() {
-        if matches!(part, std::path::Component::ParentDir) {
-            bail!("saved Curios root contains a parent traversal");
-        }
-        current.push(part);
+    if root
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        bail!("saved Curios root contains a parent traversal");
+    }
+    // The root and what Curios made below it; its ancestors are the
+    // system's (macOS keeps temporary folders under `/var`, a symlink).
+    let curios = root.join(".nth/curios");
+    let dir = curios.join(session.id.to_string());
+    for current in [root.clone(), root.join(".nth"), curios, dir.clone()] {
         match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => bail!(
                 "refusing Curios deletion through symlink {}",

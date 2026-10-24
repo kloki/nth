@@ -257,6 +257,10 @@ fn no_repository_and_nested_start_have_explicit_results() {
     let (repo, _store) = setup();
     let nested = repo.path().join("nested/deep");
     fs::create_dir_all(&nested).unwrap();
-    assert_eq!(repository_root(&nested).unwrap(), repo.path());
+    // Git names the real path, which a temporary folder may not be.
+    assert_eq!(
+        repository_root(&nested).unwrap(),
+        repo.path().canonicalize().unwrap()
+    );
     assert!(Store::new(repository_root(&nested).unwrap(), "nested-owner").is_ok());
 }

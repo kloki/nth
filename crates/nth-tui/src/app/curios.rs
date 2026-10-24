@@ -655,6 +655,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.curio_receipts.len(), 1);
-        assert_eq!(saved.curio_root.as_deref(), Some(dir.path()));
+        // The store keeps the real path, which a temporary folder may not be.
+        assert_eq!(saved.curio_root, Some(dir.path().canonicalize().unwrap()));
     }
 }

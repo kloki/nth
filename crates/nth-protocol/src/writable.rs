@@ -51,8 +51,12 @@ impl Writable {
         else {
             return Ok(());
         };
+        // Only what lies inside the source folder: the folders above the
+        // repository are the system's (macOS keeps temporary folders under
+        // `/var`, a symlink).
         let source_safe = path
             .ancestors()
+            .take_while(|p| source.as_ref().is_some_and(|s| p.starts_with(s)))
             .all(|p| match std::fs::symlink_metadata(p) {
                 Ok(meta) => !meta.file_type().is_symlink(),
                 Err(err) => err.kind() == std::io::ErrorKind::NotFound,

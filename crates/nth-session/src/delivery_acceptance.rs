@@ -179,7 +179,7 @@ async fn persisted_root_survives_managed_move_and_distinguishes_separate_checkou
     let mut independent = Session::new("fake", other.path().to_path_buf());
     assert_eq!(
         independent.prepare_curios().unwrap().repo_root(),
-        other.path()
+        other.path().canonicalize().unwrap()
     );
     assert!(
         independent
