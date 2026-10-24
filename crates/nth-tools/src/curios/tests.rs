@@ -220,7 +220,10 @@ async fn read_pages_large_threads_and_immutable_batches_without_dumping_state() 
         let output = CurioRead.call(a, &ctx).await.unwrap();
         assert!(output.len() <= MAX_OUTPUT);
         let out: Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(out["page"]["text_truncated"], true);
+        assert_eq!(out["page"]["text_truncated"], false);
+        for item in out["page"]["items"].as_array().unwrap() {
+            assert_eq!(item["message"]["body"], "é".repeat(8000));
+        }
         count += out["page"]["items"].as_array().unwrap().len();
         cursor = out["page"]["next_cursor"].clone();
         if cursor.is_null() {
@@ -234,6 +237,143 @@ async fn read_pages_large_threads_and_immutable_batches_without_dumping_state() 
             .await
             .unwrap_err()
             .starts_with("curios.invalid:")
+    );
+}
+
+#[tokio::test]
+async fn lossless_body_continuation() {
+    let (_dir, ctx) = context();
+    let published = publish(&ctx).await;
+    let cid = published["curio"]["id"].as_str().unwrap();
+    let store = ctx.curios.store().unwrap();
+    let bodies = [
+        format!("{}TAIL_REQUIRED_ACTION", "x".repeat(3001)),
+        "é".repeat(8000),
+        "x".repeat(16384),
+        format!("{}TAIL_REQUIRED_ACTION", "\u{0001}é\n\"\\".repeat(2700)),
+    ];
+    let threads: Vec<_> = bodies
+        .iter()
+        .enumerate()
+        .map(|(n, b)| comment(&store, cid, &format!("body-{n}"), b.clone()))
+        .collect();
+    let batch = store
+        .send(
+            cid,
+            core::Send {
+                request_id: "send-bodies".into(),
+                message_ids: threads.iter().map(|t| t.messages[0].id.clone()).collect(),
+            },
+        )
+        .unwrap();
+    let mut selections = vec![json!({"action":"batch","batch_id":batch.id,"limit":100})];
+    selections.extend(
+        threads
+            .iter()
+            .map(|t| json!({"action":"thread","curio_id":cid,"thread_id":t.id})),
+    );
+    for mut selection in selections {
+        let is_batch = selection["action"] == "batch";
+        let mut recovered = std::collections::BTreeMap::<String, String>::new();
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            assert!(calls < 20, "cursor must make progress");
+            let output = CurioRead.call(selection.clone(), &ctx).await.unwrap();
+            assert!(output.len() <= MAX_OUTPUT);
+            let out: Value = serde_json::from_str(&output).unwrap();
+            let items = out["page"]["items"].as_array().unwrap();
+            assert!(!items.is_empty());
+            for item in items {
+                let m = if is_batch { &item["message"] } else { item };
+                let body = recovered
+                    .entry(m["id"].as_str().unwrap().into())
+                    .or_default();
+                if !item["body_chunk"].is_null() {
+                    assert_eq!(item["body_chunk"]["offset"], body.len());
+                }
+                body.push_str(m["body"].as_str().unwrap());
+            }
+            selection["cursor"] = out["page"]["next_cursor"].clone();
+            if selection["cursor"].is_null() {
+                break;
+            }
+        }
+        for (id, body) in &recovered {
+            let expected = threads.iter().find(|t| &t.messages[0].id == id).unwrap();
+            assert_eq!(body, &expected.messages[0].body);
+        }
+        assert_eq!(recovered.len(), if is_batch { bodies.len() } else { 1 });
+    }
+}
+
+#[tokio::test]
+async fn batch_reviewed_revision_preserves_historical_and_unknown_context() {
+    let (_dir, ctx) = context();
+    let published = publish(&ctx).await;
+    let cid = published["curio"]["id"].as_str().unwrap();
+    let store = ctx.curios.store().unwrap();
+    let old = comment(&store, cid, "old", "Historical".into());
+    store
+        .publish(core::Publish {
+            request_id: "update".into(),
+            curio_id: Some(cid.into()),
+            expected_revision: Some(1),
+            title: None,
+            html: "<h1 id=title>New</h1>".into(),
+        })
+        .unwrap();
+    let current = store
+        .comment(
+            cid,
+            core::Comment {
+                request_id: "current".into(),
+                revision: 2,
+                target: old.target.clone(),
+                body: "Current".into(),
+            },
+        )
+        .unwrap();
+    let batch = store
+        .send(
+            cid,
+            core::Send {
+                request_id: "send".into(),
+                message_ids: vec![old.messages[0].id.clone(), current.messages[0].id.clone()],
+            },
+        )
+        .unwrap();
+    let path = store.path().join("state.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    state["batches"][0]["messages"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewed_revision");
+    std::fs::write(path, state.to_string()).unwrap();
+    let output = CurioRead
+        .call(json!({"action":"batch","batch_id":batch.id}), &ctx)
+        .await
+        .unwrap();
+    let output: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(output["batch"]["revision"], 2);
+    assert_eq!(output["batch"]["reviewed_revisions"], json!([null, 1]));
+    assert_eq!(output["page"]["items"][0]["reviewed_revision"], 1);
+    assert!(
+        output["page"]["items"][1]
+            .get("reviewed_revision")
+            .unwrap()
+            .is_null()
+    );
+    let summaries: Value = serde_json::from_str(
+        &CurioRead
+            .call(json!({"action":"batches"}), &ctx)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        summaries["page"]["items"][0]["reviewed_revisions"],
+        json!([null, 1])
     );
 }
 

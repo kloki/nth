@@ -111,6 +111,7 @@ pub struct Batch {
     pub id: String,
     pub session_id: String,
     pub curio_id: String,
+    /// Current revision at submission time; messages retain their reviewed context.
     pub revision: u64,
     pub messages: Vec<SubmittedMessage>,
     pub recorded: bool,
@@ -122,6 +123,9 @@ pub struct SubmittedMessage {
     pub thread_version: u64,
     pub message: Message,
     pub target: Target,
+    /// Revision viewed when this human message was written. None for legacy data.
+    #[serde(default)]
+    pub reviewed_revision: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

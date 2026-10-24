@@ -65,41 +65,118 @@ fn shorten(value: &mut Value) -> bool {
             true
         }
         Value::Array(items) => items.iter_mut().fold(false, |cut, v| shorten(v) | cut),
-        Value::Object(fields) => fields.values_mut().fold(false, |cut, v| shorten(v) | cut),
+        Value::Object(fields) => fields
+            .iter_mut()
+            .fold(false, |cut, (key, v)| (key != "body" && shorten(v)) | cut),
         _ => false,
     }
 }
 
-// Every paged item has bounded strings and no unbounded nested collections.
+// A cursor identifies an item and, for an oversized escaped body, a UTF-8 byte offset.
 fn page(
     items: Vec<Value>,
     cursor: Option<&str>,
     limit: Option<usize>,
     budget: usize,
 ) -> Result<Value, String> {
-    let start = cursor.unwrap_or("0").parse::<usize>().map_err(|_| "curios.invalid: cursor must be a nonnegative decimal offset. Recovery: use next_cursor from the previous result.".to_string())?;
+    let invalid = || {
+        "curios.invalid: invalid cursor. Recovery: use next_cursor from the previous result."
+            .to_string()
+    };
+    let (index, byte) = cursor
+        .unwrap_or("0")
+        .split_once(':')
+        .unwrap_or((cursor.unwrap_or("0"), "0"));
+    let start = index.parse::<usize>().map_err(|_| invalid())?;
+    let mut body_offset = byte.parse::<usize>().map_err(|_| invalid())?;
     let limit = limit.unwrap_or(20);
-    if !(1..=100).contains(&limit) || start > items.len() {
+    if !(1..=100).contains(&limit)
+        || start > items.len()
+        || (start == items.len() && body_offset != 0)
+    {
         return Err("curios.invalid: limit must be 1..100 and cursor within the collection. Recovery: restart with no cursor.".into());
     }
     let total = items.len();
     let mut result = Vec::new();
     let mut bytes = 0;
     let mut truncated = false;
+    let mut next = start;
+    let mut next_byte = 0;
     for mut item in items.into_iter().skip(start).take(limit) {
         let cut = shorten(&mut item);
-        let size = serde_json::to_vec(&item).expect("JSON value").len();
+        let body_path = if item.get("message").is_some() {
+            "/message/body"
+        } else {
+            "/body"
+        };
+        let body = item
+            .pointer(body_path)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if body_offset != 0
+            && body
+                .as_ref()
+                .is_none_or(|s| body_offset >= s.len() || !s.is_char_boundary(body_offset))
+        {
+            return Err(invalid());
+        }
+        if let Some(body) = &body {
+            *item.pointer_mut(body_path).expect("body") = json!(&body[body_offset..]);
+            if body_offset != 0 {
+                item["body_chunk"] =
+                    json!({"offset":body_offset,"end":body.len(),"total_bytes":body.len()});
+            }
+        }
+        let mut size = item.to_string().len();
+        // Only split a body when it cannot fit on an otherwise empty page.
+        if size > budget && result.is_empty() {
+            let body = body.as_ref().ok_or_else(invalid)?;
+            item["body_chunk"] =
+                json!({"offset":body_offset,"end":body_offset,"total_bytes":body.len()});
+            let boundaries: Vec<_> = body[body_offset..]
+                .char_indices()
+                .map(|(i, c)| body_offset + i + c.len_utf8())
+                .collect();
+            let (mut low, mut high) = (0, boundaries.len());
+            while low < high {
+                let mid = (low + high).div_ceil(2);
+                let candidate = boundaries[mid - 1];
+                *item.pointer_mut(body_path).expect("body") = json!(&body[body_offset..candidate]);
+                item["body_chunk"]["end"] = json!(candidate);
+                if item.to_string().len() > budget {
+                    high = mid - 1;
+                } else {
+                    low = mid;
+                }
+            }
+            if low == 0 {
+                return Err(invalid());
+            }
+            let end = boundaries[low - 1];
+            *item.pointer_mut(body_path).expect("body") = json!(&body[body_offset..end]);
+            item["body_chunk"]["end"] = json!(end);
+            next_byte = if end < body.len() { end } else { 0 };
+            size = item.to_string().len();
+        }
         if bytes + size > budget {
             break;
         }
         truncated |= cut;
         bytes += size;
         result.push(item);
+        if next_byte != 0 {
+            break;
+        }
+        next += 1;
+        body_offset = 0;
     }
-    let next = start + result.len();
     Ok(
-        json!({"items": result, "total": total, "next_cursor": (next < total).then(|| next.to_string()), "text_truncated": truncated, "text_limit_bytes": 2048}),
+        json!({"items": result, "total": total, "next_cursor": (next < total).then(|| if next_byte == 0 { next.to_string() } else { format!("{next}:{next_byte}") }), "text_truncated": truncated, "text_limit_bytes": 2048}),
     )
+}
+
+fn reviewed_revisions(batch: &core::Batch) -> std::collections::BTreeSet<Option<u64>> {
+    batch.messages.iter().map(|m| m.reviewed_revision).collect()
 }
 
 fn revision(rev: &core::Revision) -> Value {
@@ -158,7 +235,7 @@ fn required(value: Option<&str>, name: &str) -> Result<String, String> {
 
 impl Tool for CurioRead {
     fn spec(&self) -> ToolSpec {
-        ToolSpec { name:"curio_read", description:"Read only this session's curios. list returns source/template paths; get returns current metadata; revisions lists metadata; revision pages anchors; threads lists review/attachment state without messages; thread pages messages and original target context; batches lists immutable sent-batch metadata; batch pages submitted messages. Use curio_id for get/revisions/revision/threads/thread, thread_id for thread, batch_id for batch. Numeric opaque next_cursor paginates the selected collection. Text fields are clipped to 2048 bytes with text_truncated indication; output is bounded to 32 KiB. No HTML or authentication secrets returned.".into(), parameters:json!({"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["list","get","revisions","revision","threads","thread","batches","batch"]},"curio_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"batch_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}) }
+        ToolSpec { name:"curio_read", description:"Read only this session's curios. list returns source/template paths; get returns current metadata; revisions lists metadata; revision pages anchors; threads lists review/attachment state without messages; thread pages messages and original target context; batches lists immutable sent-batch metadata; batch pages submitted messages including reviewed_revision (null means unknown legacy). Batch revision is the publication current at send time, never a fallback reviewed revision; summary reviewed_revisions lists distinct reviewed revisions including null. Use curio_id for get/revisions/revision/threads/thread, thread_id for thread, batch_id for batch. Pass page.next_cursor unchanged as cursor until null. Cursors are item indexes or index:body_byte_offset. Message bodies are lossless: normally complete, but oversized JSON-escaped bodies use UTF-8-safe chunks. Chunk items have body_chunk:{offset,end,total_bytes} (exclusive byte end); concatenate body (thread) or message.body (batch) for the same message in cursor order. limit is a maximum item count; pages shrink to fit 32 KiB. Other text may clip to 2048 bytes with text_truncated/metadata_truncated flags. No HTML or authentication secrets returned.".into(), parameters:json!({"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["list","get","revisions","revision","threads","thread","batches","batch"]},"curio_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"batch_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}) }
     }
     fn call<'a>(&'a self, value: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
@@ -172,9 +249,9 @@ impl Tool for CurioRead {
                     if a.action == "batch" {
                         let id = required(a.batch_id.as_deref(), "batch_id")?;
                         let batch = batches.into_iter().find(|b| b.id == id).ok_or_else(|| failure(core::Error::NotFound("Batch not found".into())))?;
-                        meta["batch"] = json!({"id":batch.id,"curio_id":batch.curio_id,"revision":batch.revision,"recorded":batch.recorded});
+                        meta["batch"] = json!({"id":batch.id,"curio_id":batch.curio_id,"revision":batch.revision,"recorded":batch.recorded,"reviewed_revisions":reviewed_revisions(&batch)});
                         batch.messages.into_iter().map(|m| json!(m)).collect()
-                    } else { batches.into_iter().filter(|b| a.curio_id.as_ref().is_none_or(|id| id == &b.curio_id)).map(|b| json!({"id":b.id,"curio_id":b.curio_id,"revision":b.revision,"recorded":b.recorded,"message_count":b.messages.len()})).collect() }
+                    } else { batches.into_iter().filter(|b| a.curio_id.as_ref().is_none_or(|id| id == &b.curio_id)).map(|b| json!({"id":b.id,"curio_id":b.curio_id,"revision":b.revision,"recorded":b.recorded,"message_count":b.messages.len(),"reviewed_revisions":reviewed_revisions(&b)})).collect() }
                 }
                 "get" | "revisions" | "revision" | "threads" | "thread" => {
                     let id = required(a.curio_id.as_deref(), "curio_id")?;

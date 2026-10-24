@@ -220,6 +220,8 @@ aside > .hint {
   margin: 16px 0;
 }
 .thread-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
   display: block;
   text-align: left;
   width: 100%;
@@ -239,6 +241,11 @@ aside > .hint {
   font-size: 12px;
   color: var(--review-secondary);
   overflow-wrap: anywhere;
+}
+#draft-recovery button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  margin-bottom: 8px;
 }
 #composer,
 #thread-detail {

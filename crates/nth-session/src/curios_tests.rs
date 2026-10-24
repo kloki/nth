@@ -135,6 +135,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     std::fs::remove_file(&state).unwrap();
     std::fs::create_dir(&state).unwrap();
     assert!(saved.save(&session).await.is_err());
+    assert!(saved.load(session.id).await.is_err());
     let persisted: Session = serde_json::from_slice(
         &std::fs::read(saves.path().join(format!("{}.json", session.id))).unwrap(),
     )
@@ -143,13 +144,35 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     std::fs::remove_dir(&state).unwrap();
     std::fs::write(&state, bytes).unwrap();
     saved.save(&session).await.unwrap();
+    // Repository availability is independent of history availability. Keep
+    // receipts through offline loads/saves so a later resume can reconcile.
+    let git = repo.path().join(".git");
+    let offline_git = repo.path().join("git-offline");
+    std::fs::rename(&git, &offline_git).unwrap();
+    let offline = saved.load(session.id).await.unwrap();
+    assert_eq!(offline.curio_receipts, session.curio_receipts);
+    assert_eq!(offline.messages, session.messages);
+    saved.save(&offline).await.unwrap();
+    std::fs::rename(&offline_git, &git).unwrap();
+    raw["batches"][0]["recorded"] = false.into();
+    std::fs::write(&state, serde_json::to_vec(&raw).unwrap()).unwrap();
+    saved.load(session.id).await.unwrap();
+    assert!(store.batches(true).unwrap().is_empty());
+
+    let root = repo.path().to_path_buf();
+    repo.close().unwrap();
+    assert!(!root.exists());
+    let offline = saved.load(session.id).await.unwrap();
+    assert_eq!(offline.curio_receipts, session.curio_receipts);
+    assert_eq!(offline.messages, session.messages);
+    saved.delete(session.id).await.unwrap();
     let mut json = serde_json::to_value(&session).unwrap();
     json.as_object_mut().unwrap().remove("curio_root");
     json.as_object_mut().unwrap().remove("curio_receipts");
     let old: Session = serde_json::from_value(json).unwrap();
     assert!(old.curio_root.is_none() && old.curio_receipts.is_empty());
     let source = session.curio_source_dir();
-    session.set_cwd(repo.path().join("managed"), Some(repo.path().to_path_buf()));
+    session.set_cwd(root.join("managed"), Some(root));
     assert_eq!(session.curio_source_dir(), source);
     assert!(session.as_subagent(None).curios().store().is_err());
 }

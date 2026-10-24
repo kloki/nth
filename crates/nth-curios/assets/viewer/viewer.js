@@ -271,7 +271,44 @@
     if (target)
       writeDraft(`new:${revision}`, { target, body: $("comment-body").value });
   }
-  function beginComment(nextTarget, focus = true) {
+  function archiveComposer() {
+    const draft = readDraft(`new:${revision}`);
+    if (draft?.body?.trim()) {
+      const saved = readDraft(`closed:${revision}`) || [];
+      writeDraft(`closed:${revision}`, [...saved, draft]);
+    }
+    writeDraft(`new:${revision}`, null);
+  }
+  function renderRecovery() {
+    let recovery = $("draft-recovery");
+    if (!recovery) {
+      recovery = document.createElement("div");
+      recovery.id = "draft-recovery";
+      $("composer").before(recovery);
+    }
+    const saved = readDraft(`closed:${revision}`) || [];
+    recovery.replaceChildren(
+      ...saved.map((draft, index) => {
+        const button = document.createElement("button");
+        button.textContent = `Recover draft · ${draft.target.label}`;
+        button.addEventListener("click", () => {
+          if (busy || (target && $("comment-body").value.trim())) {
+            say(
+              "Save or cancel your current comment before recovering a draft.",
+            );
+            return;
+          }
+          writeDraft(
+            `closed:${revision}`,
+            saved.filter((_, i) => i !== index),
+          );
+          beginComment(draft.target, true, draft.body);
+        });
+        return button;
+      }),
+    );
+  }
+  function beginComment(nextTarget, focus = true, body = "") {
     if (busy) return;
     if (target && $("comment-body").value.trim()) {
       say(
@@ -279,7 +316,9 @@
       );
       return;
     }
+    if (!target) archiveComposer();
     target = nextTarget;
+    $("comment-body").value = body;
     $("composer").hidden = false;
     $("target-label").textContent = `${target.kind} · ${target.label}`;
     $("region-fields").hidden = target.kind !== "region";
@@ -288,6 +327,7 @@
       for (const key of ["x", "y", "width", "height"])
         $(`region-${key}`).value = String(target.rect[key]);
     persistComposer();
+    renderRecovery();
     schedulePins();
     $("empty").hidden = true;
     if (focus) {
@@ -302,6 +342,7 @@
     $("region-fields").disabled = true;
     $("comment-body").value = "";
     writeDraft(`new:${revision}`, null);
+    renderRecovery();
     schedulePins();
     $("add-comment").focus();
   }
@@ -450,11 +491,8 @@
       abort.abort();
       resize.disconnect();
     };
-    const draft = readDraft(`new:${revision}`);
-    if (draft?.target && !target) {
-      $("comment-body").value = draft.body || "";
-      beginComment(draft.target, false);
-    }
+    if (!target) archiveComposer();
+    renderRecovery();
     schedulePins();
   });
   function schedulePins() {
@@ -479,12 +517,38 @@
       bottom = top + box.height;
     const doc = frameDocument();
     const clips = (value) => /^(auto|scroll|hidden|clip)$/.test(value);
+    const styleOf = (node) => doc.defaultView.getComputedStyle(node);
+    function containingBlock(node, fixed) {
+      for (
+        let parent = node.parentElement;
+        parent;
+        parent = parent.parentElement
+      ) {
+        const style = styleOf(parent);
+        if (
+          (!fixed && style.position !== "static") ||
+          style.transform !== "none" ||
+          style.perspective !== "none" ||
+          style.filter !== "none" ||
+          style.backdropFilter !== "none" ||
+          /\b(layout|paint|strict|content)\b/.test(style.contain) ||
+          /\b(transform|perspective|filter)\b/.test(style.willChange) ||
+          style.contentVisibility === "auto"
+        )
+          return parent;
+      }
+      return null;
+    }
+    // Overflow between an out-of-flow box and its containing block does not
+    // clip it. Repeat at each positioned ancestor (including fixed subtrees).
     for (
-      let ancestor = element.parentElement;
-      ancestor;
-      ancestor = ancestor.parentElement
+      let node = element, ancestor;
+      (ancestor = /^(fixed|absolute)$/.test(styleOf(node).position)
+        ? containingBlock(node, styleOf(node).position === "fixed")
+        : node.parentElement);
+      node = ancestor
     ) {
-      const style = doc.defaultView.getComputedStyle(ancestor);
+      const style = styleOf(ancestor);
       if (!clips(style.overflowX) && !clips(style.overflowY)) continue;
       const bounds = ancestor.getBoundingClientRect();
       // Client dimensions exclude borders and scrollbars; bounding dimensions
@@ -785,10 +849,13 @@
       $("region-mode").focus();
     } else if (target) {
       persistComposer();
+      archiveComposer();
       target = null;
+      $("comment-body").value = "";
       $("composer").hidden = true;
       $("region-fields").disabled = true;
       schedulePins();
+      renderRecovery();
       $("add-comment").focus();
       say("Composer closed. Draft retained for recovery.");
     } else $("close-thread").click();

@@ -118,6 +118,233 @@ fn durable_review_retry_and_history() {
 }
 
 #[test]
+fn actual_uuid_owner_ignore_exceptions_are_rejected_without_rewriting() {
+    let (dir, _) = setup();
+    let owner = "d7811ce2-b442-4bd5-a2e4-bb0dc390d95d";
+    let ignore = dir.path().join(".nth/curios/.gitignore");
+    for exception in [
+        format!("!{owner}/\n!{owner}/source/\n!{owner}/source/*.html\n"),
+        format!("!{owner}/\n!{owner}/state.json\n"),
+        format!("!{owner}/\n!{owner}/lock\n!{owner}/delivery.lock\n"),
+        format!("!{owner}/\n!{owner}/*/\n!{owner}/*/revisions/\n"),
+    ] {
+        let rules = format!("*\n{exception}");
+        std::fs::write(&ignore, &rules).unwrap();
+        assert!(matches!(
+            Store::new(dir.path(), owner),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&ignore).unwrap(), rules);
+        assert!(
+            !dir.path()
+                .join(".nth/curios")
+                .join(owner)
+                .join("state.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn existing_generated_files_are_checked_even_when_tracked() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("p")).unwrap().curio.id;
+    let generated = store.path().join(&cid).join("revisions/1/index.html");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "--force"])
+            .arg(&generated)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Store::new(dir.path(), "session-one").unwrap();
+    let rules = format!(
+        "*\n!session-one/\n!session-one/{cid}/\n!session-one/{cid}/revisions/\n!session-one/{cid}/revisions/1/\n!session-one/{cid}/revisions/1/index.html\n"
+    );
+    let ignore = dir.path().join(".nth/curios/.gitignore");
+    std::fs::write(&ignore, &rules).unwrap();
+    assert!(matches!(
+        Store::new(dir.path(), "another-owner"),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(std::fs::read_to_string(ignore).unwrap(), rules);
+    assert!(generated.exists());
+}
+
+#[test]
+fn reply_before_ack_is_durable_without_answering_unsent_or_later_messages() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("p")).unwrap().curio.id;
+    let thread = store.comment(&cid, comment("c")).unwrap();
+    let send = Send {
+        request_id: "send".into(),
+        message_ids: vec![thread.messages[0].id.clone()],
+    };
+    let batch = store.send(&cid, send.clone()).unwrap();
+    let unsent = store
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "unsent".into(),
+                expected_version: 2,
+                body: "Unsent follow-up".into(),
+                mark_addressed: false,
+                revision: Some(1),
+            },
+            Author::Human,
+        )
+        .unwrap();
+    let reply = Reply {
+        request_id: "answer".into(),
+        expected_version: unsent.version,
+        body: "Answer".into(),
+        mark_addressed: false,
+        revision: Some(1),
+    };
+    let answered = store
+        .reply(&cid, &thread.id, reply.clone(), Author::Agent)
+        .unwrap();
+    assert_eq!(answered.messages[0].delivery, Delivery::Queued);
+    assert_eq!(answered.messages[1].delivery, Delivery::Saved);
+    let later = store
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "later".into(),
+                expected_version: answered.version,
+                body: "Later question".into(),
+                mark_addressed: false,
+                revision: Some(1),
+            },
+            Author::Human,
+        )
+        .unwrap();
+    let later_batch = store
+        .send(
+            &cid,
+            Send {
+                request_id: "send-later".into(),
+                message_ids: vec![later.messages[1].id.clone(), later.messages[3].id.clone()],
+            },
+        )
+        .unwrap();
+    // An idempotent retry must not answer newly submitted messages.
+    store.reply(&cid, &thread.id, reply, Author::Agent).unwrap();
+    assert_eq!(store.send(&cid, send).unwrap().id, batch.id);
+    let resumed = Store::new(dir.path(), "session-one").unwrap();
+    crate::store::FAIL_STATE_COMMIT.with(|fail| fail.set(true));
+    assert!(
+        resumed
+            .acknowledge_recorded(std::slice::from_ref(&batch.id))
+            .is_err()
+    );
+    assert_eq!(
+        resumed.snapshot(&cid, None).unwrap().threads[0].messages[0].delivery,
+        Delivery::Queued
+    );
+    resumed
+        .acknowledge_recorded(&[batch.id.clone(), later_batch.id])
+        .unwrap();
+    let snapshot = resumed.snapshot(&cid, None).unwrap();
+    let current = &snapshot.threads[0];
+    assert_eq!(current.messages[0].delivery, Delivery::Answered);
+    assert_eq!(current.messages[1].delivery, Delivery::Recorded);
+    assert_eq!(current.messages[3].delivery, Delivery::Recorded);
+    let version = current.version;
+    resumed.acknowledge_recorded(&[batch.id]).unwrap();
+    assert_eq!(
+        resumed.snapshot(&cid, None).unwrap().threads[0].version,
+        version
+    );
+    let after_ack = resumed
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "answer-after-ack".into(),
+                expected_version: version,
+                body: "Follow-up answer".into(),
+                mark_addressed: false,
+                revision: Some(1),
+            },
+            Author::Agent,
+        )
+        .unwrap();
+    assert_eq!(after_ack.messages[1].delivery, Delivery::Answered);
+    assert_eq!(after_ack.messages[3].delivery, Delivery::Answered);
+}
+
+#[test]
+fn mixed_historical_submissions_keep_each_messages_reviewed_revision() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("p1")).unwrap().curio.id;
+    let mut update = publication("p2");
+    update.curio_id = Some(cid.clone());
+    update.expected_revision = Some(1);
+    update.html = "<p id='replacement'>Replacement</p>".into();
+    store.publish(update).unwrap();
+    let thread = store.comment(&cid, comment("historical")).unwrap();
+    let replied = store
+        .reply(
+            &cid,
+            &thread.id,
+            Reply {
+                request_id: "current-reply".into(),
+                expected_version: thread.version,
+                body: "Looking at revision two".into(),
+                mark_addressed: false,
+                revision: Some(2),
+            },
+            Author::Human,
+        )
+        .unwrap();
+    let resumed = Store::new(dir.path(), "session-one").unwrap();
+    let batch = resumed
+        .send(
+            &cid,
+            Send {
+                request_id: "send".into(),
+                message_ids: replied.messages.iter().map(|m| m.id.clone()).collect(),
+            },
+        )
+        .unwrap();
+    assert_eq!(batch.revision, 2);
+    assert_eq!(batch.messages[0].reviewed_revision, Some(1));
+    assert_eq!(batch.messages[1].reviewed_revision, Some(2));
+    assert_eq!(
+        batch.messages[0].target.element_id.as_deref(),
+        Some("heading")
+    );
+    let original = resumed
+        .snapshot(&cid, batch.messages[0].reviewed_revision)
+        .unwrap();
+    assert_eq!(original.revision.number, 1);
+    assert_eq!(original.threads[0].attachment, "attached");
+    assert_eq!(
+        resumed.snapshot(&cid, None).unwrap().threads[0].attachment,
+        "detached"
+    );
+    let mut legacy = serde_json::to_value(&batch.messages[0]).unwrap();
+    legacy.as_object_mut().unwrap().remove("reviewed_revision");
+    let legacy: SubmittedMessage = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.reviewed_revision, None);
+    assert_eq!(
+        Store::new(dir.path(), "session-one")
+            .unwrap()
+            .batches(true)
+            .unwrap()[0]
+            .messages[0]
+            .reviewed_revision,
+        Some(1)
+    );
+}
+
+#[test]
 fn static_boundary_and_anchor_validation() {
     for html in [
         "<script>alert(1)</script>",

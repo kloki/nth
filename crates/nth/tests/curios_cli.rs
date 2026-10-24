@@ -179,6 +179,168 @@ fn long_thread_mutations_return_bounded_retry_safe_receipts() {
     assert_eq!(run(&update_args), update);
 }
 
+#[test]
+fn immutable_large_batch_is_recoverable_by_message_pages() {
+    let repo = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let store = core::Store::new(repo.path(), "batch-owner").unwrap();
+    let published = store
+        .publish(Publish {
+            request_id: "publish".into(),
+            curio_id: None,
+            expected_revision: None,
+            title: None,
+            html: "<p id=title>Original</p>".into(),
+        })
+        .unwrap();
+    let id = &published.curio.id;
+    let mut mids = Vec::new();
+    for n in 0..20 {
+        if n == 10 {
+            store
+                .publish(Publish {
+                    request_id: "publication-2".into(),
+                    curio_id: Some(id.clone()),
+                    expected_revision: Some(1),
+                    title: None,
+                    html: "<p id=title>Updated</p>".into(),
+                })
+                .unwrap();
+        }
+        let t = store
+            .comment(
+                id,
+                Comment {
+                    request_id: format!("comment-{n}"),
+                    revision: if n < 10 { 1 } else { 2 },
+                    target: Target {
+                        element_id: Some("title".into()),
+                        kind: TargetKind::Element,
+                        rect: None,
+                        label: format!("Context {n}"),
+                        quote: "Original quote".into(),
+                    },
+                    body: format!("{n:04}{}TAIL_REQUIRED_ACTION", "é".repeat(7988)),
+                },
+            )
+            .unwrap();
+        mids.push(t.messages[0].id.clone());
+    }
+    let batch = store
+        .send(
+            id,
+            core::Send {
+                request_id: "send".into(),
+                message_ids: mids,
+            },
+        )
+        .unwrap();
+    let path = store.path().join("state.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    state["batches"][0]["messages"][19]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewed_revision");
+    std::fs::write(path, state.to_string()).unwrap();
+    let batch = store
+        .batches(false)
+        .unwrap()
+        .into_iter()
+        .find(|b| b.id == batch.id)
+        .unwrap();
+    let expected = serde_json::to_value(&batch.messages).unwrap();
+    assert_eq!(expected[0]["reviewed_revision"], 1);
+    assert_eq!(expected[10]["reviewed_revision"], 2);
+    assert!(expected[19].get("reviewed_revision").unwrap().is_null());
+    assert!(expected.to_string().len() > 256 * 1024);
+    // Later state changes must not replace the submitted target, version or body.
+    let t = &batch.messages[0];
+    store
+        .reply(
+            id,
+            &t.thread_id,
+            Reply {
+                request_id: "later".into(),
+                expected_version: t.thread_version,
+                body: "Later reply".into(),
+                revision: None,
+                mark_addressed: false,
+            },
+            Author::Human,
+        )
+        .unwrap();
+    let summaries = json(
+        repo.path(),
+        data.path(),
+        &["curio", "read", id, "--view", "batches"],
+    );
+    assert_eq!(summaries["items"][0]["message_count"], 20);
+    assert_eq!(summaries["items"][0]["revision"], 2);
+    assert_eq!(
+        summaries["items"][0]["reviewed_revisions"],
+        serde_json::json!([null, 1, 2])
+    );
+    assert!(summaries["items"][0].get("messages").is_none());
+    let mut offset = 0;
+    let mut recovered = Vec::new();
+    loop {
+        let output = command(repo.path(), data.path())
+            .args([
+                "curio",
+                "read",
+                id,
+                "--view",
+                "messages",
+                "--batch",
+                &batch.id,
+                "--offset",
+                &offset.to_string(),
+                "--limit",
+                "100",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.len() <= 256 * 1024);
+        let page: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(page["batch"]["revision"], 2);
+        assert_eq!(
+            page["batch"]["reviewed_revisions"],
+            serde_json::json!([null, 1, 2])
+        );
+        let items = page["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        recovered.extend(items.iter().cloned());
+        if page["next_offset"].is_null() {
+            break;
+        }
+        let next = page["next_offset"].as_u64().unwrap();
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(Value::Array(recovered), expected);
+    let help = command(repo.path(), data.path())
+        .args(["curio", "read", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("--batch"));
+    assert!(help.contains("submitted context/versions"));
+}
+
 #[tokio::test]
 async fn isolated_binary_publish_read_and_missing_repository() {
     let dir = tempfile::tempdir().unwrap();

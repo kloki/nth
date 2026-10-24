@@ -53,7 +53,7 @@ enum Command {
         #[arg(long)]
         request_id: String,
     },
-    /// Read metadata or a bounded page; messages require --thread
+    /// Read a bounded page; batches lists summaries, messages requires --thread or --batch
     Read {
         id: String,
         #[arg(long)]
@@ -62,8 +62,14 @@ enum Command {
         view: View,
         #[arg(long)]
         thread: Option<String>,
+        /// Immutable batch ID; page complete submitted context/versions with --view messages.
+        /// reviewed_revision is null for unknown legacy context; batch revision is send-time only.
+        #[arg(long, conflicts_with = "thread")]
+        batch: Option<String>,
+        /// Item offset; continue with the result's next_offset until null
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        /// Maximum items; pages shrink to fit the output byte budget without clipping messages
         #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=100))]
         limit: u16,
     },
@@ -183,13 +189,22 @@ fn human(out: &mut impl Write, value: &Value, indent: &str) -> io::Result<()> {
 
 fn page(items: Vec<Value>, offset: usize, limit: u16) -> Value {
     let total = items.len();
+    let mut bytes = 0;
     let items: Vec<_> = items
         .into_iter()
         .skip(offset)
         .take(limit as usize)
+        .take_while(|item| {
+            bytes += item.to_string().len() + 1;
+            bytes <= 240 * 1024
+        })
         .collect();
     let next = offset.saturating_add(items.len());
     json!({"items": items, "total": total, "next_offset": (next < total).then_some(next)})
+}
+
+fn reviewed_revisions(batch: &core::Batch) -> std::collections::BTreeSet<Option<u64>> {
+    batch.messages.iter().map(|m| m.reviewed_revision).collect()
 }
 
 /// Preserve thread receipt fields without echoing private content or history.
@@ -289,9 +304,13 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
             revision,
             view,
             thread,
+            batch,
             offset,
             limit,
         } => {
+            if batch.is_some() && !matches!(view, View::Messages) {
+                bail!("--batch requires --view messages");
+            }
             let store = owner(root, prefix, Some(&id)).await?;
             let snapshot = store.snapshot(&id, revision)?;
             match view {
@@ -303,12 +322,20 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
                     "status":t.status,"attachment":t.attachment,"created_revision":t.created_revision,
                     "message_count":t.messages.len()})).collect(), offset, limit),
                 View::Messages => {
-                    let tid = thread.context("--view messages requires --thread")?;
-                    let t = snapshot.threads.into_iter().find(|t| t.id == tid).context("thread not found")?;
-                    page(t.messages.into_iter().map(serde_json::to_value).collect::<std::result::Result<_,_>>()?, offset, limit)
+                    if let Some(bid) = batch {
+                        let b = store.batches(false)?.into_iter().find(|b| b.id == bid && b.curio_id == id).context("batch not found")?;
+                        let revisions = reviewed_revisions(&b);
+                        let mut result = page(b.messages.into_iter().map(serde_json::to_value).collect::<std::result::Result<_,_>>()?, offset, limit);
+                        result["batch"] = json!({"id":b.id,"session_id":b.session_id,"curio_id":b.curio_id,"revision":b.revision,"recorded":b.recorded,"reviewed_revisions":revisions});
+                        result
+                    } else {
+                        let tid = thread.context("--view messages requires --thread or --batch")?;
+                        let t = snapshot.threads.into_iter().find(|t| t.id == tid).context("thread not found")?;
+                        page(t.messages.into_iter().map(serde_json::to_value).collect::<std::result::Result<_,_>>()?, offset, limit)
+                    }
                 }
                 View::Revisions => page(snapshot.revisions.into_iter().map(serde_json::to_value).collect::<std::result::Result<_,_>>()?, offset, limit),
-                View::Batches => page(store.batches(false)?.into_iter().filter(|b| b.curio_id == id).map(serde_json::to_value).collect::<std::result::Result<_,_>>()?, offset, limit),
+                View::Batches => page(store.batches(false)?.into_iter().filter(|b| b.curio_id == id).map(|b| json!({"id":b.id,"session_id":b.session_id,"curio_id":b.curio_id,"revision":b.revision,"recorded":b.recorded,"message_count":b.messages.len(),"reviewed_revisions":reviewed_revisions(&b)})).collect(), offset, limit),
             }
         }
         Command::Comment {
@@ -393,6 +420,7 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
                 "recorded": batch.recorded,
                 "messages": batch.messages.iter().map(|m| json!({
                     "thread_id": m.thread_id, "thread_version": m.thread_version,
+                    "reviewed_revision": m.reviewed_revision,
                     "message": {"id": m.message.id, "delivery": m.message.delivery}
                 })).collect::<Vec<_>>()})
         }
@@ -677,5 +705,17 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("title: Review"));
         assert!(output.contains("revision: 2"));
+        let mut output = Vec::new();
+        human(&mut output, &json!({"batch":{"id":"batch-1","revision":1},"items":[{"thread_version":2,"message":{"body":"Complete body"},"target":{"quote":"Submitted quote"}}],"next_offset":1}), "").unwrap();
+        let output = String::from_utf8(output).unwrap();
+        for field in [
+            "id: batch-1",
+            "thread_version: 2",
+            "body: Complete body",
+            "quote: Submitted quote",
+            "next_offset: 1",
+        ] {
+            assert!(output.contains(field), "{output}");
+        }
     }
 }

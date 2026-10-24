@@ -1,9 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -34,6 +34,10 @@ struct State {
     requests: BTreeMap<String, Receipt>,
     #[serde(default)]
     batches: Vec<Batch>,
+    #[serde(default)]
+    answered_message_ids: BTreeSet<String>,
+    #[serde(default)]
+    reviewed_revisions: BTreeMap<String, u64>,
 }
 fn schema() -> u32 {
     1
@@ -112,7 +116,33 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn verify_nested_ignores(path: &Path, root: bool) -> Result<()> {
+fn verify_ignored(repo: &Path, path: &Path) -> Result<()> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "--verbose", "-z", "--no-index", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin.write_all(path.as_os_str().as_encoded_bytes())?;
+        stdin.write_all(&[0])?;
+    }
+    let output = child.wait_with_output()?;
+    // check-ignore can report a matching negation with a successful status.
+    let pattern = output.stdout.split(|b| *b == 0).nth(2);
+    if !output.status.success()
+        || pattern.is_none_or(|pattern| pattern.is_empty() || pattern.starts_with(b"!"))
+    {
+        return Err(Error::Conflict(
+            "Existing ignore rules expose Curios content".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_nested_ignores(repo: &Path, path: &Path, root: bool) -> Result<()> {
     for item in fs::read_dir(path)? {
         let item = item?;
         let kind = item.file_type()?;
@@ -120,12 +150,13 @@ fn verify_nested_ignores(path: &Path, root: bool) -> Result<()> {
             return Err(Error::Conflict("Symlink inside Curios storage".into()));
         }
         if kind.is_dir() {
-            verify_nested_ignores(&item.path(), false)?;
+            verify_nested_ignores(repo, &item.path(), false)?;
         } else if !root && item.file_name() == ".gitignore" {
             return Err(Error::Conflict(
                 "Nested ignore rules inside Curios storage require removal".into(),
             ));
         }
+        verify_ignored(repo, &item.path())?;
     }
     Ok(())
 }
@@ -146,29 +177,25 @@ impl Store {
         let base = root.join(".nth/curios");
         no_symlinks(&base)?;
         fs::create_dir_all(&base)?;
-        verify_nested_ignores(&base, true)?;
         let ignore = base.join(".gitignore");
         if !ignore.exists() {
             atomic(&ignore, b"*\n")?;
         }
-        // Verify the generated tree really is ignored, including existing user rules.
+        verify_nested_ignores(&root, &base, true)?;
+        // Require the actual owner directory to be ignored too, protecting future
+        // curio/revisions directories and arbitrary source filenames.
+        let owner = base.join(session_id);
+        no_symlinks(&owner)?;
+        no_symlinks(&owner.join("source"))?;
+        fs::create_dir_all(owner.join("source"))?;
         for probe in [
-            ".gitignore",
-            "probe/source/document.html",
-            "probe/state.json",
-            "probe/lock",
+            owner.clone(),
+            owner.join("source"),
+            owner.join("state.json"),
+            owner.join("lock"),
+            owner.join("delivery.lock"),
         ] {
-            let status = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(["check-ignore", "--quiet", "--no-index"])
-                .arg(base.join(probe))
-                .status()?;
-            if !status.success() {
-                return Err(Error::Conflict(
-                    "Existing ignore rules expose Curios content".into(),
-                ));
-            }
+            verify_ignored(&root, &probe)?;
         }
         let store = Self {
             root,
@@ -545,6 +572,9 @@ impl Store {
                     delivery: Delivery::Saved,
                 }],
             };
+            state
+                .reviewed_revisions
+                .insert(thread.messages[0].id.clone(), comment.revision);
             entry.threads.push(thread.clone());
             Ok(thread)
         })
@@ -581,8 +611,13 @@ impl Store {
                 }
                 if author == Author::Agent {
                     for m in &mut thread.messages {
-                        if m.author == Author::Human && m.delivery == Delivery::Recorded {
-                            m.delivery = Delivery::Answered;
+                        if m.author == Author::Human
+                            && matches!(m.delivery, Delivery::Queued | Delivery::Recorded)
+                        {
+                            state.answered_message_ids.insert(m.id.clone());
+                            if m.delivery == Delivery::Recorded {
+                                m.delivery = Delivery::Answered;
+                            }
                         }
                     }
                     if reply.mark_addressed && thread.status != Status::Resolved {
@@ -600,6 +635,12 @@ impl Store {
                         Delivery::Answered
                     },
                 });
+                if author == Author::Human {
+                    state.reviewed_revisions.insert(
+                        thread.messages.last().expect("new reply").id.clone(),
+                        reply.revision.unwrap_or(entry.curio.current_revision),
+                    );
+                }
                 thread.version += 1;
                 Ok(thread.clone())
             },
@@ -661,6 +702,7 @@ impl Store {
                             thread_version: thread.version + 1,
                             message: message.clone(),
                             target: thread.target.clone(),
+                            reviewed_revision: state.reviewed_revisions.get(&message.id).copied(),
                         });
                     }
                 }
@@ -706,7 +748,12 @@ impl Store {
                             if batch.messages.iter().any(|m| m.message.id == message.id)
                                 && message.delivery == Delivery::Queued
                             {
-                                message.delivery = Delivery::Recorded;
+                                message.delivery =
+                                    if state.answered_message_ids.contains(&message.id) {
+                                        Delivery::Answered
+                                    } else {
+                                        Delivery::Recorded
+                                    };
                                 changed = true;
                             }
                         }
