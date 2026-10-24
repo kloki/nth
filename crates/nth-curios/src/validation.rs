@@ -16,7 +16,6 @@ fn invalid(message: &str) -> Error {
 fn css(value: &str) -> Result<()> {
     let lower = value.to_ascii_lowercase();
     if lower.contains('\\')
-        || lower.contains("url")
         || lower.contains("@import")
         || lower.contains("@font-face")
         || lower.contains("expression")
@@ -28,7 +27,28 @@ fn css(value: &str) -> Result<()> {
             "CSS resources, escapes and executable forms are unsupported",
         ));
     }
+    // With escapes and comments refused, `url(` is the only spelling of the
+    // function, and each one may only name an element of the document.
+    let mut rest = value;
+    while let Some(at) = rest.to_ascii_lowercase().find("url(") {
+        let after = &rest[at + "url(".len()..];
+        let end = after.find(')').unwrap_or(after.len());
+        if !after[..end].strip_prefix('#').is_some_and(local_id) {
+            return Err(invalid(
+                "CSS resources, escapes and executable forms are unsupported",
+            ));
+        }
+        rest = &after[end..];
+    }
     Ok(())
+}
+
+/// An id a local `url(#id)` reference may name.
+fn local_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
 }
 
 fn raster(header: &str, data: &str) -> Result<()> {
@@ -81,12 +101,7 @@ fn presentation_resource(value: &str) -> Result<()> {
         let local = value
             .strip_prefix("url(#")
             .and_then(|v| v.strip_suffix(')'));
-        if !local.is_some_and(|id| {
-            !id.is_empty()
-                && id
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
-        }) {
+        if !local.is_some_and(local_id) {
             return Err(invalid(
                 "Only a single local SVG resource reference is allowed",
             ));
@@ -195,7 +210,7 @@ pub fn validate(html: &str) -> Result<Vec<Anchor>> {
                     | "background-image"
                     | "border-image-source"
                     | "list-style-image"
-            ) || (key != "src" && key != "style" && value.to_ascii_lowercase().contains("url"))
+            ) || (key != "src" && key != "style" && value.to_ascii_lowercase().contains("url("))
             {
                 presentation_resource(value)?;
             }

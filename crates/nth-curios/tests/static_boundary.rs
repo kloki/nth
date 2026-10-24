@@ -64,3 +64,25 @@ fn static_limits_duplicate_ids_and_safe_local_svg() {
     let anchors = validate("<style>@media(max-width:600px){p{color:red}}</style><svg><defs><linearGradient id='g'/></defs><rect id='box' fill='url(#g)'/></svg><p id='text'>A &amp; B</p>").unwrap();
     assert!(anchors.iter().any(|a| a.id == "text" && a.label == "A & B"));
 }
+
+#[test]
+fn the_word_url_is_text_and_local_css_references_are_allowed() {
+    for html in [
+        "<img alt='URL routing diagram'>",
+        "<span title='Paste the URL'>x</span>",
+        "<p class='curly'>x</p>",
+        "<style>.surly{color:red}</style>",
+        "<style>circle{fill:url(#g)}</style><svg><circle id='c' r='1'/></svg>",
+        "<p style='mask:URL(#m)'>x</p>",
+    ] {
+        assert!(validate(html).is_ok(), "rejected {html}");
+    }
+    for html in [
+        "<style>a{background:url(http://evil.invalid/x)}</style>",
+        "<style>a{background:url(#a), URL(x)}</style>",
+        "<p style='fill:url(#a) url(x)'>x</p>",
+        "<style>a{background:url('#a')}</style>",
+    ] {
+        assert!(validate(html).is_err(), "accepted {html}");
+    }
+}
