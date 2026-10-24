@@ -30,6 +30,26 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
 use crate::{Session, Store};
 
 #[tokio::test]
+async fn curios_is_made_only_when_plan_mode_or_its_tools_need_it() {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut session = Session::new("fake", repo.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Act;
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(!repo.path().join(".nth/curios").exists());
+    session.mode = nth_protocol::Mode::Plan;
+    crate::session::tests::send(&mut session, "plan it").await;
+    assert!(session.curio_source_dir().unwrap().is_dir());
+}
+
+#[tokio::test]
 async fn receipts_follow_saved_history_and_resume_reconciles() {
     let repo = tempfile::tempdir().unwrap();
     assert!(

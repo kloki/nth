@@ -474,7 +474,11 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
+        // Plan mode names the source folder the model may write review
+        // documents in, so it is made ready; otherwise Curios waits for its
+        // tools.
         if !self.subagent
+            && self.tools_mode() == Mode::Plan
             && let Ok(store) = self.curios().store()
         {
             self.curio_root = Some(store.repo_root().to_path_buf());

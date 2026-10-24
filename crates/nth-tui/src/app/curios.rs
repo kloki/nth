@@ -153,8 +153,14 @@ impl App {
         if self.curios.items.is_empty() {
             self.areas.curio = None;
         }
+        // Feedback exists only once this session published, so its folder
+        // is waited for rather than made.
         if !self.curios.tried_delivery
             && let Some(session) = &mut self.session
+            && root
+                .join(".nth/curios")
+                .join(session.id.to_string())
+                .is_dir()
         {
             self.curios.tried_delivery = true;
             if session.prepare_curios().is_ok() {
@@ -265,8 +271,9 @@ impl App {
                     .first()
                     .map(|c| (c.session_id.clone(), c.id.clone()))
             });
-        if let Some((s, c)) = chosen {
-            self.open_curio(s, c, None);
+        match chosen {
+            Some((s, c)) => self.open_curio(s, c, None),
+            None => self.hint = Some("no Curio to open".into()),
         }
     }
 
@@ -365,6 +372,24 @@ mod tests {
         *,
     };
     use crate::app::tests::{Reply, Scripted, rows_of};
+
+    #[test]
+    fn polling_makes_no_curios_folder_for_a_session_that_never_published() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let session = Session::new("glm", dir.path().to_path_buf());
+        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        app.poll_curios();
+        app.poll_curios();
+        assert!(!dir.path().join(".nth/curios").exists());
+    }
 
     fn fixture() -> (tempfile::TempDir, App, core::Store, Curio) {
         let dir = tempfile::tempdir().unwrap();
@@ -585,6 +610,16 @@ mod tests {
         let pr = app.areas.pr_link.unwrap();
         let curio = app.areas.curio.unwrap();
         assert!(!pr.intersects(curio));
+        // The space before the icon counts, so a near miss still opens it.
+        assert_eq!(curio.width, 2);
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: curio.x,
+            row: curio.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.curios.opening.is_running());
+        app.curios.invalidate();
         app.opener = |url| {
             assert_eq!(url, "https://example.test/pull/123");
             Ok(())

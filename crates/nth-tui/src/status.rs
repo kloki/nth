@@ -91,13 +91,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
             summary.clear();
         }
     }
+    // The icon alone is one column at the edge, hard to hit: its target
+    // takes the space before it too.
     let curio = if app.has_curios() {
-        if !summary.is_empty() {
+        let at = summary.iter().map(Span::width).sum::<usize>();
+        let wide = if summary.is_empty() {
+            1
+        } else {
             summary.push(Span::raw(" "));
-        }
-        let at = summary.iter().map(Span::width).sum();
+            2
+        };
         summary.push(Span::styled(icons().curio, Style::new().fg(Color::Cyan)));
-        Some(at)
+        Some((at, wide))
     } else {
         None
     };
@@ -117,7 +122,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     split_line(frame, checks, left, servers(app));
     HitAreas {
         pr: link_area,
-        curio: curio.and_then(|at| link_rect(right, width, at, 1)),
+        curio: curio.and_then(|(at, wide)| link_rect(right, width, at, wide)),
     }
 }
 
