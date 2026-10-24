@@ -54,6 +54,7 @@ impl Turn<'_> {
     /// ends: the notices first, so the transcript reads them back, then the
     /// prompts, as a turn's own prompt follows its notices.
     pub(super) async fn hand_over(&mut self) {
+        self.hand_over_curios().await;
         let loaded = self
             .ctx
             .instructions
@@ -73,6 +74,23 @@ impl Turn<'_> {
         if !sent.is_empty() {
             self.messages.push(Message::User(sent));
             emit(self.events, Event::Notice(shown)).await;
+        }
+    }
+
+    pub(super) async fn hand_over_curios(&mut self) {
+        if self.cancel.is_cancelled() {
+            return;
+        }
+        let mut curio_notices = Vec::new();
+        for notice in self.ctx.inbox.take_curios(&self.ctx.session) {
+            if self.ctx.curios.record(&notice) {
+                curio_notices.push(notice.render());
+            }
+        }
+        if !curio_notices.is_empty() {
+            let text = curio_notices.join("\n");
+            self.messages.push(Message::User(text.clone()));
+            emit(self.events, Event::Notice(text)).await;
         }
     }
 }

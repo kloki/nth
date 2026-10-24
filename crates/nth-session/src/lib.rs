@@ -1,5 +1,7 @@
 mod agent_loop;
 mod compaction;
+#[cfg(test)]
+mod curios_tests;
 mod memory;
 pub mod plan;
 mod primary;

@@ -35,6 +35,12 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
+    /// Original repository owning generated review state; absent until used.
+    #[serde(default)]
+    pub curio_root: Option<PathBuf>,
+    /// Receipts persisted alongside the history which contains their notices.
+    #[serde(default)]
+    pub curio_receipts: BTreeSet<String>,
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
     pub cwd: PathBuf,
@@ -148,6 +154,94 @@ pub struct Session {
 }
 
 impl Session {
+    /// Trusted handle for tools or an active front-end delivery owner.
+    pub fn curios(&self) -> nth_protocol::Curios {
+        if self.subagent {
+            return nth_protocol::Curios::default();
+        }
+        nth_protocol::Curios::new(
+            self.origin.as_ref().unwrap_or(&self.cwd).clone(),
+            self.id.to_string(),
+            self.curio_root.clone(),
+            self.curio_receipts.clone(),
+        )
+    }
+
+    pub fn curio_source_dir(&self) -> Option<PathBuf> {
+        self.curio_root.as_ref().map(|r| {
+            r.join(".nth/curios")
+                .join(self.id.to_string())
+                .join("source")
+        })
+    }
+
+    /// Explicit preparation stores ownership for save/resume.
+    pub fn prepare_curios(&mut self) -> nth_curios::Result<nth_curios::Store> {
+        let store = self.curios().store()?;
+        self.curio_root = Some(store.repo_root().to_path_buf());
+        Ok(store)
+    }
+
+    /// Idle wakeup entry point. Never routes submitted text through prompt,
+    /// skill or agent-mention parsing. Caller owns the delivery lease and save.
+    pub async fn deliver_curios(
+        &mut self,
+        provider: &dyn Provider,
+        tools: &[Box<dyn Tool>],
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        if let Ok(store) = self.curios().store() {
+            self.curio_root = Some(store.repo_root().to_path_buf());
+        }
+        let mut held = self.held(front_end);
+        let mut added = false;
+        for notice in front_end.inbox.take_curios(&self.id.to_string()) {
+            if held.ctx.curios.record(&notice) {
+                let text = notice.render();
+                self.messages.push(Message::User(text.clone()));
+                emit(events, Event::Notice(text)).await;
+                added = true;
+            }
+        }
+        if !added {
+            return Ok(());
+        }
+        let result = self
+            .turn(&mut held, provider, tools, events, cancel)
+            .run()
+            .await;
+        self.curio_root = held.ctx.curios.root().or(self.curio_root.take());
+        self.curio_receipts.extend(held.ctx.curios.recorded());
+        self.loaded_instructions = held
+            .ctx
+            .instructions
+            .lock()
+            .expect("loaded instructions lock poisoned")
+            .clone();
+        if let Some(cwd) = held.ctx.workdir.moved_to() {
+            self.set_cwd(cwd, held.ctx.workdir.origin());
+        }
+        self.usage.record(held.spend);
+        self.updated_at = SystemTime::now();
+        result
+    }
+
+    pub(crate) fn acknowledge_curios(&self) -> nth_curios::Result<()> {
+        if self.curio_receipts.is_empty() {
+            return Ok(());
+        }
+        let Some(root) = &self.curio_root else {
+            return Ok(());
+        };
+        nth_curios::Store::new(root, &self.id.to_string())?
+            .acknowledge_recorded(&self.curio_receipts.iter().cloned().collect::<Vec<_>>())
+    }
+
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let context = Arc::<Context>::default();
@@ -163,6 +257,8 @@ impl Session {
         let now = SystemTime::now();
         Self {
             id,
+            curio_root: None,
+            curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
             extra_dirs: Vec::new(),
@@ -371,6 +467,11 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
+        if !self.subagent
+            && let Ok(store) = self.curios().store()
+        {
+            self.curio_root = Some(store.repo_root().to_path_buf());
+        }
         // `@explore …` tells the model to delegate to that agent; a subagent
         // has no task tool to do so with.
         if !self.subagent
@@ -416,6 +517,13 @@ impl Session {
             text = format!("{text}\n\n{reminder}");
         }
         // An instruction file edited since the last turn, in front of the
+        // Only the current owner's source workspace is additionally writable.
+        if self.tools_mode() == Mode::Plan
+            && let Some(source) = self.curio_source_dir()
+        {
+            text.push_str(&format!("\n\n<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>", source.display()));
+        }
+        // An instruction file edited since the last turn, in front of the
         // prompt as the front-end's notices are.
         let changes = self.watch.changes(self.loaded()).await;
         if let Some(changed) = instructions_notice(&changes) {
@@ -445,6 +553,8 @@ impl Session {
             .run()
             .await;
         let Held { ctx, spend, .. } = held;
+        self.curio_root = ctx.curios.root().or(self.curio_root.take());
+        self.curio_receipts.extend(ctx.curios.recorded());
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
@@ -506,7 +616,13 @@ impl Session {
 
     /// What the model's tools and the front-end reach this session through.
     fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
+        let mut writable = plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir());
+        if let nth_protocol::Writable::Plan { source, .. } = &mut writable {
+            *source = self.curio_source_dir();
+        }
         ToolContext {
+            curios: self.curios(),
+            is_subagent: self.subagent,
             extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(self.loaded())),
             watch: self.watch.clone(),
@@ -515,7 +631,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir()),
+            writable,
             agent: self.primary().cloned(),
             llm: Llm {
                 model: self.model.clone(),

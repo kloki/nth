@@ -21,13 +21,18 @@ pub enum Writable {
     Plan {
         file: PathBuf,
         memory: Option<PathBuf>,
+        source: Option<PathBuf>,
     },
 }
 
 impl Writable {
     /// Plan mode with no memory folder.
     pub fn plan(file: PathBuf) -> Self {
-        Writable::Plan { file, memory: None }
+        Writable::Plan {
+            file,
+            memory: None,
+            source: None,
+        }
     }
 
     /// Whether this is plan mode, which some tools refuse in.
@@ -38,10 +43,30 @@ impl Writable {
     /// `Err` with a message for the model when `path`, absolute as the
     /// tools resolve it, may not be written.
     pub fn check(&self, path: &Path) -> Result<(), String> {
-        let Writable::Plan { file, memory } = self else {
+        let Writable::Plan {
+            file,
+            memory,
+            source,
+        } = self
+        else {
             return Ok(());
         };
+        let source_safe = path
+            .ancestors()
+            .all(|p| match std::fs::symlink_metadata(p) {
+                Ok(meta) => !meta.file_type().is_symlink(),
+                Err(err) => err.kind() == std::io::ErrorKind::NotFound,
+            });
+        if source.as_ref().is_some_and(|s| path.starts_with(s)) && !source_safe {
+            return Err("Curios source paths may not traverse symlinks".into());
+        }
         let path = normalize(path);
+        if let Some(source) = source
+            && path.starts_with(normalize(source))
+            && source_safe
+        {
+            return Ok(());
+        }
         if path == normalize(file) {
             return Ok(());
         }
@@ -109,6 +134,7 @@ mod tests {
         let plan = Writable::Plan {
             file: "/repo/.nth/plans/1.md".into(),
             memory: Some("/repo/.nth/memory".into()),
+            source: None,
         };
 
         assert_eq!(plan.check(Path::new("/repo/.nth/memory/MEMORY.md")), Ok(()));
@@ -120,5 +146,24 @@ mod tests {
         assert!(plan.check(Path::new("/repo/.nth/memory-x/a.md")).is_err());
         assert!(plan.planning());
         assert!(!Writable::Any.planning());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_scope_rejects_other_sessions_traversal_and_symlinks() {
+        let root = std::env::temp_dir().join(format!("nth-writable-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("source")).unwrap();
+        std::os::unix::fs::symlink(std::env::temp_dir(), root.join("source/escape")).unwrap();
+        let plan = Writable::Plan {
+            file: root.join("plan.md"),
+            memory: None,
+            source: Some(root.join("source")),
+        };
+        assert!(plan.check(&root.join("source/new/a.html")).is_ok());
+        assert!(plan.check(&root.join("other/source/a.html")).is_err());
+        assert!(plan.check(&root.join("source/../state.json")).is_err());
+        assert!(plan.check(&root.join("source/escape/a.html")).is_err());
+        assert!(plan.check(&root.join("source/escape/../a.html")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

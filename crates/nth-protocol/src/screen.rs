@@ -30,6 +30,12 @@ impl Panel {
 /// or a file in a tab of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Show {
+    /// Opaque identity only: the front-end opens its host lazily.
+    Curio {
+        session_id: String,
+        curio_id: String,
+        revision: Option<u64>,
+    },
     Panel(Panel),
     /// An absolute path to a file that exists.
     File(PathBuf),
@@ -42,6 +48,19 @@ pub enum Show {
 pub struct Screen(Option<mpsc::Sender<Show>>);
 
 impl Screen {
+    pub async fn show_curio(
+        &self,
+        session_id: String,
+        curio_id: String,
+        revision: Option<u64>,
+    ) -> bool {
+        self.send(Show::Curio {
+            session_id,
+            curio_id,
+            revision,
+        })
+        .await
+    }
     pub fn new(front_end: mpsc::Sender<Show>) -> Self {
         Self(Some(front_end))
     }

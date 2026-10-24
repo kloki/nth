@@ -20,6 +20,8 @@ use crate::{Ledger, Session, compaction};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Curios receipt reconciliation failed: {0}")]
+    Curios(#[from] nth_curios::Error),
     #[error("neither XDG_DATA_HOME nor HOME is set, so nth has nowhere to save")]
     NoDataDir,
     #[error("{}: {source}", path.display())]
@@ -118,7 +120,21 @@ impl Store {
         let path = self.path(session.id);
         let tmp = path.with_extension("json.tmp");
         tokio::fs::write(&tmp, json).await.map_err(io_at(&tmp))?;
-        tokio::fs::rename(&tmp, &path).await.map_err(io_at(&path))
+        tokio::fs::File::open(&tmp)
+            .await
+            .map_err(io_at(&tmp))?
+            .sync_all()
+            .await
+            .map_err(io_at(&tmp))?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_at(&path))?;
+        tokio::fs::File::open(&self.dir)
+            .await
+            .map_err(io_at(&self.dir))?
+            .sync_all()
+            .await
+            .map_err(io_at(&self.dir))?;
+        session.acknowledge_curios()?;
+        Ok(())
     }
 
     /// Every saved session, the most recently used first. Files that don't
@@ -142,6 +158,7 @@ impl Store {
         let mut session: Session =
             serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })?;
         load_images(&mut session.messages, &self.images()).await;
+        session.acknowledge_curios()?;
         Ok(session)
     }
 

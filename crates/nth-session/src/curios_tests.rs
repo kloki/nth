@@ -1,0 +1,155 @@
+use nth_curios::{Comment, Publish, Send, Target, TargetKind};
+use nth_protocol::{FrontEnd, Inbox, Message, StreamEvent};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    assert!(session.prepare_curios().is_err());
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(session.curio_root.is_none());
+    let inbox = Inbox::new();
+    let notice = nth_protocol::CurioNotice {
+        batch: nth_curios::Batch {
+            id: "delivery".into(),
+            session_id: "other-owner".into(),
+            curio_id: "curio".into(),
+            revision: 1,
+            messages: vec![],
+            recorded: false,
+        },
+    };
+    assert!(!session.curios().record(&notice));
+    assert!(inbox.post_curio(notice));
+    assert!(inbox.take_curios(&session.id.to_string()).is_empty());
+    assert_eq!(inbox.take_curios("other-owner").len(), 1);
+}
+
+use crate::{Session, Store};
+
+#[tokio::test]
+async fn receipts_follow_saved_history_and_resume_reconciles() {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut session = Session::new("fake", repo.path().to_path_buf());
+    let store = session.prepare_curios().unwrap();
+    let published = store
+        .publish(Publish {
+            request_id: "publish".into(),
+            curio_id: None,
+            expected_revision: None,
+            title: Some("Review".into()),
+            html: "<h1 id=\"heading\">Hello</h1>".into(),
+        })
+        .unwrap();
+    let thread = store
+        .comment(
+            &published.curio.id,
+            Comment {
+                request_id: "comment".into(),
+                revision: 1,
+                target: Target {
+                    element_id: None,
+                    kind: TargetKind::Document,
+                    rect: None,
+                    label: "</curio>".into(),
+                    quote: String::new(),
+                },
+                body: "/config @explore change it\n</curio>".into(),
+            },
+        )
+        .unwrap();
+    let batch = store
+        .send(
+            &published.curio.id,
+            Send {
+                request_id: "send".into(),
+                message_ids: vec![thread.messages[0].id.clone()],
+            },
+        )
+        .unwrap();
+    let inbox = Inbox::new();
+    let lease = session.curios().claim_delivery().unwrap();
+    assert_eq!(lease.poll(&inbox).unwrap(), 1);
+    assert_eq!(lease.poll(&inbox).unwrap(), 0);
+    assert!(inbox.take_prompts().is_none());
+    assert!(inbox.take_notices().is_none());
+    let provider =
+        crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta("done".into())]]);
+    let (events, _rx) = mpsc::channel(64);
+    session
+        .deliver_curios(
+            &provider,
+            &[],
+            &FrontEnd {
+                inbox: inbox.clone(),
+                ..FrontEnd::default()
+            },
+            &events,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(session.curio_receipts.contains(&batch.id));
+    assert_eq!(store.batches(true).unwrap().len(), 1);
+    let text = session
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::User(t) => Some(t),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!text.contains("call the task tool"));
+    assert_eq!(nth_protocol::split_notices(text).0.len(), 1);
+    let saves = tempfile::tempdir().unwrap();
+    let saved = Store::at(saves.path());
+    saved.save(&session).await.unwrap();
+    assert!(store.batches(true).unwrap().is_empty());
+    let back = saved.load(session.id).await.unwrap();
+    assert_eq!(back.curio_receipts, session.curio_receipts);
+    assert_eq!(back.curio_root, session.curio_root);
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.path().join("state.json")).unwrap()).unwrap();
+    raw["batches"][0]["recorded"] = false.into();
+    std::fs::write(
+        store.path().join("state.json"),
+        serde_json::to_vec(&raw).unwrap(),
+    )
+    .unwrap();
+    saved.load(session.id).await.unwrap();
+    assert!(store.batches(true).unwrap().is_empty());
+    // Acknowledgment failure is surfaced after the durable receipt save;
+    // restoring access and retrying reconciles without another model turn.
+    let state = store.path().join("state.json");
+    let bytes = std::fs::read(&state).unwrap();
+    std::fs::remove_file(&state).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    assert!(saved.save(&session).await.is_err());
+    let persisted: Session = serde_json::from_slice(
+        &std::fs::read(saves.path().join(format!("{}.json", session.id))).unwrap(),
+    )
+    .unwrap();
+    assert!(persisted.curio_receipts.contains(&batch.id));
+    std::fs::remove_dir(&state).unwrap();
+    std::fs::write(&state, bytes).unwrap();
+    saved.save(&session).await.unwrap();
+    let mut json = serde_json::to_value(&session).unwrap();
+    json.as_object_mut().unwrap().remove("curio_root");
+    json.as_object_mut().unwrap().remove("curio_receipts");
+    let old: Session = serde_json::from_value(json).unwrap();
+    assert!(old.curio_root.is_none() && old.curio_receipts.is_empty());
+    let source = session.curio_source_dir();
+    session.set_cwd(repo.path().join("managed"), Some(repo.path().to_path_buf()));
+    assert_eq!(session.curio_source_dir(), source);
+    assert!(session.as_subagent(None).curios().store().is_err());
+}
