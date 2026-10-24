@@ -5,6 +5,7 @@ mod agents;
 mod chat;
 mod config;
 mod connect;
+mod curios;
 mod formatters;
 mod lsp;
 mod memory;
@@ -50,6 +51,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Publish and review repository-local static documents
+    Curio(curios::Args),
     /// Send one prompt and let the agent work until it answers
     Run {
         prompt: String,
@@ -191,6 +194,7 @@ async fn dispatch(
     // the file may not exist yet, or be the broken one --force replaces.
     let config = || load(config_path.as_deref(), model.clone());
     match command {
+        Command::Curio(args) => curios::run(args).await,
         Command::Run {
             prompt,
             mode,
@@ -238,6 +242,7 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     let (model, effort) = config.llm_for(mode);
     let model = providers.qualify(&model);
     let mut session = Session::new(model, cwd.clone()).with_context(context(cwd, paths).await);
+    prepare_curios(&mut session)?;
     session.mode = mode;
     session.effort = effort;
     session.max_steps = config.session.max_steps;
@@ -251,6 +256,14 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     session.subagent_llm = config.subagent_for().map(picked);
     session.clerk_llm = config.clerk_for().map(picked);
     Ok((session, providers))
+}
+
+/// Prepare the plan-safe source workspace when a repository is available.
+fn prepare_curios(session: &mut Session) -> Result<()> {
+    match session.prepare_curios() {
+        Ok(_) | Err(nth_protocol::nth_curios::Error::RepoRequired) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Sizes the session's compaction to its model: the `[context]` policy,
@@ -605,6 +618,15 @@ mod tests {
             let picked = pick(listing.clone()).expect("one is listed");
             assert!(ids.contains(&picked.as_str()), "{picked}");
         }
+    }
+
+    #[test]
+    fn ordinary_session_without_a_repository_can_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new("unused/model", dir.path().into());
+        prepare_curios(&mut session).unwrap();
+        assert!(session.curio_root.is_none());
+        assert!(!dir.path().join(".nth/curios").exists());
     }
 
     #[test]

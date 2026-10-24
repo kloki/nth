@@ -93,6 +93,14 @@ impl Host {
     pub fn url(&self) -> String {
         format!("http://{}/#{}", self.address, self.token)
     }
+    /// User-only opening URL for a revision validated by the caller.
+    /// Like `url()`, this contains a capability and must never be logged.
+    pub fn url_for_revision(&self, revision: u64) -> String {
+        format!(
+            "http://{}/?revision={revision}#{}",
+            self.address, self.token
+        )
+    }
     pub async fn stop(mut self) -> Result<()> {
         self.stop.cancel();
         if let Some(task) = self.task.take() {

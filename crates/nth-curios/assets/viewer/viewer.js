@@ -11,7 +11,15 @@
   } catch {
     token = "";
   }
-  let state, revision, loadedRevision, selected, target, drag;
+  const requestedRevision = new URLSearchParams(location.search).get(
+    "revision",
+  );
+  let revision =
+    /^[1-9]\d*$/.test(requestedRevision || "") &&
+    Number.isSafeInteger(Number(requestedRevision))
+      ? Number(requestedRevision)
+      : undefined;
+  let state, loadedRevision, selected, target, drag;
   let mode = "element",
     busy = false,
     authenticated = false,
@@ -101,6 +109,9 @@
       );
       state = snapshot;
       revision = snapshot.revision.number;
+      const url = new URL(location.href);
+      url.searchParams.set("revision", String(revision));
+      history.replaceState(null, "", url.pathname + url.search);
       render();
       if (loadedRevision !== revision) loadDocument();
     } catch (error) {

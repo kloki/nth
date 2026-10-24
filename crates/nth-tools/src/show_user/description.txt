@@ -1,5 +1,7 @@
 Show a file to the user in a tab of its own above their prompt. Markdown is rendered; any other file is shown with syntax highlighting by its extension.
 
+Alternatively, open a published Curio through the trusted front-end with curio: {curio_id, revision?}. Choose exactly one of filePath or curio. Curio ownership comes from the session; never pass a URL, owner, capability or authentication secret. This only requests presentation; it does not publish or change review state. A front-end is required.
+
 Usage notes:
 - Use it when the user asks to see a file, or when the file says what you mean better than a summary does: a document or report you wrote for them, a config you want them to check, code you are about to walk through.
 - To explain code, such as when the user asks how something works, write an annotated copy and show that instead of the original: the same code with your explanation as inline comments at the lines it concerns. Write it outside the project, for example under /tmp/nth/, and keep the original's extension so it is highlighted the same way. Never add the comments to the user's own file.

@@ -23,7 +23,7 @@ owo-colors.workspace = true
 serde.workspace = true
 jiff.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 
 [dev-dependencies]

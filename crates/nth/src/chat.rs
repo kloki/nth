@@ -25,6 +25,7 @@ pub async fn run(resume: bool, mut config: Config) -> Result<()> {
             .context("no saved session to continue")?;
         let context = context(session.cwd.clone(), &paths).await;
         session.set_context(context);
+        crate::prepare_curios(&mut session)?;
         session.max_steps = config.session.max_steps;
         // Saved before there were several providers, perhaps: shown and
         // compared as provider/model like the listed ones.

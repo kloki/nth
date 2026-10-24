@@ -7,6 +7,7 @@ mod agent_picker;
 mod completion;
 mod connect;
 mod content;
+mod curios;
 mod diagnostics;
 mod dirs;
 mod editor;
@@ -209,6 +210,7 @@ pub struct App {
     /// The current session's id, kept here because the session itself is
     /// in the turn task while a turn runs.
     session_id: uuid::Uuid,
+    curios: curios::Curios,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
@@ -377,6 +379,12 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
 }
 
 enum Step {
+    CurioOpened(
+        Result<
+            nth_protocol::nth_curios::Result<(String, String, nth_protocol::nth_curios::Host)>,
+            JoinError,
+        >,
+    ),
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),
@@ -494,6 +502,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
+            curios: curios::Curios::new(&session),
             hero_since: Instant::now(),
             flash: None,
             pointer: None,
@@ -629,6 +638,8 @@ impl App {
         self.list_llms();
         self.plan.read();
         self.work.read();
+        self.poll_curios();
+        let mut curio_tick = tokio::time::interval(Duration::from_secs(1));
 
         while !self.quit {
             if self.pending_editor.is_some() {
@@ -650,6 +661,7 @@ impl App {
                 || self.hint.as_ref().is_some_and(hint::Hint::flashing);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
+                opened = self.curios.opening.join() => Step::CurioOpened(opened),
                 ended = self.editor.join() => Step::EditorClosed(ended),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
@@ -683,8 +695,14 @@ impl App {
                 browser = self.browser_lookup.join() => Step::BrowserFound(browser),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
+                _ = curio_tick.tick() => { self.poll_curios(); Step::Tick },
             };
             match step {
+                Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
+                    Err(nth_protocol::nth_curios::Error::Invalid(
+                        "host unavailable".into(),
+                    ))
+                })),
                 Step::Terminal(None) => break,
                 Step::Terminal(Some(event)) => {
                     self.on_terminal(event.context("reading terminal input")?)
@@ -774,6 +792,11 @@ impl App {
         match show {
             Show::Panel(panel) => self.open_content(panel.into()),
             Show::File(path) => self.show_file(path),
+            Show::Curio {
+                session_id,
+                curio_id,
+                revision,
+            } => self.open_curio(session_id, curio_id, revision),
         }
         if self.content.active() != before {
             self.flash = Some(flash::Flash::new());
@@ -832,7 +855,9 @@ impl App {
             flash.draw(frame.buffer_mut(), focused);
         }
         // The link's place is kept for a click to land on.
-        self.areas.pr_link = status::draw(frame, status, self);
+        let hits = status::draw(frame, status, self);
+        self.areas.pr_link = hits.pr;
+        self.areas.curio = hits.curio;
         match &self.input {
             Input::Prompt => {
                 // On a subagent's tab the prompt is its: the label names it
@@ -870,6 +895,7 @@ impl App {
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
             Input::AgentPicker(picker) => crate::agent_picker::draw(frame, input, picker),
+            Input::Curios(picker) => picker.draw(frame, input, self.session_id),
             Input::Question(panel) => crate::question::draw(frame, input, panel),
             Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
@@ -1074,6 +1100,7 @@ impl App {
             Command::CopyId => self.copy_session_id(),
             Command::Settings => self.open_settings(),
             Command::Memory => self.show_memory(),
+            Command::Curios => self.open_curios_picker(),
         }
     }
 
@@ -1093,6 +1120,7 @@ impl App {
     fn start_fresh_session(&mut self) {
         let mut session =
             Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
+        session.curio_root = self.session.as_ref().and_then(|s| s.curio_root.clone());
         session.effort = self.effort;
         session.mode = self.mode;
         session.set_agent(self.agent.clone());

@@ -29,7 +29,13 @@ pub const ROWS: u16 = 2;
 
 /// Draws the two lines. Where the pull-request link ended up on line 1,
 /// for a click to land on; `None` when none shows or it is cut off.
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
+#[derive(Default)]
+pub struct HitAreas {
+    pub pr: Option<Rect>,
+    pub curio: Option<Rect>,
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
     // The working directory, and how many were added with `/add-dir`,
@@ -85,6 +91,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
             summary.clear();
         }
     }
+    let curio = if app.has_curios() {
+        if !summary.is_empty() {
+            summary.push(Span::raw(" "));
+        }
+        let at = summary.iter().map(Span::width).sum();
+        summary.push(Span::styled(icons().curio, Style::new().fg(Color::Cyan)));
+        Some(at)
+    } else {
+        None
+    };
     let width = summary.iter().map(Span::width).sum();
     let right = split_line(frame, state, place, summary);
     let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
@@ -99,7 +115,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         None => queued(app),
     };
     split_line(frame, checks, left, servers(app));
-    link_area
+    HitAreas {
+        pr: link_area,
+        curio: curio.and_then(|at| link_rect(right, width, at, 1)),
+    }
 }
 
 /// What the session spent, once it spent anything: its price at the
@@ -155,7 +174,7 @@ fn link_rect(right: Rect, width: usize, at: usize, link: usize) -> Option<Rect> 
     let start = (edge - i32::try_from(width).unwrap_or(edge)).max(i32::from(right.x));
     let x = start + i32::try_from(at).unwrap_or(edge);
     let end = x + i32::try_from(link).unwrap_or(edge);
-    (x >= i32::from(right.x) && end <= edge).then(|| {
+    (right.height > 0 && link > 0 && x >= i32::from(right.x) && end <= edge).then(|| {
         Rect::new(
             u16::try_from(x).unwrap_or(right.x),
             right.y,

@@ -35,6 +35,7 @@ impl App {
     /// A load that found no pull request, because the tool is missing or
     /// the branch has none, shows no link rather than stopping the app.
     pub(super) fn pr_loaded(&mut self, pr: Option<Pr>) {
+        self.areas.pr_link = None;
         self.pr = pr;
         if self.pr_loading.take_again() {
             self.load_pr();

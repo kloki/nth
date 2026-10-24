@@ -1,6 +1,7 @@
 mod apply_patch;
 mod bash;
 mod bom;
+mod curios;
 mod edit;
 mod glob;
 mod grep;
@@ -21,6 +22,7 @@ mod write;
 
 pub use apply_patch::ApplyPatch;
 pub use bash::{Bash, BashConfig};
+pub use curios::{CurioPublish, CurioRead, CurioReply};
 pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
@@ -66,6 +68,9 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Question),
         Box::new(Panel),
         Box::new(ShowUser),
+        Box::new(CurioPublish),
+        Box::new(CurioRead),
+        Box::new(CurioReply),
         Box::new(EnterWorktree),
         Box::new(ExitWorktree),
     ]

@@ -347,6 +347,11 @@ impl App {
                     None => text,
                 });
                 let result = match text {
+                    Ok(text) if text.is_empty() => {
+                        session
+                            .deliver_curios(provider.as_ref(), &tools, &front_end, &events, &token)
+                            .await
+                    }
                     Ok(text) => {
                         session
                             .prompt(text, provider.as_ref(), &tools, &front_end, &events, &token)
