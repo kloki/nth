@@ -17,14 +17,14 @@ use super::App;
 use crate::spinner;
 
 /// How many ticks a wave takes to cross the hint, whatever its length.
-const TICKS: u32 = 10;
+const TICKS: u32 = 8;
 /// How many columns wide the reversed head is.
 const CREST: f64 = 2.0;
 /// How long a wave runs, in and out alike.
 const WAVE: Duration = spinner::FRAME.saturating_mul(TICKS);
 /// How long a hint stays when no key clears it first, the wave out
 /// starting then.
-const LIFE: Duration = Duration::from_secs(2);
+const LIFE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
@@ -74,7 +74,7 @@ impl Hint {
             at += wide as f64;
             let cell = match middle {
                 m if m > head + CREST / 2.0 => Cell::Ahead,
-                m if m >= head - CREST / 2.0 => Cell::Crest,
+                m if m > head - CREST / 2.0 => Cell::Crest,
                 _ => Cell::Behind,
             };
             let (style, shown) = match (cell, leaving) {
@@ -176,8 +176,8 @@ mod tests {
             "plain once the wave has passed"
         );
 
-        // Three ticks in, the head is on `op`: `c` behind it, `ied` to come.
-        app.hint = Some(said("copied", tick(3)));
+        // Two ticks in, the head is on `op`: `c` behind it, `ied` to come.
+        app.hint = Some(said("copied", tick(2)));
         let wave = cells(&mut app, at);
         assert_eq!((wave[0].0, wave[0].1), PLAIN);
         assert_eq!((wave[1].0, wave[1].1), HEAD);
@@ -188,7 +188,7 @@ mod tests {
         );
 
         // Going, the same head wipes `c` away and leaves `ied` standing.
-        app.hint = Some(said("copied", LIFE + tick(3)));
+        app.hint = Some(said("copied", LIFE + tick(2)));
         let wave = cells(&mut app, at);
         assert_eq!(wave[0].2, " ", "wiped");
         assert_eq!((wave[1].0, wave[1].1), HEAD);
