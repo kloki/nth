@@ -5,6 +5,8 @@
 //! and spinners are not icons and stay where they are drawn.
 
 pub struct Icons {
+    /// A published review document.
+    pub curio: &'static str,
     /// Something worked or is chosen.
     pub ok: &'static str,
     /// Something failed.
@@ -125,6 +127,7 @@ pub struct GitIcons {
 }
 
 pub static PLAIN: Icons = Icons {
+    curio: "◇",
     ok: "✓",
     fail: "✗",
     warn: "!",
@@ -229,6 +232,7 @@ impl Icons {
     #[cfg(test)]
     fn all(&self) -> Vec<&'static str> {
         let Icons {
+            curio,
             ok,
             fail,
             warn,
@@ -258,6 +262,7 @@ impl Icons {
             git,
         } = self;
         let mut all = vec![
+            *curio,
             *ok,
             *fail,
             *warn,

@@ -29,6 +29,7 @@ pub struct Inbox(Option<Arc<Mutex<Vec<Pending>>>>);
 /// One thing waiting for the model.
 #[derive(Debug)]
 enum Pending {
+    Curio(crate::CurioNotice),
     Monitor(MonitorNotice),
     Task(TaskNotice),
     Work(WorkNotice),
@@ -48,6 +49,34 @@ struct MonitorNotice {
 }
 
 impl Inbox {
+    pub fn post_curio(&self, notice: crate::CurioNotice) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        let mut pending = lock(pending);
+        if pending.iter().any(|p| matches!(p, Pending::Curio(n) if n.batch.session_id == notice.batch.session_id && n.batch.id == notice.batch.id)) {
+            return false;
+        }
+        pending.push(Pending::Curio(notice));
+        true
+    }
+
+    /// Typed delivery bypasses prompt/command/mention parsing and is never preemptive.
+    pub fn take_curios(&self, owner: &str) -> Vec<crate::CurioNotice> {
+        let Some(pending) = &self.0 else {
+            return Vec::new();
+        };
+        let mut pending = lock(pending);
+        let mut taken = Vec::new();
+        pending.retain(|p| {
+            if let Pending::Curio(n) = p
+                && n.batch.session_id == owner
+            {
+                taken.push(n.clone());
+                return false;
+            }
+            true
+        });
+        taken
+    }
     /// An empty inbox someone will empty.
     pub fn new() -> Self {
         Self(Some(Arc::default()))
@@ -184,7 +213,9 @@ impl Inbox {
         let mut pending = lock(self.0.as_ref()?);
         let (prompts, notices): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
             .into_iter()
-            .partition(|pending| pending.prompt().is_some());
+            .partition(|pending| {
+                pending.prompt().is_some() || matches!(pending, Pending::Curio(_))
+            });
         *pending = prompts;
         drop(pending);
         let notices: Vec<String> = notices.iter().filter_map(Pending::notice).collect();
@@ -232,7 +263,7 @@ fn monitor_notice<'a>(
     match &mut pending[index] {
         Pending::Monitor(monitor) => monitor,
         // Just pushed or found as a monitor's.
-        Pending::Task(_) | Pending::Work(_) | Pending::Prompt(_) => {
+        Pending::Task(_) | Pending::Work(_) | Pending::Prompt(_) | Pending::Curio(_) => {
             unreachable!("the index is a monitor's notice")
         }
     }
@@ -254,6 +285,7 @@ impl Pending {
             Pending::Task(task) => Some(notice::render_task(task)),
             Pending::Work(work) => Some(notice::render_work(work)),
             Pending::Prompt(_) => None,
+            Pending::Curio(_) => None,
         }
     }
 
@@ -261,7 +293,7 @@ impl Pending {
     fn prompt(&self) -> Option<&str> {
         match self {
             Pending::Prompt(text) => Some(text),
-            Pending::Monitor(_) | Pending::Task(_) | Pending::Work(_) => None,
+            Pending::Monitor(_) | Pending::Task(_) | Pending::Work(_) | Pending::Curio(_) => None,
         }
     }
 }

@@ -358,6 +358,12 @@ fn body(text: &str, element: &str) -> String {
 /// A notice as the transcript shows it, from the text the model read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeSummary {
+    Curio {
+        delivery: String,
+        session: String,
+        curio: String,
+        revision: u64,
+    },
     /// Which monitor, and how many lines or how it ended.
     Monitor {
         id: MonitorId,
@@ -389,7 +395,7 @@ pub enum NoticeSummary {
 }
 
 /// The elements `split_notices` knows.
-const ELEMENTS: [&str; 4] = ["monitor", "task", "work_item", "instructions"];
+const ELEMENTS: [&str; 5] = ["monitor", "task", "work_item", "instructions", "curio"];
 
 /// Splits the notices off the front of a user message: what monitors,
 /// subagents and work items said, then what the user typed after it, if
@@ -435,6 +441,12 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
 /// missing, which ends the notices there.
 fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
     Some(match element {
+        "curio" => NoticeSummary::Curio {
+            delivery: value(attrs, "delivery")?,
+            session: value(attrs, "session")?,
+            curio: value(attrs, "curio")?,
+            revision: number(attrs, "revision")?,
+        },
         "monitor" => NoticeSummary::Monitor {
             id: number(attrs, "id")?,
             description: value(attrs, "description").unwrap_or_default(),

@@ -787,7 +787,17 @@ mod tests {
         let agents = discover(&tree.path("repo"), &tree.paths(), &mut Vec::new());
 
         let careful = agents.get("careful").expect("careful");
-        assert_eq!(careful.denied, ["apply_patch", "edit", "webfetch", "write"]);
+        assert_eq!(
+            careful.denied,
+            [
+                "apply_patch",
+                "curio_publish",
+                "curio_reply",
+                "edit",
+                "webfetch",
+                "write"
+            ]
+        );
         assert!(careful.allows("bash"), "a pattern map is not a plain deny");
         assert_eq!(agents.get("plain").expect("plain").model, None);
         assert_eq!(

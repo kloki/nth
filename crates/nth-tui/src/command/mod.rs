@@ -24,6 +24,7 @@ pub enum Command {
     Compact,
     Connect,
     CopyId,
+    Curios,
     Diagnostics,
     Exit,
     Memory,
@@ -36,7 +37,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 17] = [
+    const ALL: [Command; 18] = [
         Command::AddDir,
         Command::Agents,
         Command::Approve,
@@ -45,6 +46,7 @@ impl Command {
         Command::Compact,
         Command::Connect,
         Command::CopyId,
+        Command::Curios,
         Command::Diagnostics,
         Command::Exit,
         Command::Memory,
@@ -66,6 +68,7 @@ impl Command {
             Command::Compact => "compact",
             Command::Connect => "connect",
             Command::CopyId => "copy-id",
+            Command::Curios => "curios",
             Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
             Command::Memory => "memory",
@@ -88,6 +91,7 @@ impl Command {
             Command::Compact => "summarize the session",
             Command::Connect => "sign in to a provider",
             Command::CopyId => "copy the session id",
+            Command::Curios => "open a repository review document",
             Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
             Command::Memory => "show what the model remembers",
@@ -258,7 +262,8 @@ mod tests {
                 Command::Close,
                 Command::Compact,
                 Command::Connect,
-                Command::CopyId
+                Command::CopyId,
+                Command::Curios
             ])
         );
         assert_eq!(
@@ -296,6 +301,7 @@ mod tests {
                 "compact",
                 "connect",
                 "copy-id",
+                "curios",
                 "diagnostics",
                 "exit",
                 "memory",
@@ -311,7 +317,9 @@ mod tests {
         assert_eq!(names("/d"), ["diagnostics", "deploy"]);
         assert_eq!(
             names("/c"),
-            ["clear", "close", "compact", "connect", "copy-id", "config"],
+            [
+                "clear", "close", "compact", "connect", "copy-id", "curios", "config"
+            ],
             "the clear skill is hidden by the command"
         );
         assert_eq!(

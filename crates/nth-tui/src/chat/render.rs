@@ -205,6 +205,15 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
                 Span::styled(format!("{name} {change}"), dim),
             ])]
         }
+        Entry::Notice(NoticeSummary::Curio {
+            curio, revision, ..
+        }) => vec![Line::styled(
+            format!(
+                "{INDENT}{} review feedback · {curio} · r{revision}",
+                icons().curio
+            ),
+            dim,
+        )],
         Entry::Answer(text) => {
             return barred_markdown(text, width, Style::new().fg(Color::Blue));
         }

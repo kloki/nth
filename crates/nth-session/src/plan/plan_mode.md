@@ -1,10 +1,10 @@
 <system-reminder>
-Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file and the session's explicitly permitted Curios source workspace), run any non-readonly tools (except curio_publish and curio_reply for review documents), or otherwise make any changes to the system. Do not change configs or make commits. This supersedes any other instructions you have received.
 
 ## Plan File Info:
 
 {plan_info}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions. Do NOT use sed, tee, echo, cat, or ANY other bash command to manipulate files - bash commands may ONLY read/inspect.{memory}
+You should build your plan incrementally by writing to or editing this file. You may also author review documents in the current session's explicitly permitted Curios source workspace and publish/reply through Curios domain tools. Private revision/thread state and other sessions' workspaces are not writable. Otherwise take only READ-ONLY actions. Do NOT use sed, tee, echo, cat, or ANY other bash command to manipulate files - bash commands may ONLY read/inspect.{memory}
 
 ## Plan Workflow
 

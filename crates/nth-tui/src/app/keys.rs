@@ -6,6 +6,7 @@ use super::{App, input::Input};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
+    CopyCurio,
     Submit,
     Interrupt,
     /// Highlights the next or previous entry in the completion popup or a
@@ -68,6 +69,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
         KeyCode::Char('p') if ctrl => Action::NextProfile,
         KeyCode::Char('g') if ctrl => Action::Edit,
+        KeyCode::Char('y') if ctrl => Action::CopyCurio,
         // Terminals report ctrl+shift+t either way; only those that
         // disambiguate escape codes tell it from ctrl+t at all.
         KeyCode::Char('T') if ctrl => Action::PrevContent,
@@ -131,6 +133,7 @@ impl App {
             _ => {}
         }
         match &self.input {
+            Input::Curios(_) => return self.key_curios(action),
             Input::LlmPicker(_) => return self.key_llm_picker(action),
             Input::SessionPicker(_) => return self.key_session_picker(action),
             Input::AgentPicker(_) => return self.key_agent_picker(action),
@@ -218,6 +221,7 @@ impl App {
             Action::Right => self.prompt.right(),
             Action::LineStart => self.prompt.home(),
             Action::LineEnd => self.prompt.end(),
+            Action::CopyCurio => {}
         }
         match action {
             Action::Insert(_) | Action::Newline | Action::Backspace | Action::Delete => {
@@ -373,7 +377,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Agents);
-        for _ in 0..16 {
+        for _ in 0..17 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -416,6 +420,7 @@ mod tests {
                 "compact",
                 "connect",
                 "copy-id",
+                "curios",
                 "diagnostics",
                 "exit",
                 "memory",

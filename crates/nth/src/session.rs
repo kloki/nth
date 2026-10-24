@@ -33,7 +33,7 @@ pub enum SessionCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Delete a saved session with its plan, work items and monitor logs
+    /// Delete a saved session with its plan, work, logs, images and repository Curios
     Delete {
         /// The session, by its id or the start of it
         session: String,
@@ -118,6 +118,7 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
 /// worktrees are left alone, since they may hold work not merged yet.
 /// Returns what went besides the save.
 async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec<PathBuf>> {
+    let curio_dir = curio_dir(session)?;
     store.delete(session.id).await?;
     let mut removed = Vec::new();
     // The plan sits under the working directory, so one written before
@@ -145,7 +146,45 @@ async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec
             removed.push(dir);
         }
     }
+    if let Some(dir) = curio_dir
+        && gone(tokio::fs::remove_dir_all(&dir).await, &dir)?
+    {
+        removed.push(dir);
+    }
     Ok(removed)
+}
+
+/// Use persisted ownership, including when the checkout is no longer a Git
+/// repository. Never follow a replaced ancestor into another directory.
+fn curio_dir(session: &Session) -> Result<Option<PathBuf>> {
+    let Some(root) = &session.curio_root else {
+        return Ok(None);
+    };
+    if !root.is_absolute() {
+        bail!("saved Curios root must be absolute");
+    }
+    if root
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        bail!("saved Curios root contains a parent traversal");
+    }
+    // The root and what Curios made below it; its ancestors are the
+    // system's (macOS keeps temporary folders under `/var`, a symlink).
+    let curios = root.join(".nth/curios");
+    let dir = curios.join(session.id.to_string());
+    for current in [root.clone(), root.join(".nth"), curios, dir.clone()] {
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => bail!(
+                "refusing Curios deletion through symlink {}",
+                current.display()
+            ),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(Some(dir))
 }
 
 /// Whether a removal took something away; one that was never there is
@@ -369,6 +408,55 @@ mod tests {
         let removed = delete(&store, &session, dir.path()).await.expect("deletes");
 
         assert!(removed.is_empty(), "{removed:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_curios_uses_stored_root_even_without_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("sessions"));
+        let root = dir.path().join("original");
+        let mut session = Session::new("glm", dir.path().join("worktree"));
+        session.curio_root = Some(root.clone());
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.unwrap();
+        let own = root.join(".nth/curios").join(session.id.to_string());
+        let other = root.join(".nth/curios/another-session");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(root.join("project.html"), "keep").unwrap();
+        let removed = delete(&store, &session, dir.path()).await.unwrap();
+        assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
+        assert!(!own.exists());
+        assert!(other.exists());
+        assert!(root.join("project.html").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn curio_deletion_rejects_symlink_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(target.path(), dir.path().join(".nth")).unwrap();
+        let mut session = Session::new("glm", dir.path().into());
+        session.curio_root = Some(dir.path().into());
+        assert!(curio_dir(&session).is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_with_missing_curio_repository_still_removes_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("sessions"));
+        let mut session = Session::new("glm", dir.path().join("gone"));
+        session.curio_root = Some(session.cwd.clone());
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.unwrap();
+        assert!(
+            delete(&store, &session, dir.path())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]

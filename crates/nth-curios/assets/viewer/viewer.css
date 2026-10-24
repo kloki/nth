@@ -1,0 +1,248 @@
+:root {
+  color-scheme: light;
+  --review-paper: #f7f7f5;
+  --review-surface: #fff;
+  --review-ink: #252724;
+  --review-secondary: #5c605a;
+  --review-line: #dddfd9;
+  --review-accent: #425f78;
+  --review-selection: #eaf0f5;
+  font:
+    14px/1.5 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--review-ink);
+  background: var(--review-paper);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  border: 1px solid var(--review-line);
+  border-radius: 6px;
+  background: var(--review-surface);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: var(--review-selection);
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.primary {
+  background: var(--review-accent);
+  border-color: var(--review-accent);
+  color: white;
+}
+.primary:hover:not(:disabled) {
+  background: #344d63;
+}
+:focus-visible {
+  outline: 2px solid var(--review-accent);
+  outline-offset: 2px;
+}
+h1,
+p {
+  margin: 0;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--review-line);
+  flex-wrap: wrap;
+}
+h1 {
+  font-size: 16px;
+  line-height: 1.3;
+}
+#notice {
+  flex: 1;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--review-secondary);
+  overflow-wrap: anywhere;
+}
+#notice.error {
+  color: #8c3028;
+}
+.revision-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--review-secondary);
+}
+select,
+textarea {
+  background: white;
+  border: 1px solid var(--review-line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  max-width: 100%;
+}
+#stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: white;
+}
+iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  background: white;
+}
+#overlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+#selection-box {
+  position: absolute;
+  border: 2px solid var(--review-accent);
+  background: rgb(66 95 120 / 0.08);
+}
+.pin {
+  pointer-events: auto;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1.5px solid var(--review-accent);
+  box-shadow: 0 0 0 1.5px white;
+  color: var(--review-accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.pin[aria-pressed="true"] {
+  background: var(--review-accent);
+  color: white;
+}
+.pin.resolved {
+  opacity: 0.55;
+}
+/* A ring turning round the pin while nth works on its thread. */
+.pin.working::after,
+.spinner {
+  content: "";
+  border: 2px solid transparent;
+  border-top-color: var(--review-accent);
+  border-right-color: var(--review-accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.pin.working::after {
+  position: absolute;
+  inset: -6px;
+}
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  vertical-align: -2px;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+#popover {
+  pointer-events: auto;
+  position: absolute;
+  width: min(340px, calc(100% - 16px));
+  max-height: min(420px, calc(100% - 16px));
+  overflow: auto;
+  padding: 10px;
+  background: var(--review-surface);
+  border: 1px solid var(--review-line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.14);
+}
+#messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#messages li {
+  padding: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#messages strong {
+  display: block;
+  font-size: 12px;
+  color: var(--review-secondary);
+}
+#messages li.agent strong {
+  color: var(--review-accent);
+}
+#working {
+  font-size: 12px;
+  color: var(--review-secondary);
+  padding-bottom: 8px;
+}
+textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  margin: 0 0 8px;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+}
+#resolve,
+#close {
+  border-color: transparent;
+  background: none;
+  color: var(--review-secondary);
+  font-size: 12px;
+}
+#close {
+  margin-left: auto;
+}
+[hidden] {
+  display: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pin.working::after,
+  .spinner {
+    animation: none;
+    border-color: var(--review-accent);
+    border-style: dotted;
+  }
+}
+@media (forced-colors: active) {
+  .pin,
+  #selection-box {
+    border: 2px solid Highlight;
+  }
+  .pin[aria-pressed="true"] {
+    outline: 3px solid Highlight;
+  }
+}

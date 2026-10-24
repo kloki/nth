@@ -20,7 +20,10 @@ use crate::{Error, work::ORCHESTRATOR_TOOLS};
 /// Tools a subagent never gets: another task would nest without end, the
 /// work plan is its parent's to run, and the rest need the front-end,
 /// which belongs to the parent.
-pub(super) const WITHHELD: [&str; 11] = [
+pub(super) const WITHHELD: [&str; 14] = [
+    "curio_publish",
+    "curio_read",
+    "curio_reply",
     "task",
     "task_stop",
     "question",
@@ -290,6 +293,9 @@ mod tests {
     #[test]
     fn a_subagent_gets_its_share_of_the_tools() {
         let all = [
+            "curio_read",
+            "curio_publish",
+            "curio_reply",
             "read",
             "write",
             "edit",

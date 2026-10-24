@@ -22,6 +22,7 @@ pub(super) struct Areas {
     /// Each tab drawn, one or two.
     pub panes: Vec<(Tab, Rect)>,
     pub pr_link: Option<Rect>,
+    pub curio: Option<Rect>,
     /// The `/connect` panel's login URL, while it shows.
     pub login_url: Option<Rect>,
 }
@@ -71,6 +72,11 @@ impl App {
                 if self.areas.login_url.is_some_and(|area| area.contains(at)) =>
             {
                 self.open_login_url();
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if self.areas.curio.is_some_and(|area| area.contains(at)) =>
+            {
+                self.open_latest_curio()
             }
             MouseEventKind::Down(MouseButton::Left) => self.click_content(at),
             MouseEventKind::Down(MouseButton::Right) => self.copy_entry(at),

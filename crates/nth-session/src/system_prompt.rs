@@ -393,7 +393,7 @@ mod tests {
                 })
                 .collect()
         };
-        let before = built_in(&["browser", "config"]);
+        let before = built_in(&["browser", "config", "curios"]);
         let after = built_in(&["init", "screenshot", "setup-worktrees", "work-plan"]);
         assert_eq!(
             skills,

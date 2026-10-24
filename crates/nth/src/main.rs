@@ -5,6 +5,7 @@ mod agents;
 mod chat;
 mod config;
 mod connect;
+mod curios;
 mod formatters;
 mod lsp;
 mod memory;
@@ -50,6 +51,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Publish and review repository-local static documents
+    Curio(curios::Args),
     /// Send one prompt and let the agent work until it answers
     Run {
         prompt: String,
@@ -191,6 +194,7 @@ async fn dispatch(
     // the file may not exist yet, or be the broken one --force replaces.
     let config = || load(config_path.as_deref(), model.clone());
     match command {
+        Command::Curio(args) => curios::run(args).await,
         Command::Run {
             prompt,
             mode,

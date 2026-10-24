@@ -41,6 +41,7 @@ impl App {
     /// ended in the session, so the model knows they are gone when it is
     /// resumed.
     pub(super) async fn stop_background_for_exit(&mut self) {
+        self.curios.invalidate();
         self.stop_subagents_for_exit().await;
         if self.monitors.running() > 0 {
             self.monitors.stop_all(StoppedBy::Exit);

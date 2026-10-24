@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod delivery_acceptance;
 mod provider;
 
 use crossterm::event::Event as TermEvent;
@@ -238,11 +239,13 @@ fn the_status_bar_shows_the_session_time() {
 
 #[test]
 fn the_minute_wake_lands_within_the_minute() {
-    let now = tokio::time::Instant::now();
+    let before = tokio::time::Instant::now();
     let at = super::next_minute();
+    // Up to a whole minute from when it was asked, a moment after `before`.
+    let after = tokio::time::Instant::now();
 
-    assert!(at > now, "in the future");
-    assert!(at <= now + Duration::from_secs(60), "within the minute");
+    assert!(at > before, "in the future");
+    assert!(at <= after + Duration::from_secs(60), "within the minute");
 }
 
 #[test]

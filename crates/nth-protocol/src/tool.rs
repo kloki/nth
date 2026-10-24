@@ -22,6 +22,9 @@ pub struct ToolSpec {
 }
 
 pub struct ToolContext {
+    pub is_subagent: bool,
+    /// Trusted Curios owner scope; unavailable to subagents.
+    pub curios: crate::Curios,
     pub cwd: PathBuf,
     /// Where a tool moves the session's working directory, as entering a
     /// worktree does; later steps of the turn run there.
@@ -106,6 +109,8 @@ impl ToolContext {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,
+            curios: crate::Curios::default(),
+            is_subagent: false,
             workdir: Workdir::default(),
             extra_dirs: Vec::new(),
             output: OutputSink::default(),
@@ -137,6 +142,8 @@ impl ToolContext {
     pub fn for_call(&self, call_id: String, output: OutputSink) -> Self {
         Self {
             cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
+            curios: self.curios.clone(),
+            is_subagent: self.is_subagent,
             workdir: self.workdir.clone(),
             extra_dirs: self.extra_dirs.clone(),
             output,

@@ -196,9 +196,9 @@ mod tests {
         assert!(rows[5].starts_with("  /compact "));
         assert!(rows[6].starts_with("  /connect "));
         assert!(rows[7].starts_with("  /copy-id "));
-        assert!(rows[8].starts_with("  /diagnostics "));
+        assert!(rows[8].starts_with("  /curios "));
         assert!(
-            rows[9].starts_with("  /exit "),
+            rows[9].starts_with("  /diagnostics "),
             "right above the cursor, moved left to fit"
         );
         assert!(rows[10].starts_with(" ▎ /"));

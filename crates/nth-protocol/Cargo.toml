@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 nth-context.workspace = true
+nth-curios.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
