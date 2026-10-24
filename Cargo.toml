@@ -11,6 +11,7 @@ repository = "https://github.com/kloki/nth"
 [workspace.dependencies]
 nth-auth = { path = "crates/nth-auth" }
 nth-context = { path = "crates/nth-context" }
+nth-curios = { path = "crates/nth-curios" }
 nth-format = { path = "crates/nth-format" }
 nth-icons = { path = "crates/nth-icons" }
 nth-llm = { path = "crates/nth-llm" }
