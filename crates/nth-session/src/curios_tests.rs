@@ -213,3 +213,164 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     assert_eq!(session.curio_source_dir(), source);
     assert!(session.as_subagent(None).curios().store().is_err());
 }
+
+/// A session in a fresh repository with `count` batches of review feedback
+/// waiting in its inbox.
+fn waiting(count: usize) -> (tempfile::TempDir, Session, Inbox) {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut session = Session::new("fake", repo.path().to_path_buf());
+    let store = session.prepare_curios().unwrap();
+    let curio = store
+        .publish(Publish {
+            request_id: "publish".into(),
+            curio_id: None,
+            expected_revision: None,
+            title: Some("Review".into()),
+            html: "<h1 id=\"heading\">Hello</h1>".into(),
+        })
+        .unwrap()
+        .curio;
+    for n in 0..count {
+        let thread = store
+            .comment(
+                &curio.id,
+                Comment {
+                    request_id: format!("comment-{n}"),
+                    revision: 1,
+                    target: Target {
+                        element_id: None,
+                        kind: TargetKind::Document,
+                        rect: None,
+                        label: "Document".into(),
+                        quote: String::new(),
+                    },
+                    body: format!("Note {n}"),
+                },
+            )
+            .unwrap();
+        store
+            .send(
+                &curio.id,
+                Send {
+                    request_id: format!("send-{n}"),
+                    message_ids: vec![thread.messages[0].id.clone()],
+                },
+            )
+            .unwrap();
+    }
+    let inbox = Inbox::new();
+    let lease = session.curios().claim_delivery().unwrap();
+    assert_eq!(lease.poll(&inbox).unwrap(), count);
+    (repo, session, inbox)
+}
+
+fn front_end(inbox: &Inbox) -> FrontEnd {
+    FrontEnd {
+        inbox: inbox.clone(),
+        ..FrontEnd::default()
+    }
+}
+
+/// The user messages `session` holds.
+fn said(session: &Session) -> Vec<&str> {
+    session
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::User(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn feedback_waiting_at_a_prompt_leads_the_prompt_in_one_message() {
+    let (_repo, mut session, inbox) = waiting(1);
+    let provider =
+        crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+    let (events, _rx) = mpsc::channel(64);
+    session
+        .prompt(
+            "hello",
+            &provider,
+            &[],
+            &front_end(&inbox),
+            &events,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let said = said(&session);
+    assert_eq!(said.len(), 1, "{said:#?}");
+    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    assert_eq!(notices.len(), 1);
+    assert!(rest.starts_with("hello"), "{rest}");
+}
+
+#[tokio::test]
+async fn batches_delivered_together_read_back_as_notices() {
+    let (_repo, mut session, inbox) = waiting(2);
+    let provider =
+        crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+    let (events, _rx) = mpsc::channel(64);
+    session
+        .deliver_curios(
+            &provider,
+            &[],
+            &front_end(&inbox),
+            &events,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let said = said(&session);
+    assert_eq!(said.len(), 1);
+    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    assert_eq!(notices.len(), 2);
+    assert!(!rest.contains("<curio"), "{rest}");
+}
+
+#[tokio::test]
+async fn feedback_after_an_unanswered_prompt_joins_it() {
+    use crate::agent_loop::tests::{Failure, Reply, Scripted};
+
+    let (_repo, mut session, inbox) = waiting(1);
+    let (events, _rx) = mpsc::channel(64);
+    let refused = Scripted::script(vec![Reply::Refused(Failure::Down)]);
+    let cancel = CancellationToken::new();
+    // Prompted where the feedback is not yet seen, so only it is left.
+    assert!(
+        session
+            .prompt(
+                "hello",
+                &refused,
+                &[],
+                &FrontEnd::default(),
+                &events,
+                &cancel
+            )
+            .await
+            .is_err()
+    );
+    let answers = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+    session
+        .deliver_curios(&answers, &[], &front_end(&inbox), &events, &cancel)
+        .await
+        .unwrap();
+
+    let said = said(&session);
+    assert_eq!(said.len(), 1, "{said:#?}");
+    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    assert_eq!(notices.len(), 1);
+    assert!(rest.starts_with("hello"), "{rest}");
+}

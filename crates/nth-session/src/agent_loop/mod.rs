@@ -152,7 +152,6 @@ impl Turn<'_> {
 
     /// The step loop [`Turn::run`] wraps, with the usage the trigger reads.
     async fn step_loop(&mut self, last_usage: &mut Option<Usage>) -> Result<(), Error> {
-        self.hand_over_curios().await;
         // A primary agent is offered only the tools it allows.
         let (specs, tools): (Vec<_>, Vec<_>) = self
             .tools

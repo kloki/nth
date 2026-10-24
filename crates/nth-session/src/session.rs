@@ -198,6 +198,27 @@ impl Session {
         if let Ok(store) = self.curios().store() {
             self.curio_root = Some(store.repo_root().to_path_buf());
         }
+        let Some(notices) = self.take_curios(front_end, events).await else {
+            return Ok(());
+        };
+        self.prepared_turn(
+            TurnInput::Feedback(notices),
+            provider,
+            tools,
+            front_end,
+            events,
+            cancel,
+        )
+        .await
+    }
+
+    /// This session's review feedback waiting in `front_end`'s inbox,
+    /// recorded and shown, as the notices that lead the next user message.
+    async fn take_curios(
+        &mut self,
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+    ) -> Option<String> {
         let curios = self.curios();
         let mut notices = Vec::new();
         for notice in front_end.inbox.take_curios(&self.id.to_string()) {
@@ -207,19 +228,9 @@ impl Session {
                 notices.push(text);
             }
         }
-        if notices.is_empty() {
-            return Ok(());
-        }
         self.curio_receipts.extend(curios.recorded());
-        self.prepared_turn(
-            TurnInput::Feedback(notices.join("\n\n")),
-            provider,
-            tools,
-            front_end,
-            events,
-            cancel,
-        )
-        .await
+        // One element per line, as `split_notices` reads them back.
+        (!notices.is_empty()).then(|| notices.join("\n"))
     }
 
     /// Marks the Curios feedback this session recorded as recorded in its
@@ -512,9 +523,11 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        let (mut text, join_unanswered) = match input {
-            TurnInput::Prompt(text) => (text, true),
-            TurnInput::Feedback(text) => (text, false),
+        // Notices lead the message, as `split_notices` reads them; feedback
+        // is notices alone, with only the reminders after it.
+        let (curios, mut text) = match input {
+            TurnInput::Prompt(text) => (self.take_curios(front_end, events).await, text),
+            TurnInput::Feedback(notices) => (Some(notices), String::new()),
         };
         let plan_path = self.plan_path();
         let agent = self.primary().map(|agent| agent.name.clone());
@@ -535,7 +548,7 @@ impl Session {
         if let Some(reminder) =
             primary::reminder(agent.as_deref(), self.last_turn_agent.as_deref(), first)
         {
-            text = format!("{text}\n\n{reminder}");
+            append(&mut text, &reminder);
         }
         // A primary agent's own prompt says how it works; plan mode's
         // reminders are for plan and act.
@@ -551,21 +564,28 @@ impl Session {
         {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
-            text = format!("{text}\n\n{reminder}");
+            append(&mut text, &reminder);
         }
         // Only the current owner's source workspace is additionally writable.
         if self.tools_mode() == Mode::Plan
             && let Some(source) = self.curio_source_dir()
         {
-            text.push_str(&format!("\n\n<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>", source.display()));
+            append(
+                &mut text,
+                &format!(
+                    "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
+                    source.display()
+                ),
+            );
         }
         // An instruction file edited since the last turn, in front of the
         // prompt as the front-end's notices are.
         let changes = self.watch.changes(self.loaded()).await;
-        if let Some(changed) = instructions_notice(&changes) {
-            text = format!("{changed}\n{text}");
-            emit(events, Event::Notice(changed)).await;
+        let changed = instructions_notice(&changes);
+        if let Some(changed) = &changed {
+            emit(events, Event::Notice(changed.clone())).await;
         }
+        let notices = [changed, curios].into_iter().flatten().collect::<Vec<_>>();
         self.last_turn_mode = match agent {
             Some(_) => None,
             None => Some(self.mode),
@@ -575,12 +595,22 @@ impl Session {
         match self.messages.last_mut() {
             // A turn that failed before the model said anything left the
             // last prompt unanswered; for the same reason as the reminder,
-            // this one joins it rather than following it.
-            Some(Message::User(previous)) if join_unanswered => {
-                previous.push_str("\n\n");
-                previous.push_str(&text);
+            // this one joins it rather than following it, its notices
+            // still in front.
+            Some(Message::User(previous)) => {
+                *previous = notices
+                    .into_iter()
+                    .chain([std::mem::take(previous)])
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                append(previous, &text);
             }
-            _ => self.messages.push(Message::User(text)),
+            _ => {
+                let message = notices.into_iter().chain([text]);
+                let message = message.filter(|part| !part.is_empty());
+                let message = message.collect::<Vec<_>>().join("\n");
+                self.messages.push(Message::User(message));
+            }
         }
         self.updated_at = SystemTime::now();
         let mut held = self.held(front_end);
@@ -735,7 +765,16 @@ impl Session {
 /// Typed feedback keeps its own history entry after an unanswered prompt.
 enum TurnInput {
     Prompt(String),
+    /// Curio notices, already recorded.
     Feedback(String),
+}
+
+/// Puts `part` after `text` as a paragraph of its own.
+fn append(text: &mut String, part: &str) {
+    if !part.is_empty() && !text.is_empty() {
+        text.push_str("\n\n");
+    }
+    text.push_str(part);
 }
 
 /// What a turn borrows that the session does not hold.
