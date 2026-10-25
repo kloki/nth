@@ -723,6 +723,13 @@ mod tests {
         assert!(rows[14].contains(nth_icons::icons().curio));
         let rect = app.areas.curio.unwrap();
         app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.hovering_clickable());
+        app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: rect.x,
             row: rect.y,
@@ -746,6 +753,7 @@ mod tests {
         app.place = "x".repeat(200);
         rows_of(&mut app, 20);
         assert!(app.areas.curio.is_none());
+        assert!(!app.hovering_clickable());
         app.start_fresh_session();
         assert!(app.curios.hosts.is_empty());
         assert!(app.curios.last.is_none());

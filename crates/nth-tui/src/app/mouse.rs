@@ -368,14 +368,17 @@ mod tests {
 
         click(&mut app, MouseButton::Left, 3, 0);
         assert_eq!(app.content.active(), Tab::Chat);
+        assert!(app.hovering_clickable());
 
         click(&mut app, MouseButton::Left, 12, 0);
         assert_eq!(app.content.active(), Tab::Diagnostics);
+        assert!(app.hovering_clickable());
 
         // Past the tabs, and in the margin before them: nothing changes.
         click(&mut app, MouseButton::Left, 30, 0);
         click(&mut app, MouseButton::Left, 0, 0);
         assert_eq!(app.content.active(), Tab::Diagnostics);
+        assert!(!app.hovering_clickable());
     }
 
     #[test]
@@ -449,6 +452,8 @@ mod tests {
         rows(&mut app); // Where the link was drawn decides the click.
         let link = app.areas.pr_link.expect("the link shows");
 
+        hover(&mut app, link.x + 1, link.y);
+        assert!(app.hovering_clickable());
         click(&mut app, MouseButton::Left, link.x + 1, link.y);
         assert_eq!(
             app.hint.as_deref(),
@@ -464,5 +469,6 @@ mod tests {
             link.y,
         );
         assert_eq!(app.hint, None);
+        assert!(!app.hovering_clickable());
     }
 }
