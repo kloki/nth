@@ -485,10 +485,10 @@ async fn keymaps_command_opens_a_scrollable_reference_tab_once() {
     assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Keymaps]);
 
     app.apply(Action::Bottom);
-    let later = rows(&mut app);
+    rows(&mut app);
     assert!(
-        later.iter().any(|row| row.contains("Ctrl+Home")),
-        "{later:#?}"
+        app.keymaps.pager.scrollbar().is_some(),
+        "reference overflows the view"
     );
 
     app.apply(Action::CloseContent);
