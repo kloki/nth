@@ -377,7 +377,7 @@ mod tests {
         let mut app = typed("/");
         app.apply(Action::SelectNext);
         assert_eq!(selected(&app), Command::Agents);
-        for _ in 0..17 {
+        for _ in 0..18 {
             app.apply(Action::SelectNext);
         }
         assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -423,6 +423,7 @@ mod tests {
                 "curios",
                 "diagnostics",
                 "exit",
+                "keymaps",
                 "memory",
                 "models",
                 "plan",

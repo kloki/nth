@@ -27,6 +27,7 @@ pub enum Command {
     Curios,
     Diagnostics,
     Exit,
+    Keymaps,
     Memory,
     Models,
     Plan,
@@ -37,7 +38,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 18] = [
+    const ALL: [Command; 19] = [
         Command::AddDir,
         Command::Agents,
         Command::Approve,
@@ -49,6 +50,7 @@ impl Command {
         Command::Curios,
         Command::Diagnostics,
         Command::Exit,
+        Command::Keymaps,
         Command::Memory,
         Command::Models,
         Command::Plan,
@@ -71,6 +73,7 @@ impl Command {
             Command::Curios => "curios",
             Command::Diagnostics => "diagnostics",
             Command::Exit => "exit",
+            Command::Keymaps => "keymaps",
             Command::Memory => "memory",
             Command::Models => "models",
             Command::Plan => "plan",
@@ -94,6 +97,7 @@ impl Command {
             Command::Curios => "open a repository review document",
             Command::Diagnostics => "show what nth found and runs",
             Command::Exit => "quit nth",
+            Command::Keymaps => "show keyboard shortcuts",
             Command::Memory => "show what the model remembers",
             Command::Models => "switch model and effort",
             Command::Plan => "show the plan",
@@ -304,6 +308,7 @@ mod tests {
                 "curios",
                 "diagnostics",
                 "exit",
+                "keymaps",
                 "memory",
                 "models",
                 "plan",

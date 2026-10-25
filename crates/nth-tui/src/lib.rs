@@ -13,6 +13,7 @@ mod git;
 mod header;
 mod hero;
 mod history;
+mod keymaps;
 mod llm_picker;
 mod mention;
 mod monitor;

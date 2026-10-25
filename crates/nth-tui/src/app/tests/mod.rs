@@ -461,6 +461,44 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
 }
 
 #[tokio::test]
+async fn keymaps_command_opens_a_scrollable_reference_tab_once() {
+    let mut app = app();
+    app.prompt.insert_str("/keymaps");
+    app.submit();
+
+    assert_eq!(app.content.active(), Tab::Keymaps);
+    assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Keymaps]);
+    assert!(
+        !app.is_busy(),
+        "opening the reference does not start a turn"
+    );
+    let first = rows(&mut app);
+    assert!(first[0].contains("keymaps"), "{first:#?}");
+    assert!(
+        first.iter().any(|row| row.contains("content tabs")),
+        "{first:#?}"
+    );
+    assert!(first.iter().any(|row| row.contains("Ctrl+T")), "{first:#?}");
+
+    app.prompt.insert_str("/keymaps");
+    app.submit();
+    assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Keymaps]);
+
+    app.apply(Action::Bottom);
+    rows(&mut app);
+    assert!(
+        app.keymaps.pager.scrollbar().is_some(),
+        "reference overflows the view"
+    );
+
+    app.apply(Action::CloseContent);
+    assert_eq!(app.content.tabs(), [Tab::Chat]);
+    app.prompt.insert_str("/keymaps");
+    app.submit();
+    assert_eq!(app.content.active(), Tab::Keymaps);
+}
+
+#[tokio::test]
 async fn tabs_open_switch_and_close() {
     let mut app = app();
     app.prompt.insert_str("/diagnostics");

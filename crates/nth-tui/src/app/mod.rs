@@ -96,6 +96,7 @@ use crate::{
     git::{GitStatus, Pr},
     header, hero,
     history::History,
+    keymaps::Keymaps,
     llm_picker::usage::LlmUsage,
     monitor::MonitorView,
     prompt::{self, Prompt},
@@ -177,6 +178,7 @@ pub struct App {
     content: Content,
     diagnostics: Diagnostics,
     usage_view: UsageView,
+    keymaps: Keymaps,
     /// Every saved session's tool totals, most called first; empty until
     /// the usage tab is opened.
     all_time_tools: Vec<(String, ToolUse)>,
@@ -480,6 +482,7 @@ impl App {
             content: Content::default(),
             diagnostics: Diagnostics::default(),
             usage_view: UsageView::default(),
+            keymaps: Keymaps::default(),
             all_time_tools: Vec::new(),
             tools_lookup: Job::default(),
             checkers: None,
@@ -958,6 +961,12 @@ impl App {
                     }
                 }
             }
+            Tab::Keymaps => {
+                self.keymaps.draw(frame, area);
+                if let Some(state) = self.keymaps.pager.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
             Tab::Diagnostics => {
                 let row = |label, llm: Llm, current, inherits| crate::diagnostics::ModeModel {
                     label,
@@ -1090,6 +1099,7 @@ impl App {
         match command {
             // Dropping the app aborts a running turn.
             Command::Exit => self.ask_quit(),
+            Command::Keymaps => self.open_content(Tab::Keymaps),
             // `/add-dir` without a directory to add only says how it is used.
             Command::AddDir => self.add_dir(""),
             // Mid-turn the session is in the turn task, so there is nothing
