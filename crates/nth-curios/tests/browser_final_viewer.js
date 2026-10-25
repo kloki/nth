@@ -56,5 +56,30 @@
   );
   pin.click();
   assert("A click on the open pin closes it", $("popover").hidden);
+  const details = doc.getElementById("more");
+  details.querySelector("summary").click();
+  assert(
+    "With comments on, a summary click comments instead of opening",
+    !details.open && !$("popover").hidden,
+  );
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  $("comments").click();
+  assert(
+    "Comments off hides the pins and popover",
+    $("overlays").hidden &&
+      $("comments").getAttribute("aria-pressed") === "false",
+  );
+  details.querySelector("summary").click();
+  assert(
+    "With comments off, the summary opens its details",
+    details.open && $("popover").hidden,
+  );
+  doc.getElementById("summary").click();
+  assert("With comments off, no popover opens", $("popover").hidden);
+  $("comments").click();
+  assert(
+    "Comments on shows the pins again",
+    !$("overlays").hidden && Boolean(document.querySelector(".pin")),
+  );
   return results;
 })();

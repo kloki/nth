@@ -50,7 +50,13 @@ button:disabled {
   border-color: var(--review-accent);
   color: white;
 }
-.primary:hover:not(:disabled) {
+#comments[aria-pressed="true"] {
+  background: var(--review-accent);
+  border-color: var(--review-accent);
+  color: white;
+}
+.primary:hover:not(:disabled),
+#comments[aria-pressed="true"]:hover:not(:disabled) {
   background: #344d63;
 }
 :focus-visible {
@@ -242,7 +248,8 @@ textarea {
   #selection-box {
     border: 2px solid Highlight;
   }
-  .pin[aria-pressed="true"] {
+  .pin[aria-pressed="true"],
+  #comments[aria-pressed="true"] {
     outline: 3px solid Highlight;
   }
 }

@@ -31,7 +31,11 @@
   const frame = $("document");
   const drafts = new Map();
   const requests = new Map();
+  // Off, clicks reach the document so its own interactive parts work.
+  let commenting = true;
   const HINT = "Click an element to comment.";
+  const OFF = "Comments are off: the document responds to clicks.";
+  const hint = () => say(commenting ? HINT : OFF);
   const say = (text, error = false) => {
     $("notice").textContent = text;
     $("notice").classList.toggle("error", error);
@@ -203,7 +207,7 @@
     );
   }
   function openPopover(next) {
-    if (busy) return false;
+    if (busy || !commenting) return false;
     if (editing()) {
       say("Send or clear your comment first.");
       $("comment-body").focus();
@@ -212,7 +216,7 @@
     selected = next.thread || null;
     target = next.target || null;
     $("comment-body").value = readDraft(draftSlot()) || "";
-    say(HINT);
+    hint();
     render();
     $("comment-body").focus({ preventScroll: true });
     return true;
@@ -279,9 +283,12 @@
     const listen = (node, event, handler) =>
       node.addEventListener(event, handler, options);
     listen(doc, "click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
       const link = event.target.closest?.("a[href]");
+      // Links stay guarded either way: the frame never navigates.
+      if (link || commenting) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       if (link) {
         let url;
         try {
@@ -316,6 +323,7 @@
           );
         return;
       }
+      if (!commenting) return;
       const element = eligible(event.target);
       if (element) openPopover({ target: makeTarget(element) });
       else if (!editing()) closePopover();
@@ -448,7 +456,7 @@
   }
   function drawPins() {
     pinFrame = 0;
-    if (!state || !frameDocument()) return;
+    if (!state || !commenting || !frameDocument()) return;
     const pins = $("pins"),
       existing = new Map(
         Array.from(pins.children).map((node) => [node.dataset.id, node]),
@@ -592,7 +600,7 @@
       writeDraft(slot, null);
       $("comment-body").value = "";
       await sendPending(saved);
-      say(HINT);
+      hint();
     });
   });
   $("resolve").addEventListener("click", async () => {
@@ -607,6 +615,18 @@
     );
   });
   $("close").addEventListener("click", closePopover);
+  // Closing keeps a draft: the input listener already stored it.
+  $("comments").addEventListener("click", () => {
+    if (busy) return;
+    closePopover();
+    commenting = !commenting;
+    const toggle = $("comments");
+    toggle.setAttribute("aria-pressed", String(commenting));
+    toggle.textContent = commenting ? "Comments on" : "Comments off";
+    $("overlays").hidden = !commenting;
+    hint();
+    schedulePins();
+  });
   $("revision").addEventListener("change", (event) =>
     changeRevision(event.target.value),
   );
@@ -691,7 +711,7 @@
       authenticated = true;
       await refresh();
       if (state) {
-        say(HINT);
+        hint();
         events();
       } else {
         authenticated = false;
