@@ -66,6 +66,8 @@ pub struct TabIcons {
     pub usage: &'static str,
     /// The orchestration's work items.
     pub work: &'static str,
+    /// The keyboard reference.
+    pub keymaps: &'static str,
 }
 
 /// The work tab's own marks; its items otherwise reuse `ok`, `fail`, `dot`,
@@ -166,6 +168,7 @@ pub static PLAIN: Icons = Icons {
         subagent: "@",
         usage: "∑",
         work: "⊞",
+        keymaps: "●",
     },
     tool: ToolIcons {
         read: "≡",

@@ -254,6 +254,7 @@ impl App {
             Tab::Subagent(id) => self.subagent_views.get(&id).map(|view| &view.chat),
             Tab::Diagnostics
             | Tab::File(_)
+            | Tab::Keymaps
             | Tab::Monitor(_)
             | Tab::Plan
             | Tab::Usage

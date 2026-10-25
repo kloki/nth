@@ -25,6 +25,8 @@ pub(crate) enum Tab {
     Diagnostics,
     /// A file the model showed you; its view is on the app.
     File(FileId),
+    /// The keyboard reference.
+    Keymaps,
     /// A background command the model started; its view is on the app.
     Monitor(MonitorId),
     /// The plan file, open while there is one.
@@ -51,6 +53,7 @@ impl Tab {
             Tab::Diagnostics => tab.diagnostics,
             Tab::Plan => tab.plan,
             Tab::File(_) => tab.file,
+            Tab::Keymaps => tab.keymaps,
             // A monitor's own header starts with its icon too.
             Tab::Monitor(_) => tab.monitor,
             Tab::Subagent(_) => tab.subagent,
@@ -287,6 +290,7 @@ impl App {
                 .views
                 .get(&id)
                 .map_or_else(|| format!("file {id}"), FileView::label),
+            Tab::Keymaps => "keymaps".into(),
             Tab::Monitor(id) => self
                 .monitor_views
                 .get(&id)
@@ -358,7 +362,7 @@ impl App {
             Tab::Chat if matches!(self.input, Input::Question(_)) => TabState::NeedsYou,
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
-            Tab::Diagnostics | Tab::Usage | Tab::File(_) => TabState::Idle,
+            Tab::Diagnostics | Tab::Usage | Tab::File(_) | Tab::Keymaps => TabState::Idle,
             Tab::Plan => self.plan.view.state(),
             Tab::Work => self.work.view.state(&self.live_work()),
             // Its tab closes once the process stops.
@@ -479,6 +483,7 @@ impl App {
             Tab::Plan => &mut self.plan.view.pager,
             Tab::Work => &mut self.work.view.pager,
             Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,
+            Tab::Keymaps => &mut self.keymaps.pager,
         })
     }
 }
