@@ -325,10 +325,10 @@ fn the_status_bar_shows_what_the_session_spent() {
         output: 10,
         ..Usage::default()
     }));
-    assert!(
-        rows(&mut app)[14].starts_with(&format!("{place} ↻ ?")),
-        "no price known, no cache count said: {:?}",
-        rows(&mut app)[14]
+    assert_eq!(
+        rows(&mut app)[14].trim_end(),
+        place,
+        "no price known, nothing said"
     );
 
     let mut glm = model("glm", true);
@@ -348,7 +348,7 @@ fn the_status_bar_shows_what_the_session_spent() {
     }));
     // 1000 fresh at 1000/M, 1000 read at 100/M, 20 out at 10000/M.
     assert!(
-        rows(&mut app)[14].contains(" $1.30 ↻ 50%"),
+        rows(&mut app)[14].contains(" $1.30 "),
         "{:?}",
         rows(&mut app)[14]
     );

@@ -2,7 +2,7 @@
 //! after anything that may have changed it: the status itself, and the
 //! branch's pull request.
 
-use super::App;
+use super::{App, mouse};
 use crate::git::{self, GitStatus, Pr};
 
 impl App {
@@ -35,7 +35,7 @@ impl App {
     /// A load that found no pull request, because the tool is missing or
     /// the branch has none, shows no link rather than stopping the app.
     pub(super) fn pr_loaded(&mut self, pr: Option<Pr>) {
-        self.areas.pr_link = None;
+        self.areas.forget(&mouse::Target::PullRequest);
         self.pr = pr;
         if self.pr_loading.take_again() {
             self.load_pr();
@@ -87,7 +87,10 @@ mod tests {
 
         assert!(rows[14].trim_end().ends_with("git · main #123 +2 *1"));
         // The link covers exactly its number, so a click lands on it alone.
-        let area = app.areas.pr_link.expect("the link shows");
+        let area = app
+            .areas
+            .find(&mouse::Target::PullRequest)
+            .expect("the link shows");
         let link: String = rows[usize::from(area.y)]
             .chars()
             .skip(usize::from(area.x))
@@ -111,7 +114,7 @@ mod tests {
         let rows = rows(&mut app);
 
         assert!(!rows[14].contains("#123"), "the right side is cut first");
-        assert_eq!(app.areas.pr_link, None);
+        assert_eq!(app.areas.find(&mouse::Target::PullRequest), None);
     }
 
     #[tokio::test]

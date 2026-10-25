@@ -820,10 +820,7 @@ impl App {
         .areas(area);
 
         self.close_answered_subagents();
-        self.areas = mouse::Areas {
-            header,
-            ..mouse::Areas::default()
-        };
+        self.areas = mouse::Areas::default();
         self.wide = self.split_width != 0 && frame.area().width >= self.split_width;
         let panes = match self.panes() {
             Panes::Single(tab) => vec![(tab, content)],
@@ -845,14 +842,31 @@ impl App {
             .map_or(content, |&(_, area)| area);
         self.areas.panes = panes;
         let tabs = self.tab_labels();
-        header::draw(frame, header, &tabs, self.areas.header_split());
+        let split = self.areas.header_split();
+        header::draw(frame, header, &tabs, split);
+        for (index, area) in header::tab_areas(&tabs, header, split)
+            .into_iter()
+            .enumerate()
+        {
+            self.areas.target(mouse::Target::Tab(index), area);
+        }
         if let Some(flash) = self.flash.as_ref().filter(|r| r.running()) {
             flash.draw(frame.buffer_mut(), focused);
         }
-        // The link's place is kept for a click to land on.
+        // The links' places are kept for the pointer to land on.
         let hits = status::draw(frame, status, self);
-        self.areas.pr_link = hits.pr;
-        self.areas.curio = hits.curio;
+        if let Some(area) = hits.place {
+            self.areas.target(mouse::Target::Place, area);
+        }
+        if let Some(area) = hits.branch {
+            self.areas.target(mouse::Target::Branch, area);
+        }
+        if let Some(area) = hits.pr {
+            self.areas.target(mouse::Target::PullRequest, area);
+        }
+        if let Some(area) = hits.curio {
+            self.areas.target(mouse::Target::Curio, area);
+        }
         match &self.input {
             Input::Prompt => {
                 // On a subagent's tab the prompt is its: the label names it
@@ -884,7 +898,8 @@ impl App {
                 // completes.
                 if let Some(completion) = &self.completion {
                     let at = prompt::position(input, &self.prompt, completion.start());
-                    completion.draw(frame, area, at);
+                    let popup = completion.draw(frame, area, at);
+                    self.areas.cover(popup);
                 }
             }
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
@@ -894,9 +909,13 @@ impl App {
             Input::Question(panel) => crate::question::draw(frame, input, panel),
             Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
             Input::Connect(panel) => {
-                self.areas.login_url = crate::connect::draw(frame, input, panel)
+                if let Some(area) = crate::connect::draw(frame, input, panel) {
+                    self.areas.target(mouse::Target::LoginUrl, area);
+                }
             }
         }
+        // Last, over whatever ended up on top.
+        self.draw_hover(frame);
     }
 
     /// `tab`'s view into `area`, with its scrollbar.

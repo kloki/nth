@@ -128,10 +128,30 @@ impl Chat {
         self.transcript.entry_at(line)
     }
 
-    /// The web address drawn at screen position (`column`, `row`), if any.
-    pub fn link_at(&self, column: u16, row: u16) -> Option<String> {
+    /// The web address drawn at screen position (`column`, `row`), if any,
+    /// and where on screen it is drawn.
+    pub fn link_at(&self, column: u16, row: u16) -> Option<(Rect, String)> {
         let (line, column) = self.line_at(column, row)?;
-        self.transcript.link_at(line, column)
+        let (columns, url) = self.transcript.link_at(line, column)?;
+        let x = self.area.x.saturating_add(columns.start as u16);
+        let width = (columns.len() as u16).min(self.area.right().saturating_sub(x));
+        Some((Rect::new(x, row, width, 1), url))
+    }
+
+    /// Where on screen the entry at (`column`, `row`) shows: its rows the
+    /// last draw put in view, the full width of the history.
+    pub fn entry_area_at(&self, column: u16, row: u16) -> Option<Rect> {
+        let (line, _) = self.line_at(column, row)?;
+        let lines = self.transcript.entry_lines(line)?;
+        let first = lines.start.max(self.top);
+        let last = lines.end.min(self.top + usize::from(self.area.height));
+        let y = self.area.y + (first - self.top) as u16;
+        Some(Rect::new(
+            self.area.x,
+            y,
+            self.area.width,
+            (last - first) as u16,
+        ))
     }
 
     /// The history line and the column into it under a screen position.

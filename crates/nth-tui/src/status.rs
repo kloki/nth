@@ -2,7 +2,8 @@
 //! the working directory in magenta (then how many were added with
 //! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
 //! and what the session spent on the left, git branch and status on the
-//! right, with the branch's pull request as a clickable `#N`. Line 2 shows
+//! right, with the branch's pull request as a clickable `#N`; a right click
+//! copies the working directory or the branch. Line 2 shows
 //! a hint about the last key (typed in by a wave, wiped out by one after a
 //! few seconds) or the queued prompts on the left, and the language servers
 //! that check a write on the right: a dot per server, coloured by the
@@ -27,10 +28,13 @@ use crate::{app::App, git};
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
 
-/// Draws the two lines. Where the pull-request link ended up on line 1,
-/// for a click to land on; `None` when none shows or it is cut off.
+/// Draws the two lines. Where line 1's working directory, branch,
+/// pull-request link and curio ended up, for the pointer to land on;
+/// `None` when one does not show or is cut off.
 #[derive(Default)]
 pub struct HitAreas {
+    pub place: Option<Rect>,
+    pub branch: Option<Rect>,
     pub pr: Option<Rect>,
     pub curio: Option<Rect>,
 }
@@ -45,6 +49,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     if !app.extra_dirs.is_empty() {
         dirs.push_str(&format!(" (+{})", app.extra_dirs.len()));
     }
+    let dirs_width = dirs.width();
     let mut place = vec![
         Span::styled(dirs, magenta()),
         Span::raw(" "),
@@ -70,9 +75,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     // The pull request on the branch, when the forge's tool found one:
     // its number in yellow, where it falls among the summary's spans.
     let mut link = None;
+    let mut branch_at = None;
     if let Some(status) = &app.git {
         summary.push(Span::styled("git · ", bright_white()));
         if let Some(branch) = &status.branch {
+            let at = summary.iter().map(Span::width).sum();
+            branch_at = Some((at, branch.width()));
             summary.push(Span::styled(branch.clone(), Style::new().fg(Color::Green)));
         }
         if let (Some(_), Some(pr)) = (&status.branch, &app.pr) {
@@ -114,30 +122,34 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
         None => queued(app),
     };
     split_line(frame, checks, left, servers(app));
+    // The left side starts at the line's edge, cut at its end.
+    let place_width = u16::try_from(dirs_width)
+        .unwrap_or(u16::MAX)
+        .min(state.width);
     HitAreas {
+        place: (place_width > 0).then_some(Rect {
+            width: place_width,
+            ..state
+        }),
+        branch: branch_at.and_then(|(at, wide)| link_rect(right, width, at, wide)),
         pr: link_area,
         curio: curio.and_then(|(at, wide)| link_rect(right, width, at, wide)),
     }
 }
 
-/// What the session spent, once it spent anything: its price at the
-/// catalogue's rates when known, and how much of what it sent came from
-/// the provider's prompt cache behind the cache icon, as ` $3.10 ↻ 82%`,
-/// or `↻ ?` when the provider never said.
+/// What the session spent at the catalogue's rates, once it spent
+/// anything and the price is known, as ` $3.10`.
 fn spent(app: &App) -> Vec<Span<'static>> {
-    let total = app.spent.ledger.total();
-    if total.steps == 0 {
+    if app.spent.ledger.total().steps == 0 {
         return Vec::new();
     }
-    let cache = match total.tokens.cached_share() {
-        Some(share) => format!("{} {:.0}%", icons().cache, share * 100.0),
-        None => format!("{} ?", icons().cache),
-    };
-    let text = match app.price() {
-        Some(price) => format!(" {price} {cache}"),
-        None => format!(" {cache}"),
-    };
-    vec![Span::styled(text, Style::new().fg(Color::Gray))]
+    match app.price() {
+        Some(price) => vec![Span::styled(
+            format!(" {price}"),
+            Style::new().fg(Color::Gray),
+        )],
+        None => Vec::new(),
+    }
 }
 
 /// Context used as a percentage of the window, coloured by how full it is:

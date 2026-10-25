@@ -58,7 +58,8 @@ impl Completion {
         }
     }
 
-    pub(super) fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) {
+    /// Where it was drawn.
+    pub(super) fn draw(&self, frame: &mut Frame, area: Rect, anchor: Position) -> Rect {
         let (rows, selected): (Vec<(String, &str)>, _) = match self {
             Completion::Command(popup) => (Entry::rows(popup.items()), popup.selected_index()),
             Completion::Directory { popup, .. } => (
@@ -73,7 +74,7 @@ impl Completion {
                 (mention::rows(popup.items()), popup.selected_index())
             }
         };
-        popup::draw(frame, area, anchor, &rows, selected);
+        popup::draw(frame, area, anchor, &rows, selected)
     }
 }
 

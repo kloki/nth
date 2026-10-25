@@ -523,7 +523,7 @@ Colours here are the terminal's standard colours; see [Colours](#colours). Purpl
 | Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta                |
 | Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                                                                                                    | white                  |
 | Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%                                                                           | white, yellow, magenta |
-| Spent   | What the session spent, subagents included: its price at the catalogue's rates and the share of input read from the prompt cache behind `↻`, `$3.10 ↻ 82%`; `↻ ?` when the provider never said | white                  |
+| Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | white                  |
 
 The context figure shows `◘ 0%` until the first turn reports usage, and is hidden when the model's context window is unknown. It is rounded to the nearest percent and capped at 100%, and turns yellow at 50% and magenta at 80%. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one. The time counts from the session's creation (`created_at`), so a resumed session carries on from where it left off and shows days when it is old, while `/clear` starts it over; it updates at each whole minute even when nothing else happens.
 
@@ -550,7 +550,7 @@ The status comes from one `git status --porcelain=v2 --branch` plus a stash chec
 
 **The branch's pull request**
 
-After the branch, when the branch has one, the pull request's `#N` in yellow, the one clickable thing in the bar: a left click opens the PR in the browser, with `opened <url>` on line 2 as a hint. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
+After the branch, when the branch has one, the pull request's `#N` in yellow: a left click opens the PR in the browser, with `opened <url>` on line 2 as a hint. A right click on the working directory copies its full path, and one on the branch copies its name, with `copied` on line 2. Each of them turns white while the pointer is over it. It shows whichever state the PR is in — open, merged or closed — and no link while the branch has none or the forge's tool cannot find it.
 
 Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs at start-up, at the end of each turn and when the session moves, not after every write, since it goes over the network; no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
 
