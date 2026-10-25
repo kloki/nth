@@ -21,8 +21,6 @@ pub struct Icons {
     pub current: &'static str,
     /// A language server, coloured by its state.
     pub dot: &'static str,
-    /// The share of input read from the prompt cache.
-    pub cache: &'static str,
     /// How full the context window is.
     pub context: &'static str,
     /// Prompts waiting for the turn to end.
@@ -135,7 +133,6 @@ pub static PLAIN: Icons = Icons {
     to: "→",
     current: "→",
     dot: "●",
-    cache: "↻",
     context: "◘",
     queued: ">",
     thinking: "∴",
@@ -240,7 +237,6 @@ impl Icons {
             to,
             current,
             dot,
-            cache,
             context,
             queued,
             thinking,
@@ -270,7 +266,6 @@ impl Icons {
             *to,
             *current,
             *dot,
-            *cache,
             *context,
             *queued,
             *thinking,

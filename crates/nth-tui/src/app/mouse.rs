@@ -1,14 +1,15 @@
 //! What the mouse does: the wheel scrolls the tab under it, a click on a
 //! header tab shows it, a click on a link in a chat or on the status bar's
-//! pull-request link or curio opens it, and a right click on an entry
-//! copies what it says. Whatever a click would act on changes colour while
+//! pull-request link or curio opens it, and a right click on an entry, or
+//! on the status bar's working directory or branch, copies what it says. Whatever a click would act on changes colour while
 //! the pointer is over it, and the chat entry under it gets a background,
 //! so two things can be hovered at once. Where it moves is kept for the empty
 //! chat's field to ripple under, and in a split it gives the pane under it
 //! the focus.
 //!
 //! Something new to point at is a [`Target`]: recorded with
-//! [`Areas::target`] where it is drawn, and acted on in [`App::click`].
+//! [`Areas::target`] where it is drawn, and acted on in [`App::click`] or
+//! [`App::right_click`].
 
 use std::process::Stdio;
 
@@ -29,6 +30,10 @@ const WHEEL_LINES: usize = 3;
 pub(super) enum Target {
     /// The header's tab at this index of `App::tab_labels`.
     Tab(usize),
+    /// The working directory on the status bar; a right click copies it.
+    Place,
+    /// The branch on the status bar; a right click copies it.
+    Branch,
     /// The branch's pull request on the status bar.
     PullRequest,
     /// The status bar's curio icon.
@@ -54,9 +59,11 @@ impl Target {
     fn hover(&self) -> Hover {
         match self {
             Target::Tab(_) | Target::Link(_) => Hover::Text(theme::HOVER),
-            Target::PullRequest | Target::Curio | Target::LoginUrl => {
-                Hover::Text(theme::HOVER_STATUS)
-            }
+            Target::Place
+            | Target::Branch
+            | Target::PullRequest
+            | Target::Curio
+            | Target::LoginUrl => Hover::Text(theme::HOVER_STATUS),
             Target::Entry => Hover::Background(theme::HOVER_ENTRY),
         }
     }
@@ -132,7 +139,11 @@ impl App {
                     self.click(target);
                 }
             }
-            MouseEventKind::Down(MouseButton::Right) => self.copy_entry(at),
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some((target, _)) = self.hits_at(at).into_iter().next() {
+                    self.right_click(target, at);
+                }
+            }
             _ => {}
         }
     }
@@ -144,7 +155,20 @@ impl App {
             Target::Curio => self.open_latest_curio(),
             Target::LoginUrl => self.open_login_url(),
             Target::Link(url) => self.open_url(&url),
-            Target::Entry => {}
+            Target::Place | Target::Branch | Target::Entry => {}
+        }
+    }
+
+    fn right_click(&mut self, target: Target, at: Position) {
+        match target {
+            Target::Place => self.copy(self.cwd.display().to_string()),
+            Target::Branch => {
+                if let Some(branch) = self.git.as_ref().and_then(|git| git.branch.clone()) {
+                    self.copy(branch);
+                }
+            }
+            Target::Link(_) | Target::Entry => self.copy_entry(at),
+            Target::Tab(_) | Target::PullRequest | Target::Curio | Target::LoginUrl => {}
         }
     }
 
@@ -272,6 +296,11 @@ impl App {
         else {
             return;
         };
+        self.copy(text);
+    }
+
+    /// Puts `text` on the clipboard, and says how it went on the status bar.
+    fn copy(&mut self, text: String) {
         if text.len() > terminal::COPY_LIMIT {
             self.hint = Some("too large to copy".into());
             return;
@@ -503,6 +532,53 @@ mod tests {
         assert!((link.left()..link.right()).all(hovered));
         // `main` before it stays green.
         assert!(!hovered(link.x - 2));
+    }
+
+    #[test]
+    fn a_right_click_on_the_working_directory_copies_it() {
+        let mut app = app();
+        app.clipboard = |text| {
+            assert_eq!(text, "/repo");
+            Ok(())
+        };
+        rows(&mut app);
+        let place = app.areas.find(&Target::Place).expect("the place shows");
+
+        hover(&mut app, place.x, place.y);
+        let drawn = buffer(&mut app);
+        assert!(
+            (place.left()..place.right()).all(|x| fg(&drawn, x, place.y) == theme::HOVER_STATUS)
+        );
+
+        click(&mut app, MouseButton::Right, place.x, place.y);
+        assert_eq!(app.hint.as_deref(), Some("copied"));
+    }
+
+    #[test]
+    fn a_right_click_on_the_branch_copies_it() {
+        let mut app = app();
+        app.clipboard = |text| {
+            assert_eq!(text, "main");
+            Ok(())
+        };
+        app.git = Some(crate::git::GitStatus {
+            branch: Some("main".into()),
+            ..Default::default()
+        });
+        let rows = rows(&mut app);
+        let branch = app.areas.find(&Target::Branch).expect("the branch shows");
+        let shown: String = rows[usize::from(branch.y)]
+            .chars()
+            .skip(usize::from(branch.x))
+            .take(usize::from(branch.width))
+            .collect();
+        assert_eq!(shown, "main");
+
+        // A left click does nothing.
+        click(&mut app, MouseButton::Left, branch.x, branch.y);
+        assert_eq!(app.hint, None);
+        click(&mut app, MouseButton::Right, branch.x, branch.y);
+        assert_eq!(app.hint.as_deref(), Some("copied"));
     }
 
     #[tokio::test]

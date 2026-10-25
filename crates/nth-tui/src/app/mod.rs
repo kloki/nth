@@ -855,6 +855,12 @@ impl App {
         }
         // The links' places are kept for the pointer to land on.
         let hits = status::draw(frame, status, self);
+        if let Some(area) = hits.place {
+            self.areas.target(mouse::Target::Place, area);
+        }
+        if let Some(area) = hits.branch {
+            self.areas.target(mouse::Target::Branch, area);
+        }
         if let Some(area) = hits.pr {
             self.areas.target(mouse::Target::PullRequest, area);
         }
