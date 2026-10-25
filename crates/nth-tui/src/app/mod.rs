@@ -623,6 +623,7 @@ impl App {
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut pointer = crate::terminal::Pointer::default();
         // `None` while your editor has the terminal.
         let mut input = Some(EventStream::new());
         let mut tick = tokio::time::interval(TICK);
@@ -639,6 +640,7 @@ impl App {
         while !self.quit {
             if self.pending_editor.is_some() {
                 self.open_editor(&mut input).await;
+                pointer = crate::terminal::Pointer::default();
             }
             if !self.is_editing() {
                 // The terminal holds the frame until it is all written, so
@@ -647,6 +649,7 @@ impl App {
                 queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 terminal.draw(|frame| self.draw(frame))?;
                 execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+                pointer.update(terminal.backend_mut(), self.hovering_clickable())?;
             }
             let ticking = self.is_busy()
                 || self.running_monitors() > 0

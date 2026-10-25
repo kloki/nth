@@ -38,9 +38,9 @@ impl Areas {
 impl App {
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = Position::new(mouse.column, mouse.row);
+        self.pointer = Some(at);
         match mouse.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                self.pointer = Some(at);
                 // Only a split has a pane without the focus.
                 if let Some(tab) = self.pane_at(at) {
                     self.content.select_tab(tab);
@@ -82,6 +82,31 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => self.copy_entry(at),
             _ => {}
         }
+    }
+
+    /// Use the same targets as left clicks, with the layout of the latest
+    /// frame so a stationary mouse follows changes beneath it too.
+    pub(super) fn hovering_clickable(&mut self) -> bool {
+        let Some(at) = self.pointer else {
+            return false;
+        };
+        if self.areas.header.contains(at) {
+            return header::tab_at(
+                &self.tab_labels(),
+                self.areas.header,
+                self.areas.header_split(),
+                at.x,
+            )
+            .is_some();
+        }
+        [self.areas.pr_link, self.areas.login_url, self.areas.curio]
+            .into_iter()
+            .flatten()
+            .any(|area| area.contains(at))
+            || self
+                .chat_at(at)
+                .and_then(|chat| chat.link_at(at.x, at.y))
+                .is_some()
     }
 
     /// The tab of the pane under `at`, if the last draw put one there.
@@ -244,6 +269,94 @@ mod tests {
             .finish_turn(Ok(()), "glm", Duration::from_secs(1));
         rows(&mut app);
         app
+    }
+
+    #[tokio::test]
+    async fn hand_pointer_tracks_tabs_and_split_header_gaps() {
+        let mut app = app().with_split_width(80);
+        app.open_content(Tab::Diagnostics);
+        rows_of(&mut app, 100);
+        assert!(!app.hovering_clickable());
+        hover(&mut app, 3, 0);
+        assert!(app.hovering_clickable());
+        hover(&mut app, 30, 0);
+        assert!(!app.hovering_clickable());
+        let x = app.areas.header_split().unwrap();
+        hover(&mut app, x + 2, 0);
+        assert!(app.hovering_clickable());
+        hover(&mut app, 0, 0);
+        assert!(!app.hovering_clickable());
+    }
+
+    #[tokio::test]
+    async fn hand_pointer_tracks_only_clickable_chat_links_and_redraws() {
+        let mut app = with_answer("see [docs](file:///etc/passwd) and [more](https://x.y)");
+        let lines = rows(&mut app);
+        let y = lines
+            .iter()
+            .position(|line| line.contains("see docs"))
+            .unwrap();
+        let docs = lines[y].find("docs").unwrap();
+        let more = lines[y].find("more").unwrap();
+        hover(&mut app, docs as u16, y as u16);
+        assert!(!app.hovering_clickable());
+        hover(&mut app, more as u16, y as u16);
+        assert!(app.hovering_clickable());
+
+        // A tab switch replaces the link beneath a stationary mouse.
+        app.open_content(Tab::Diagnostics);
+        rows(&mut app);
+        assert!(!app.hovering_clickable());
+        app.content.select_tab(Tab::Chat);
+        rows(&mut app);
+        assert!(app.hovering_clickable());
+    }
+
+    #[test]
+    fn hand_pointer_tracks_status_and_login_hit_areas() {
+        let mut app = app();
+        rows(&mut app);
+        let area = Rect::new(5, 20, 10, 1);
+        for target in 0..3 {
+            app.areas.pr_link = (target == 0).then_some(area);
+            app.areas.curio = (target == 1).then_some(area);
+            app.areas.login_url = (target == 2).then_some(area);
+            hover(&mut app, 5, 20);
+            assert!(app.hovering_clickable());
+            hover(&mut app, 15, 20);
+            assert!(!app.hovering_clickable());
+        }
+        // The next frame clears targets no longer drawn.
+        hover(&mut app, 5, 20);
+        rows(&mut app);
+        assert!(!app.hovering_clickable());
+    }
+
+    #[tokio::test]
+    async fn hand_pointer_finds_subagent_links_in_a_split() {
+        let mut app = app().with_split_width(80);
+        let mut view = crate::subagent::SubagentView::new(
+            "general".into(),
+            "research".into(),
+            app.cwd.clone(),
+        );
+        view.chat
+            .apply(&Event::TextDelta("[subagent docs](https://x.y)".into()));
+        view.chat
+            .transcript
+            .finish_turn(Ok(()), "glm", Duration::from_secs(1));
+        app.subagent_views.insert(1, view);
+        app.open_content(Tab::Subagent(1));
+        let lines = rows_of(&mut app, 100);
+        let y = lines
+            .iter()
+            .position(|line| line.contains("subagent docs"))
+            .unwrap();
+        let x = lines[y].find("subagent docs").unwrap();
+        hover(&mut app, x as u16, y as u16);
+        assert!(app.hovering_clickable());
+        hover(&mut app, 3, y as u16);
+        assert!(!app.hovering_clickable());
     }
 
     #[tokio::test]

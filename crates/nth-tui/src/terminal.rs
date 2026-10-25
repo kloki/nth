@@ -79,6 +79,7 @@ pub fn restore() {
 /// Undoes the modes set on top of what `ratatui::init` enables; popping
 /// keyboard flags that were never pushed is a no-op for the terminal.
 fn release() {
+    let _ = Pointer::default().update(&mut stdout(), false);
     let _ = execute!(
         stdout(),
         PopKeyboardEnhancementFlags,
@@ -86,6 +87,30 @@ fn release() {
         DisableBracketedPaste,
         DisableMouseCapture
     );
+}
+
+/// The last mouse shape sent to the terminal. Unsupported terminals ignore
+/// OSC 22; no query is needed on the input stream.
+#[derive(Default)]
+pub(crate) struct Pointer {
+    hand: Option<bool>,
+}
+
+impl Pointer {
+    pub fn update(&mut self, out: &mut impl Write, hand: bool) -> std::io::Result<()> {
+        if self.hand == Some(hand) {
+            return Ok(());
+        }
+        let sequence = if hand {
+            "\x1b]22;pointer\x1b\\"
+        } else {
+            "\x1b]22;\x1b\\"
+        };
+        out.write_all(sequence.as_bytes())?;
+        out.flush()?;
+        self.hand = Some(hand);
+        Ok(())
+    }
 }
 
 /// The most text `copy` sends. Terminals drop an OSC 52 payload over their
@@ -108,6 +133,21 @@ fn osc52(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_updates_only_on_changes_and_can_be_reapplied_after_release() {
+        let mut pointer = Pointer::default();
+        let mut out = Vec::new();
+        for hand in [false, false, true, true, false] {
+            pointer.update(&mut out, hand).unwrap();
+        }
+        assert_eq!(out, b"\x1b]22;\x1b\\\x1b]22;pointer\x1b\\\x1b]22;\x1b\\");
+
+        out.clear();
+        pointer = Pointer::default();
+        pointer.update(&mut out, false).unwrap();
+        assert_eq!(out, b"\x1b]22;\x1b\\");
+    }
 
     #[test]
     fn the_clipboard_sequence_carries_the_text_in_base64() {
