@@ -32,9 +32,9 @@ nth init
 
 ## Setup subscriptions
 
-Only Codex is supported.
+Only Openai is supported.
 
-- run `/connect` in `nth`
+- run `nth connect`
 
 # Features
 
@@ -60,9 +60,14 @@ Only Codex is supported.
 - Complete a task in cycles
 - The model will dynamically update the plan based on its findings
 - `nth` will automatically use it when needed
+- Visualize progress on long runnig tasks
 
 ## Profiles
 
 - Profiles configure different models for plan/act/subagent
 - Defined in your config
 - ctrl-p toggles between them
+
+## Curios
+
+- Local version of claude's artifacts
