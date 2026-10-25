@@ -133,7 +133,11 @@ pub(crate) async fn reminder(
 /// the `memory` folder, when the session keeps one.
 pub(crate) fn writable(mode: Mode, plan: PathBuf, memory: Option<PathBuf>) -> Writable {
     match mode {
-        Mode::Plan => Writable::Plan { file: plan, memory },
+        Mode::Plan => Writable::Plan {
+            file: plan,
+            memory,
+            source: None,
+        },
         Mode::Act => Writable::Any,
     }
 }

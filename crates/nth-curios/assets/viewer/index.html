@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Curios review</title>
+    <link rel="stylesheet" href="/viewer.css" />
+    <script src="/viewer.js" defer></script>
+  </head>
+  <body>
+    <main id="stage">
+      <iframe
+        id="document"
+        title="Published curio"
+        sandbox="allow-same-origin"
+        referrerpolicy="no-referrer"
+      ></iframe>
+      <div id="overlays" aria-label="Comment pins">
+        <div id="hover-box" hidden></div>
+        <div id="selection-box" hidden></div>
+        <div id="pins"></div>
+        <section id="popover" hidden aria-label="Comment">
+          <ol id="messages" aria-label="Thread messages"></ol>
+          <p id="working" hidden>
+            <span
+              id="spinner"
+              class="spinner"
+              role="img"
+              aria-label="nth is working"
+            ></span
+            ><span id="working-text"
+              >Waiting for nth: its session is not running.</span
+            >
+          </p>
+          <form id="comment-form">
+            <textarea
+              id="comment-body"
+              rows="1"
+              maxlength="16000"
+              aria-label="Comment"
+              placeholder="Comment for nth…"
+            ></textarea>
+            <button type="button" id="resolve" hidden aria-label="Resolve">
+              <svg
+                class="icon resolve-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+              <svg
+                class="icon reopen-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+            </button>
+            <button type="submit" id="submit" aria-label="Comment">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+            </button>
+          </form>
+        </section>
+      </div>
+    </main>
+    <header id="dock" aria-label="Curio">
+      <span class="lead">
+        <span id="status-dot" role="img" aria-label="Connecting"></span>
+        <span id="current-revision">r…</span>
+      </span>
+      <span class="more">
+        <span class="separator" aria-hidden="true">│</span>
+        <h1 id="title">Opening curio…</h1>
+        <nav id="revisions" aria-label="Other revisions"></nav>
+        <button id="update" type="button" hidden></button>
+        <span id="thread-count"></span>
+      </span>
+      <button
+        id="comments"
+        type="button"
+        aria-pressed="true"
+        aria-label="Comments on"
+      >
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+        </svg>
+      </button>
+    </header>
+    <p
+      id="notice"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      Connecting…
+    </p>
+    <noscript
+      >The trusted Curios review shell needs JavaScript. Published documents do
+      not execute JavaScript.</noscript
+    >
+  </body>
+</html>

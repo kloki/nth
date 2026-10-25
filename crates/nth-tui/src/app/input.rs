@@ -17,6 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub(super) enum Input {
     Prompt,
+    Curios(super::curios::Picker),
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
     AgentPicker(AgentPicker),
@@ -33,9 +34,10 @@ impl Input {
     pub(super) fn rows(&self, screen: Rect) -> u16 {
         match self {
             Input::Prompt => prompt::ROWS,
-            Input::LlmPicker(_) | Input::SessionPicker(_) | Input::AgentPicker(_) => {
-                picker_rows(screen)
-            }
+            Input::LlmPicker(_)
+            | Input::SessionPicker(_)
+            | Input::AgentPicker(_)
+            | Input::Curios(_) => picker_rows(screen),
             Input::Question(panel) => question::rows(panel, screen),
             Input::Settings(_) => settings::ROWS,
             Input::Connect(panel) => panel.rows(),

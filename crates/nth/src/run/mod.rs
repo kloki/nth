@@ -99,8 +99,16 @@ pub async fn run(
         Ok(store) => store.save(&session).await,
         Err(e) => Err(e),
     };
-    if let Err(e) = saved {
-        eprintln!("{} session not saved: {e}", icons().warn.yellow().bold());
+    match saved {
+        Err(e) => eprintln!("{} session not saved: {e}", icons().warn.yellow().bold()),
+        Ok(()) => {
+            if let Err(e) = session.acknowledge_curios() {
+                eprintln!(
+                    "{} Curios feedback not acknowledged: {e}",
+                    icons().warn.yellow().bold()
+                );
+            }
+        }
     }
     lsp.shutdown().await;
     turn?;

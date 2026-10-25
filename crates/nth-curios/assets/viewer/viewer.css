@@ -1,0 +1,493 @@
+/* The review shell's chrome wears Dracula, as Koen's waybar does; the
+   document itself keeps its own look on white. */
+:root {
+  color-scheme: light;
+  --bar: rgb(30 31 41 / 0.92);
+  --background: #282a36;
+  --foreground: #f8f8f2;
+  --comment: #6272a4;
+  --purple: #bd93f9;
+  --pink: #ff79c6;
+  --green: #50fa7b;
+  --red: #ff5555;
+  --mono:
+    "FantasqueSansM Nerd Font", "FantasqueSansMNerdFont", "JetBrains Mono",
+    ui-monospace, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  font:
+    14px/1.45 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--background);
+  background: white;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: white;
+}
+button,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+h1,
+p {
+  margin: 0;
+}
+.icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: white;
+}
+iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  background: white;
+}
+#overlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* The dock: bottom right, as wide as what it shows. Collapsed it is the
+   status, the revision and the comment toggle; hover or focus opens the
+   rest to the left, so the toggle never moves under the pointer. */
+#dock {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  max-width: calc(100vw - 28px);
+  padding: 3px 4px;
+  background: var(--bar);
+  border-radius: 999px;
+  color: var(--foreground);
+  font: 13px/1 var(--mono);
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.18);
+}
+#dock .lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--comment);
+}
+#status-dot.listening {
+  background: var(--green);
+}
+#status-dot.error {
+  background: var(--red);
+}
+#dock .more {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-width 0.28s ease,
+    opacity 0.2s ease;
+}
+#dock:hover .more,
+#dock:focus-within .more {
+  max-width: 640px;
+  opacity: 1;
+}
+#dock .more > *,
+#revisions button {
+  padding: 6px 10px;
+}
+.separator,
+#thread-count,
+#revisions button {
+  color: var(--comment);
+}
+#title {
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#revisions {
+  display: flex;
+}
+#revisions button:hover:not(:disabled),
+#update:hover:not(:disabled) {
+  color: var(--foreground);
+}
+#update {
+  color: var(--purple);
+}
+#comments {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 50%;
+  color: var(--comment);
+}
+#comments[aria-pressed="true"] {
+  background: var(--pink);
+  color: var(--background);
+}
+#comments .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* Notices are for screen readers only; on screen an error turns the
+   dock's dot red and says itself on hover. */
+#notice {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pin {
+  pointer-events: auto;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: var(--background);
+  box-shadow: 0 0 0 2px white;
+  color: var(--foreground);
+  font: 700 11px/1 var(--mono);
+}
+.pin[aria-pressed="true"] {
+  background: var(--purple);
+  color: var(--background);
+}
+.pin.resolved {
+  opacity: 0.55;
+}
+/* A working pin carries nth's spinner beside it, unless its
+   thread is open and shows the spinner itself. */
+.pin .spinner {
+  position: absolute;
+  left: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.pin[aria-pressed="true"] .spinner {
+  display: none;
+}
+
+/* What a click would comment on: a dashed outline. What the popover is
+   about: tinted, with a purple line drawn under it. */
+#hover-box,
+#selection-box {
+  position: absolute;
+  border-radius: 4px;
+}
+#hover-box {
+  outline: 2px dashed var(--purple);
+  outline-offset: 2px;
+  background: rgb(189 147 249 / 0.06);
+  animation: appear 0.12s ease-out;
+}
+#selection-box {
+  background: rgb(189 147 249 / 0.12);
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+#selection-box::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--purple);
+  transform-origin: left;
+  animation: underline 0.2s var(--ease);
+}
+@keyframes underline {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* nth's TUI spinner, drawn dot by dot from viewer.js: 16 frames of 80 ms,
+   each shown for its 1/16 of the loop. */
+.spinner {
+  display: inline-flex;
+  flex: none;
+  padding: 8px 12px;
+  background: var(--bar);
+  border-radius: 5px;
+}
+.spinner .face {
+  position: relative;
+  width: 36px;
+  height: 16px;
+}
+.spinner .frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: frame 1.28s steps(1) infinite;
+}
+@keyframes frame {
+  0% {
+    opacity: 1;
+  }
+  6.25%,
+  100% {
+    opacity: 0;
+  }
+}
+.spinner i {
+  position: absolute;
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: var(--purple);
+}
+
+/* The thread: chat bubbles on frosted glass, so they read over any page. */
+#popover {
+  pointer-events: auto;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(354px, calc(100% - 16px));
+  max-height: min(460px, calc(100% - 16px));
+  overflow: auto;
+  padding: 12px;
+  border-radius: 20px;
+  background: rgb(248 248 242 / 0.55);
+  backdrop-filter: blur(4px);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.6),
+    0 12px 40px rgb(0 0 0 / 0.12);
+}
+#popover.opening {
+  animation: pop-in 0.2s var(--ease);
+}
+/* `hidden` is set at once; the panel stays drawn while it fades out. */
+#popover[hidden].closing {
+  display: flex !important;
+  pointer-events: none;
+  animation: pop-out 0.12s ease-in forwards;
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+    backdrop-filter: blur(0);
+  }
+}
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.92);
+    backdrop-filter: blur(0);
+  }
+}
+#messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#messages li,
+#working-text {
+  max-width: 80%;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#messages li.human {
+  align-self: flex-end;
+  background: var(--purple);
+  color: var(--background);
+  border-radius: 14px 14px 4px 14px;
+}
+#messages li.agent,
+#working-text {
+  align-self: flex-start;
+  background: var(--background);
+  color: var(--foreground);
+  border-radius: 14px 14px 14px 4px;
+}
+#popover.opening #messages li,
+#messages li.new {
+  animation: rise 0.16s var(--ease) both;
+  animation-delay: calc(80ms + var(--i, 0) * 60ms);
+}
+#messages li.new {
+  animation-delay: 0ms;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+/* Who said what, for screen readers; the side and colour say it on screen. */
+#messages strong {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+#working {
+  display: flex;
+  align-self: flex-start;
+}
+#working-text {
+  max-width: none;
+}
+#comment-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 4px 4px 14px;
+  background: rgb(30 31 41 / 0.94);
+  border-radius: 18px;
+}
+textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  max-height: 140px;
+  padding: 6px 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--foreground);
+  resize: none;
+  overflow-y: hidden;
+}
+textarea::placeholder {
+  color: var(--comment);
+}
+/* The pill shows the focus, not the field inside it. */
+#comment-body:focus-visible {
+  outline: none;
+}
+#comment-form:focus-within {
+  box-shadow: 0 0 0 2px var(--purple);
+}
+#comment-form button {
+  display: flex;
+  flex: none;
+  padding: 7px;
+  border-radius: 50%;
+}
+#resolve {
+  color: var(--comment);
+}
+#resolve:hover:not(:disabled) {
+  color: var(--foreground);
+}
+#resolve .reopen-icon,
+#resolve.reopen .resolve-icon {
+  display: none;
+}
+#resolve.reopen .reopen-icon {
+  display: block;
+}
+#submit {
+  background: var(--pink);
+  color: var(--background);
+}
+[hidden] {
+  display: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  #dock .more {
+    transition: none;
+  }
+  #hover-box,
+  #selection-box::after,
+  #popover.opening,
+  #popover.opening #messages li,
+  #messages li.new {
+    animation: none;
+  }
+  #popover[hidden].closing {
+    display: none !important;
+  }
+  .spinner .frame {
+    animation: none;
+  }
+  .spinner .frame:first-child {
+    opacity: 1;
+  }
+}
+@media (forced-colors: active) {
+  .pin,
+  #hover-box,
+  #selection-box::after,
+  #status-dot {
+    border: 2px solid Highlight;
+  }
+  .pin[aria-pressed="true"],
+  #comments[aria-pressed="true"] {
+    outline: 3px solid Highlight;
+  }
+}

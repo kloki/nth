@@ -118,7 +118,20 @@ impl Store {
         let path = self.path(session.id);
         let tmp = path.with_extension("json.tmp");
         tokio::fs::write(&tmp, json).await.map_err(io_at(&tmp))?;
-        tokio::fs::rename(&tmp, &path).await.map_err(io_at(&path))
+        tokio::fs::File::open(&tmp)
+            .await
+            .map_err(io_at(&tmp))?
+            .sync_all()
+            .await
+            .map_err(io_at(&tmp))?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_at(&path))?;
+        tokio::fs::File::open(&self.dir)
+            .await
+            .map_err(io_at(&self.dir))?
+            .sync_all()
+            .await
+            .map_err(io_at(&self.dir))?;
+        Ok(())
     }
 
     /// Every saved session, the most recently used first. Files that don't
@@ -516,6 +529,38 @@ mod tests {
 
         assert_eq!(store.list().await.expect("lists"), []);
         assert_eq!(store.latest().await.expect("loads"), None);
+    }
+
+    #[tokio::test]
+    async fn a_broken_curios_store_never_stops_a_save_or_load() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(repo.path())
+            .status()
+            .expect("runs git");
+        assert!(status.success());
+        let mut session = Session::new("glm-5.3", repo.path().into());
+        session.messages.push(Message::User("hi".into()));
+        session.curio_root = Some(repo.path().canonicalize().expect("exists"));
+        session.curio_receipts.insert("batch".into());
+        // An ignore exception that would put the session's state in git,
+        // which the Curios store refuses to open with.
+        let curios = repo.path().join(".nth/curios");
+        std::fs::create_dir_all(&curios).expect("creates");
+        std::fs::write(
+            curios.join(".gitignore"),
+            format!("*\n!{0}/\n!{0}/state.json\n", session.id),
+        )
+        .expect("writes");
+        assert!(session.acknowledge_curios().is_err());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path());
+
+        store.save(&session).await.expect("saves");
+        let loaded = store.load(session.id).await.expect("loads");
+
+        assert_eq!(loaded.curio_receipts, session.curio_receipts);
     }
 
     #[tokio::test]

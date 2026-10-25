@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quiet Folio — document starter</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --doc-paper: #fafaf8;
+        --doc-surface: #ffffff;
+        --doc-ink: #252724;
+        --doc-muted: #555b55;
+        --doc-rule: #d9ddd6;
+        --doc-accent: #425f78;
+        --doc-tint: #edf2f5;
+        --doc-font:
+          system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --doc-measure: 68ch;
+        --doc-space: 1.5rem;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--doc-paper);
+        color: var(--doc-ink);
+        font-family: var(--doc-font);
+        font-size: 1rem;
+        line-height: 1.65;
+      }
+      main {
+        max-width: calc(var(--doc-measure) + 3rem);
+        margin-inline: auto;
+        padding: 4rem var(--doc-space);
+        overflow-wrap: break-word;
+      }
+      header {
+        margin-block-end: 3rem;
+      }
+      section + section {
+        margin-block-start: 3rem;
+      }
+      h1,
+      h2 {
+        line-height: 1.2;
+        text-wrap: balance;
+      }
+      h1 {
+        margin: 0.5rem 0 1rem;
+        font-size: clamp(2rem, 5vw, 3rem);
+        font-weight: 650;
+      }
+      h2 {
+        margin: 0 0 1rem;
+        font-size: 1.4rem;
+        font-weight: 650;
+      }
+      p {
+        margin: 0 0 1rem;
+      }
+      .doc-eyebrow {
+        color: var(--doc-accent);
+        font-size: 0.85rem;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .doc-lead {
+        color: var(--doc-muted);
+        font-size: 1.125rem;
+      }
+      .doc-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+        border: 1px solid var(--doc-rule);
+        border-radius: 0.375rem;
+        background: var(--doc-surface);
+      }
+      .doc-scroll:focus-visible {
+        outline: 3px solid var(--doc-accent);
+        outline-offset: 3px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+      }
+      caption {
+        padding: 1rem;
+        text-align: left;
+        color: var(--doc-muted);
+      }
+      th,
+      td {
+        padding: 0.75rem 1rem;
+        vertical-align: top;
+        border-top: 1px solid var(--doc-rule);
+      }
+      thead th {
+        background: var(--doc-tint);
+      }
+      th {
+        font-weight: 650;
+      }
+      figure {
+        margin: var(--doc-space) 0 0;
+      }
+      figcaption,
+      .doc-note {
+        color: var(--doc-muted);
+        font-size: 0.9rem;
+      }
+      figcaption {
+        margin-block-start: 0.75rem;
+      }
+      .doc-artboard {
+        display: block;
+        width: 640px;
+        height: 200px;
+      }
+      .doc-artboard text {
+        font-family: var(--doc-font);
+        fill: var(--doc-ink);
+      }
+      .doc-node {
+        fill: var(--doc-tint);
+        stroke: var(--doc-accent);
+        stroke-width: 2;
+      }
+      .doc-connector {
+        fill: none;
+        stroke: var(--doc-accent);
+        stroke-width: 2;
+      }
+      .doc-arrow {
+        fill: var(--doc-accent);
+      }
+      footer {
+        margin-block-start: 3rem;
+        padding-block-start: 1rem;
+        border-top: 1px solid var(--doc-rule);
+      }
+      @media (max-width: 40rem) {
+        main {
+          padding: 2rem 1rem;
+        }
+        th,
+        td {
+          padding: 0.75rem;
+        }
+      }
+      @media print {
+        body {
+          background: white;
+        }
+        main {
+          max-width: none;
+          padding: 0;
+        }
+        .doc-scroll {
+          overflow: visible;
+        }
+        .doc-artboard {
+          width: 100%;
+          height: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="document">
+      <header id="document-introduction">
+        <p class="doc-eyebrow">Quiet Folio · optional starter</p>
+        <h1 id="document-title">A document ready for discussion</h1>
+        <p class="doc-lead">
+          This is a small layout example, not a finished report. Replace its
+          content and structure with the user's brief before publishing.
+        </p>
+      </header>
+
+      <section id="writing-guidance" aria-labelledby="writing-heading">
+        <h2 id="writing-heading">Start with the point</h2>
+        <p>
+          State the question, explain the evidence and make the next step clear.
+          Keep prose comfortably narrow. Use a table or diagram only when it
+          makes the explanation easier to understand.
+        </p>
+        <p>
+          Keep a section's ID when its meaning survives an edit. Give new ideas
+          new IDs so review comments continue to refer to the intended content.
+        </p>
+      </section>
+
+      <section id="structure-example" aria-labelledby="structure-heading">
+        <h2 id="structure-heading">Make the structure visible</h2>
+        <div
+          class="doc-scroll"
+          role="region"
+          aria-label="Example document structure table"
+          tabindex="0"
+        >
+          <table id="document-structure">
+            <caption>
+              Example structure — adapt or remove these rows.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Part</th>
+                <th scope="col">Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr id="structure-context">
+                <th scope="row">Context</th>
+                <td>Explain the question and relevant constraints.</td>
+              </tr>
+              <tr id="structure-evidence">
+                <th scope="row">Evidence</th>
+                <td>Present sourced facts and label assumptions.</td>
+              </tr>
+              <tr id="structure-proposal">
+                <th scope="row">Proposal</th>
+                <td>Describe the next step and its rationale.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="diagram-example" aria-labelledby="diagram-heading">
+        <h2 id="diagram-heading">Show one relationship</h2>
+        <p id="artboard-instructions" class="doc-note">
+          Example artboard · 640 × 200 units. On a narrow screen, focus the
+          diagram region and scroll horizontally to see its full width.
+        </p>
+        <figure id="document-flow">
+          <div
+            class="doc-scroll"
+            role="region"
+            aria-label="Document flow artboard"
+            aria-describedby="artboard-instructions"
+            tabindex="0"
+          >
+            <svg
+              class="doc-artboard"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 640 200"
+              role="img"
+              aria-labelledby="flow-title flow-description"
+            >
+              <title id="flow-title">From question to proposal</title>
+              <desc id="flow-description">
+                A question leads to evidence, which informs a proposal. Three
+                labeled boxes are joined by right-pointing arrows.
+              </desc>
+              <g id="flow-question">
+                <rect
+                  class="doc-node"
+                  x="24"
+                  y="64"
+                  width="168"
+                  height="72"
+                  rx="6"
+                />
+                <text x="108" y="107" text-anchor="middle" font-size="18">
+                  Question
+                </text>
+              </g>
+              <path class="doc-connector" d="M192 100 H230" />
+              <path class="doc-arrow" d="M230 95 L240 100 L230 105 Z" />
+              <g id="flow-evidence">
+                <rect
+                  class="doc-node"
+                  x="240"
+                  y="64"
+                  width="160"
+                  height="72"
+                  rx="6"
+                />
+                <text x="320" y="107" text-anchor="middle" font-size="18">
+                  Evidence
+                </text>
+              </g>
+              <path class="doc-connector" d="M400 100 H438" />
+              <path class="doc-arrow" d="M438 95 L448 100 L438 105 Z" />
+              <g id="flow-proposal">
+                <rect
+                  class="doc-node"
+                  x="448"
+                  y="64"
+                  width="168"
+                  height="72"
+                  rx="6"
+                />
+                <text x="532" y="107" text-anchor="middle" font-size="18">
+                  Proposal
+                </text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>
+            Example only: replace this flow with the relationship your document
+            needs.
+          </figcaption>
+        </figure>
+      </section>
+
+      <footer id="starter-note">
+        <p class="doc-note">
+          Optional styling, ordinary HTML. Keep what helps the brief and remove
+          the rest.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -35,6 +35,12 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
+    /// Original repository owning generated review state; absent until used.
+    #[serde(default)]
+    pub curio_root: Option<PathBuf>,
+    /// Receipts persisted alongside the history which contains their notices.
+    #[serde(default)]
+    pub curio_receipts: BTreeSet<String>,
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
     pub cwd: PathBuf,
@@ -148,6 +154,112 @@ pub struct Session {
 }
 
 impl Session {
+    /// Trusted handle for tools or an active front-end delivery owner.
+    pub fn curios(&self) -> nth_protocol::Curios {
+        if self.subagent {
+            return nth_protocol::Curios::default();
+        }
+        nth_protocol::Curios::new(
+            self.origin.as_ref().unwrap_or(&self.cwd).clone(),
+            self.id.to_string(),
+            self.curio_root.clone(),
+            self.curio_receipts.clone(),
+        )
+    }
+
+    pub fn curio_source_dir(&self) -> Option<PathBuf> {
+        self.curio_root.as_ref().map(|r| {
+            r.join(".nth/curios")
+                .join(self.id.to_string())
+                .join("source")
+        })
+    }
+
+    /// Explicit preparation stores ownership for save/resume.
+    pub fn prepare_curios(&mut self) -> nth_curios::Result<nth_curios::Store> {
+        let store = self.curios().store()?;
+        self.curio_root = Some(store.repo_root().to_path_buf());
+        Ok(store)
+    }
+
+    /// Idle wakeup entry point. Never routes submitted text through prompt,
+    /// skill or agent-mention parsing. Caller owns the delivery lease and save.
+    pub async fn deliver_curios(
+        &mut self,
+        provider: &dyn Provider,
+        tools: &[Box<dyn Tool>],
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        if let Ok(store) = self.curios().store() {
+            self.curio_root = Some(store.repo_root().to_path_buf());
+        }
+        let Some(notices) = self.take_curios(front_end, events).await else {
+            return Ok(());
+        };
+        self.prepared_turn(
+            TurnInput::Feedback(notices),
+            provider,
+            tools,
+            front_end,
+            events,
+            cancel,
+        )
+        .await
+    }
+
+    /// This session's review feedback waiting in `front_end`'s inbox,
+    /// recorded and shown, as the notices that lead the next user message.
+    async fn take_curios(
+        &mut self,
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+    ) -> Option<String> {
+        let curios = self.curios();
+        let mut notices = Vec::new();
+        for notice in front_end.inbox.take_curios(&self.id.to_string()) {
+            if curios.record(&notice) {
+                let text = notice.render();
+                emit(events, Event::Notice(text.clone())).await;
+                notices.push(text);
+            }
+        }
+        self.curio_receipts.extend(curios.recorded());
+        // One element per line, as `split_notices` reads them back.
+        (!notices.is_empty()).then(|| notices.join("\n"))
+    }
+
+    /// Marks the Curios feedback this session recorded as recorded in its
+    /// store too. Call once the session is saved; one missed is caught up by
+    /// the next, since it covers every receipt.
+    pub fn acknowledge_curios(&self) -> nth_curios::Result<()> {
+        if self.curio_receipts.is_empty() {
+            return Ok(());
+        }
+        let Some(root) = &self.curio_root else {
+            return Ok(());
+        };
+        // Saved history remains usable when its repository has gone away.
+        // Only repository absence is optional; state and write errors still fail.
+        match root.try_exists() {
+            Ok(false) => return Ok(()),
+            Err(error) => return Err(error.into()),
+            Ok(true) => {}
+        }
+        match nth_curios::repository_root(root) {
+            Err(nth_curios::Error::RepoRequired) => return Ok(()),
+            Err(error) => return Err(error),
+            Ok(found) if found != root.canonicalize()? => return Ok(()),
+            Ok(_) => {}
+        }
+        nth_curios::Store::new(root, &self.id.to_string())?
+            .acknowledge_recorded(&self.curio_receipts.iter().cloned().collect::<Vec<_>>())
+    }
+
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let context = Arc::<Context>::default();
@@ -163,6 +275,8 @@ impl Session {
         let now = SystemTime::now();
         Self {
             id,
+            curio_root: None,
+            curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
             extra_dirs: Vec::new(),
@@ -371,6 +485,15 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
+        // Plan mode names the source folder the model may write review
+        // documents in, so it is made ready; otherwise Curios waits for its
+        // tools.
+        if !self.subagent
+            && self.tools_mode() == Mode::Plan
+            && let Ok(store) = self.curios().store()
+        {
+            self.curio_root = Some(store.repo_root().to_path_buf());
+        }
         // `@explore …` tells the model to delegate to that agent; a subagent
         // has no task tool to do so with.
         if !self.subagent
@@ -378,6 +501,34 @@ impl Session {
         {
             text.push_str(&mention);
         }
+        self.prepared_turn(
+            TurnInput::Prompt(text),
+            provider,
+            tools,
+            front_end,
+            events,
+            cancel,
+        )
+        .await
+    }
+
+    /// Shared turn preparation for ordinary prompts and typed review feedback.
+    /// Feedback reaches this directly so document text is never parsed as input.
+    async fn prepared_turn(
+        &mut self,
+        input: TurnInput,
+        provider: &dyn Provider,
+        tools: &[Box<dyn Tool>],
+        front_end: &FrontEnd,
+        events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        // Notices lead the message, as `split_notices` reads them; feedback
+        // is notices alone, with only the reminders after it.
+        let (curios, mut text) = match input {
+            TurnInput::Prompt(text) => (self.take_curios(front_end, events).await, text),
+            TurnInput::Feedback(notices) => (Some(notices), String::new()),
+        };
         let plan_path = self.plan_path();
         let agent = self.primary().map(|agent| agent.name.clone());
         if self.tools_mode() == Mode::Plan {
@@ -397,7 +548,7 @@ impl Session {
         if let Some(reminder) =
             primary::reminder(agent.as_deref(), self.last_turn_agent.as_deref(), first)
         {
-            text = format!("{text}\n\n{reminder}");
+            append(&mut text, &reminder);
         }
         // A primary agent's own prompt says how it works; plan mode's
         // reminders are for plan and act.
@@ -413,15 +564,28 @@ impl Session {
         {
             // On the same message, as opencode adds a synthetic part: two
             // user messages in a row are not something every endpoint takes.
-            text = format!("{text}\n\n{reminder}");
+            append(&mut text, &reminder);
+        }
+        // Only the current owner's source workspace is additionally writable.
+        if self.tools_mode() == Mode::Plan
+            && let Some(source) = self.curio_source_dir()
+        {
+            append(
+                &mut text,
+                &format!(
+                    "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
+                    source.display()
+                ),
+            );
         }
         // An instruction file edited since the last turn, in front of the
         // prompt as the front-end's notices are.
         let changes = self.watch.changes(self.loaded()).await;
-        if let Some(changed) = instructions_notice(&changes) {
-            text = format!("{changed}\n{text}");
-            emit(events, Event::Notice(changed)).await;
+        let changed = instructions_notice(&changes);
+        if let Some(changed) = &changed {
+            emit(events, Event::Notice(changed.clone())).await;
         }
+        let notices = [changed, curios].into_iter().flatten().collect::<Vec<_>>();
         self.last_turn_mode = match agent {
             Some(_) => None,
             None => Some(self.mode),
@@ -431,12 +595,22 @@ impl Session {
         match self.messages.last_mut() {
             // A turn that failed before the model said anything left the
             // last prompt unanswered; for the same reason as the reminder,
-            // this one joins it rather than following it.
+            // this one joins it rather than following it, its notices
+            // still in front.
             Some(Message::User(previous)) => {
-                previous.push_str("\n\n");
-                previous.push_str(&text);
+                *previous = notices
+                    .into_iter()
+                    .chain([std::mem::take(previous)])
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                append(previous, &text);
             }
-            _ => self.messages.push(Message::User(text)),
+            _ => {
+                let message = notices.into_iter().chain([text]);
+                let message = message.filter(|part| !part.is_empty());
+                let message = message.collect::<Vec<_>>().join("\n");
+                self.messages.push(Message::User(message));
+            }
         }
         self.updated_at = SystemTime::now();
         let mut held = self.held(front_end);
@@ -445,6 +619,8 @@ impl Session {
             .run()
             .await;
         let Held { ctx, spend, .. } = held;
+        self.curio_root = ctx.curios.root().or(self.curio_root.take());
+        self.curio_receipts.extend(ctx.curios.recorded());
         self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
@@ -506,7 +682,13 @@ impl Session {
 
     /// What the model's tools and the front-end reach this session through.
     fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
+        let mut writable = plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir());
+        if let nth_protocol::Writable::Plan { source, .. } = &mut writable {
+            *source = self.curio_source_dir();
+        }
         ToolContext {
+            curios: self.curios(),
+            is_subagent: self.subagent,
             extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(self.loaded())),
             watch: self.watch.clone(),
@@ -515,7 +697,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
-            writable: plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir()),
+            writable,
             agent: self.primary().cloned(),
             llm: Llm {
                 model: self.model.clone(),
@@ -578,6 +760,21 @@ impl Session {
         self.updated_at = SystemTime::now();
         result.map(|_| ())
     }
+}
+
+/// Typed feedback keeps its own history entry after an unanswered prompt.
+enum TurnInput {
+    Prompt(String),
+    /// Curio notices, already recorded.
+    Feedback(String),
+}
+
+/// Puts `part` after `text` as a paragraph of its own.
+fn append(text: &mut String, part: &str) {
+    if !part.is_empty() && !text.is_empty() {
+        text.push_str("\n\n");
+    }
+    text.push_str(part);
 }
 
 /// What a turn borrows that the session does not hold.
@@ -927,6 +1124,136 @@ pub(crate) mod tests {
         std::fs::write(dir.join("AGENTS.md"), text).expect("writes");
         let context = Context::discover(dir, &nth_context::Paths::default());
         Session::new("glm-5.3", dir.to_path_buf()).with_context(Arc::new(context))
+    }
+
+    /// Delivers typed feedback and returns the messages captured on the wire.
+    async fn deliver_feedback(session: &mut Session, id: &str) -> Vec<Message> {
+        use crate::agent_loop::tests::{Echo, Named, Scripted};
+
+        let front_end = FrontEnd {
+            inbox: nth_protocol::Inbox::new(),
+            ..FrontEnd::default()
+        };
+        assert!(front_end.inbox.post_curio(nth_protocol::CurioNotice {
+            batch: nth_curios::Batch {
+                id: id.into(),
+                session_id: session.id.to_string(),
+                curio_id: "review".into(),
+                revision: 1,
+                messages: vec![],
+                recorded: false,
+            },
+        }));
+        let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo), Box::new(Named("bash"))];
+        let (tx, _rx) = mpsc::channel(64);
+        session
+            .deliver_curios(
+                &provider,
+                &tools,
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("feedback completes");
+        if session.primary().is_some() {
+            assert_eq!(
+                *provider.tools.lock().unwrap(),
+                [vec!["echo".to_string()]],
+                "primary agent tool permissions apply to feedback"
+            );
+        }
+        provider.sent.into_inner().unwrap().pop().unwrap()
+    }
+
+    fn last_user(messages: &[Message]) -> &str {
+        messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("user message")
+    }
+
+    #[tokio::test]
+    async fn curio_feedback_prepares_mode_transitions_and_refreshes_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = with_agents_md(dir.path(), "old instructions");
+        send(&mut session, "first act prompt").await;
+        session.mode = Mode::Plan;
+        std::fs::write(dir.path().join("AGENTS.md"), "updated instructions").unwrap();
+
+        let captured = deliver_feedback(&mut session, "plan-feedback").await;
+        let text = last_user(&captured);
+        assert!(text.starts_with("<instructions "), "{text}");
+        assert!(text.contains("updated instructions"), "{text}");
+        assert!(text.contains("<curio delivery="), "{text}");
+        assert!(text.contains("Plan mode is active"), "{text}");
+        assert!(dir.path().join(".nth/.gitignore").exists());
+        assert!(
+            session
+                .tool_context(&FrontEnd::default())
+                .writable
+                .planning()
+        );
+        assert_eq!(session.last_turn_mode, Some(Mode::Plan));
+
+        let next = send(&mut session, "continue planning").await;
+        assert!(
+            !next.contains("<instructions "),
+            "instructions delivered once"
+        );
+        session.mode = Mode::Act;
+        let captured = deliver_feedback(&mut session, "act-feedback").await;
+        let text = last_user(&captured);
+        assert!(
+            text.contains("operational mode has changed from plan to act"),
+            "{text}"
+        );
+        assert_eq!(session.last_turn_mode, Some(Mode::Act));
+    }
+
+    #[tokio::test]
+    async fn curio_feedback_prepares_primary_entry_and_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session =
+            Session::new("fake", dir.path().to_path_buf()).with_context(with_reviewer(dir.path()));
+        send(&mut session, "ordinary act prompt").await;
+        session.mode = Mode::Plan;
+        session.set_agent(Some("review".into()));
+
+        let captured = deliver_feedback(&mut session, "primary-feedback").await;
+        let text = last_user(&captured);
+        assert!(text.contains("now running as the review agent"), "{text}");
+        assert!(!text.contains("Plan mode"), "{text}");
+        assert!(matches!(&captured[0], Message::System(text) if text.starts_with("You review.\n")));
+        assert!(
+            !session
+                .tool_context(&FrontEnd::default())
+                .writable
+                .planning()
+        );
+        assert_eq!(session.last_turn_mode, None);
+        assert_eq!(session.last_turn_agent.as_deref(), Some("review"));
+        assert!(
+            !send(&mut session, "continue review")
+                .await
+                .contains("now running")
+        );
+
+        session.set_agent(None);
+        let captured = deliver_feedback(&mut session, "exit-feedback").await;
+        let text = last_user(&captured);
+        assert!(
+            text.contains("no longer running as the review agent"),
+            "{text}"
+        );
+        assert!(text.contains("Plan mode is active"), "{text}");
+        assert_eq!(session.last_turn_agent, None);
+        assert_eq!(session.last_turn_mode, Some(Mode::Plan));
     }
 
     #[tokio::test]

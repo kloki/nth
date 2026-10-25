@@ -5,7 +5,15 @@
 /// Tools that change files: kept from a subagent while its parent plans,
 /// covered by opencode's `edit` permission, and followed by format notes and
 /// language server errors in their results.
-pub const WRITERS: [&str; 3] = ["write", "edit", "apply_patch"];
+pub const WRITERS: [&str; 5] = [
+    "write",
+    "edit",
+    "apply_patch",
+    "curio_publish",
+    "curio_reply",
+];
+
+pub const CURIOS: [&str; 3] = ["curio_publish", "curio_read", "curio_reply"];
 
 /// The tool a subagent on a work item ticks its todo with.
 pub const WORK_TODO: &str = "work_todo";

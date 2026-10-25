@@ -8,9 +8,17 @@ use serde_json::json;
 pub struct ShowUser;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Args {
-    file_path: String,
+    file_path: Option<String>,
+    curio: Option<CurioTarget>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurioTarget {
+    curio_id: String,
+    revision: Option<u64>,
 }
 
 impl Tool for ShowUser {
@@ -21,9 +29,15 @@ impl Tool for ShowUser {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "filePath": { "type": "string", "description": "The path to the file to show" }
+                    "filePath": { "type": "string", "description": "The path to the file to show" },
+                    "curio": {
+                        "type":"object", "additionalProperties":false,
+                        "properties":{"curio_id":{"type":"string"},"revision":{"type":"integer","minimum":1}},
+                        "required":["curio_id"]
+                    }
                 },
-                "required": ["filePath"]
+                "additionalProperties":false,
+                "oneOf": [{"required":["filePath"],"not":{"required":["curio"]}}, {"required":["curio"],"not":{"required":["filePath"]}}]
             }),
         }
     }
@@ -34,7 +48,20 @@ impl Tool for ShowUser {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { file_path } = nth_protocol::parse_args(args)?;
+            let selection = args.as_object().ok_or_else(|| "curios.invalid: expected a show_user selection object".to_string())?;
+            if selection.contains_key("filePath") == selection.contains_key("curio") {
+                return Err("curios.invalid: choose exactly one of filePath or curio. Recovery: supply only the desired presentation target.".into());
+            }
+            let Args { file_path, curio } = nth_protocol::parse_args(args)?;
+            if let Some(target) = curio {
+                let store = crate::curios::store(ctx, "show_user")?;
+                let snapshot = store.snapshot(&target.curio_id, target.revision).map_err(crate::curios::failure)?;
+                if ctx.screen.show_curio(store.session_id().into(), snapshot.curio.id.clone(), target.revision).await {
+                    return Ok(format!("Curio {} revision {} was sent to the front-end for opening.", snapshot.curio.id, snapshot.revision.number));
+                }
+                return Err("curios.unavailable: no screen in this session. Recovery: open the curio through the CLI or interactive session.".into());
+            }
+            let file_path = file_path.ok_or_else(|| "curios.invalid: the selected target must not be null. Recovery: provide a filePath string or curio object.".to_string())?;
             let path = crate::path::resolve(&ctx.cwd, &file_path);
             match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_file() => {}

@@ -54,6 +54,7 @@ impl Turn<'_> {
     /// ends: the notices first, so the transcript reads them back, then the
     /// prompts, as a turn's own prompt follows its notices.
     pub(super) async fn hand_over(&mut self) {
+        let curios = self.take_curios();
         let loaded = self
             .ctx
             .instructions
@@ -61,7 +62,7 @@ impl Turn<'_> {
             .expect("loaded instructions lock poisoned")
             .clone();
         let changed = instructions_notice(&self.ctx.watch.changes(loaded).await);
-        let notices = [changed, self.ctx.inbox.take_notices()]
+        let notices = [changed, curios, self.ctx.inbox.take_notices()]
             .into_iter()
             .flatten();
         let notices = Some(notices.collect::<Vec<_>>().join("\n")).filter(|n| !n.is_empty());
@@ -74,6 +75,21 @@ impl Turn<'_> {
             self.messages.push(Message::User(sent));
             emit(self.events, Event::Notice(shown)).await;
         }
+    }
+
+    /// The review feedback sent while the tools ran, recorded, as notices
+    /// for [`Self::hand_over`] to put in its message.
+    fn take_curios(&mut self) -> Option<String> {
+        if self.cancel.is_cancelled() {
+            return None;
+        }
+        let notices = self.ctx.inbox.take_curios(&self.ctx.session);
+        let notices = notices
+            .into_iter()
+            .filter(|notice| self.ctx.curios.record(notice))
+            .map(|notice| notice.render())
+            .collect::<Vec<_>>();
+        (!notices.is_empty()).then(|| notices.join("\n"))
     }
 }
 
@@ -180,6 +196,82 @@ mod tests {
             shown |= event == Event::Notice(notice.into());
         }
         assert!(shown);
+    }
+
+    /// Sends a review and a prompt while it runs, as the front-end would.
+    struct Review;
+
+    impl Tool for Review {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "review",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            ctx: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            async move {
+                ctx.inbox.post_curio(nth_protocol::CurioNotice {
+                    batch: nth_curios::Batch {
+                        id: "batch".into(),
+                        session_id: ctx.session.clone(),
+                        curio_id: "curio".into(),
+                        revision: 1,
+                        messages: vec![],
+                        recorded: false,
+                    },
+                });
+                ctx.inbox.post_prompt("and the title".into());
+                Ok("reviewed".into())
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn feedback_sent_while_tools_run_goes_in_the_one_message_after_them() {
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "review", ""))],
+            vec![StreamEvent::TextDelta("on it".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Review)];
+        let ctx = ToolContext {
+            curios: nth_protocol::Curios::new(".".into(), "s1".into(), None, Default::default()),
+            session: "s1".into(),
+            inbox: Inbox::new(),
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        let mut messages = vec![Message::User("go".into())];
+
+        let mut last_usage = None;
+        Turn {
+            provider: &provider,
+            route: ROUTE,
+            tools: &tools,
+            ctx: &ctx,
+            messages: &mut messages,
+            spend: &mut spend(),
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
+        .await
+        .expect("turn completes");
+
+        let Message::User(text) = &messages[3] else {
+            panic!("{:#?}", messages[3]);
+        };
+        let (notices, rest) = nth_protocol::split_notices(text);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(rest, "and the title");
+        assert!(matches!(messages[4], Message::Assistant(_)));
     }
 
     #[tokio::test]

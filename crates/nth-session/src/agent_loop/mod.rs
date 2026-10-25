@@ -158,10 +158,12 @@ impl Turn<'_> {
             .iter()
             .map(|t| (t.spec(), t.as_ref()))
             .filter(|(spec, _)| {
-                self.ctx
-                    .agent
-                    .as_ref()
-                    .is_none_or(|agent| agent.allows(spec.name))
+                !(self.ctx.is_subagent && nth_protocol::tool_names::CURIOS.contains(&spec.name))
+                    && self
+                        .ctx
+                        .agent
+                        .as_ref()
+                        .is_none_or(|agent| agent.allows(spec.name))
             })
             .unzip();
         // Looked up by name once per call; a spec is too costly to build for
