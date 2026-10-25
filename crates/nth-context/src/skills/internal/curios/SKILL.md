@@ -22,12 +22,11 @@ This embedded skill has no filesystem resource directory. If Quiet Folio suits t
 
 ## Author a complete static document
 
-- Produce one self-contained HTML file with a meaningful title, `lang`, viewport metadata, semantic headings and sections. Inline CSS and SVG; use only supported bounded embedded raster images when needed.
-- No scripts, event handlers, forms, executable embeds, frames, remote fonts, imports, stylesheets, images or other network dependencies. Do not add a review interface to the document. Publishing validates this boundary; fix rejected content and publish again.
+Load the `curios-design` skill before writing or restyling the document: its page contract lists exactly what publishing accepts, and the rest is how to give the document a deliberate design and draw its diagrams.
+
+- Produce one self-contained HTML file with a meaningful title, `lang`, viewport metadata, semantic headings and sections, all CSS and SVG inline. No scripts, forms, embeds, links out, fonts or other network dependencies, and no review interface of its own: publishing validates this boundary, so fix rejected content and publish again.
 - Give each element worth commenting on a unique, meaningful HTML ID, such as `capacity-assumptions` or `handoff-diagram`: the user can only comment on elements with an ID. Keep IDs when restyling or reordering, and never reuse a removed ID for a different concept.
 - Use real user-supplied facts. Clearly label examples or assumptions, and avoid invented metrics or filler sections. The requested document determines its structure.
-- Honor an explicit brand/design brief. Quiet Folio is optional: near-white paper, charcoal text, muted accents, system fonts, 60–72ch prose and generous spacing.
-- Use table captions and header cells, SVG titles and visible text labels; give wide artboards contained horizontal scrolling.
 
 ## Publish, then present
 

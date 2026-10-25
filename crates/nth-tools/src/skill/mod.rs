@@ -104,7 +104,7 @@ mod tests {
 
         assert_eq!(
             out,
-            Err("Skill \"nope\" not found. Available skills: browser, config, curios, deploy, init, screenshot, setup-worktrees, work-plan".into())
+            Err("Skill \"nope\" not found. Available skills: browser, config, curios, curios-design, deploy, init, screenshot, setup-worktrees, work-plan".into())
         );
     }
 }

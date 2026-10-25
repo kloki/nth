@@ -318,7 +318,14 @@ mod tests {
         assert_eq!(
             names("/c"),
             [
-                "clear", "close", "compact", "connect", "copy-id", "curios", "config"
+                "clear",
+                "close",
+                "compact",
+                "connect",
+                "copy-id",
+                "curios",
+                "config",
+                "curios-design"
             ],
             "the clear skill is hidden by the command"
         );

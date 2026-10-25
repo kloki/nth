@@ -5,10 +5,11 @@
 use super::{Location, Skill, Source};
 use crate::frontmatter;
 
-const SKILLS: [&str; 7] = [
+const SKILLS: [&str; 8] = [
     include_str!("browser/SKILL.md"),
     include_str!("config/SKILL.md"),
     include_str!("curios/SKILL.md"),
+    include_str!("curios-design/SKILL.md"),
     include_str!("init/SKILL.md"),
     include_str!("screenshot/SKILL.md"),
     include_str!("setup-worktrees/SKILL.md"),

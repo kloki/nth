@@ -71,3 +71,4 @@ Only Openai is supported.
 ## Curios
 
 - Local version of claude's artifacts
+- `curios-design` skill: design guidance adapted from Claude's artifact skills
