@@ -44,6 +44,11 @@
   assert("A sent comment shows nth working", pin.classList.contains("working"));
   assert("The thread stays open", !$("popover").hidden && !$("working").hidden);
   assert(
+    "nth's spinner shows its 16 frames in the thread and beside the pin",
+    $("spinner").querySelectorAll(".frame").length === 16 &&
+      pin.querySelectorAll(".spinner .frame").length === 16,
+  );
+  assert(
     "The thread shows only who said what",
     $("messages").innerText.trim() === "You\nTighten the summary",
   );
@@ -56,6 +61,10 @@
   );
   pin.click();
   assert("A click on the open pin closes it", $("popover").hidden);
+  assert(
+    "The dock holds the title and the comment toggle",
+    $("dock").contains($("title")) && $("dock").contains($("comments")),
+  );
   const details = doc.getElementById("more");
   details.querySelector("summary").click();
   assert(

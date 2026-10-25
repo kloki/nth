@@ -20,8 +20,9 @@
       ? Number(requestedRevision)
       : undefined;
   // `target` is the element a new comment is on; `selected` the thread
-  // the popover shows. At most one of them is set.
-  let state, loadedRevision, selected, target;
+  // the popover shows. At most one of them is set. `hovered` is the ID of
+  // the element a click would comment on.
+  let state, loadedRevision, selected, target, hovered;
   let busy = false,
     authenticated = false,
     refreshing = false,
@@ -36,10 +37,86 @@
   const HINT = "Click an element to comment.";
   const OFF = "Comments are off: the document responds to clicks.";
   const hint = () => say(commenting ? HINT : OFF);
+  // What the viewer has to say goes to screen readers; an error also turns
+  // the dock's dot red, with the error on hover.
   const say = (text, error = false) => {
     $("notice").textContent = text;
-    $("notice").classList.toggle("error", error);
+    $("status-dot").classList.toggle("error", error);
+    if (error) $("status-dot").title = text;
+    else $("status-dot").removeAttribute("title");
   };
+  // nth's TUI spinner, crates/nth-tui/src/spinner/spinner_big.txt, frame by
+  // frame (a test keeps the two equal). Each shows for 80 ms.
+  const SPINNER = [
+    "⠖⠉⠉⠑",
+    "⡠⠖⠉⠉",
+    "⣠⡠⠖⠉",
+    "⣄⣠⡠⠖",
+    "⠢⣄⣠⡠",
+    "⠙⠢⣄⣠",
+    "⠉⠙⠢⣄",
+    "⠊⠉⠙⠢",
+    "⠜⠊⠉⠙",
+    "⡤⠜⠊⠉",
+    "⣀⡤⠜⠊",
+    "⢤⣀⡤⠜",
+    "⠣⢤⣀⡤",
+    "⠑⠣⢤⣀",
+    "⠉⠑⠣⢤",
+    "⠋⠉⠑⠣",
+  ];
+  // Braille bit k lights the dot at [column, row] DOTS[k].
+  const DOTS = [
+    [0, 0],
+    [0, 1],
+    [0, 2],
+    [1, 0],
+    [1, 1],
+    [1, 2],
+    [0, 3],
+    [1, 3],
+  ];
+  // The spinner's dots drawn as elements rather than braille text, so it
+  // looks the same whatever fonts the browser has.
+  function spinnerFace() {
+    const face = document.createElement("span");
+    face.className = "face";
+    SPINNER.forEach((text, index) => {
+      const frame = document.createElement("span");
+      frame.className = "frame";
+      // Frame `index` shows from `index * 80` ms into the loop.
+      frame.style.animationDelay = `-${((SPINNER.length - index) % SPINNER.length) * 80}ms`;
+      [...text].forEach((character, column) => {
+        const bits = character.codePointAt(0) - 0x2800;
+        DOTS.forEach(([x, y], bit) => {
+          if (!((bits >> bit) & 1)) return;
+          const dot = document.createElement("i");
+          dot.style.left = `${column * 9 + 1.5 + x * 4}px`;
+          dot.style.top = `${1.5 + y * 4}px`;
+          frame.append(dot);
+        });
+      });
+      face.append(frame);
+    });
+    return face;
+  }
+  function spinner() {
+    const pill = document.createElement("span");
+    pill.className = "spinner";
+    pill.setAttribute("aria-hidden", "true");
+    pill.append(spinnerFace());
+    return pill;
+  }
+  $("spinner").append(spinnerFace());
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  // Grows with what is typed, up to its CSS max-height.
+  function fitComment() {
+    const body = $("comment-body");
+    body.style.height = "auto";
+    body.style.height = `${body.scrollHeight}px`;
+    body.style.overflowY =
+      body.scrollHeight > body.clientHeight ? "auto" : "hidden";
+  }
   function draftKey(key) {
     return `curios:${state.curio.session_id}:${state.curio.id}:${key}`;
   }
@@ -150,56 +227,95 @@
   function render() {
     document.title = `${state.curio.title} · Curios`;
     $("title").textContent = state.curio.title;
-    const picker = $("revision");
-    if (document.activeElement !== picker) {
-      picker.replaceChildren(
-        ...state.revisions.map(
-          (item) =>
-            new Option(
-              `r${item.number} · ${item.title || "Revision"}`,
-              String(item.number),
-            ),
-        ),
-      );
-      picker.value = String(revision);
-    }
-    picker.disabled = busy;
+    $("current-revision").textContent = `r${revision}`;
+    // The other revisions, as niri shows workspaces: one button each.
+    const picker = $("revisions");
+    const others = state.revisions.filter((item) => item.number !== revision);
+    const buttons = new Map(
+      Array.from(picker.children).map((node) => [node.dataset.number, node]),
+    );
+    picker.replaceChildren(
+      ...others.map((item) => {
+        const key = String(item.number);
+        let button = buttons.get(key);
+        if (!button) {
+          button = document.createElement("button");
+          button.type = "button";
+          button.dataset.number = key;
+          button.textContent = `r${key}`;
+          button.addEventListener("click", () => changeRevision(item.number));
+        }
+        button.title = item.title || "Revision";
+        button.disabled = busy;
+        return button;
+      }),
+    );
     $("update").hidden = state.curio.current_revision === revision;
-    $("update").textContent = `View latest · r${state.curio.current_revision}`;
+    $("update").textContent = `latest r${state.curio.current_revision}`;
+    const open = state.threads.filter(
+      (thread) => thread.status !== "resolved",
+    ).length;
+    $("thread-count").textContent = open
+      ? `${open} open`
+      : state.threads.length
+        ? "all resolved"
+        : "no threads";
+    $("status-dot").classList.toggle("listening", state.listening);
+    $("status-dot").setAttribute(
+      "aria-label",
+      state.listening ? "nth is listening" : "No nth session is listening",
+    );
     if (selected && !currentThread()) selected = null;
     renderPopover();
     schedulePins();
   }
   function renderPopover() {
     const thread = currentThread();
-    $("popover").hidden = !thread && !target;
+    const popover = $("popover");
+    const wasOpen = !popover.hidden;
+    popover.hidden = !thread && !target;
+    // Closing keeps what it showed while it fades out.
+    if (popover.hidden) {
+      if (wasOpen && !reducedMotion.matches) popover.classList.add("closing");
+      return;
+    }
+    popover.classList.remove("closing");
+    if (!wasOpen && !reducedMotion.matches) {
+      popover.classList.add("opening");
+      setTimeout(() => popover.classList.remove("opening"), 500);
+    }
     $("submit").disabled = busy;
-    $("submit").textContent = thread ? "Reply" : "Comment";
+    $("submit").setAttribute("aria-label", thread ? "Reply" : "Comment");
     $("resolve").hidden = !thread;
     const messages = $("messages");
     $("working").hidden = !thread || !waiting(thread);
-    $("working").querySelector(".spinner").hidden = !state.listening;
-    $("working-text").textContent = state.listening
-      ? "nth is working…"
-      : "Waiting for nth: its session is not running.";
+    $("spinner").hidden = !state.listening;
+    $("working-text").hidden = state.listening;
     if (!thread) {
       messages.replaceChildren();
       delete messages.dataset.signature;
       return;
     }
-    $("resolve").textContent =
-      thread.status === "resolved" ? "Reopen" : "Resolve";
+    const resolved = thread.status === "resolved";
+    $("resolve").setAttribute("aria-label", resolved ? "Reopen" : "Resolve");
+    $("resolve").classList.toggle("reopen", resolved);
     // Only the conversation itself: who said what.
     const signature = JSON.stringify(
       thread.messages.map((message) => [message.author, message.body]),
     );
     if (messages.dataset.signature === signature) return;
+    // Messages that arrive while the thread shows rise in on their own.
+    const shown = wasOpen && messages.dataset.thread === thread.id;
+    const before = shown ? messages.children.length : thread.messages.length;
     messages.dataset.signature = signature;
+    messages.dataset.thread = thread.id;
     messages.replaceChildren(
-      ...thread.messages.map((message) => {
+      ...thread.messages.map((message, index) => {
         const item = document.createElement("li"),
           author = document.createElement("strong");
         item.className = message.author;
+        item.classList.toggle("new", index >= before);
+        item.style.setProperty("--i", String(index));
         author.textContent = message.author === "agent" ? "nth" : "You";
         item.append(author, document.createTextNode(message.body));
         return item;
@@ -216,7 +332,7 @@
     selected = next.thread || null;
     target = next.target || null;
     $("comment-body").value = readDraft(draftSlot()) || "";
-    hint();
+    fitComment();
     render();
     $("comment-body").focus({ preventScroll: true });
     return true;
@@ -327,6 +443,17 @@
       const element = eligible(event.target);
       if (element) openPopover({ target: makeTarget(element) });
       else if (!editing()) closePopover();
+    });
+    listen(doc, "pointerover", (event) => {
+      const id = (commenting && eligible(event.target)?.id) || null;
+      if (id !== hovered) {
+        hovered = id;
+        schedulePins();
+      }
+    });
+    listen(doc.documentElement, "pointerleave", () => {
+      hovered = null;
+      schedulePins();
     });
     listen(doc, "auxclick", (event) => event.preventDefault());
     listen(doc, "submit", (event) => event.preventDefault());
@@ -481,10 +608,14 @@
           if (selected === thread.id) closePopover();
           else openPopover({ thread: thread.id });
         });
+        pin.append(document.createElement("span"));
         pins.append(pin);
       }
-      pin.textContent = String(thread.number);
+      pin.firstChild.textContent = String(thread.number);
       pin.classList.toggle("working", working(thread));
+      const pill = pin.querySelector(".spinner");
+      if (working(thread) && !pill) pin.append(spinner());
+      else if (!working(thread)) pill?.remove();
       pin.classList.toggle("resolved", thread.status === "resolved");
       pin.setAttribute(
         "aria-label",
@@ -498,13 +629,23 @@
       existing.delete(thread.id);
     }
     for (const pin of existing.values()) pin.remove();
-    const box = target ? viewRect(target) : null;
-    const overlay = $("selection-box");
+    // What the popover is about, and what a click would comment on.
+    const about = target || currentThread()?.target;
+    const box = about ? viewRect(about) : null;
+    cover($("selection-box"), box);
+    cover(
+      $("hover-box"),
+      hovered && hovered !== about?.element_id
+        ? viewRect({ element_id: hovered })
+        : null,
+    );
+    placePopover(anchor || box);
+  }
+  function cover(overlay, box) {
     overlay.hidden = !box;
     if (box)
       for (const key of ["left", "top", "width", "height"])
         overlay.style[key] = `${box[key]}px`;
-    placePopover(anchor || box);
   }
   // Below what it is about, or above when that leaves no room, and always
   // inside the stage.
@@ -525,6 +666,8 @@
     );
     popover.style.left = `${left}px`;
     popover.style.top = `${top}px`;
+    // It grows out of, and shrinks back into, what it is about.
+    popover.style.transformOrigin = `${box.left - left}px ${box.top + box.height / 2 - top}px`;
   }
   async function mutate(steps) {
     if (busy) return false;
@@ -561,7 +704,6 @@
   }
   async function changeRevision(number) {
     if (busy || editing()) {
-      $("revision").value = String(revision);
       say("Send or clear your comment before changing revisions.");
       return;
     }
@@ -572,6 +714,10 @@
   $("comment-body").addEventListener("input", () => {
     const slot = draftSlot();
     if (slot) writeDraft(slot, $("comment-body").value || null);
+    fitComment();
+  });
+  $("popover").addEventListener("animationend", (event) => {
+    if (event.target === $("popover")) $("popover").classList.remove("closing");
   });
   $("comment-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -599,8 +745,8 @@
       requests.delete(slot);
       writeDraft(slot, null);
       $("comment-body").value = "";
+      fitComment();
       await sendPending(saved);
-      hint();
     });
   });
   $("resolve").addEventListener("click", async () => {
@@ -614,22 +760,22 @@
       }),
     );
   });
-  $("close").addEventListener("click", closePopover);
   // Closing keeps a draft: the input listener already stored it.
   $("comments").addEventListener("click", () => {
     if (busy) return;
     closePopover();
     commenting = !commenting;
+    hovered = null;
     const toggle = $("comments");
     toggle.setAttribute("aria-pressed", String(commenting));
-    toggle.textContent = commenting ? "Comments on" : "Comments off";
+    toggle.setAttribute(
+      "aria-label",
+      commenting ? "Comments on" : "Comments off",
+    );
     $("overlays").hidden = !commenting;
     hint();
     schedulePins();
   });
-  $("revision").addEventListener("change", (event) =>
-    changeRevision(event.target.value),
-  );
   $("update").addEventListener("click", () =>
     changeRevision(state.curio.current_revision),
   );

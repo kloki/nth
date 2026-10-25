@@ -25,6 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         title: Some("Browser isolation fixture".into()),
         html: html.into(),
     })?;
+    // Stands in for the running session, so sent feedback shows nth working.
+    let _lease = store.claim_delivery()?;
     let host = Host::start(store.clone(), &published.curio.id).await?;
     fs::write(directory.join("url"), host.url())?;
     fs::write(

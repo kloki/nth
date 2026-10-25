@@ -27,7 +27,7 @@
   ).status;
   const resources = performance.getEntriesByType("resource");
   return {
-    revision: document.getElementById("revision").value,
+    revision: document.getElementById("current-revision").textContent,
     latest: state.curio.current_revision,
     threads: state.threads.length,
     pending: state.threads
