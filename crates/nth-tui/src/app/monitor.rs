@@ -58,7 +58,7 @@ impl App {
     /// resume: they were watching for that conversation. Their tabs close
     /// as each process stops, as they always do.
     pub(super) fn left_session(&mut self) {
-        self.areas.pr_link = None;
+        self.areas.forget(&crate::app::mouse::Target::PullRequest);
         self.reset_curios();
         self.left_subagents();
         self.monitors.forget_all();

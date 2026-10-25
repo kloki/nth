@@ -13,14 +13,14 @@ use crate::theme::pick;
 
 /// `area` bounds the popup; its bottom-left corner sits just above `anchor`,
 /// shifted left if it would run off the edge. Each row is a label, drawn in
-/// blue, and a detail after it.
+/// blue, and a detail after it. Returns where it was drawn.
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
     anchor: Position,
     rows: &[(String, &str)],
     selected: usize,
-) {
+) -> Rect {
     let content = rows
         .iter()
         .map(|(label, detail)| label.chars().count() + detail.chars().count())
@@ -64,4 +64,5 @@ pub fn draw(
         Paragraph::new(lines).style(Style::new().fg(Color::White)),
         popup,
     );
+    popup
 }

@@ -96,20 +96,21 @@ pub fn draw(frame: &mut Frame, area: Rect, tabs: &[TabLabel], split: Option<u16>
     status::split_line(frame, last, spans, name);
 }
 
-/// Which of `tabs`, drawn as [`draw`] does, is under column `x`.
-pub fn tab_at(tabs: &[TabLabel], area: Rect, split: Option<u16>, x: u16) -> Option<usize> {
-    let (run, range) = runs(tabs, area, split)
-        .into_iter()
-        .find(|(run, _)| (run.x..run.right()).contains(&x))?;
-    let mut offset = usize::from(x - run.x);
-    for index in range {
-        let width = tabs[index].text().width();
-        if offset < width {
-            return Some(index);
+/// Where each of `tabs`, drawn as [`draw`] does, sits on screen, in
+/// order; a tab cut off at the end of its run is cut short here too, and
+/// one past it has no width.
+pub fn tab_areas(tabs: &[TabLabel], area: Rect, split: Option<u16>) -> Vec<Rect> {
+    let mut areas = Vec::with_capacity(tabs.len());
+    for (run, range) in runs(tabs, area, split) {
+        let mut x = run.x;
+        for tab in &tabs[range] {
+            let width = u16::try_from(tab.text().width()).unwrap_or(u16::MAX);
+            let width = width.min(run.right().saturating_sub(x));
+            areas.push(Rect { x, width, ..run });
+            x = x.saturating_add(width);
         }
-        offset -= width;
     }
-    None
+    areas
 }
 
 #[cfg(test)]
@@ -136,24 +137,31 @@ mod tests {
     }
 
     #[test]
-    fn a_click_lands_on_the_tab_under_it() {
+    fn each_tab_has_the_columns_it_is_drawn_over() {
         let area = Rect::new(1, 0, 40, 1);
         // `[› chat]` is 8 columns from x = 1, then ` ≡ diagnostics `.
-        assert_eq!(tab_at(&labels(), area, None, 1), Some(0));
-        assert_eq!(tab_at(&labels(), area, None, 8), Some(0));
-        assert_eq!(tab_at(&labels(), area, None, 9), Some(1));
-        assert_eq!(tab_at(&labels(), area, None, 23), Some(1));
-        assert_eq!(tab_at(&labels(), area, None, 24), None);
-        assert_eq!(tab_at(&labels(), area, None, 0), None);
+        assert_eq!(
+            tab_areas(&labels(), area, None),
+            [Rect::new(1, 0, 8, 1), Rect::new(9, 0, 15, 1)]
+        );
     }
 
     #[test]
     fn split_the_other_tabs_start_over_the_right_pane() {
         let area = Rect::new(1, 0, 40, 1);
         // `[› chat]` from x = 1, then ` ≡ diagnostics ` from x = 21.
-        assert_eq!(tab_at(&labels(), area, Some(21), 8), Some(0));
-        assert_eq!(tab_at(&labels(), area, Some(21), 12), None, "the gap");
-        assert_eq!(tab_at(&labels(), area, Some(21), 21), Some(1));
-        assert_eq!(tab_at(&labels(), area, Some(21), 35), Some(1));
+        assert_eq!(
+            tab_areas(&labels(), area, Some(21)),
+            [Rect::new(1, 0, 8, 1), Rect::new(21, 0, 15, 1)]
+        );
+    }
+
+    #[test]
+    fn a_tab_past_the_edge_is_cut_short() {
+        let area = Rect::new(0, 0, 12, 1);
+        assert_eq!(
+            tab_areas(&labels(), area, None),
+            [Rect::new(0, 0, 8, 1), Rect::new(8, 0, 4, 1)]
+        );
     }
 }

@@ -51,6 +51,16 @@ pub fn tab_colour(state: TabState) -> Option<Color> {
     }
 }
 
+/// A header tab or a chat link under the pointer: the colour of what is
+/// picked, as in a list.
+pub const HOVER: Color = Color::Magenta;
+/// The status bar's links under the pointer: bright white, against their
+/// own yellow and cyan.
+pub const HOVER_STATUS: Color = Color::White;
+/// Behind the chat entry under the pointer: bright black, visible on any
+/// theme, with dim text still readable on it.
+pub const HOVER_ENTRY: Color = Color::DarkGray;
+
 /// The highlighted item in any list: popup, picker.
 pub fn pick() -> Style {
     Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)

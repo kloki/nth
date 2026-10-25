@@ -1,6 +1,7 @@
 //! The chat history as a list of entries, built from session events.
 
 use std::{
+    ops::Range,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -14,7 +15,7 @@ use nth_session::{
     plan::edits::{self, PlanEdits},
 };
 use ratatui::text::Line;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::after_write::{self, Note};
 use crate::{rich::Link, settings::ChatSettings};
@@ -64,9 +65,9 @@ pub enum Entry {
     },
 }
 
-/// The run of non-blanks under display `column` of `text`; a click in a
-/// gap is on nothing.
-fn word_at(text: &str, column: usize) -> Option<&str> {
+/// The run of non-blanks under display `column` of `text`, with the
+/// display column it starts at; a click in a gap is on nothing.
+fn word_at(text: &str, column: usize) -> Option<(usize, &str)> {
     let mut at = 0;
     // Byte and display column where the word being read started.
     let mut word: Option<(usize, usize)> = None;
@@ -75,7 +76,7 @@ fn word_at(text: &str, column: usize) -> Option<&str> {
             if let Some((start, from)) = word.take()
                 && (from..at).contains(&column)
             {
-                return Some(&text[start..i]);
+                return Some((from, &text[start..i]));
             }
             if column < at {
                 return None;
@@ -86,7 +87,7 @@ fn word_at(text: &str, column: usize) -> Option<&str> {
         at += c.width().unwrap_or(0);
     }
     match word {
-        Some((start, from)) if (from..at).contains(&column) => Some(&text[start..]),
+        Some((start, from)) if (from..at).contains(&column) => Some((from, &text[start..])),
         _ => None,
     }
 }
@@ -254,33 +255,48 @@ impl Transcript {
     }
 
     /// The web address on `line` at display `column` of the last layout: a
-    /// markdown link's, or a bare `http(s)://` word's. Nothing else opens,
-    /// as the model writes the targets.
-    pub fn link_at(&self, line: usize, column: usize) -> Option<String> {
+    /// markdown link's, or a bare `http(s)://` word's, with the display
+    /// columns it is drawn over. Nothing else opens, as the model writes the
+    /// targets.
+    pub fn link_at(&self, line: usize, column: usize) -> Option<(Range<usize>, String)> {
         let (item, row) = self.locate(line)?;
         let wrapped = item.lines.as_ref()?;
         let linked = wrapped
             .links
             .iter()
             .find(|link| link.row == row && link.columns.contains(&column))
-            .map(|link| link.url.clone());
-        let url = linked.or_else(|| {
+            .map(|link| (link.columns.clone(), link.url.clone()));
+        let (columns, url) = linked.or_else(|| {
             let text = wrapped.lines.get(row)?.to_string();
-            word_at(&text, column).map(|word| {
-                word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\''])
-                    .to_string()
+            word_at(&text, column).map(|(from, word)| {
+                let url = word
+                    .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>', '"', '\''])
+                    .to_string();
+                (from..from + url.width(), url)
             })
         })?;
-        (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+        (url.starts_with("http://") || url.starts_with("https://")).then_some((columns, url))
+    }
+
+    /// The lines of the last layout that the entry on `line` takes, its
+    /// blank separator included.
+    pub fn entry_lines(&self, line: usize) -> Option<Range<usize>> {
+        self.item_at(line).map(|(_, lines)| lines)
     }
 
     /// The item holding `line`, and which of its rows that is.
     fn locate(&self, line: usize) -> Option<(&Item, usize)> {
+        self.item_at(line)
+            .map(|(item, lines)| (item, line - lines.start))
+    }
+
+    /// The item holding `line`, and the lines it takes.
+    fn item_at(&self, line: usize) -> Option<(&Item, Range<usize>)> {
         let mut first = 0;
         for item in &self.items {
             let rows = item.lines.as_ref().map_or(0, |w| w.lines.len());
             if line < first + rows {
-                return Some((item, line - first));
+                return Some((item, first..first + rows));
             }
             first += rows;
         }
@@ -552,13 +568,14 @@ pub(super) mod tests {
 
     #[test]
     fn a_word_is_only_under_its_own_columns() {
-        assert_eq!(word_at("a  bb c", 0), Some("a"));
+        assert_eq!(word_at("a  bb c", 0), Some((0, "a")));
         assert_eq!(word_at("a  bb c", 1), None);
         assert_eq!(word_at("a  bb c", 2), None);
-        assert_eq!(word_at("a  bb c", 3), Some("bb"));
-        assert_eq!(word_at("a  bb c", 6), Some("c"));
+        assert_eq!(word_at("a  bb c", 3), Some((3, "bb")));
+        assert_eq!(word_at("a  bb c", 6), Some((6, "c")));
         assert_eq!(word_at("a  bb c", 7), None);
-        assert_eq!(word_at("日本 x", 1), Some("日本"));
+        assert_eq!(word_at("日本 x", 1), Some((0, "日本")));
+        assert_eq!(word_at("日本 x", 5), Some((5, "x")));
     }
 
     #[test]
@@ -575,6 +592,14 @@ pub(super) mod tests {
         assert_eq!(t.entry_at(2), Some(&Entry::Answer("two".into())));
         assert_eq!(t.entry_at(4), Some(&Entry::TurnError("three".into())));
         assert_eq!(t.entry_at(5), None);
+
+        assert_eq!(t.entry_lines(0), Some(0..1));
+        assert_eq!(t.entry_lines(2), Some(1..3));
+        assert_eq!(t.entry_lines(5), None);
+    }
+
+    fn url_at(t: &Transcript, line: usize, column: usize) -> Option<String> {
+        t.link_at(line, column).map(|(_, url)| url)
     }
 
     #[test]
@@ -590,15 +615,17 @@ pub(super) mod tests {
         );
 
         // `docs` sits after the bar and `see `.
-        assert_eq!(t.link_at(0, 6).as_deref(), Some("https://x.y"));
-        assert_eq!(t.link_at(0, 9).as_deref(), Some("https://x.y"));
-        assert_eq!(t.link_at(0, 10), None);
+        assert_eq!(url_at(&t, 0, 6).as_deref(), Some("https://x.y"));
+        assert_eq!(url_at(&t, 0, 9).as_deref(), Some("https://x.y"));
+        assert_eq!(url_at(&t, 0, 10), None);
+        assert_eq!(t.link_at(0, 6).map(|(columns, _)| columns), Some(6..10));
         // A bare address, without the full stop after it.
-        assert_eq!(t.link_at(0, 14).as_deref(), Some("https://a.b/c"));
+        assert_eq!(url_at(&t, 0, 14).as_deref(), Some("https://a.b/c"));
+        assert_eq!(t.link_at(0, 14).map(|(columns, _)| columns), Some(14..27));
         // The gap before it opens nothing, nor does a file link.
-        assert_eq!(t.link_at(0, 13), None);
-        assert_eq!(t.link_at(0, 35), None);
-        assert_eq!(t.link_at(1, 6), None);
+        assert_eq!(url_at(&t, 0, 13), None);
+        assert_eq!(url_at(&t, 0, 35), None);
+        assert_eq!(url_at(&t, 1, 6), None);
     }
 
     #[test]
@@ -613,10 +640,10 @@ pub(super) mod tests {
             ["▎ alpha beta gamma", "▎ delta epsilon"]
         );
 
-        assert_eq!(t.link_at(1, 2).as_deref(), Some("https://d"));
-        assert_eq!(t.link_at(1, 6).as_deref(), Some("https://d"));
-        assert_eq!(t.link_at(1, 7), None);
-        assert_eq!(t.link_at(0, 2), None);
+        assert_eq!(url_at(&t, 1, 2).as_deref(), Some("https://d"));
+        assert_eq!(url_at(&t, 1, 6).as_deref(), Some("https://d"));
+        assert_eq!(url_at(&t, 1, 7), None);
+        assert_eq!(url_at(&t, 0, 2), None);
     }
 
     #[test]

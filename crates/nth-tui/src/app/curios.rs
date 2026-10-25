@@ -161,7 +161,7 @@ impl App {
         if let Some(session) = &self.session {
             self.curios = Curios::new(session);
         }
-        self.areas.curio = None;
+        self.areas.forget(&crate::app::mouse::Target::Curio);
         if matches!(self.input, Input::Curios(_)) {
             self.input = Input::Prompt;
         }
@@ -188,7 +188,7 @@ impl App {
         });
         self.curios.items.reverse();
         if self.curios.items.is_empty() {
-            self.areas.curio = None;
+            self.areas.forget(&crate::app::mouse::Target::Curio);
         }
         // Feedback exists only once this session published, so its folder
         // is waited for rather than made.
@@ -721,7 +721,7 @@ mod tests {
         app.place = "repo".into();
         let rows = rows_of(&mut app, 100);
         assert!(rows[14].contains(nth_icons::icons().curio));
-        let rect = app.areas.curio.unwrap();
+        let rect = app.areas.find(&crate::app::mouse::Target::Curio).unwrap();
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: rect.x,
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(app.curios.hosts.len(), 1);
         app.place = "x".repeat(200);
         rows_of(&mut app, 20);
-        assert!(app.areas.curio.is_none());
+        assert!(app.areas.find(&crate::app::mouse::Target::Curio).is_none());
         app.start_fresh_session();
         assert!(app.curios.hosts.is_empty());
         assert!(app.curios.last.is_none());
@@ -781,8 +781,11 @@ mod tests {
             state: crate::git::State::Open,
         });
         rows_of(&mut app, 100);
-        let pr = app.areas.pr_link.unwrap();
-        let curio = app.areas.curio.unwrap();
+        let pr = app
+            .areas
+            .find(&crate::app::mouse::Target::PullRequest)
+            .unwrap();
+        let curio = app.areas.find(&crate::app::mouse::Target::Curio).unwrap();
         assert!(!pr.intersects(curio));
         // The space before the icon counts, so a near miss still opens it.
         assert_eq!(curio.width, 2);
@@ -807,7 +810,11 @@ mod tests {
         assert!(!app.curios.opening.is_running());
         assert!(app.hint.as_deref().unwrap().contains("example.test"));
         app.pr_loaded(None);
-        assert!(app.areas.pr_link.is_none());
+        assert!(
+            app.areas
+                .find(&crate::app::mouse::Target::PullRequest)
+                .is_none()
+        );
     }
 
     #[tokio::test]
