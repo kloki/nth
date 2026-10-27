@@ -64,9 +64,9 @@ impl App {
             .await;
     }
 
-    async fn open_editor_in(
+    async fn open_editor_in<T>(
         &mut self,
-        input: &mut Option<EventStream>,
+        input: &mut Option<T>,
         dir: &std::path::Path,
         suspend: impl FnOnce(),
     ) {
@@ -116,18 +116,24 @@ impl App {
         input: &mut Option<EventStream>,
         ended: Result<io::Result<ExitStatus>, JoinError>,
     ) -> anyhow::Result<()> {
-        self.finish_editor(input, ended, || terminal::resume(terminal))
-            .await
+        self.finish_editor(
+            input,
+            ended,
+            || terminal::resume(terminal),
+            EventStream::new,
+        )
+        .await
     }
 
-    async fn finish_editor(
+    async fn finish_editor<T>(
         &mut self,
-        input: &mut Option<EventStream>,
+        input: &mut Option<T>,
         ended: Result<io::Result<ExitStatus>, JoinError>,
         resume: impl FnOnce() -> anyhow::Result<()>,
+        create_input: impl FnOnce() -> T,
     ) -> anyhow::Result<()> {
         resume()?;
-        *input = Some(EventStream::new());
+        *input = Some(create_input());
         let Some(Editing {
             target,
             copy,
@@ -252,10 +258,10 @@ mod tests {
         let mut app = crate::app::tests::app();
         app.prompt.insert_str("draft");
         app.edit();
-        let mut input = Some(EventStream::new());
+        let mut input = Some("original input");
         app.open_editor_in(&mut input, &blocker, || panic!("terminal suspended"))
             .await;
-        assert!(input.is_some());
+        assert_eq!(input, Some("original input"));
         assert!(!app.is_editing());
         assert_eq!(app.prompt.text(), "draft");
         assert!(
@@ -281,14 +287,22 @@ mod tests {
         let mut input = None;
         let restored = std::cell::Cell::new(false);
         let status = run_editor("false", &copy).await.expect("runs");
-        app.finish_editor(&mut input, Ok(Ok(status)), || {
-            restored.set(true);
-            Ok(())
-        })
+        app.finish_editor(
+            &mut input,
+            Ok(Ok(status)),
+            || {
+                restored.set(true);
+                Ok(())
+            },
+            || {
+                assert!(restored.get(), "terminal resumed before input creation");
+                "restored input"
+            },
+        )
         .await
         .expect("restores");
         assert!(restored.get());
-        assert!(input.is_some());
+        assert_eq!(input, Some("restored input"));
         assert!(!app.is_editing());
         assert!(!copy.exists());
         assert_eq!(app.prompt.text(), "draft");
