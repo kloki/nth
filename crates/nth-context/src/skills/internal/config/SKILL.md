@@ -49,9 +49,12 @@ There is no per-project config: the one file applies everywhere.
 
 ### Add a provider
 
-Each `[provider.<id>]` is one OpenAI-compatible chat completions endpoint, and
-the id prefixes its models. nth refuses to chat without a provider whose key is
-set, or ChatGPT connected.
+Each `[provider.<id>]` is one endpoint, and the id prefixes its models. The
+models.dev catalogue selects Anthropic messages, OpenAI responses or chat
+completions per model, matching the provider by `base_url` or else its id.
+Unknown providers can borrow model metadata, but not prices or protocols;
+unknown models fall back to OpenAI-compatible chat completions. nth needs a
+provider whose key is set, or ChatGPT connected.
 
 ```toml
 [provider.opencode]
@@ -66,6 +69,20 @@ variable (`export OPENCODE_API_KEY=...`); a provider whose variable is not set i
 left out. Use `models = ["a", "b"]` to offer only those, needed for an endpoint
 without `/models`. The id `chatgpt` is reserved for the built-in subscription
 login (`nth connect`), so do not configure it.
+
+For OpenCode Zen with Grok, use the same `OPENCODE_API_KEY` variable:
+
+```toml
+model = "zen/grok-4.7"
+
+[provider.zen]
+name = "OpenCode Zen"
+base_url = "https://opencode.ai/zen/v1"
+api_key_env = "OPENCODE_API_KEY"
+```
+
+Keep the `/zen` URLs for requests: their `/models` routes work; the catalogue's
+`/inference` URLs currently return 404 for model discovery.
 
 ### Choose the default model
 
@@ -284,8 +301,8 @@ Every key with its default, in the order of `nth init`'s template.
 
 **`[memory]`** — what the model learns, kept in `.nth/memory/` in the main checkout, out of git.
 
-| Key       | Default | Meaning                                                                 |
-| --------- | ------- | ----------------------------------------------------------------------- |
+| Key       | Default | Meaning                                                                  |
+| --------- | ------- | ------------------------------------------------------------------------ |
 | `enabled` | `true`  | Load the `MEMORY.md` index and tell the model how to save; false is off. |
 
 **`[mode]`**

@@ -247,6 +247,48 @@ mod tests {
     }
 
     #[test]
+    fn zen_lists_grok_metadata_by_url_under_a_configured_alias() {
+        let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
+        let (id, provider) =
+            catalog::provider_for(&catalog, "zen", "https://opencode.ai/inference/openai/v1/")
+                .expect("Zen matched by URL");
+        assert_eq!(id, "opencode");
+        let models = select(
+            ["grok-code", "grok-4.7", "grok-build-0.1"]
+                .map(String::from)
+                .into(),
+            Some(&catalog),
+            Some(provider),
+        );
+
+        assert_eq!(ids(&models), ["grok-4.7", "grok-build-0.1", "grok-code"]);
+        assert_eq!(
+            models[0],
+            ModelInfo {
+                id: "grok-4.7".into(),
+                name: Some("Grok 4.7".into()),
+                context: Some(500_000),
+                output: Some(500_000),
+                efforts: vec![Effort::Low, Effort::Medium, Effort::High, Effort::XHigh],
+                origin: None,
+                cost: Some(Cost {
+                    input: 2.0,
+                    output: 6.0,
+                    cache_read: Some(0.5),
+                    cache_write: None,
+                }),
+                takes_images: Some(true),
+            }
+        );
+        assert_eq!(models[1].name.as_deref(), Some("Grok Build 0.1"));
+        assert_eq!(models[1].takes_images, Some(true));
+        assert!(models[1].efforts.is_empty());
+        assert_eq!(models[2].name.as_deref(), Some("Grok Code"));
+        assert_eq!(models[2].takes_images, Some(false));
+        assert!(models[2].efforts.is_empty());
+    }
+
+    #[test]
     fn unknown_endpoint_keeps_everything() {
         let catalog: catalog::Catalog = serde_json::from_str(FIXTURE).expect("valid fixture");
         let provider =

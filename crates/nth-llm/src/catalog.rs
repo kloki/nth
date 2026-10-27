@@ -253,12 +253,22 @@ pub(crate) fn provider_for<'a>(
     id: &str,
     base_url: &str,
 ) -> Option<(&'a str, &'a Provider)> {
-    let base_url = base_url.trim_end_matches('/');
+    let base_url = endpoint_identity(base_url);
     catalog
         .iter()
-        .find(|(_, p)| p.api.as_deref().map(|a| a.trim_end_matches('/')) == Some(base_url))
+        .find(|(_, p)| p.api.as_deref().map(endpoint_identity) == Some(base_url))
         .or_else(|| catalog.get_key_value(id))
         .map(|(id, p)| (id.as_str(), p))
+}
+
+/// OpenCode renamed its gateway routes. Compare both generations as the
+/// same endpoint without changing where a configured client sends requests.
+fn endpoint_identity(url: &str) -> &str {
+    match url.trim_end_matches('/') {
+        "https://opencode.ai/zen/v1" => "https://opencode.ai/inference/openai/v1",
+        "https://opencode.ai/zen/go/v1" => "https://opencode.ai/inference/go/openai/v1",
+        url => url,
+    }
 }
 
 /// What another provider's entry says about `model`, for an endpoint the
@@ -334,6 +344,50 @@ mod tests {
             "the url wins"
         );
         assert!(provider_for(&catalog, "lyceum", "https://api.lyceum.technology").is_none());
+    }
+
+    #[test]
+    fn legacy_and_current_gateway_urls_find_the_same_provider() {
+        // Both catalogue generations must work with both config generations.
+        for (zen, go) in [
+            (
+                "https://opencode.ai/zen/v1",
+                "https://opencode.ai/zen/go/v1",
+            ),
+            (
+                "https://opencode.ai/inference/openai/v1",
+                "https://opencode.ai/inference/go/openai/v1",
+            ),
+        ] {
+            let catalog: Catalog = serde_json::from_value(serde_json::json!({
+                "opencode": {"api": zen, "models": {}},
+                "opencode-go": {"api": go, "models": {}},
+            }))
+            .expect("valid catalogue");
+            for (url, expected) in [
+                ("https://opencode.ai/zen/v1", "opencode"),
+                ("https://opencode.ai/inference/openai/v1", "opencode"),
+                ("https://opencode.ai/zen/go/v1", "opencode-go"),
+                ("https://opencode.ai/inference/go/openai/v1", "opencode-go"),
+            ] {
+                for id in ["zen", "custom", "opencode"] {
+                    for url in [url.to_string(), format!("{url}/")] {
+                        assert_eq!(
+                            provider_for(&catalog, id, &url).map(|(id, _)| id),
+                            Some(expected),
+                            "{id} at {url}, catalogue {zen} / {go}"
+                        );
+                    }
+                }
+            }
+            for url in [
+                "http://opencode.ai/zen/v1",
+                "https://example.com/zen/v1",
+                "https://opencode.ai/zen/v1/proxy",
+            ] {
+                assert!(provider_for(&catalog, "custom", url).is_none());
+            }
+        }
     }
 
     #[test]

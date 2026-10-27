@@ -36,8 +36,9 @@ impl Tool for ShowUser {
                         "required":["curio_id"]
                     }
                 },
-                "additionalProperties":false,
-                "oneOf": [{"required":["filePath"],"not":{"required":["curio"]}}, {"required":["curio"],"not":{"required":["filePath"]}}]
+                // Some providers reject root-level unions. The call validates
+                // that exactly one target is selected before using either.
+                "additionalProperties":false
             }),
         }
     }
@@ -87,6 +88,25 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn requires_exactly_one_target() {
+        let ctx = ToolContext::new(std::env::temp_dir());
+        for args in [
+            json!({}),
+            json!({"filePath": "a.rs", "curio": {"curio_id": "example"}}),
+        ] {
+            let error = ShowUser
+                .call(args, &ctx)
+                .await
+                .expect_err("invalid selection");
+            assert!(error.contains("choose exactly one"), "{error}");
+        }
+        let schema = ShowUser.spec().parameters;
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("anyOf").is_none());
+    }
 
     #[tokio::test]
     async fn sends_the_file_to_the_screen_by_its_absolute_path() {
