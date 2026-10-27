@@ -72,3 +72,8 @@ Only Openai is supported.
 
 - Local version of claude's artifacts
 - `curios-design` skill: design guidance adapted from Claude's artifact skills
+
+## Repository data
+
+- All persisted data is stored insided the repository folder. `.nth/`
+- Deleted the repository deletes all data
