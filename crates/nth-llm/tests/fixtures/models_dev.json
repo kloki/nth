@@ -3,7 +3,7 @@
     "id": "opencode-go",
     "name": "OpenCode Go",
     "npm": "@ai-sdk/openai-compatible",
-    "api": "https://opencode.ai/zen/go/v1",
+    "api": "https://opencode.ai/inference/go/openai/v1",
     "models": {
       "glm-5.3": {
         "id": "glm-5.3",
@@ -22,11 +22,7 @@
         "reasoning_options": [
           {
             "type": "effort",
-            "values": [
-              "low",
-              "high",
-              "max"
-            ]
+            "values": ["low", "high", "max"]
           }
         ]
       },
@@ -41,9 +37,7 @@
         "reasoning_options": [
           {
             "type": "effort",
-            "values": [
-              "max"
-            ]
+            "values": ["max"]
           }
         ]
       },
@@ -78,12 +72,7 @@
         "reasoning_options": [
           {
             "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh"
-            ]
+            "values": ["low", "medium", "high", "xhigh"]
           }
         ]
       },
@@ -97,6 +86,40 @@
         "provider": {
           "npm": "@ai-sdk/google"
         }
+      }
+    }
+  },
+  "opencode": {
+    "id": "opencode",
+    "name": "OpenCode Zen",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://opencode.ai/inference/openai/v1",
+    "models": {
+      "grok-4.7": {
+        "id": "grok-4.7",
+        "name": "Grok 4.7",
+        "reasoning": true,
+        "modalities": { "input": ["text", "image"], "output": ["text"] },
+        "cost": { "input": 2, "output": 6, "cache_read": 0.5 },
+        "limit": { "context": 500000, "output": 500000 },
+        "provider": { "npm": "@ai-sdk/openai" },
+        "reasoning_options": [
+          { "type": "effort", "values": ["low", "medium", "high", "xhigh"] }
+        ]
+      },
+      "grok-build-0.1": {
+        "id": "grok-build-0.1",
+        "name": "Grok Build 0.1",
+        "reasoning": true,
+        "modalities": { "input": ["text", "image"], "output": ["text"] },
+        "provider": { "npm": "@ai-sdk/openai" },
+        "reasoning_options": []
+      },
+      "grok-code": {
+        "id": "grok-code",
+        "name": "Grok Code",
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "reasoning_options": []
       }
     }
   },
@@ -115,13 +138,7 @@
         "reasoning_options": [
           {
             "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
-            ]
+            "values": ["low", "medium", "high", "xhigh", "max"]
           }
         ]
       },
@@ -159,11 +176,7 @@
         "reasoning_options": [
           {
             "type": "effort",
-            "values": [
-              "low",
-              "medium",
-              "high"
-            ]
+            "values": ["low", "medium", "high"]
           }
         ]
       }

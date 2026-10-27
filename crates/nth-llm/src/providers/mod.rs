@@ -180,7 +180,7 @@ impl Provider for Providers {
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
-    use nth_protocol::Effort;
+    use nth_protocol::{AssistantMessage, Effort, Message, ToolCall};
 
     use super::*;
     use crate::{Credentials, catalog::Wire};
@@ -315,6 +315,139 @@ mod tests {
             "an endpoint the catalogue does not know borrows the model, not its wire"
         );
         assert_eq!(wire("lyceum/unlisted").await, (Wire::ChatCompletions, None));
+    }
+
+    #[tokio::test]
+    async fn zen_grok_routes_and_continues_tool_calls_over_its_models_protocol() {
+        for (model, responses) in [
+            ("grok-4.7", true),
+            ("grok-build-0.1", true),
+            ("grok-code", false),
+        ] {
+            let fixture: &[u8] = if responses {
+                include_bytes!("../../tests/fixtures/zen_responses.sse")
+            } else {
+                include_bytes!("../../tests/fixtures/go_stream.sse")
+            };
+            let (url, sent) = crate::testing::serve_once(fixture).await;
+            let mut catalog: serde_json::Value =
+                serde_json::from_str(include_str!("../../tests/fixtures/models_dev.json"))
+                    .expect("valid fixture");
+            // Keep the configured id distinct: only the URL can find Zen.
+            catalog["opencode"]["api"] = serde_json::json!(url);
+            let providers = Providers::build(
+                vec![EndpointConfig {
+                    base_url: url,
+                    ..endpoint("zen")
+                }],
+                Vec::new(),
+                "zen/grok-4.7",
+                reqwest::Client::new(),
+                Snapshot::of(serde_json::from_value(catalog).expect("valid catalogue")),
+            )
+            .expect("Zen configured");
+            let call = ToolCall {
+                id: "call_previous".into(),
+                name: "read".into(),
+                arguments: r#"{"filePath":"Cargo.toml"}"#.into(),
+            };
+            let messages = [
+                Message::Assistant(AssistantMessage {
+                    tool_calls: vec![call.clone()],
+                    ..Default::default()
+                }),
+                Message::ToolResult {
+                    call_id: call.id.clone(),
+                    content: "[workspace]".into(),
+                    images: Vec::new(),
+                },
+            ];
+            let qualified = format!("zen/{model}");
+            let events: Vec<_> = providers
+                .stream(Request {
+                    model: &qualified,
+                    session_id: "ses_zen",
+                    parent_session_id: None,
+                    effort: Effort::XHigh,
+                    messages: &messages,
+                    tools: &[],
+                })
+                .await
+                .expect("streams")
+                .collect()
+                .await;
+            let events: Vec<_> = events.into_iter().map(|e| e.expect("valid SSE")).collect();
+            let calls: Vec<_> = events
+                .iter()
+                .filter_map(|e| match e {
+                    StreamEvent::ToolCall(call) => Some(call.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                calls,
+                if responses {
+                    vec![
+                        ToolCall {
+                            id: "call_y8Tp".into(),
+                            ..call.clone()
+                        },
+                        ToolCall {
+                            id: "call_xzh9".into(),
+                            name: "glob".into(),
+                            arguments: r#"{"pattern":"**/*.rs"}"#.into(),
+                        },
+                    ]
+                } else {
+                    vec![
+                        ToolCall {
+                            id: "call_a".into(),
+                            ..call.clone()
+                        },
+                        ToolCall {
+                            id: "call_b".into(),
+                            name: "bash".into(),
+                            arguments: r#"{"command":"ls"}"#.into(),
+                        },
+                    ]
+                },
+                "{model} parses tool calls through its selected protocol"
+            );
+            let (head, body) = sent.await.expect("a request");
+            let body: serde_json::Value = serde_json::from_str(&body).expect("JSON body");
+            assert_eq!(body["model"], model, "the configured prefix is stripped");
+            if responses {
+                assert_eq!(head.lines().next(), Some("POST /responses HTTP/1.1"));
+                assert_eq!(
+                    body["input"],
+                    serde_json::json!([
+                        {"type": "function_call", "call_id": call.id,
+                         "name": call.name, "arguments": call.arguments},
+                        {"type": "function_call_output", "call_id": call.id,
+                         "output": "[workspace]"},
+                    ])
+                );
+                if model == "grok-4.7" {
+                    assert_eq!(body["reasoning"]["effort"], "xhigh");
+                } else {
+                    assert!(body["reasoning"].get("effort").is_none(), "{body}");
+                }
+            } else {
+                assert_eq!(head.lines().next(), Some("POST /chat/completions HTTP/1.1"));
+                assert_eq!(
+                    body["messages"],
+                    serde_json::json!([
+                        {"role": "assistant", "content": "", "tool_calls": [
+                            {"id": call.id, "type": "function", "function": {
+                                "name": call.name, "arguments": call.arguments,
+                            }},
+                        ]},
+                        {"role": "tool", "tool_call_id": call.id, "content": "[workspace]"},
+                    ])
+                );
+                assert!(body.get("reasoning_effort").is_none(), "{body}");
+            }
+        }
     }
 
     /// A ChatGPT login kept in `dir`, and its store to connect it with.

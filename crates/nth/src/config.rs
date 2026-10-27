@@ -50,8 +50,8 @@ pub struct Config {
     pub notify: nth_notify::NotifyConfig,
 }
 
-/// An OpenAI-compatible chat completions endpoint, the one protocol nth
-/// speaks, so there is no kind to pick.
+/// A provider endpoint; the models.dev catalogue selects each model's
+/// protocol, falling back to OpenAI-compatible chat completions.
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
