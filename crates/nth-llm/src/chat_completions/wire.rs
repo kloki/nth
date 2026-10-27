@@ -144,7 +144,85 @@ fn tool(spec: &ToolSpec) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::{AssistantMessage, ToolCall};
+
     use super::*;
+
+    #[test]
+    fn translates_a_conversation_with_tool_calls() {
+        let messages = [
+            Message::System("You are nth.".into()),
+            Message::User("Read both.".into()),
+            Message::Assistant(AssistantMessage {
+                text: "Reading.".into(),
+                reasoning: "Two files.".into(),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "call_a".into(),
+                        name: "read".into(),
+                        arguments: r#"{"filePath":"a"}"#.into(),
+                    },
+                    ToolCall {
+                        id: "call_b".into(),
+                        name: "read".into(),
+                        arguments: r#"{"filePath":"b"}"#.into(),
+                    },
+                ],
+            }),
+            Message::ToolResult {
+                call_id: "call_b".into(),
+                content: "B".into(),
+                images: Vec::new(),
+            },
+            Message::ToolResult {
+                call_id: "call_a".into(),
+                content: "A".into(),
+                images: Vec::new(),
+            },
+            Message::Assistant(AssistantMessage {
+                text: "Done.".into(),
+                ..Default::default()
+            }),
+        ];
+        let tools = [ToolSpec {
+            name: "read",
+            description: "Reads a file.".into(),
+            parameters: json!({ "type": "object" }),
+        }];
+
+        assert_eq!(
+            body("glm", Effort::Default, None, &messages, &tools),
+            json!({
+                "model": "glm",
+                "stream": true,
+                "stream_options": { "include_usage": true },
+                "messages": [
+                    { "role": "system", "content": "You are nth." },
+                    { "role": "user", "content": "Read both." },
+                    {
+                        "role": "assistant",
+                        "content": "Reading.",
+                        "reasoning_content": "Two files.",
+                        "tool_calls": [
+                            { "id": "call_a", "type": "function", "function": {
+                                "name": "read", "arguments": r#"{"filePath":"a"}"#
+                            } },
+                            { "id": "call_b", "type": "function", "function": {
+                                "name": "read", "arguments": r#"{"filePath":"b"}"#
+                            } },
+                        ],
+                    },
+                    { "role": "tool", "tool_call_id": "call_b", "content": "B" },
+                    { "role": "tool", "tool_call_id": "call_a", "content": "A" },
+                    { "role": "assistant", "content": "Done." },
+                ],
+                "tools": [{ "type": "function", "function": {
+                    "name": "read", "description": "Reads a file.",
+                    "parameters": { "type": "object" },
+                } }],
+            })
+        );
+    }
 
     #[test]
     fn sends_an_effort_only_when_one_is_chosen() {

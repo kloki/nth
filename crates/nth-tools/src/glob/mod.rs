@@ -45,17 +45,26 @@ impl Tool for Glob {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
-            let dir = match &args.path {
+            let mut dir = match &args.path {
                 Some(path) => crate::path::resolve(&ctx.cwd, path),
                 None => ctx.cwd.clone(),
             };
+            let mut pattern = args.pattern;
+            if Path::new(&pattern).is_absolute() {
+                let wildcard = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
+                let prefix = &pattern[..wildcard];
+                let parent = prefix.rfind('/').unwrap_or(0);
+                dir = PathBuf::from(if parent == 0 { "/" } else { &prefix[..parent] });
+                // Keep the remainder anchored to this directory. A bare
+                // basename otherwise matches at every depth in `find`.
+                pattern = format!("/{}", &pattern[parent + 1..]);
+            }
             match tokio::fs::metadata(&dir).await {
                 Ok(meta) if meta.is_dir() => {}
                 Ok(_) => return Err(format!("glob path must be a directory: {}", dir.display())),
                 Err(e) => return Err(format!("cannot search {}: {e}", dir.display())),
             }
 
-            let pattern = args.pattern;
             let files = tokio::task::spawn_blocking(move || find(&dir, &pattern))
                 .await
                 .map_err(|e| format!("glob failed: {e}"))??;
@@ -166,6 +175,42 @@ mod tests {
             .await
             .expect("glob");
         assert_eq!(lines(root, &out), ["src/new.rs", "src/mid.rs"]);
+    }
+
+    #[tokio::test]
+    async fn absolute_pattern_matches_files_under_the_search_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        touch(&root.join("src/a.rs"), 0);
+        touch(&root.join("src/a.txt"), 0);
+        let pattern = root.join("src/*.rs");
+        let out = glob(root, json!({ "pattern": pattern.to_str().unwrap() }))
+            .await
+            .expect("glob");
+        assert_eq!(out, root.join("src/a.rs").display().to_string());
+    }
+
+    #[tokio::test]
+    async fn absolute_patterns_keep_their_depth_and_literal_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        touch(&root.join("café/a.rs"), 0);
+        touch(&root.join("café/nested/a.rs"), 0);
+        touch(&root.join("cafeteria/a.rs"), 0);
+        for suffix in ["café/*.rs", "café/a.rs"] {
+            let pattern = root.join(suffix);
+            let out = glob(root, json!({ "pattern": pattern.to_str().unwrap() }))
+                .await
+                .expect("glob");
+            assert_eq!(out, root.join("café/a.rs").display().to_string());
+        }
+        let pattern = root.join("café/**/*.rs");
+        let out = glob(root, json!({ "pattern": pattern.to_str().unwrap() }))
+            .await
+            .expect("glob");
+        let mut matches = lines(root, &out);
+        matches.sort();
+        assert_eq!(matches, ["café/a.rs", "café/nested/a.rs"]);
     }
 
     #[tokio::test]

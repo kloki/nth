@@ -60,6 +60,16 @@ impl App {
     /// it in the background. `input` goes, so its reader thread stops
     /// taking the keys meant for the editor.
     pub(super) async fn open_editor(&mut self, input: &mut Option<EventStream>) {
+        self.open_editor_in(input, &std::env::temp_dir().join("nth"), terminal::suspend)
+            .await;
+    }
+
+    async fn open_editor_in(
+        &mut self,
+        input: &mut Option<EventStream>,
+        dir: &std::path::Path,
+        suspend: impl FnOnce(),
+    ) {
         let Some(target) = self.pending_editor.take() else {
             return;
         };
@@ -80,13 +90,13 @@ impl App {
                 name
             }
         };
-        let copy = std::env::temp_dir().join("nth").join(name);
+        let copy = dir.join(name);
         if let Err(e) = write_copy(&copy, &original).await {
             self.hint = Some(format!("cannot open the editor: {e}").into());
             return;
         }
         *input = None;
-        terminal::suspend();
+        suspend();
         let editor = editor();
         let path = copy.clone();
         self.editor
@@ -106,7 +116,17 @@ impl App {
         input: &mut Option<EventStream>,
         ended: Result<io::Result<ExitStatus>, JoinError>,
     ) -> anyhow::Result<()> {
-        terminal::resume(terminal)?;
+        self.finish_editor(input, ended, || terminal::resume(terminal))
+            .await
+    }
+
+    async fn finish_editor(
+        &mut self,
+        input: &mut Option<EventStream>,
+        ended: Result<io::Result<ExitStatus>, JoinError>,
+        resume: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        resume()?;
         *input = Some(EventStream::new());
         let Some(Editing {
             target,
@@ -222,6 +242,57 @@ mod tests {
 
         let status = run_editor("false", &path).await.expect("runs");
         assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn copy_failure_keeps_terminal_and_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("file");
+        std::fs::write(&blocker, "not a directory").expect("writes");
+        let mut app = crate::app::tests::app();
+        app.prompt.insert_str("draft");
+        app.edit();
+        let mut input = Some(EventStream::new());
+        app.open_editor_in(&mut input, &blocker, || panic!("terminal suspended"))
+            .await;
+        assert!(input.is_some());
+        assert!(!app.is_editing());
+        assert_eq!(app.prompt.text(), "draft");
+        assert!(
+            app.hint
+                .as_deref()
+                .unwrap()
+                .starts_with("cannot open the editor:")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_editor_restores_terminal_and_discards_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let copy = dir.path().join("prompt.md");
+        std::fs::write(&copy, "changed").expect("writes");
+        let mut app = crate::app::tests::app();
+        app.prompt.insert_str("draft");
+        app.editing = Some(Editing {
+            target: Target::Prompt,
+            copy: copy.clone(),
+            original: "draft".into(),
+        });
+        let mut input = None;
+        let restored = std::cell::Cell::new(false);
+        let status = run_editor("false", &copy).await.expect("runs");
+        app.finish_editor(&mut input, Ok(Ok(status)), || {
+            restored.set(true);
+            Ok(())
+        })
+        .await
+        .expect("restores");
+        assert!(restored.get());
+        assert!(input.is_some());
+        assert!(!app.is_editing());
+        assert!(!copy.exists());
+        assert_eq!(app.prompt.text(), "draft");
+        assert!(app.hint.as_deref().unwrap().contains("edits dropped"));
     }
 
     /// An app on a session in a temporary directory whose plan reads

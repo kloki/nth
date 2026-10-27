@@ -167,7 +167,7 @@ mod tests {
     async fn a_hint_waves_in_then_waves_out_and_goes() {
         let mut app = app();
         app.hint = Some(said("copied", WAVE));
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         let at = u16::try_from(row.find("copied").expect("the hint shows")).unwrap();
         assert!(
             cells(&mut app, at)
@@ -199,6 +199,10 @@ mod tests {
         crate::app::monitor::due(app.hint.as_ref().map(Hint::expires)).await;
         app.hint_expired();
         assert_eq!(app.hint, None);
-        assert!(rows(&mut app)[15].trim().is_empty());
+        assert!(
+            crate::app::tests::status_row(&rows(&mut app), 1)
+                .trim()
+                .is_empty()
+        );
     }
 }

@@ -177,21 +177,33 @@ mod tests {
     #[test]
     fn cycling_puts_both_modes_on_the_profile() {
         let mut app = profiled();
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · go-act · go");
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
+            " ▎ act  · go-act · go"
+        );
 
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "zen-act");
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · zen-act · zen");
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
+            " ▎ act  · zen-act · zen"
+        );
 
         app.apply(Action::NextTab);
         assert_eq!(app.mode, Mode::Plan);
         assert_eq!(app.model, "zen-plan");
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ plan · zen-plan · zen");
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
+            " ▎ plan · zen-plan · zen"
+        );
 
         app.apply(Action::NextProfile);
         assert_eq!(app.model, "go-plan", "wraps to the first");
         assert_eq!(app.hint.as_deref(), Some("Profile set to go"));
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ plan · go-plan · go");
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
+            " ▎ plan · go-plan · go"
+        );
     }
 
     #[tokio::test]

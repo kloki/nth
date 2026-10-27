@@ -277,9 +277,9 @@ async fn a_queued_compaction_shows_its_label_until_the_turn_ends() {
 
     let rows = crate::app::tests::rows(&mut app);
     assert!(
-        rows[15].starts_with(" > 1 queued · /compact"),
+        crate::app::tests::status_row(&rows, 1).starts_with(" > 1 queued · /compact"),
         "{:?}",
-        rows[15]
+        crate::app::tests::status_row(&rows, 1)
     );
 
     end(&mut app).await;

@@ -265,7 +265,11 @@ mod tests {
             rows.iter().all(|r| !r.contains("Ask anything")),
             "no prompt"
         );
-        assert_eq!(rows[14].trim_end(), " /repo 0m", "status stays");
+        assert_eq!(
+            crate::app::tests::status_row(&rows, 0).trim_end(),
+            " /repo 0m",
+            "status stays"
+        );
     }
 
     #[test]
@@ -284,8 +288,14 @@ mod tests {
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
         let shown = rows(&mut app);
-        assert_eq!(shown[9].trim_end(), " ▎ act  · glm · medium");
-        assert_eq!(shown[14].trim_end(), " /repo 0m");
+        assert_eq!(
+            crate::app::tests::prompt_row(&shown, 0).trim_end(),
+            " ▎ act  · glm · medium"
+        );
+        assert_eq!(
+            crate::app::tests::status_row(&shown, 0).trim_end(),
+            " /repo 0m"
+        );
 
         app.apply(Action::LlmPicker);
         app.apply(Action::SelectNext);

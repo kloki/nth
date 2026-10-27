@@ -351,6 +351,36 @@ async fn runs_tools_until_the_model_answers() {
 }
 
 #[tokio::test]
+async fn zero_steps_fails_without_a_provider_request() {
+    let provider = Scripted::new(vec![]);
+    let ctx = ToolContext::new(".".into());
+    let (tx, _rx) = mpsc::channel(16);
+    let mut messages = vec![Message::User("go".into())];
+    let mut last_usage = None;
+
+    let result = Turn {
+        provider: &provider,
+        route: Route {
+            max_steps: 0,
+            ..ROUTE
+        },
+        tools: &[],
+        ctx: &ctx,
+        messages: &mut messages,
+        spend: &mut spend(),
+        last_usage: &mut last_usage,
+        events: &tx,
+        cancel: &CancellationToken::new(),
+    }
+    .run()
+    .await;
+
+    assert!(matches!(result, Err(Error::TooManySteps(0))));
+    assert_eq!(provider.requests(), 0);
+    assert_eq!(messages, [Message::User("go".into())]);
+}
+
+#[tokio::test]
 async fn the_last_step_tells_the_model_to_stop() {
     let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("done".into())]]);
     let ctx = ToolContext::new(".".into());

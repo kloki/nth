@@ -623,6 +623,31 @@ mod tests {
     }
 
     #[test]
+    fn absolute_imports_read_outside_the_project_and_share_the_seen_set() {
+        let tree = Tree::new();
+        let shared = tree.path("shared/style.md");
+        let missing = tree.path("shared/missing.md");
+        let root = format!(
+            "@{} @../shared/style.md @{}",
+            shared.display(),
+            missing.display()
+        );
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/AGENTS.md", &root)
+            .file("shared/style.md", "style @rules.md")
+            .file("shared/rules.md", "rules");
+
+        assert_eq!(
+            tree.discover("repo", &no_globals()),
+            vec![
+                ("repo/AGENTS.md".into(), root),
+                ("shared/style.md".into(), "style @rules.md".into()),
+                ("shared/rules.md".into(), "rules".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_tilde_import_is_read_from_home() {
         let tree = Tree::new();
         tree.file("home/.claude/CLAUDE.md", "@RTK.md\n@~/notes/me.md")
@@ -706,6 +731,29 @@ mod tests {
                 ("repo/a/notes.md", "notes"),
                 ("repo/a/b/AGENTS.md", "b @../notes.md"),
             ])
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_absolute_imports_are_claimed_once_across_reads() {
+        let tree = Tree::new();
+        let absolute = format!("@{}", tree.path("shared.md").display());
+        tree.file("repo/.git/HEAD", "")
+            .file("repo/a/AGENTS.md", &absolute)
+            .file("repo/b/AGENTS.md", &absolute)
+            .file("shared.md", "shared");
+        let loaded = loaded(&[]);
+
+        assert_eq!(
+            nested_in(&tree, "a", &loaded).await,
+            vec![
+                ("repo/a/AGENTS.md".into(), absolute.clone()),
+                ("shared.md".into(), "shared".into()),
+            ]
+        );
+        assert_eq!(
+            nested_in(&tree, "b", &loaded).await,
+            vec![("repo/b/AGENTS.md".into(), absolute)]
         );
     }
 

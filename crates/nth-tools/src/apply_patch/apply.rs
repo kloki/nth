@@ -50,8 +50,8 @@ pub(super) fn apply(source: &str, hunks: &[Hunk]) -> Result<String, String> {
         }
         let new = joined(&hunk.new, eol);
         if hunk.old.is_empty() {
-            // Pure additions go after the @@ line, or else at the end.
-            let at = if hunk.context.is_some() {
+            // EOF takes precedence over an anchor, which only locates the hunk.
+            let at = if hunk.context.is_some() && !hunk.end_of_file {
                 cursor
             } else {
                 text.len()

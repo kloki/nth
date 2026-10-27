@@ -267,42 +267,107 @@ mod tests {
         })
     }
 
-    /// Runs `command` with a sink, and returns what it streamed.
-    async fn streamed(command: &str) -> Vec<String> {
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    async fn next_text(rx: &mut tokio::sync::mpsc::Receiver<nth_protocol::Event>) -> String {
+        match tokio::time::timeout(DEADLINE, rx.recv())
+            .await
+            .expect("output deadline")
+        {
+            Some(nth_protocol::Event::ToolOutput { text, .. }) => text,
+            event => panic!("expected output, got {event:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streams_lines_before_the_command_exits() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let ctx = ToolContext {
             output: OutputSink::new(tx, "1".into()),
             ..ToolContext::new(dir.path().to_path_buf())
         };
-        let out = Bash::default()
-            .call(json!({ "command": command, "description": "t" }), &ctx)
-            .await;
-        assert!(out.is_ok());
-        let mut texts = Vec::new();
+        // The shell cannot finish until the test releases it through the FIFO.
+        let bash = Bash::new(BashConfig {
+            rtk: false,
+            ..BashConfig::default()
+        });
+        let call = bash.call(json!({ "command": "mkfifo gate; echo one; read -r x < gate; echo two; printf three", "description": "t" }), &ctx);
+        tokio::pin!(call);
+        tokio::select! {
+            text = next_text(&mut rx) => assert_eq!(text, "one\n"),
+            result = &mut call => panic!("exited before release: {result:?}"),
+        }
+        let release = tokio::fs::write(dir.path().join("gate"), b"go\n");
+        let (result, released) =
+            tokio::time::timeout(DEADLINE, async { tokio::join!(&mut call, release) })
+                .await
+                .expect("completion deadline");
+        released.expect("release");
+        assert_eq!(result.expect("bash"), "one\ntwo\nthree");
+        let mut rest = String::new();
         while let Ok(event) = rx.try_recv() {
             if let nth_protocol::Event::ToolOutput { text, .. } = event {
-                texts.push(text);
+                rest.push_str(&text);
             }
         }
-        texts
-    }
-
-    #[tokio::test]
-    async fn streams_lines_before_the_command_exits() {
-        let texts = streamed("echo one; sleep 0.2; echo two; printf three").await;
-        // Only the sleep separates sends for sure: what follows it may
-        // arrive in one read, as it does on macOS.
-        assert_eq!(texts[0], "one\n");
-        assert_eq!(texts.concat(), "one\ntwo\nthree");
+        assert_eq!(rest, "two\nthree");
     }
 
     #[tokio::test]
     async fn never_splits_a_character_across_sends() {
-        // The euro sign is three bytes; write them in two separate reads.
-        let texts = streamed(r"printf '\xe2\x82'; sleep 0.1; printf '\xac\n'").await;
-        assert_eq!(texts.concat(), "€\n");
-        assert!(texts.iter().all(|t| !t.contains('\u{fffd}')));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sink = OutputSink::new(tx, "1".into());
+        let mut streamed = Streamed::new(&sink);
+        streamed.lines(&[0xe2, 0x82]).await;
+        assert!(rx.try_recv().is_err());
+        streamed.lines(&[0xe2, 0x82, 0xac, b'\n']).await;
+        assert_eq!(next_text(&mut rx).await, "€\n");
+    }
+
+    async fn assert_process_gone(pid: &str) {
+        tokio::time::timeout(DEADLINE, async {
+            loop {
+                let alive = std::process::Command::new("kill")
+                    .args(["-0", pid.trim()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("run kill")
+                    .success();
+                if !alive || process_is_zombie(pid.trim()) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("background process survived cleanup");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_zombie(pid: &str) -> bool {
+        let Ok(pid) = pid.parse::<u32>() else {
+            return false;
+        };
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim().starts_with("Z "))
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_is_zombie(_pid: &str) -> bool {
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_process_is_not_a_zombie() {
+        assert!(!process_is_zombie(&std::process::id().to_string()));
     }
 
     #[tokio::test]
@@ -330,8 +395,13 @@ mod tests {
         assert_eq!(out, Ok("[nth-abc]\n".to_string()));
 
         // Outside a session there is nothing to name it after.
-        let out = bash(args).await;
-        assert_eq!(out, Ok("[]\n".to_string()));
+        let empty = ToolContext {
+            session: String::new(),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let out = Bash::default().call(args, &empty).await;
+        let inherited = std::env::var("AGENT_BROWSER_SESSION").unwrap_or_default();
+        assert_eq!(out, Ok(format!("[{inherited}]\n")));
     }
 
     #[tokio::test]
@@ -442,7 +512,7 @@ mod tests {
     async fn timeout_kills_background_processes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let out = quick(200)
+        let out = quick(2_000)
             .call(
                 json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "description": "t" }),
                 &ctx,
@@ -450,38 +520,33 @@ mod tests {
             .await;
         assert!(out.is_err());
         let pid = std::fs::read_to_string(dir.path().join("pid")).expect("pid file");
-        // Give the kernel a moment to deliver SIGKILL and let init reap it.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let alive = std::process::Command::new("kill")
-            .args(["-0", pid.trim()])
-            .status()
-            .expect("run kill")
-            .success();
-        assert!(
-            !alive,
-            "background sleep {} survived the timeout",
-            pid.trim()
-        );
+        assert_process_gone(&pid).await;
     }
 
     #[tokio::test]
     async fn dropping_a_running_call_kills_its_processes() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext::new(dir.path().to_path_buf());
-        let bash = Bash::default();
-        let call = bash.call(
-            json!({ "command": "sleep 30 & echo $! > pid; sleep 30", "description": "t" }),
-            &ctx,
-        );
-        let out = tokio::time::timeout(Duration::from_millis(300), call).await;
-        assert!(out.is_err(), "the call should still be running");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let ctx = ToolContext {
+            output: OutputSink::new(tx, "1".into()),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let bash = Bash::new(BashConfig {
+            rtk: false,
+            ..BashConfig::default()
+        });
+        {
+            let call = bash.call(
+                json!({ "command": "sleep 30 & echo $! > pid; echo ready; wait", "description": "t" }),
+                &ctx,
+            );
+            tokio::pin!(call);
+            tokio::select! {
+                text = next_text(&mut rx) => assert_eq!(text, "ready\n"),
+                result = &mut call => panic!("exited before cancellation: {result:?}"),
+            }
+        }
         let pid = std::fs::read_to_string(dir.path().join("pid")).expect("pid file");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let alive = std::process::Command::new("kill")
-            .args(["-0", pid.trim()])
-            .status()
-            .expect("run kill")
-            .success();
-        assert!(!alive, "background sleep {} survived the drop", pid.trim());
+        assert_process_gone(&pid).await;
     }
 }

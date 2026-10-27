@@ -43,7 +43,11 @@ pub(crate) fn buffer(app: &mut App) -> Buffer {
 }
 
 fn buffer_of(app: &mut App, width: u16) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(width, 16)).expect("test backend");
+    buffer_sized(app, width, 16)
+}
+
+fn buffer_sized(app: &mut App, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
     terminal.draw(|frame| app.draw(frame)).expect("draws");
     terminal.backend().buffer().clone()
 }
@@ -76,6 +80,16 @@ pub(crate) fn rows_of(app: &mut App, width: u16) -> Vec<String> {
         .collect()
 }
 
+/// Rows counted from the bottom, independent of terminal height.
+pub(crate) fn status_row(rows: &[String], offset: usize) -> &str {
+    &rows[rows.len() - usize::from(crate::status::ROWS) + offset]
+}
+
+/// A row of the standard prompt panel, counted from its top.
+pub(crate) fn prompt_row(rows: &[String], offset: usize) -> &str {
+    &rows[rows.len() - usize::from(crate::status::ROWS + crate::prompt::ROWS) - 1 + offset]
+}
+
 #[test]
 fn an_empty_chat_shows_the_field_until_something_is_said() {
     let mut app = app();
@@ -97,6 +111,17 @@ fn an_empty_chat_shows_the_field_until_something_is_said() {
 }
 
 #[test]
+fn tiny_terminal_draws_without_overflow() {
+    let mut app = app();
+    let buffer = buffer_sized(&mut app, 40, 4);
+    assert_eq!(buffer.area, ratatui::layout::Rect::new(0, 0, 40, 4));
+    let rows: Vec<String> = (0..4)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    assert!(rows.iter().any(|row| row.contains("act")), "{rows:?}");
+}
+
+#[test]
 fn prompt_and_status_rows_never_move() {
     let mut app = app();
     let idle = rows(&mut app);
@@ -109,12 +134,12 @@ fn prompt_and_status_rows_never_move() {
         [1, 8, 13].iter().all(|&i| idle[i].trim().is_empty()),
         "an empty line between bands"
     );
-    assert_eq!(idle[9].trim_end(), " ▎ act  · glm");
-    assert_eq!(idle[10].trim_end(), " ▎ Ask anything.");
-    assert_eq!(idle[11].trim_end(), " ▎");
-    assert_eq!(idle[12].trim_end(), " ▎");
-    assert_eq!(idle[14].trim_end(), " /repo 0m");
-    assert!(idle[15].trim().is_empty(), "no hint when idle");
+    assert_eq!(prompt_row(&idle, 0).trim_end(), " ▎ act  · glm");
+    assert_eq!(prompt_row(&idle, 1).trim_end(), " ▎ Ask anything.");
+    assert_eq!(prompt_row(&idle, 2).trim_end(), " ▎");
+    assert_eq!(prompt_row(&idle, 3).trim_end(), " ▎");
+    assert_eq!(status_row(&idle, 0).trim_end(), " /repo 0m");
+    assert!(status_row(&idle, 1).trim().is_empty(), "no hint when idle");
 
     for i in 0..20 {
         app.chat.transcript.push_user(format!("message {i}"));
@@ -126,24 +151,39 @@ fn prompt_and_status_rows_never_move() {
 
     assert_eq!(busy[0], idle[0], "the header stays on top");
     assert_eq!(busy[7].trim_end(), " ▎ message 19");
-    let spinner = busy[9].chars().skip(3).take(4).collect::<String>();
+    let spinner = prompt_row(&busy, 0)
+        .chars()
+        .skip(3)
+        .take(4)
+        .collect::<String>();
     assert!(
         spinner.chars().all(|c| ('⠀'..='⣿').contains(&c)),
         "spinner in place of the mode: {:?}",
-        busy[9]
+        prompt_row(&busy, 0)
     );
-    assert!(busy[9].trim_end().ends_with("esc to cancel"));
+    assert!(prompt_row(&busy, 0).trim_end().ends_with("esc to cancel"));
     // Byte offsets shift with the spinner's multi-byte glyphs; count chars.
     let at = |row: &str| row.find("· glm").map(|at| row[..at].chars().count());
-    assert_eq!(at(&busy[9]), at(&idle[9]), "the model stays put while busy");
+    assert_eq!(
+        at(prompt_row(&busy, 0)),
+        at(prompt_row(&idle, 0)),
+        "the model stays put while busy"
+    );
     let text: Vec<&str> = busy[10..=12].iter().map(|r| r.trim_end()).collect();
     assert_eq!(
         text,
         [" ▎ line 8", " ▎ line 9", " ▎ line 10"],
         "scrolled to the cursor"
     );
-    assert_eq!(busy[14].trim_end(), " /repo 0m", "no git outside a repo");
-    assert!(busy[15].trim().is_empty(), "nothing below while busy");
+    assert_eq!(
+        status_row(&busy, 0).trim_end(),
+        " /repo 0m",
+        "no git outside a repo"
+    );
+    assert!(
+        status_row(&busy, 1).trim().is_empty(),
+        "nothing below while busy"
+    );
 }
 
 #[test]
@@ -153,13 +193,23 @@ fn the_prompt_shows_the_model_with_its_provider_and_effort_coloured() {
     app.effort = Effort::High;
     let buffer = buffer(&mut app);
     let row: String = (0..buffer.area.width)
-        .map(|x| buffer[(x, 9)].symbol())
+        .map(|x| {
+            buffer[(
+                x,
+                buffer.area.height - crate::status::ROWS - crate::prompt::ROWS - 1,
+            )]
+                .symbol()
+        })
         .collect();
 
     assert_eq!(row.trim_end(), " ▎ act  · opencode/glm-5.3 · high");
     let fg = |text: &str| {
         let at = row.find(text).expect(text);
-        buffer[(u16::try_from(row[..at].chars().count()).expect("fits"), 9)].fg
+        buffer[(
+            u16::try_from(row[..at].chars().count()).expect("fits"),
+            buffer.area.height - crate::status::ROWS - crate::prompt::ROWS - 1,
+        )]
+            .fg
     };
     assert_eq!(fg("opencode/"), Color::White, "the provider is bright");
     assert_eq!(fg("glm-5.3"), Color::Blue);
@@ -205,7 +255,10 @@ fn a_scrollbar_shows_only_while_scrolled_up() {
         !bar.starts_with('┃') && !bar.ends_with('┃'),
         "partway: {bar:?}"
     );
-    assert!(up[15].trim().is_empty(), "no hint in the status bar");
+    assert!(
+        status_row(&up, 1).trim().is_empty(),
+        "no hint in the status bar"
+    );
 
     app.chat.jump_top();
     assert!(scrollbar(&rows(&mut app)).starts_with('┃'));
@@ -224,8 +277,15 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
     .into();
     let rows = rows(&mut app);
 
-    assert_eq!(rows[14].trim_end(), " /repo 0m", "the first line stays");
-    assert_eq!(rows[15].trim_end(), " > 2 queued · fix the build");
+    assert_eq!(
+        status_row(&rows, 0).trim_end(),
+        " /repo 0m",
+        "the first line stays"
+    );
+    assert_eq!(
+        status_row(&rows, 1).trim_end(),
+        " > 2 queued · fix the build"
+    );
 }
 
 #[test]
@@ -234,7 +294,7 @@ fn the_status_bar_shows_the_session_time() {
     app.session_since = SystemTime::now() - Duration::from_secs(24 * 60);
     let rows = rows(&mut app);
 
-    assert_eq!(rows[14].trim_end(), " /repo 24m");
+    assert_eq!(status_row(&rows, 0).trim_end(), " /repo 24m");
 }
 
 #[test]
@@ -259,7 +319,7 @@ fn a_narrow_status_line_cuts_the_right_first() {
     app.busy_since = Some(Instant::now());
     let rows = rows(&mut app);
 
-    let row = rows[14].trim();
+    let row = status_row(&rows, 0).trim();
     assert!(row.starts_with("/repo 0m git · a-very"), "{row:?}");
     assert!(!row.ends_with("*1"), "the counts are cut: {row:?}");
 }
@@ -267,7 +327,7 @@ fn a_narrow_status_line_cuts_the_right_first() {
 #[test]
 fn the_context_usage_shows_a_coloured_percentage() {
     let mut app = app();
-    let place = rows(&mut app)[14].trim_end().to_string();
+    let place = status_row(&rows(&mut app), 0).trim_end().to_string();
     assert!(
         place.ends_with("/repo 0m"),
         "nothing while the window is unknown"
@@ -278,20 +338,20 @@ fn the_context_usage_shows_a_coloured_percentage() {
     app.llms = Some(vec![glm].into());
     let empty = rows(&mut app);
     assert!(
-        empty[14].starts_with(&format!("{place} ◘ 0%")),
+        status_row(&empty, 0).starts_with(&format!("{place} ◘ 0%")),
         "zero before the first reply: {:?}",
-        empty[14]
+        status_row(&empty, 0)
     );
 
     // The colour of the `◘ NN%` span in row 14, found by its text.
     let colour = |app: &mut App, text: &str| -> Color {
         let buffer = buffer(app);
         let row: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, 14)].symbol())
+            .map(|x| buffer[(x, buffer.area.height - crate::status::ROWS)].symbol())
             .collect();
         let at = row.find(text).expect(text);
         let x = u16::try_from(row[..at].chars().count()).expect("fits");
-        buffer[(x, 14)].fg
+        buffer[(x, buffer.area.height - crate::status::ROWS)].fg
     };
 
     app.on_session(Event::Usage(Usage {
@@ -319,14 +379,14 @@ fn the_context_usage_shows_a_coloured_percentage() {
 #[test]
 fn the_status_bar_shows_what_the_session_spent() {
     let mut app = app();
-    let place = rows(&mut app)[14].trim_end().to_string();
+    let place = status_row(&rows(&mut app), 0).trim_end().to_string();
     app.on_session(Event::Usage(Usage {
         input: 1_000,
         output: 10,
         ..Usage::default()
     }));
     assert_eq!(
-        rows(&mut app)[14].trim_end(),
+        status_row(&rows(&mut app), 0).trim_end(),
         place,
         "no price known, nothing said"
     );
@@ -348,9 +408,9 @@ fn the_status_bar_shows_what_the_session_spent() {
     }));
     // 1000 fresh at 1000/M, 1000 read at 100/M, 20 out at 10000/M.
     assert!(
-        rows(&mut app)[14].contains(" $1.30 "),
+        status_row(&rows(&mut app), 0).contains(" $1.30 "),
         "{:?}",
-        rows(&mut app)[14]
+        status_row(&rows(&mut app), 0)
     );
 }
 
@@ -655,7 +715,10 @@ fn a_large_paste_collapses_and_a_small_one_does_not() {
     app.on_terminal(TermEvent::Paste(pasted));
 
     assert_eq!(app.prompt.text(), "[pasted 5 lines] ");
-    assert_eq!(rows(&mut app)[10].trim_end(), " ▎ [pasted 5 lines]");
+    assert_eq!(
+        prompt_row(&rows(&mut app), 1).trim_end(),
+        " ▎ [pasted 5 lines]"
+    );
 
     app.on_terminal(TermEvent::Paste("one\ntwo".into()));
     assert_eq!(
@@ -671,22 +734,22 @@ async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
     app.prompt.insert_str("half typed");
     app.run_command(crate::command::Command::Settings);
     let shown = rows(&mut app);
-    assert_eq!(shown[10].trim_end(), " ▎ settings");
+    assert_eq!(prompt_row(&shown, 1).trim_end(), " ▎ settings");
     assert!(
-        shown[11].starts_with(" ▎ → [x] thinking "),
+        prompt_row(&shown, 2).starts_with(" ▎ → [x] thinking "),
         "{:?}",
-        shown[11]
+        prompt_row(&shown, 2)
     );
     assert!(
-        shown[12].starts_with(" ▎   [x] tool output "),
+        prompt_row(&shown, 3).starts_with(" ▎   [x] tool output "),
         "{:?}",
-        shown[12]
+        prompt_row(&shown, 3)
     );
 
     app.apply(Action::SelectNext);
     app.apply(Action::Submit);
     assert!(!app.settings.tool_output);
-    assert!(rows(&mut app)[12].starts_with(" ▎ → [ ] tool output "));
+    assert!(prompt_row(&rows(&mut app), 3).starts_with(" ▎ → [ ] tool output "));
 
     app.apply(Action::Interrupt);
     assert!(matches!(app.input, Input::Prompt));
@@ -704,14 +767,14 @@ fn chat_settings_start_from_the_config() {
     app.run_command(crate::command::Command::Settings);
     let shown = rows(&mut app);
     assert!(
-        shown[11].starts_with(" ▎ → [ ] thinking "),
+        prompt_row(&shown, 2).starts_with(" ▎ → [ ] thinking "),
         "{:?}",
-        shown[11]
+        prompt_row(&shown, 2)
     );
     assert!(
-        shown[12].starts_with(" ▎   [ ] tool output "),
+        prompt_row(&shown, 3).starts_with(" ▎   [ ] tool output "),
         "{:?}",
-        shown[12]
+        prompt_row(&shown, 3)
     );
 }
 

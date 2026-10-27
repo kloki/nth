@@ -483,6 +483,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_again_replaces_the_session_and_its_listing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let mut saved = session("first prompt", 1);
+        store.save(&saved).await.expect("first save");
+
+        saved.messages[0] = Message::User("revised prompt".into());
+        saved.messages.push(Message::User("another message".into()));
+        saved.model = "new-model".into();
+        saved.updated_at = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+        store.save(&saved).await.expect("second save");
+
+        assert_eq!(store.load(saved.id).await.expect("loads"), saved);
+        let listed = store.list().await.expect("lists");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, saved.id);
+        assert_eq!(listed[0].title, "revised prompt");
+        assert_eq!(listed[0].model, "new-model");
+        assert_eq!(listed[0].updated_at, saved.updated_at);
+    }
+
+    #[tokio::test]
     async fn deletes_a_saved_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());

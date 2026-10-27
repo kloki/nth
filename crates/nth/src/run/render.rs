@@ -94,8 +94,10 @@ impl Printer {
     }
 
     pub fn finish(&self) {
-        if self.mid_line.is_some() {
-            println!();
+        match self.mid_line {
+            Some(Stream::Text) => println!(),
+            Some(Stream::Reasoning) => eprintln!(),
+            None => {}
         }
     }
 
@@ -131,12 +133,127 @@ impl Printer {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Event;
+    use std::time::Duration;
+
+    use nth_protocol::{Event, ToolCall};
 
     use super::*;
 
     /// Set only in the child the test below re-executes itself as.
     const CHILD: &str = "NTH_PRINTER_TEST_CHILD";
+
+    fn unstyle(text: &str) -> String {
+        let mut plain = String::new();
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                for code in chars.by_ref() {
+                    if code == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                plain.push(ch);
+            }
+        }
+        plain
+    }
+
+    #[test]
+    fn tool_and_retry_events_break_lines_and_track_the_working_directory() {
+        const CHILD_EVENTS: &str = "NTH_PRINTER_EVENTS_CHILD";
+        if std::env::var_os(CHILD_EVENTS).is_some() {
+            let mut printer = Printer::new(PathBuf::from("/repo"));
+            let call = ToolCall {
+                id: "one".into(),
+                name: "read".into(),
+                arguments: r#"{"filePath":"/other/file"}"#.into(),
+            };
+            printer.event(&Event::TextDelta("answer".into()));
+            printer.event(&Event::Moved(PathBuf::from("/other")));
+            printer.event(&Event::ToolStarted(call.clone()));
+            printer.event(&Event::ToolOutput {
+                call_id: call.id.clone(),
+                text: "hidden output".into(),
+            });
+            printer.event(&Event::ToolFinished {
+                call: call.clone(),
+                result: Ok("hidden result".into()),
+            });
+            printer.event(&Event::ReasoningDelta("thinking".into()));
+            printer.event(&Event::ToolFinished {
+                call,
+                result: Err("failed first\nfailed second".into()),
+            });
+            printer.event(&Event::TextDelta("retrying".into()));
+            printer.event(&Event::Retry {
+                attempt: 2,
+                delay: Duration::from_millis(1500),
+            });
+            printer.event(&Event::ReasoningDelta("last thought".into()));
+            printer.finish();
+            assert_eq!(printer.tool_calls, 1);
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "run::render::tests::tool_and_retry_events_break_lines_and_track_the_working_directory", "--nocapture"])
+            .env(CHILD_EVENTS, "1")
+            .env("NO_COLOR", "1")
+            .output().unwrap();
+        assert!(child.status.success(), "{child:?}");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = unstyle(&String::from_utf8_lossy(&child.stderr));
+        assert!(stdout.contains("answer\nretrying\n"), "{stdout:?}");
+        assert!(stderr.contains("read  file\n"), "{stderr:?}");
+        assert!(stderr.contains("thinking\n"), "{stderr:?}");
+        assert!(
+            stderr.contains("failed first") && !stderr.contains("failed second"),
+            "{stderr:?}"
+        );
+        assert!(stderr.contains("retrying in 2s · attempt 2"), "{stderr:?}");
+        assert!(stderr.ends_with("last thought\n"), "{stderr:?}");
+        assert!(
+            !stderr.contains("hidden output") && !stderr.contains("hidden result"),
+            "{stderr:?}"
+        );
+    }
+
+    #[test]
+    fn stream_transitions_and_finish_end_the_right_lines() {
+        const CHILD_TRANSITIONS: &str = "NTH_PRINTER_TRANSITIONS_CHILD";
+        if std::env::var_os(CHILD_TRANSITIONS).is_some() {
+            let mut printer = Printer::new(PathBuf::from("/repo"));
+            printer.event(&Event::TextDelta("answer".into()));
+            printer.event(&Event::TextDelta(" continued".into()));
+            printer.event(&Event::ReasoningDelta("thinking".into()));
+            printer.event(&Event::ReasoningDelta(" more\n".into()));
+            printer.event(&Event::TextDelta("next\n".into()));
+            printer.event(&Event::ReasoningDelta("unfinished".into()));
+            printer.event(&Event::Moved(PathBuf::from("/other")));
+            printer.event(&Event::TextDelta("last".into()));
+            printer.finish();
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::render::tests::stream_transitions_and_finish_end_the_right_lines",
+                "--nocapture",
+            ])
+            .env(CHILD_TRANSITIONS, "1")
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{child:?}");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = unstyle(&String::from_utf8_lossy(&child.stderr));
+        assert!(
+            stdout.contains("answer continued\nnext\nlast\n"),
+            "{stdout:?}"
+        );
+        assert!(stderr.contains("thinking more\nunfinished\n"), "{stderr:?}");
+        assert!(stderr.contains("/other\n"), "{stderr:?}");
+    }
 
     /// A compaction shows on stderr as one row holding the summary's first
     /// line with something on it, on a line of its own when the answer was
