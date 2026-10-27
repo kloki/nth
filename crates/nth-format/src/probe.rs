@@ -176,3 +176,174 @@ async fn help_matches(
         false => Err(format!("{name} is not the expected program")),
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn write(root: &Path, name: &str, contents: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn executable(root: &Path, name: &str, script: &str) -> PathBuf {
+        let path = write(root, name, script);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn node_dependency_walks_manifests_and_prefers_nearest_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let cwd = root.join("src");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let bin = dir.path().join("bin");
+        let global = executable(&bin, "prettier", "#!/bin/sh\n");
+        let env = Env {
+            cwd: &cwd,
+            root: &root,
+            search_path: Some(bin.as_os_str()),
+        };
+        let builtin = crate::registry::find("prettier").unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"dependencies":{"prettier":"1"}}"#,
+        );
+        write(&cwd, "package.json", "invalid json");
+        assert_eq!(
+            check(builtin, &env).await.unwrap_err(),
+            "prettier not in package.json"
+        );
+        write(
+            &root,
+            "package.json",
+            r#"{"devDependencies":{"prettier":"1"}}"#,
+        );
+        assert_eq!(
+            check(builtin, &env).await.unwrap()[0],
+            global.to_string_lossy()
+        );
+        let parent = executable(&root, "node_modules/.bin/prettier", "#!/bin/sh\n");
+        assert_eq!(
+            check(builtin, &env).await.unwrap()[0],
+            parent.to_string_lossy()
+        );
+        let local = executable(&cwd, "node_modules/.bin/prettier", "#!/bin/sh\n");
+        let command = check(builtin, &env).await.unwrap();
+        assert_eq!(command[0], local.to_string_lossy());
+        assert_eq!(command[1..], ["--write", "$FILE"]);
+        write(
+            &root,
+            "package.json",
+            r#"{"dependencies":{"prettier":"1"}}"#,
+        );
+        assert!(check(builtin, &env).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn node_marker_requires_a_marker_and_an_available_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let cwd = root.join("src");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let bin = dir.path().join("bin");
+        let env = Env {
+            cwd: &cwd,
+            root: &root,
+            search_path: Some(bin.as_os_str()),
+        };
+        let builtin = crate::registry::find("biome").unwrap();
+        write(dir.path(), "biome.json", "{}");
+        assert_eq!(
+            check(builtin, &env).await.unwrap_err(),
+            "no biome.json or biome.jsonc found"
+        );
+        write(&root, "biome.jsonc", "{}");
+        assert_eq!(
+            check(builtin, &env).await.unwrap_err(),
+            "biome not in node_modules/.bin or on PATH"
+        );
+        let program = executable(&bin, "biome", "#!/bin/sh\n");
+        assert_eq!(
+            check(builtin, &env).await.unwrap()[0],
+            program.to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn help_checks_exit_status_arguments_and_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let env = Env {
+            cwd: dir.path(),
+            root: dir.path(),
+            search_path: Some(bin.as_os_str()),
+        };
+        let builtin = crate::registry::find("air").unwrap();
+        let program = executable(
+            &bin,
+            "air",
+            "#!/bin/sh\n[ \"$1\" = --help ] || exit 1\nprintf 'R language formatter\nextra\n'\n",
+        );
+        assert_eq!(
+            check(builtin, &env).await.unwrap()[0],
+            program.to_string_lossy()
+        );
+        executable(
+            &bin,
+            "air",
+            "#!/bin/sh\nprintf 'other\nR language formatter\n'\n",
+        );
+        assert_eq!(
+            check(builtin, &env).await.unwrap_err(),
+            "air is not the expected program"
+        );
+        executable(
+            &bin,
+            "air",
+            "#!/bin/sh\nprintf 'R language formatter\n'\nexit 1\n",
+        );
+        assert_eq!(check(builtin, &env).await.unwrap_err(), "air --help failed");
+    }
+
+    #[tokio::test]
+    async fn ruff_recognizes_config_and_dependency_fixtures() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let cwd = root.join("src");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let bin = dir.path().join("bin");
+        let env = Env {
+            cwd: &cwd,
+            root: &root,
+            search_path: Some(bin.as_os_str()),
+        };
+        let builtin = crate::registry::find("ruff").unwrap();
+        assert_eq!(check(builtin, &env).await.unwrap_err(), "ruff not on PATH");
+        executable(&bin, "ruff", "#!/bin/sh\n");
+        write(dir.path(), "ruff.toml", "");
+        assert_eq!(
+            check(builtin, &env).await.unwrap_err(),
+            "no ruff config or dependency found"
+        );
+        for (name, text) in [
+            ("ruff.toml", ""),
+            (".ruff.toml", ""),
+            ("pyproject.toml", "[tool.ruff]\n"),
+            ("requirements.txt", "ruff>=1\n"),
+            ("Pipfile", "ruff = '*'\n"),
+        ] {
+            let path = write(&root, name, text);
+            assert!(check(builtin, &env).await.is_ok(), "{name}");
+            std::fs::remove_file(path).unwrap();
+        }
+        write(&root, "pyproject.toml", "[tool.black]\n");
+        assert!(check(builtin, &env).await.is_err());
+    }
+}

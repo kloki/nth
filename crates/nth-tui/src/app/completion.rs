@@ -199,10 +199,10 @@ mod tests {
         assert!(rows[7].starts_with("  /copy-id "));
         assert!(rows[8].starts_with("  /curios "));
         assert!(
-            rows[9].starts_with("  /diagnostics "),
+            crate::app::tests::prompt_row(&rows, 0).starts_with("  /diagnostics "),
             "right above the cursor, moved left to fit"
         );
-        assert!(rows[10].starts_with(" ▎ /"));
+        assert!(crate::app::tests::prompt_row(&rows, 1).starts_with(" ▎ /"));
     }
 
     #[test]
@@ -219,7 +219,11 @@ mod tests {
         let rows = rows(&mut app);
         // Too wide for the terminal, the popup is shifted to the margin.
         assert!(rows[8].contains("@explore  Fast agent"), "{}", rows[8]);
-        assert!(rows[9].contains("src/explorer.rs"), "{}", rows[9]);
+        assert!(
+            crate::app::tests::prompt_row(&rows, 0).contains("src/explorer.rs"),
+            "{}",
+            crate::app::tests::prompt_row(&rows, 0)
+        );
 
         app.apply(Action::Accept);
         assert_eq!(app.prompt.text(), "ask @explore ");
@@ -236,10 +240,10 @@ mod tests {
 
         assert!(rows[8].trim().is_empty());
         assert!(
-            rows[9].starts_with(" ▎ act  src/app/keys.rs "),
+            crate::app::tests::prompt_row(&rows, 0).starts_with(" ▎ act  src/app/keys.rs "),
             "lined up with the @"
         );
-        assert!(rows[10].starts_with(" ▎ see @ke"));
+        assert!(crate::app::tests::prompt_row(&rows, 1).starts_with(" ▎ see @ke"));
     }
 
     #[test]
@@ -259,7 +263,10 @@ mod tests {
         app.apply(Action::Accept);
         assert_eq!(app.prompt.text(), "see @../other/", "no space: walked into");
         let rows = rows(&mut app);
-        assert!(rows[9].contains("../other/main.rs"), "{rows:#?}");
+        assert!(
+            crate::app::tests::prompt_row(&rows, 0).contains("../other/main.rs"),
+            "{rows:#?}"
+        );
 
         app.apply(Action::Accept);
         assert_eq!(app.prompt.text(), "see @../other/main.rs ");
@@ -277,7 +284,11 @@ mod tests {
         let rows = rows(&mut app);
 
         let popup = format!(" ▎{}src/app/keys.rs  ", " ".repeat(21));
-        assert_eq!(rows[11], popup, "above the third row, against the margin");
-        assert!(rows[12].starts_with(" ▎ xxx"));
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows, 2),
+            popup,
+            "above the third row, against the margin"
+        );
+        assert!(crate::app::tests::prompt_row(&rows, 3).starts_with(" ▎ xxx"));
     }
 }

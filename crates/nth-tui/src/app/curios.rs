@@ -720,7 +720,7 @@ mod tests {
         let (_dir, mut app, _store, _c) = fixture();
         app.place = "repo".into();
         let rows = rows_of(&mut app, 100);
-        assert!(rows[14].contains(nth_icons::icons().curio));
+        assert!(crate::app::tests::status_row(&rows, 0).contains(nth_icons::icons().curio));
         let rect = app.areas.find(&crate::app::mouse::Target::Curio).unwrap();
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),

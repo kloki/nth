@@ -10,7 +10,6 @@ use nth_session::subagent::SubagentId;
 
 use super::{App, input::Input};
 use crate::{
-    chat::Chat,
     file::{FileId, FileView},
     monitor::MonitorView,
     pager::Pager,
@@ -413,32 +412,6 @@ pub(crate) trait Scrollable {
     fn jump_bottom(&mut self);
 }
 
-impl Scrollable for Chat {
-    fn scroll_up(&mut self, lines: usize) {
-        Chat::scroll_up(self, lines);
-    }
-
-    fn scroll_down(&mut self, lines: usize) {
-        Chat::scroll_down(self, lines);
-    }
-
-    fn page_up(&mut self) {
-        Chat::page_up(self);
-    }
-
-    fn page_down(&mut self) {
-        Chat::page_down(self);
-    }
-
-    fn jump_top(&mut self) {
-        Chat::jump_top(self);
-    }
-
-    fn jump_bottom(&mut self) {
-        Chat::jump_bottom(self);
-    }
-}
-
 impl Scrollable for Pager {
     fn scroll_up(&mut self, lines: usize) {
         Pager::scroll_up(self, lines);
@@ -475,11 +448,11 @@ impl App {
     /// The view of `tab`, to scroll it; `None` for a tab whose view is gone.
     pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
         Some(match tab {
-            Tab::Chat => &mut self.chat,
+            Tab::Chat => &mut self.chat.pager,
             Tab::Diagnostics => &mut self.diagnostics.pager,
             Tab::Usage => &mut self.usage_view.pager,
             Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
-            Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat,
+            Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat.pager,
             Tab::Plan => &mut self.plan.view.pager,
             Tab::Work => &mut self.work.view.pager,
             Tab::File(id) => &mut self.file_tabs.views.get_mut(&id)?.pager,

@@ -242,16 +242,25 @@ mod tests {
             clerk: None,
         });
         assert_eq!(app.mode, Mode::Act, "a bare session acts");
-        assert_eq!(rows(&mut app)[9].trim_end(), " ▎ act  · glm");
+        assert_eq!(
+            crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
+            " ▎ act  · glm"
+        );
 
         app.apply(Action::NextTab);
         assert_eq!(app.mode, Mode::Plan);
         assert_eq!((app.model.as_str(), app.effort), ("kimi", Effort::High));
         let shown = rows(&mut app);
-        assert_eq!(shown[9].trim_end(), " ▎ plan · kimi · high");
-        assert_eq!(shown[14].trim_end(), " /repo 0m");
         assert_eq!(
-            shown[9].find("· kimi"),
+            crate::app::tests::prompt_row(&shown, 0).trim_end(),
+            " ▎ plan · kimi · high"
+        );
+        assert_eq!(
+            crate::app::tests::status_row(&shown, 0).trim_end(),
+            " /repo 0m"
+        );
+        assert_eq!(
+            crate::app::tests::prompt_row(&shown, 0).find("· kimi"),
             " ▎ act  · glm".find("· glm"),
             "the model keeps its column across modes"
         );

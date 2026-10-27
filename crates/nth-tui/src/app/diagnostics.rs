@@ -115,7 +115,7 @@ mod tests {
         let (tx, rx) = watch::channel(vec![server("rust", ServerState::Starting)]);
         let mut app = app().with_lsp(rx);
         let starting = buffer(&mut app);
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert_eq!(row.trim(), "● rust");
         assert!(
             row.trim_end().ends_with("● rust"),
@@ -131,7 +131,7 @@ mod tests {
         app.servers_changed(changed);
         let after = buffer(&mut app);
 
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(row.trim_end().ends_with("● rust  ● bash"), "{row:?}");
         assert_eq!(after[(dot(&row, 0), 15)].fg, Color::Green, "connected");
         assert_eq!(after[(dot(&row, 1), 15)].fg, Color::Red, "broken");
@@ -145,7 +145,7 @@ mod tests {
         let changed = lsp_changed(&mut app.lsp).await;
         app.servers_changed(changed);
         let twice = buffer(&mut app);
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert_eq!(row.trim(), "● rust ×2");
         assert_eq!(twice[(dot(&row, 0), 15)].fg, Color::Yellow, "worst client");
 
@@ -157,7 +157,7 @@ mod tests {
         app.servers_changed(changed);
 
         app.queue = [Queued::Prompt("lint".into())].into();
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(row.starts_with(" > 1 queued · lint "), "{row:?}");
         assert!(
             row.trim_end().ends_with("● rust  ● bash"),
@@ -165,7 +165,7 @@ mod tests {
         );
 
         app.queue = [Queued::Prompt("fix the build".into())].into();
-        let row = rows(&mut app)[15].clone();
+        let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(
             row.starts_with(" > 1 queued · fix the build "),
             "the servers are cut first: {row:?}"

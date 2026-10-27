@@ -3,7 +3,6 @@
 
 mod after_write;
 mod render;
-mod scroll;
 mod transcript;
 
 use std::path::PathBuf;
@@ -14,22 +13,17 @@ use ratatui::{
     layout::Rect,
     widgets::{Paragraph, ScrollbarState},
 };
-use scroll::Scroll;
 /// Tests reach a tool row's state through the crate, where the module is
 /// not visible.
 #[cfg(test)]
 pub use transcript::ToolState;
 pub use transcript::{Entry, Transcript};
 
-use crate::settings::ChatSettings;
+use crate::{pager::Pager, settings::ChatSettings};
 
 pub struct Chat {
     pub transcript: Transcript,
-    scroll: Scroll,
-    /// Viewport height from the last draw, for page-sized scrolling.
-    height: usize,
-    /// First line of the last full screen, from the last draw.
-    max_top: usize,
+    pub(crate) pager: Pager,
     /// Where the last draw put the history and which line it started at,
     /// so a click finds what it landed on.
     area: Rect,
@@ -40,9 +34,7 @@ impl Chat {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             transcript: Transcript::new(cwd),
-            scroll: Scroll::default(),
-            height: 0,
-            max_top: 0,
+            pager: Pager::chat(),
             area: Rect::default(),
             top: 0,
         }
@@ -66,60 +58,42 @@ impl Chat {
         self.transcript.apply(event);
     }
 
+    #[cfg(test)]
     pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll.up(lines, self.max_top);
+        self.pager.scroll_up(lines);
     }
 
-    pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll.down(lines, self.max_top);
-    }
-
-    pub fn page_up(&mut self) {
-        self.scroll_up(self.half_page());
-    }
-
-    pub fn page_down(&mut self) {
-        self.scroll_down(self.half_page());
-    }
-
+    #[cfg(test)]
     pub fn jump_top(&mut self) {
-        self.scroll.jump_top(self.max_top);
+        self.pager.jump_top();
     }
 
     pub fn jump_bottom(&mut self) {
-        self.scroll.jump_bottom();
+        self.pager.jump_bottom();
     }
 
     /// Where the view sits in the history while scrolled up; `None` while
     /// following the bottom, so the bar only shows when you have moved.
     pub fn scrollbar(&self) -> Option<ScrollbarState> {
-        if self.scroll.is_following() {
+        if self.pager.is_following() {
             return None;
         }
-        Some(
-            ScrollbarState::new(self.max_top + 1)
-                .position(self.scroll.top(self.max_top))
-                .viewport_content_length(self.height),
-        )
+        self.pager.scrollbar()
     }
 
     /// Draws the visible history; an empty chat draws nothing, leaving
     /// what shows in its place to the caller.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, settings: ChatSettings) {
         let total = self.transcript.layout(area.width, settings);
-        self.height = usize::from(area.height);
-        self.max_top = total.saturating_sub(self.height);
+        let height = usize::from(area.height);
+        let top = self.pager.layout(total, height);
         if self.transcript.is_empty() {
             return;
         }
 
-        let top = self.scroll.top(self.max_top);
         self.area = area;
         self.top = top;
-        frame.render_widget(
-            Paragraph::new(self.transcript.visible(top, self.height)),
-            area,
-        );
+        frame.render_widget(Paragraph::new(self.transcript.visible(top, height)), area);
     }
 
     /// The entry drawn at screen position (`column`, `row`) by the last draw.
@@ -162,8 +136,52 @@ impl Chat {
         let line = self.top + usize::from(row.checked_sub(self.area.y)?);
         Some((line, usize::from(column.checked_sub(self.area.x)?)))
     }
+}
 
-    fn half_page(&self) -> usize {
-        (self.height / 2).max(1)
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::subagent::SubagentView;
+
+    #[test]
+    fn child_chat_hit_targets_follow_its_scrolled_viewport() {
+        let mut child = SubagentView::new("agent".into(), "task".into(), "/repo".into());
+        for i in 0..8 {
+            child.chat.transcript.push_user(format!("message {i}"));
+        }
+        child
+            .chat
+            .apply(&Event::TextDelta("[link](https://example.com)".into()));
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let area = Rect::new(3, 1, 30, 7);
+        terminal
+            .draw(|f| {
+                child.draw(f, area, ChatSettings::default());
+            })
+            .unwrap();
+        let link = (area.y..area.bottom())
+            .find_map(|y| child.chat.link_at(area.x + 2, y))
+            .expect("link at bottom");
+        assert_eq!(link.1, "https://example.com");
+        assert!(matches!(
+            child.chat.entry_at(link.0.x, link.0.y),
+            Some(Entry::Answer(_))
+        ));
+        assert!(
+            child.chat.entry_at(area.x, area.y).is_none(),
+            "header is not chat"
+        );
+        child.chat.pager.jump_top();
+        terminal
+            .draw(|f| {
+                child.draw(f, area, ChatSettings::default());
+            })
+            .unwrap();
+        assert!(child.chat.link_at(link.0.x, link.0.y).is_none());
+        assert!(
+            matches!(child.chat.entry_at(area.x, area.y + 2), Some(Entry::User(text)) if text == "message 0")
+        );
     }
 }

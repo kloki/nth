@@ -414,6 +414,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn follows_relative_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            for (path, reply) in [
+                (
+                    "/page",
+                    response("302 Found", "Location: /destination\r\n", ""),
+                ),
+                (
+                    "/destination",
+                    response("200 OK", "Content-Type: text/plain\r\n", "arrived"),
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let mut request = [0; 4096];
+                let n = socket.read(&mut request).await.expect("request");
+                assert!(
+                    String::from_utf8_lossy(&request[..n]).starts_with(&format!("GET {path} "))
+                );
+                socket.write_all(&reply).await.expect("reply");
+            }
+        });
+        let out = tokio::time::timeout(
+            Duration::from_secs(10),
+            fetch(json!({ "url": format!("http://{addr}/page") })),
+        )
+        .await
+        .expect("deadline")
+        .expect("fetch");
+        assert_eq!(out, "arrived");
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("server deadline")
+            .expect("server");
+    }
+
+    #[tokio::test]
+    async fn timeout_covers_a_stalled_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).await.expect("request");
+            assert!(n > 0, "request is empty");
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nstart").await.expect("headers");
+            ready.send(()).expect("ready");
+            let mut buf = [0; 1];
+            socket.read(&mut buf).await.expect("client closed")
+        });
+        let request = fetch(json!({ "url": format!("http://{addr}/page"), "timeout": 1 }));
+        let (out, _) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(request, async { received.await.expect("server ready") })
+        })
+        .await
+        .expect("deadline");
+        assert_eq!(out.expect_err("timeout"), "request timed out after 1 s");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), server)
+                .await
+                .expect("server deadline")
+                .expect("server"),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn non_success_status_is_an_error() {
         let url = serve(vec![response("404 Not Found", "", "gone")]).await;
         let err = fetch(json!({ "url": url })).await.expect_err("404");

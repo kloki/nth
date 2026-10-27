@@ -194,16 +194,19 @@ mod tests {
         let mut app = connect_app(dir.path(), false).await;
         app.run_command(Command::Connect);
         let shown = rows(&mut app);
-        assert_eq!(shown[11].trim_end(), " ▎ connect");
         assert_eq!(
-            shown[12].trim_end(),
+            crate::app::tests::prompt_row(&shown, 2).trim_end(),
+            " ▎ connect"
+        );
+        assert_eq!(
+            crate::app::tests::prompt_row(&shown, 3).trim_end(),
             " ▎ → ChatGPT    a Plus or Pro subscript"
         );
 
         let mut app = connect_app(dir.path(), true).await;
         app.run_command(Command::Connect);
         assert_eq!(
-            rows(&mut app)[12].trim_end(),
+            crate::app::tests::prompt_row(&rows(&mut app), 3).trim_end(),
             " ▎ → ChatGPT ✓  a Plus or Pro subscript"
         );
     }
@@ -230,7 +233,11 @@ mod tests {
                 " ▎ Waiting for authorization in your br",
             ]
         );
-        assert_eq!(shown[14].trim_end(), " /repo 0m", "the status bar stays");
+        assert_eq!(
+            crate::app::tests::status_row(&shown, 0).trim_end(),
+            " /repo 0m",
+            "the status bar stays"
+        );
 
         app.apply(Action::Insert('c'));
         assert_eq!(app.hint.as_deref(), Some("copied"));

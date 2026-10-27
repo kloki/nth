@@ -65,8 +65,12 @@ mod tests {
         app.busy_since = Some(Instant::now());
         let rows = rows(&mut app);
 
-        assert!(rows[14].starts_with(" /repo "));
-        assert!(rows[14].trim_end().ends_with("git · main +2 *1"));
+        assert!(crate::app::tests::status_row(&rows, 0).starts_with(" /repo "));
+        assert!(
+            crate::app::tests::status_row(&rows, 0)
+                .trim_end()
+                .ends_with("git · main +2 *1")
+        );
     }
 
     #[test]
@@ -85,7 +89,11 @@ mod tests {
         });
         let rows = rows(&mut app);
 
-        assert!(rows[14].trim_end().ends_with("git · main #123 +2 *1"));
+        assert!(
+            crate::app::tests::status_row(&rows, 0)
+                .trim_end()
+                .ends_with("git · main #123 +2 *1")
+        );
         // The link covers exactly its number, so a click lands on it alone.
         let area = app
             .areas
@@ -113,7 +121,10 @@ mod tests {
         });
         let rows = rows(&mut app);
 
-        assert!(!rows[14].contains("#123"), "the right side is cut first");
+        assert!(
+            !crate::app::tests::status_row(&rows, 0).contains("#123"),
+            "the right side is cut first"
+        );
         assert_eq!(app.areas.find(&mouse::Target::PullRequest), None);
     }
 

@@ -399,6 +399,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pure_addition_with_end_of_file_goes_at_the_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a", "head\ntail\n");
+        patch(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: a\n@@ head\n+end\n*** End of File\n*** End Patch",
+        )
+        .await
+        .expect("patch");
+        assert_eq!(contents(&path), "head\ntail\nend\n");
+    }
+
+    #[tokio::test]
+    async fn eof_addition_requires_its_anchor_and_preserves_crlf() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a", "café\r\ntail\r\n");
+        let missing =
+            "*** Begin Patch\n*** Update File: a\n@@ missing\n+fin\n*** End of File\n*** End Patch";
+        assert!(patch(dir.path(), missing).await.is_err());
+        assert_eq!(contents(&path), "café\r\ntail\r\n");
+        let valid =
+            "*** Begin Patch\n*** Update File: a\n@@ café\n+fin\n*** End of File\n*** End Patch";
+        patch(dir.path(), valid).await.expect("patch");
+        assert_eq!(contents(&path), "café\r\ntail\r\nfin\r\n");
+    }
+
+    #[tokio::test]
     async fn end_of_file_anchors_to_the_last_lines() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(dir.path(), "a", "}\nfn x() {\n}\n");

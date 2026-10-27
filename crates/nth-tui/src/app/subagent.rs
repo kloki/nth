@@ -331,9 +331,10 @@ mod tests {
         );
         assert!(before[6].starts_with(" ▎ In content.rs."), "{}", before[6]);
         assert!(
-            before[9].starts_with(" ▎ ⠖⠉⠉⠑") || before[9].contains("esc to cancel"),
+            crate::app::tests::prompt_row(&before, 0).starts_with(" ▎ ⠖⠉⠉⠑")
+                || crate::app::tests::prompt_row(&before, 0).contains("esc to cancel"),
             "{}",
-            before[9]
+            crate::app::tests::prompt_row(&before, 0)
         );
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
@@ -352,9 +353,9 @@ mod tests {
             "done fades on the tab showing"
         );
         assert!(
-            after[9].starts_with(" ▎ explore "),
+            crate::app::tests::prompt_row(&after, 0).starts_with(" ▎ explore "),
             "the label names it: {}",
-            after[9]
+            crate::app::tests::prompt_row(&after, 0)
         );
         app.apply(Action::NextTab);
         assert_eq!(

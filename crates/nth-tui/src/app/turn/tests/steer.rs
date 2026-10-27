@@ -170,13 +170,21 @@ async fn the_status_bar_counts_prompts_on_their_way_into_the_turn() {
     send(&mut app, "next");
 
     let rows = crate::app::tests::rows(&mut app);
-    assert!(rows[15].starts_with(" > 1 queued · next"), "{:?}", rows[15]);
+    assert!(
+        crate::app::tests::status_row(&rows, 1).starts_with(" > 1 queued · next"),
+        "{:?}",
+        crate::app::tests::status_row(&rows, 1)
+    );
 
     // A command waiting behind it keeps its place; the prompt on its
     // way in is still the next thing the model hears.
     command(&mut app, "make");
     let rows = crate::app::tests::rows(&mut app);
-    assert!(rows[15].starts_with(" > 2 queued · next"), "{:?}", rows[15]);
+    assert!(
+        crate::app::tests::status_row(&rows, 1).starts_with(" > 2 queued · next"),
+        "{:?}",
+        crate::app::tests::status_row(&rows, 1)
+    );
 }
 
 #[tokio::test]

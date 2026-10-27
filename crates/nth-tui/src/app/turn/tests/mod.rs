@@ -50,6 +50,39 @@ async fn settle(app: &App) {
 }
 
 #[tokio::test]
+async fn end_turn_drains_tail_events_before_finishing_transcript() {
+    let (mut app, _) = busy_app().await;
+    app.interrupt();
+    let ended = app.turn.join().await.expect("turn ends");
+    app.events_tx
+        .send(Event::TextDelta("tail reply".into()))
+        .await
+        .expect("event queued");
+    app.events_tx
+        .send(Event::Usage(Usage {
+            input: 123,
+            ..Usage::default()
+        }))
+        .await
+        .expect("usage queued");
+    app.end_turn(ended);
+    let entries: Vec<_> = app.chat.transcript.entries().collect();
+    assert!(format!("{entries:?}").contains("tail reply"), "{entries:?}");
+    assert!(matches!(entries.last(), Some(Entry::Interrupted { .. })));
+    assert!(app.events_rx.try_recv().is_err());
+    assert_eq!(
+        app.spent
+            .ledger
+            .spends()
+            .last()
+            .expect("spend")
+            .tokens
+            .input,
+        123
+    );
+}
+
+#[tokio::test]
 async fn esc_interrupts_the_turn_and_keeps_the_session() {
     let (mut app, dropped) = busy_app().await;
 
