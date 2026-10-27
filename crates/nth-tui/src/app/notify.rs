@@ -32,6 +32,7 @@ impl App {
         let cx = self.notify_context(elapsed);
         match error {
             Some(error) => self.notify(Event::Failed(error), &cx),
+            None if self.background_waiting() => {}
             // Whether there is a plan is known once the read `end_turn`
             // started is back; `plan_read` sends it then.
             None if self.last_turn == TabState::Done && self.mode == Mode::Plan => {
@@ -45,13 +46,21 @@ impl App {
 
     /// After the plan is read for a turn that ended in plan mode.
     pub(super) fn notify_plan_read(&mut self) {
-        if let Some(cx) = self.plan.notice.take() {
+        let notice = self.plan.notice.take();
+        if self.is_busy() || self.background_waiting() {
+            return;
+        }
+        if let Some(cx) = notice {
             let event = match self.plan.view.exists() {
                 true => Event::PlanReady,
                 false => Event::Done,
             };
             self.notify(event, &cx);
         }
+    }
+
+    fn background_waiting(&self) -> bool {
+        self.subagents.running() > 0 || self.monitors.running() > 0 || self.inbox.wakes()
     }
 
     /// For every ask as it arrives, including those queued behind the one
@@ -276,5 +285,131 @@ mod tests {
         let n = next(&mut rx).await;
         assert_eq!(n.summary, "nth · needs you");
         assert_eq!(n.body, "Doom loop: Keep going?\nand 1 more question");
+    }
+
+    #[tokio::test]
+    async fn running_monitor_suppresses_done_but_not_failure_or_question() {
+        let (mut app, mut rx) = answering("ok");
+        app.monitors
+            .register("build", "watch")
+            .await
+            .expect("monitor");
+        send(&mut app, "go");
+        end(&mut app).await;
+        none(&mut rx).await;
+
+        app.notify_turn_ended(false, Some("failed".into()), Duration::ZERO);
+        assert!(next(&mut rx).await.summary.contains("failed"));
+        let (reply, _) = oneshot::channel();
+        app.notify_ask(&Ask {
+            call_id: "ask".into(),
+            questions: vec![Question {
+                header: "Help".into(),
+                question: "Continue?".into(),
+                multiple: false,
+                options: vec![],
+            }],
+            reply,
+        });
+        assert!(next(&mut rx).await.summary.contains("needs you"));
+        app.monitors.forget_all();
+        send(&mut app, "again");
+        end(&mut app).await;
+        assert!(next(&mut rx).await.summary.contains("done"));
+    }
+
+    #[tokio::test]
+    async fn running_subagent_without_a_view_suppresses_done() {
+        use nth_session::{
+            CancellationToken,
+            subagent::{Done, Job},
+        };
+
+        let (mut app, mut rx) = answering("ok");
+        let agents = nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        )
+        .agents;
+        let id = app.subagents.spawn(
+            agents.get("explore").expect("agent"),
+            "investigate",
+            Session::new("glm", "/repo".into()).as_subagent(None),
+            Arc::new(Scripted::hang()),
+            Vec::new(),
+        );
+        assert!(app.subagents.prompt(
+            id,
+            Job {
+                text: "go".into(),
+                cancel: CancellationToken::new(),
+                done: Done::Notify(app.inbox.clone()),
+                timeout: None
+            }
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while app.subagents.running() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("subagent started");
+        assert!(app.subagent_views.is_empty());
+        send(&mut app, "go");
+        end(&mut app).await;
+        none(&mut rx).await;
+        app.subagents.forget_all();
+    }
+
+    #[tokio::test]
+    async fn delayed_plan_notice_is_discarded_if_background_work_starts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut app, mut rx) = app_in(
+            dir.path().into(),
+            Scripted::default().with_fallback(Reply::text("planned")),
+        );
+        app.set_mode(Mode::Plan);
+        std::fs::create_dir_all(app.plan.path().parent().unwrap()).unwrap();
+        std::fs::write(app.plan.path(), "# Plan\n").unwrap();
+        send(&mut app, "plan");
+        end(&mut app).await;
+        assert!(app.plan.notice.is_some());
+        app.monitors
+            .register("build", "watch")
+            .await
+            .expect("monitor");
+        while app.plan.reading.is_running() {
+            let text = app.plan.reading.join().await.expect("read");
+            app.plan_read(text);
+        }
+        assert!(app.plan.notice.is_none());
+        none(&mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn wakeable_notice_suppresses_success_but_todo_does_not() {
+        use nth_protocol::{TaskNotice, TaskOutcome, WorkNotice, WorkState};
+        let (mut app, mut rx) = answering("ok");
+        app.last_turn = TabState::Done;
+        app.inbox.post_task(TaskNotice {
+            id: 1,
+            agent: "explore".into(),
+            description: "search".into(),
+            outcome: TaskOutcome::Completed("found".into()),
+        });
+        app.notify_turn_ended(false, None, Duration::ZERO);
+        none(&mut rx).await;
+        app.inbox.take_notices();
+        app.inbox.post_work(WorkNotice {
+            cycle: "01".into(),
+            item: "task".into(),
+            task: 1,
+            agent: "explore".into(),
+            state: WorkState::Todo(vec![]),
+        });
+        assert!(app.inbox.has_notices());
+        assert!(!app.inbox.wakes());
+        app.notify_turn_ended(false, None, Duration::ZERO);
+        assert!(next(&mut rx).await.summary.contains("done"));
     }
 }
