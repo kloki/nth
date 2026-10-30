@@ -38,6 +38,8 @@ impl App {
         self.diagnostics.formatters = None;
         self.diagnostics.rtk = None;
         self.diagnostics.browser = None;
+        self.diagnostics.tea = None;
+        self.diagnostics.gh = None;
         // Finding programs and roots walks PATH and the directory tree.
         let (lsp, cwd) = (checkers.lsp.clone(), self.cwd.clone());
         self.servers_lookup
@@ -55,6 +57,10 @@ impl App {
         // in the config turns that off, so it is always worth knowing.
         self.browser_lookup
             .start(|_| tokio::task::spawn_blocking(|| nth_context::which("agent-browser")));
+        self.tea_lookup
+            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("tea")));
+        self.gh_lookup
+            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("gh")));
     }
 
     /// Takes the servers' new states, or stops listening once the sender
