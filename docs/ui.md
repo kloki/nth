@@ -67,7 +67,11 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 Ctrl with a digit, and ctrl+shift+t, only arrive as their own keys in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
-- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
+- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `context`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
+
+## Context
+
+`/context` opens a read-only preview of the main session's next model input. A summary at the top shows the estimated input, context window, breakdown and last reported usage. Below it are the system prompt, effective conversation and offered tool definitions in full. Scroll to read them; the normal prompt stays available. Estimates are approximate, and the preview identifies work still pending, such as a reply, tool results or compaction. It excludes the unsent prompt. The preview describes nth's logical request; a provider may package or count it differently.
 
 ## Files
 
@@ -249,7 +253,7 @@ Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session
 ▎ per turn
 ▎   #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
 ▎   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
-▎ 
+▎
 ▎   prices are list-price estimates from models.dev, whatever your plan bills
 
 ▎ all time
@@ -518,11 +522,11 @@ Left-aligned: the place in magenta — the working directory, with home written 
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part    | Shows                                                                                                                                                                                          | Colour                 |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta                |
-| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                                                                                                    | white                  |
-| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%                                                                           | white, yellow, magenta |
+| Part    | Shows                                                                                                                    | Colour                 |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
+| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                      | magenta                |
+| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                              | white                  |
+| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%     | white, yellow, magenta |
 | Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | white                  |
 
 The context figure shows `◘ 0%` until the first turn reports usage, and is hidden when the model's context window is unknown. It is rounded to the nearest percent and capped at 100%, and turns yellow at 50% and magenta at 80%. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one. The time counts from the session's creation (`created_at`), so a resumed session carries on from where it left off and shows days when it is old, while `/clear` starts it over; it updates at each whole minute even when nothing else happens.

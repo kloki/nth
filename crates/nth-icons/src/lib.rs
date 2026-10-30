@@ -57,6 +57,7 @@ pub struct Icons {
 /// In front of each tab's name in the header.
 pub struct TabIcons {
     pub chat: &'static str,
+    pub context: &'static str,
     pub diagnostics: &'static str,
     pub plan: &'static str,
     /// A file the model showed you.
@@ -161,6 +162,7 @@ pub static PLAIN: Icons = Icons {
     },
     tab: TabIcons {
         chat: "›",
+        context: "◘",
         diagnostics: "●",
         plan: "≡",
         file: "◫",
@@ -292,6 +294,7 @@ impl Icons {
         ];
         all.extend([
             tab.chat,
+            tab.context,
             tab.diagnostics,
             tab.plan,
             tab.file,

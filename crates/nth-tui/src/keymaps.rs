@@ -43,7 +43,7 @@ fn sections() -> Vec<Line<'static>> {
                 ("PageUp · Ctrl+U", "scroll focused content upward"),
                 ("PageDown · Ctrl+D", "scroll focused content downward"),
                 (
-                    "Ctrl+Home · Ctrl+End",
+                    "Home · End (also Ctrl+Home · Ctrl+End)",
                     "jump focused content to top or bottom",
                 ),
                 ("Mouse wheel", "scroll the pane under the pointer"),

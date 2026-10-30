@@ -6,6 +6,7 @@ mod app;
 mod chat;
 mod command;
 mod connect;
+mod context;
 mod diagnostics;
 mod file;
 mod fuzzy;

@@ -1,6 +1,7 @@
 mod apply_patch;
 mod bash;
 mod bom;
+mod context_preview;
 mod curios;
 mod edit;
 mod glob;
@@ -22,6 +23,7 @@ mod write;
 
 pub use apply_patch::ApplyPatch;
 pub use bash::{Bash, BashConfig};
+pub use context_preview::ContextPreview;
 pub use curios::{CurioPublish, CurioRead, CurioReply};
 pub use edit::Edit;
 pub use glob::Glob;
@@ -67,6 +69,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
         Box::new(Websearch::new(config.websearch.clone())),
         Box::new(Question),
         Box::new(Panel),
+        Box::new(ContextPreview),
         Box::new(ShowUser),
         Box::new(CurioPublish),
         Box::new(CurioRead),

@@ -22,6 +22,8 @@ pub struct ToolSpec {
 }
 
 pub struct ToolContext {
+    /// Latest committed main-session preview, shared by all calls of a turn.
+    pub context_preview: crate::ContextPreview,
     pub is_subagent: bool,
     /// Trusted Curios owner scope; unavailable to subagents.
     pub curios: crate::Curios,
@@ -108,6 +110,7 @@ impl ToolContext {
     /// nobody to ask or show anything to, no monitors and no inbox.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
+            context_preview: crate::ContextPreview::default(),
             cwd,
             curios: crate::Curios::default(),
             is_subagent: false,
@@ -141,6 +144,7 @@ impl ToolContext {
     /// and attachments of its own; the rest is shared with the turn.
     pub fn for_call(&self, call_id: String, output: OutputSink) -> Self {
         Self {
+            context_preview: self.context_preview.clone(),
             cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
             curios: self.curios.clone(),
             is_subagent: self.is_subagent,

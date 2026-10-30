@@ -334,7 +334,7 @@ impl Transcript {
                 }
             }
             // The tool's own row says where it went.
-            Event::Usage(_) | Event::Moved(_) => {}
+            Event::Usage(_) | Event::Moved(_) | Event::ContextUpdated(_) => {}
             Event::Retry { attempt, delay } => {
                 self.close_reasoning();
                 self.push(Entry::Retry {

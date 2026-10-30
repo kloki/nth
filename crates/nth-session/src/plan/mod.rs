@@ -108,7 +108,7 @@ pub fn build_switch_reminder(plan: &Path, exists: bool) -> String {
 /// What the model needs to hear about the mode before a turn in `mode`
 /// after one in `last`: that plan mode starts, or that it ended. Nothing
 /// while the mode stays.
-pub(crate) async fn reminder(
+pub(crate) fn reminder(
     mode: Mode,
     last: Option<Mode>,
     plan: &Path,
@@ -122,7 +122,7 @@ pub(crate) async fn reminder(
     }
     // A check that fails reads as no plan yet, which only changes the
     // wording of the reminder.
-    let exists = tokio::fs::try_exists(plan).await.unwrap_or(false);
+    let exists = plan.try_exists().unwrap_or(false);
     Some(match mode {
         Mode::Plan => plan_mode_reminder(plan, exists, approver, memory),
         Mode::Act => build_switch_reminder(plan, exists),

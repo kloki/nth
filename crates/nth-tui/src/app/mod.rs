@@ -7,6 +7,7 @@ mod agent_picker;
 mod completion;
 mod connect;
 mod content;
+mod context;
 mod curios;
 mod diagnostics;
 mod dirs;
@@ -91,6 +92,7 @@ use crate::{
     Checkers,
     chat::Chat,
     command::Command,
+    context::ContextView,
     diagnostics::{Diagnostics, Program},
     file::FileRead,
     git::{GitStatus, Pr},
@@ -177,6 +179,7 @@ pub struct App {
     /// The content panel's tabs, and which one fills it.
     content: Content,
     diagnostics: Diagnostics,
+    context_view: ContextView,
     usage_view: UsageView,
     keymaps: Keymaps,
     /// Every saved session's tool totals, most called first; empty until
@@ -486,6 +489,7 @@ impl App {
             content: Content::default(),
             diagnostics: Diagnostics::default(),
             usage_view: UsageView::default(),
+            context_view: ContextView::default(),
             keymaps: Keymaps::default(),
             all_time_tools: Vec::new(),
             tools_lookup: Job::default(),
@@ -701,7 +705,7 @@ impl App {
                 gh = self.gh_lookup.join() => Step::GhFound(gh),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
-                _ = curio_tick.tick() => { self.poll_curios(); Step::Tick },
+                _ = curio_tick.tick() => { self.poll_curios(); self.refresh_context(); Step::Tick },
             };
             match step {
                 Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
@@ -944,6 +948,12 @@ impl App {
     /// `tab`'s view into `area`, with its scrollbar.
     fn draw_tab(&mut self, frame: &mut Frame, tab: Tab, area: Rect) {
         match tab {
+            Tab::Context => {
+                self.context_view.draw(frame, area);
+                if let Some(state) = self.context_view.pager.scrollbar() {
+                    draw_scrollbar(frame, area, state);
+                }
+            }
             Tab::Monitor(id) => {
                 if let Some(view) = self.monitor_views.get_mut(&id) {
                     view.draw(frame, area, self.home.as_deref());
@@ -1078,6 +1088,14 @@ impl App {
     }
 
     fn on_terminal(&mut self, event: TermEvent) {
+        let before = (
+            self.model.clone(),
+            self.effort,
+            self.mode,
+            self.agent.clone(),
+            self.extra_dirs.clone(),
+            self.content.panes(self.wide),
+        );
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
@@ -1088,6 +1106,17 @@ impl App {
                 self.refresh_completion();
             }
             _ => {}
+        }
+        let after = (
+            self.model.clone(),
+            self.effort,
+            self.mode,
+            self.agent.clone(),
+            self.extra_dirs.clone(),
+            self.content.panes(self.wide),
+        );
+        if before != after {
+            self.refresh_context();
         }
     }
 
@@ -1109,6 +1138,7 @@ impl App {
                 self.usage = Some(*usage);
                 self.spent.usage(&self.model, *usage);
             }
+            Event::ContextUpdated(value) => self.context_updated(value),
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }
@@ -1133,6 +1163,7 @@ impl App {
             Command::Models => self.open_llm_picker(),
             Command::Agents => self.open_agent_picker(),
             Command::Connect => self.open_connect(),
+            Command::Context => self.open_content(Tab::Context),
             Command::Resume => self.open_session_picker(),
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Usage => self.open_content(Tab::Usage),
@@ -1176,6 +1207,8 @@ impl App {
         self.session_since = session.created_at;
         self.session_id = session.id;
         self.session = Some(session);
+        self.context_view.update(None);
+        self.refresh_context();
         self.usage = None;
         self.spent = Spent::default();
         self.plan.for_session(plan_path);
@@ -1193,6 +1226,9 @@ impl App {
                 Tab::Usage => self.load_tools(),
                 _ => {}
             }
+        }
+        if tab == Tab::Context {
+            self.refresh_context();
         }
     }
 }

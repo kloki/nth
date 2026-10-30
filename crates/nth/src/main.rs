@@ -5,6 +5,7 @@ mod agents;
 mod chat;
 mod config;
 mod connect;
+mod context;
 mod curios;
 mod formatters;
 mod lsp;
@@ -115,6 +116,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Preview the next request reconstructed from a saved session
+    Context {
+        /// The session, by its id or the start of it; the latest by default
+        session: Option<String>,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
     /// List or delete saved sessions
     Session {
         #[command(subcommand)]
@@ -212,6 +221,7 @@ async fn dispatch(
         Command::Init { force } => config::init(config_path.clone(), force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
+        Command::Context { session, json } => context::run(session, json, config()?).await,
         Command::Work { session, json } => work::run(session, json).await,
         Command::Memory { json } => memory::run(json, &config()?),
         Command::Session { command } => session::run(command).await,
@@ -464,6 +474,23 @@ mod tests {
     use nth_protocol::{BoxError, Failed, ModelInfo, Origin, Request, StreamEvent};
 
     use super::*;
+
+    #[test]
+    fn context_accepts_a_session_prefix_and_json() {
+        let cli = Cli::try_parse_from(["nth", "context", "abc", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Context { session: Some(id), json: true }) if id == "abc"
+        ));
+        let cli = Cli::try_parse_from(["nth", "context"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Context {
+                session: None,
+                json: false
+            })
+        ));
+    }
 
     fn model(id: &str) -> ModelInfo {
         ModelInfo {

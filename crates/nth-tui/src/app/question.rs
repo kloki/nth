@@ -54,8 +54,6 @@ impl App {
                         Action::Delete => open.delete(),
                         Action::Left => open.left(),
                         Action::Right => open.right(),
-                        Action::LineStart => open.home(),
-                        Action::LineEnd => open.end(),
                         _ => {}
                     }
                 }

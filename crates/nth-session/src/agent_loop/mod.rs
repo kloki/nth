@@ -14,6 +14,7 @@ pub(crate) mod tests;
 
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -147,25 +148,63 @@ impl Turn<'_> {
         let mut last_usage = *self.last_usage;
         let result = self.step_loop(&mut last_usage).await;
         *self.last_usage = last_usage;
+        self.publish_preview("idle", false, last_usage);
         result
+    }
+
+    /// Publish only committed boundaries; slow front-ends receive the latest
+    /// coalesced snapshot without delaying the turn.
+    pub(crate) fn publish_preview(&self, phase: &str, last: bool, usage: Option<Usage>) {
+        if self.ctx.is_subagent {
+            return;
+        }
+        let specs = offered_tools(self.tools, self.ctx.is_subagent, self.ctx.agent.as_ref())
+            .into_iter()
+            .map(|(spec, _)| spec)
+            .collect::<Vec<_>>();
+        let mode = if self.ctx.writable.planning() {
+            nth_protocol::Mode::Plan
+        } else {
+            nth_protocol::Mode::Act
+        };
+        let mut pending = self.ctx.inbox.preview(self.route.session_id);
+        let loaded = self
+            .ctx
+            .instructions
+            .lock()
+            .expect("loaded instructions lock poisoned")
+            .clone();
+        if let Some(notice) = nth_protocol::instructions_notice(&self.ctx.watch.preview(loaded)) {
+            pending.insert(0, ("instructions".into(), notice));
+        }
+        let preview = crate::context_preview::build(crate::context_preview::Projection {
+            messages: self.messages,
+            specs: &specs,
+            model: self.route.model,
+            effort: self.route.effort,
+            mode,
+            agent: self.ctx.agent.as_ref().map(|a| a.name.as_str()),
+            context_window: self.route.context_window,
+            max_output: self.route.max_output,
+            policy: self.route.compaction,
+            last_usage: usage,
+            pending,
+            phase,
+            last_step: last,
+        });
+        if let Ok(value) = serde_json::to_value(preview) {
+            let value = Arc::new(value);
+            self.ctx.context_preview.publish(value, self.events);
+        }
     }
 
     /// The step loop [`Turn::run`] wraps, with the usage the trigger reads.
     async fn step_loop(&mut self, last_usage: &mut Option<Usage>) -> Result<(), Error> {
         // A primary agent is offered only the tools it allows.
-        let (specs, tools): (Vec<_>, Vec<_>) = self
-            .tools
-            .iter()
-            .map(|t| (t.spec(), t.as_ref()))
-            .filter(|(spec, _)| {
-                !(self.ctx.is_subagent && nth_protocol::tool_names::CURIOS.contains(&spec.name))
-                    && self
-                        .ctx
-                        .agent
-                        .as_ref()
-                        .is_none_or(|agent| agent.allows(spec.name))
-            })
-            .unzip();
+        let (specs, tools): (Vec<_>, Vec<_>) =
+            offered_tools(self.tools, self.ctx.is_subagent, self.ctx.agent.as_ref())
+                .into_iter()
+                .unzip();
         // Looked up by name once per call; a spec is too costly to build for
         // every lookup.
         let by_name: HashMap<&str, &dyn Tool> = specs
@@ -191,16 +230,19 @@ impl Turn<'_> {
             // session left over it — and one compacting cannot get under
             // the window stops the turn rather than summarizing every step.
             if self.compaction_due(*last_usage) {
+                self.publish_preview("compaction_required", false, *last_usage);
                 if !self.compact().await? {
                     return Err(Error::TooBigToCompact);
                 }
                 *last_usage = None;
+                self.publish_preview("ready", false, *last_usage);
                 if self.still_over_the_window() {
                     return Err(Error::TooBigToCompact);
                 }
                 continue;
             }
             let last = step + 1 == max_steps;
+            self.publish_preview("pending_reply", last, *last_usage);
             let reply = match self.stream_step(last, &specs, last_usage).await {
                 Ok(reply) => reply,
                 Err(Stop::Cancelled(partial)) => {
@@ -219,6 +261,7 @@ impl Turn<'_> {
                         }
                         replayed = true;
                         *last_usage = None;
+                        self.publish_preview("ready", false, *last_usage);
                         continue;
                     }
                     return Err(Error::Provider(error));
@@ -240,6 +283,7 @@ impl Turn<'_> {
             if calls.is_empty() {
                 return Ok(());
             }
+            self.publish_preview("pending_results", false, *last_usage);
             // Told not to, the model called tools anyway; they don't run, and
             // every call is answered so the session stays valid.
             if last {
@@ -252,6 +296,7 @@ impl Turn<'_> {
                 return Err(Error::TooManySteps(max_steps));
             }
             if self.preempt(&calls).await {
+                self.publish_preview("ready", false, *last_usage);
                 continue;
             }
             self.check(start, &calls).await?;
@@ -275,18 +320,35 @@ impl Turn<'_> {
             }
             self.messages
                 .extend(answers.into_iter().map(|(_, message, _)| message));
+            self.publish_preview("ready", false, *last_usage);
             if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
             }
             self.hand_over().await;
+            self.publish_preview("ready", false, *last_usage);
         }
         Err(Error::TooManySteps(max_steps))
     }
 }
 
+pub(crate) fn offered_tools<'a>(
+    tools: &'a [Box<dyn Tool>],
+    subagent: bool,
+    agent: Option<&nth_context::Agent>,
+) -> Vec<(ToolSpec, &'a dyn Tool)> {
+    tools
+        .iter()
+        .map(|tool| (tool.spec(), tool.as_ref()))
+        .filter(|(spec, _)| {
+            !(subagent && nth_protocol::tool_names::CURIOS.contains(&spec.name))
+                && agent.is_none_or(|agent| agent.allows(spec.name))
+        })
+        .collect()
+}
+
 /// The messages for the last allowed step: the history plus a prompt telling
 /// the model to stop calling tools and summarize.
-fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
+pub(crate) fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
     let mut sent = messages.to_vec();
     sent.push(Message::Assistant(AssistantMessage {
         text: MAX_STEPS_PROMPT.to_string(),

@@ -196,10 +196,10 @@ mod tests {
         assert!(rows[4].starts_with("  /close "));
         assert!(rows[5].starts_with("  /compact "));
         assert!(rows[6].starts_with("  /connect "));
-        assert!(rows[7].starts_with("  /copy-id "));
-        assert!(rows[8].starts_with("  /curios "));
+        assert!(rows[7].starts_with("  /context "));
+        assert!(rows[8].starts_with("  /copy-id "));
         assert!(
-            crate::app::tests::prompt_row(&rows, 0).starts_with("  /diagnostics "),
+            crate::app::tests::prompt_row(&rows, 0).starts_with("  /curios "),
             "right above the cursor, moved left to fit"
         );
         assert!(crate::app::tests::prompt_row(&rows, 1).starts_with(" ▎ /"));

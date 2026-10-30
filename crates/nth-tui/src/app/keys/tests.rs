@@ -29,7 +29,9 @@ fn maps_keys_to_actions() {
     assert_eq!(key(KeyCode::Char('c'), ctrl), Some(Action::ClearOrQuit));
     assert_eq!(key(KeyCode::Char('c'), none), Some(Action::Insert('c')));
     assert_eq!(key(KeyCode::Home, ctrl), Some(Action::Top));
-    assert_eq!(key(KeyCode::Home, none), Some(Action::LineStart));
+    assert_eq!(key(KeyCode::Home, none), Some(Action::Top));
+    assert_eq!(key(KeyCode::End, ctrl), Some(Action::Bottom));
+    assert_eq!(key(KeyCode::End, none), Some(Action::Bottom));
     assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
     assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
     assert_eq!(key(KeyCode::Char('p'), ctrl), Some(Action::NextProfile));
@@ -125,7 +127,7 @@ fn arrows_cycle_without_touching_the_prompt() {
     let mut app = typed("/");
     app.apply(Action::SelectNext);
     assert_eq!(selected(&app), Command::Agents);
-    for _ in 0..18 {
+    for _ in 0..19 {
         app.apply(Action::SelectNext);
     }
     assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -167,6 +169,7 @@ fn skills_are_listed_after_the_commands() {
             "close",
             "compact",
             "connect",
+            "context",
             "copy-id",
             "curios",
             "diagnostics",
@@ -380,7 +383,8 @@ fn bang_at_the_start_makes_the_prompt_a_command() {
 #[test]
 fn backspace_at_the_start_and_esc_leave_command_mode() {
     let mut app = typed("!ls");
-    app.apply(Action::LineStart);
+    app.prompt.left();
+    app.prompt.left();
     app.apply(Action::Backspace);
     assert!(!app.prompt.shell());
     assert_eq!(app.prompt.text(), "ls");
