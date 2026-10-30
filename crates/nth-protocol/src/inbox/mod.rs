@@ -206,6 +206,24 @@ impl Inbox {
         Some((1 + prompts.count(), line))
     }
 
+    /// Read pending deliveries without consuming or acknowledging them.
+    pub fn preview(&self, owner: &str) -> Vec<(String, String)> {
+        let Some(pending) = &self.0 else {
+            return Vec::new();
+        };
+        lock(pending)
+            .iter()
+            .filter_map(|item| match item {
+                Pending::Prompt(text) => Some(("prompt".into(), text.clone())),
+                Pending::Curio(notice) if notice.batch.session_id == owner => {
+                    Some(("curio".into(), notice.render()))
+                }
+                Pending::Curio(_) => None,
+                other => other.notice().map(|text| ("notice".into(), text)),
+            })
+            .collect()
+    }
+
     /// The background's notices, as one message, and forgets them. Prompts
     /// stay for [`Inbox::take_prompts`]: they read as what you typed, and
     /// whoever hands them over treats them as a prompt.

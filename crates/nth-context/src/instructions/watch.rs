@@ -21,11 +21,11 @@ use crate::Context;
 #[derive(Debug, Clone, Default)]
 pub struct Watch(Option<Arc<Mutex<Files>>>);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Files(BTreeMap<PathBuf, Seen>);
 
 /// What the model saw of one file: empty for none.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Seen {
     /// When the file was last looked at, and its length; `None` until it
     /// has been, or while it is absent.
@@ -91,6 +91,21 @@ impl Watch {
                 .changes(loaded)
         })
         .await
+    }
+
+    /// Inspect the same changes delivery would report, without advancing the
+    /// shared watch. Newly attached files are treated as seen, as in delivery.
+    /// This reads the watched files synchronously; callers should refresh at
+    /// bounded intervals rather than on every screen draw.
+    pub fn preview(&self, loaded: BTreeSet<PathBuf>) -> Vec<Change> {
+        let Some(files) = &self.0 else {
+            return Vec::new();
+        };
+        let mut snapshot = files
+            .lock()
+            .expect("only poisoned if a holder panicked")
+            .clone();
+        snapshot.changes(loaded)
     }
 }
 
@@ -223,6 +238,23 @@ mod tests {
             }]
         );
         assert_eq!(watch.changes(BTreeSet::new()).await, []);
+    }
+
+    #[tokio::test]
+    async fn preview_does_not_advance_the_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = Watch::new(&context(
+            dir.path(),
+            &[("AGENTS.md", "old")],
+            &["CLAUDE.md"],
+        ));
+        fs::write(dir.path().join("AGENTS.md"), "new").unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "created").unwrap();
+        let preview = watch.preview(BTreeSet::new());
+        assert_eq!(preview.len(), 2);
+        assert_eq!(watch.preview(BTreeSet::new()), preview);
+        assert_eq!(watch.changes(BTreeSet::new()).await, preview);
+        assert!(watch.preview(BTreeSet::new()).is_empty());
     }
 
     #[tokio::test]

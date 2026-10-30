@@ -529,7 +529,6 @@ impl Session {
             TurnInput::Prompt(text) => (self.take_curios(front_end, events).await, text),
             TurnInput::Feedback(notices) => (Some(notices), String::new()),
         };
-        let plan_path = self.plan_path();
         let agent = self.primary().map(|agent| agent.name.clone());
         if self.tools_mode() == Mode::Plan {
             // The `.nth` directory, with the `.gitignore` that keeps plan
@@ -544,39 +543,8 @@ impl Session {
             true => Approver::User,
             false => Approver::Nobody,
         };
-        let first = !self.messages.iter().any(|m| matches!(m, Message::User(_)));
-        if let Some(reminder) =
-            primary::reminder(agent.as_deref(), self.last_turn_agent.as_deref(), first)
-        {
+        for reminder in self.next_turn_reminders(approver) {
             append(&mut text, &reminder);
-        }
-        // A primary agent's own prompt says how it works; plan mode's
-        // reminders are for plan and act.
-        if agent.is_none()
-            && let Some(reminder) = plan::reminder(
-                self.mode,
-                self.last_turn_mode,
-                &plan_path,
-                self.memory_dir().as_deref(),
-                approver,
-            )
-            .await
-        {
-            // On the same message, as opencode adds a synthetic part: two
-            // user messages in a row are not something every endpoint takes.
-            append(&mut text, &reminder);
-        }
-        // Only the current owner's source workspace is additionally writable.
-        if self.tools_mode() == Mode::Plan
-            && let Some(source) = self.curio_source_dir()
-        {
-            append(
-                &mut text,
-                &format!(
-                    "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
-                    source.display()
-                ),
-            );
         }
         // An instruction file edited since the last turn, in front of the
         // prompt as the front-end's notices are.
@@ -721,6 +689,41 @@ impl Session {
     fn memory_dir(&self) -> Option<PathBuf> {
         let memory = self.context.memory.as_ref().filter(|_| !self.subagent)?;
         Some(memory.dir.clone())
+    }
+
+    /// Conditional additions to the next submitted message. Reads the plan's
+    /// existence without preparing directories or changing the session.
+    pub(crate) fn next_turn_reminders(&self, approver: Approver) -> Vec<String> {
+        let agent = self.primary().map(|agent| agent.name.as_str());
+        let first = !self.messages.iter().any(|m| matches!(m, Message::User(_)));
+        let mut reminders = Vec::new();
+        if let Some(reminder) = primary::reminder(agent, self.last_turn_agent.as_deref(), first) {
+            reminders.push(reminder);
+        }
+        if agent.is_none()
+            && let Some(reminder) = plan::reminder(
+                self.mode,
+                self.last_turn_mode,
+                &self.plan_path(),
+                self.memory_dir().as_deref(),
+                approver,
+            )
+        {
+            reminders.push(reminder);
+        }
+        if self.tools_mode() == Mode::Plan
+            && let Some(source) = self.curio_source_dir()
+        {
+            reminders.push(format!(
+                "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
+                source.display()
+            ));
+        }
+        reminders
+    }
+
+    pub(crate) fn pending_instructions(&self) -> Option<String> {
+        instructions_notice(&self.watch.preview(self.loaded()))
     }
 
     /// The instruction files in the conversation: the system prompt's, so

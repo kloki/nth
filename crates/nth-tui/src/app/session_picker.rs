@@ -131,6 +131,7 @@ impl App {
         self.plan.for_session(session.plan_path());
         self.work.for_session(session.work_dir());
         self.session = Some(session);
+        self.refresh_context();
         self.left_session();
         self.index_files();
         self.load_git();

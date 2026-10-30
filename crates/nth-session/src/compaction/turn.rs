@@ -84,6 +84,7 @@ impl Turn<'_> {
             recent: split.recent,
         });
         emit(self.events, Event::Compacted { summary }).await;
+        self.publish_preview("ready", false, None);
         Ok(true)
     }
 
@@ -293,9 +294,35 @@ mod tests {
         assert_eq!(spent.steps, 1, "the summary request is counted");
         drop(tx);
         let mut events = Vec::new();
+        let mut preview = None;
         while let Some(event) = rx.recv().await {
-            events.push(event);
+            match event {
+                Event::ContextUpdated(value) => preview = Some(value),
+                event => events.push(event),
+            }
         }
+        let preview: crate::context_preview::Preview =
+            serde_json::from_value((*preview.expect("checkpoint published")).clone()).unwrap();
+        assert_eq!(preview.phase, "ready");
+        assert_eq!(preview.last_usage, None);
+        assert_eq!(
+            preview
+                .entries
+                .iter()
+                .filter(|entry| entry.checkpoint)
+                .count(),
+            1
+        );
+        assert_eq!(
+            preview
+                .entries
+                .iter()
+                .map(|entry| &entry.message)
+                .collect::<Vec<_>>(),
+            crate::compaction::effective(&messages)
+                .iter()
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             events,
             [

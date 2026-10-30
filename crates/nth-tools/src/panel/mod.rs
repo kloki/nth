@@ -51,6 +51,20 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn spec_offers_and_describes_every_supported_panel() {
+        let spec = Panel.spec();
+        let names = spec.parameters["properties"]["panel"]["enum"]
+            .as_array()
+            .expect("panel enum");
+
+        assert_eq!(names.len(), Shown::ALL.len());
+        for panel in Shown::ALL {
+            assert!(names.contains(&json!(panel.name())));
+            assert!(spec.description.contains(&format!("- {}:", panel.name())));
+        }
+    }
+
     #[tokio::test]
     async fn sends_the_panel_to_the_screen() {
         let (tx, mut rx) = mpsc::channel(1);
