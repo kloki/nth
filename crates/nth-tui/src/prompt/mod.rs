@@ -176,17 +176,6 @@ impl Prompt {
         }
     }
 
-    /// Start of the current line, not of the whole prompt.
-    pub fn home(&mut self) {
-        self.cursor = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
-    }
-
-    pub fn end(&mut self) {
-        self.cursor += self.text[self.cursor..]
-            .find('\n')
-            .unwrap_or(self.text.len() - self.cursor);
-    }
-
     /// Shifts the pastes across one edit: `removed` bytes at `at` become
     /// `inserted`. A paste the edit crosses is dropped, leaving its
     /// placeholder as plain text.
@@ -242,17 +231,6 @@ pub(super) mod tests {
         p.replace(4..7, "@src/keys.rs ");
         assert_eq!(p.text, "see @src/keys.rs  and");
         assert_eq!(p.cursor, 17);
-    }
-
-    #[test]
-    fn home_and_end_stay_on_the_current_line() {
-        let mut p = prompt("one\ntwo");
-        p.left();
-        p.home();
-        assert_eq!(p.cursor, 4);
-
-        p.end();
-        assert_eq!(p.cursor, 7);
     }
 
     #[test]
@@ -320,7 +298,9 @@ pub(super) mod tests {
     fn editing_inside_a_placeholder_drops_it() {
         let mut p = Prompt::default();
         p.paste("a\nb\nc");
-        p.home();
+        while p.cursor() > 0 {
+            p.left();
+        }
         p.right();
         p.insert('x');
 
