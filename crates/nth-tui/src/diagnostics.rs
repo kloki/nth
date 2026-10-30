@@ -3,7 +3,7 @@
 //! instruction files,
 //! skills and agents found for the project, the language servers and
 //! formatters that check writes, the rtk the bash tool would rewrite
-//! commands through and the agent-browser the browser skill drives.
+//! commands through, agent-browser, tea and gh.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,9 @@ pub struct Diagnostics {
     pub rtk: Option<Program>,
     /// The `agent-browser` on PATH, the same way.
     pub browser: Option<Program>,
+    /// The Forgejo and GitHub command-line tools on PATH.
+    pub tea: Option<Program>,
+    pub gh: Option<Program>,
     pub pager: Pager,
 }
 
@@ -169,7 +172,8 @@ impl Diagnostics {
 
     /// The programs the tools run through, and why one would not: the
     /// `rtk` bash rewrites the model's commands through, and the
-    /// `agent-browser` the browser skill drives a browser with.
+    /// `agent-browser` the browser skill drives a browser with, and the
+    /// `tea` and `gh` command-line tools.
     fn tools(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
         lines.push(title("tools"));
         if !facts.checks {
@@ -192,6 +196,8 @@ impl Diagnostics {
             "not on PATH, the browser skill installs it",
             facts.home,
         );
+        program(lines, "tea", width, &self.tea, "not on PATH", facts.home);
+        program(lines, "gh", width, &self.gh, "not on PATH", facts.home);
     }
 }
 
@@ -658,6 +664,8 @@ mod tests {
         let tools = section(&checking, "tools");
         assert_eq!(checking[tools + 1], "▎   rtk            checking…");
         assert_eq!(checking[tools + 2], "▎   agent-browser  checking…");
+        assert_eq!(checking[tools + 3], "▎   tea            checking…");
+        assert_eq!(checking[tools + 4], "▎   gh             checking…");
 
         facts.checks = false;
         let unchecked = text(&Diagnostics::default(), &facts);
@@ -673,16 +681,22 @@ mod tests {
         let found = Diagnostics {
             rtk: Some(Program::Found("/bin/rtk".into())),
             browser: Some(Program::Found("/bin/agent-browser".into())),
+            tea: Some(Program::Found("/bin/tea".into())),
+            gh: Some(Program::Found("/bin/gh".into())),
             ..Diagnostics::default()
         };
         let lines = text(&found, &facts);
         let tools = section(&lines, "tools");
         assert_eq!(lines[tools + 1], "▎   ✓ rtk            /bin/rtk");
         assert_eq!(lines[tools + 2], "▎   ✓ agent-browser  /bin/agent-browser");
+        assert_eq!(lines[tools + 3], "▎   ✓ tea            /bin/tea");
+        assert_eq!(lines[tools + 4], "▎   ✓ gh             /bin/gh");
 
         let missing = Diagnostics {
             rtk: Some(Program::Missing),
             browser: Some(Program::Missing),
+            tea: Some(Program::Missing),
+            gh: Some(Program::Missing),
             ..Diagnostics::default()
         };
         let lines = text(&missing, &facts);
@@ -693,6 +707,8 @@ mod tests {
         );
 
         // rtk off in the config says nothing about the browser.
+        assert_eq!(lines[tools + 3], "▎   ✗ tea            not on PATH");
+        assert_eq!(lines[tools + 4], "▎   ✗ gh             not on PATH");
         facts.rtk = false;
         let lines = text(&missing, &facts);
         assert_eq!(
@@ -703,5 +719,7 @@ mod tests {
             lines[tools + 2],
             "▎   ✗ agent-browser  not on PATH, the browser skill installs it"
         );
+        assert_eq!(lines[tools + 3], "▎   ✗ tea            not on PATH");
+        assert_eq!(lines[tools + 4], "▎   ✗ gh             not on PATH");
     }
 }

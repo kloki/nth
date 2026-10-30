@@ -191,6 +191,8 @@ pub struct App {
     formatters_lookup: Job<Vec<FormatterStatus>>,
     rtk_lookup: Job<Option<PathBuf>>,
     browser_lookup: Job<Option<PathBuf>>,
+    tea_lookup: Job<Option<PathBuf>>,
+    gh_lookup: Job<Option<PathBuf>>,
     /// What fills the input panel.
     input: Input,
     /// The model and effort the next turn runs with.
@@ -411,6 +413,8 @@ enum Step {
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
     RtkFound(Result<Option<PathBuf>, JoinError>),
     BrowserFound(Result<Option<PathBuf>, JoinError>),
+    TeaFound(Result<Option<PathBuf>, JoinError>),
+    GhFound(Result<Option<PathBuf>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
     /// The notification backend failed for the first time.
@@ -490,6 +494,8 @@ impl App {
             formatters_lookup: Job::default(),
             rtk_lookup: Job::default(),
             browser_lookup: Job::default(),
+            tea_lookup: Job::default(),
+            gh_lookup: Job::default(),
             input: Input::Prompt,
             model: session.model.clone(),
             effort: session.effort,
@@ -691,6 +697,8 @@ impl App {
                 formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
                 rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
                 browser = self.browser_lookup.join() => Step::BrowserFound(browser),
+                tea = self.tea_lookup.join() => Step::TeaFound(tea),
+                gh = self.gh_lookup.join() => Step::GhFound(gh),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
                 _ = curio_tick.tick() => { self.poll_curios(); Step::Tick },
@@ -773,6 +781,18 @@ impl App {
                             Some(program) => Program::Found(program),
                             None => Program::Missing,
                         });
+                }
+                Step::TeaFound(tea) => {
+                    self.diagnostics.tea = Some(match tea.context("finding tea failed")? {
+                        Some(program) => Program::Found(program),
+                        None => Program::Missing,
+                    });
+                }
+                Step::GhFound(gh) => {
+                    self.diagnostics.gh = Some(match gh.context("finding gh failed")? {
+                        Some(program) => Program::Found(program),
+                        None => Program::Missing,
+                    });
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 // Nothing changed but time: the redraw advances the timers.
