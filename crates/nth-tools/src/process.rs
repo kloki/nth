@@ -4,6 +4,7 @@
 
 use std::{path::Path, process::Stdio, time::Duration};
 
+pub(crate) use nth_protocol::reject_old_timeout;
 use tokio::process::{Child, Command};
 
 /// The shortest timeout bash and monitor accept from the model. A `0` is
@@ -13,15 +14,6 @@ pub(crate) const MIN_TIMEOUT_MS: u64 = 1_000;
 /// How long to keep reading after the command exits, for output still in
 /// its pipes.
 pub(crate) const DRAIN: Duration = Duration::from_millis(100);
-
-pub(crate) fn reject_old_timeout(args: &serde_json::Value) -> Result<(), String> {
-    for key in ["timeout", "timeout_secs"] {
-        if args.get(key).is_some() {
-            return Err(format!("obsolete argument {key}; use timeout_ms"));
-        }
-    }
-    Ok(())
-}
 
 /// `bash -c script` in `cwd`, with no stdin, in its own process group so a
 /// timeout or a stop can kill everything the script started, not just bash.

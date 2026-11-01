@@ -107,11 +107,7 @@ impl Tool for WorkAssign {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            for key in ["timeout", "timeout_secs"] {
-                if args.get(key).is_some() {
-                    return Err(format!("obsolete argument {key}; use timeout_ms"));
-                }
-            }
+            nth_protocol::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
             if ctx.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());

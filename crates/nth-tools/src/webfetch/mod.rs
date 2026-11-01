@@ -397,6 +397,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn guards_ipv4_translated_and_nat64_literals() {
+        for host in [
+            "[::ffff:0:169.254.1.2]",
+            "[::ffff:0:169.254.169.254]",
+            "[::ffff:0:100.100.100.200]",
+            "[64:ff9b::169.254.1.2]",
+            "[64:ff9b::169.254.169.254]",
+            "[64:ff9b::100.100.100.200]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_err(), "{host}");
+        }
+        for host in [
+            "[::ffff:0:8.8.8.8]",
+            "[::ffff:0:10.0.0.1]",
+            "[::ffff:0:192.168.1.1]",
+            "[64:ff9b::8.8.8.8]",
+            "[64:ff9b::10.0.0.1]",
+            "[64:ff9b::192.168.1.1]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_ok(), "{host}");
+        }
+    }
+
     #[tokio::test]
     async fn rejects_mixed_dns_answers_before_connecting() {
         let resolver = FixedResolver(vec![

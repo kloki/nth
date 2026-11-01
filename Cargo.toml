@@ -72,6 +72,7 @@ toml = "1"
 unicode-width = "0.2"
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+vte = "0.14"
 
 # syntect (behind hoodrich) uses fancy-regex, which is very slow unoptimised;
 # keep debug builds and tests responsive.

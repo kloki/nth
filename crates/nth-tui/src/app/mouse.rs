@@ -694,7 +694,11 @@ mod tests {
             .expect("the focused tab");
         assert!(area.width > 0, "the focused tab stays visible: {area:?}");
         assert!(area.x >= 50, "it stays over the right pane: {area:?}");
-        assert!(rows[0].contains('…'), "the overflow shows: {:?}", rows[0]);
+        assert!(
+            rows[0].contains(nth_icons::icons().overflow),
+            "the overflow shows: {:?}",
+            rows[0]
+        );
     }
 
     #[test]

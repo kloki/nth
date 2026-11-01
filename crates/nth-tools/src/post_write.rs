@@ -20,9 +20,18 @@ use crate::bom;
 static EDITS: LazyLock<StdMutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
+/// The symlinks a dangling chain may follow before it is left unresolved.
+const MAX_LINKS: usize = 40;
+
 /// Resolve existing symlinks, retaining missing components under the nearest
-/// existing parent. Resolve `..` only after following any preceding symlink.
+/// existing parent. A dangling symlink resolves to its target, so a link and
+/// the target it is about to gain share one identity. Resolve `..` only after
+/// following any preceding symlink.
 fn identity(path: &Path) -> PathBuf {
+    resolve(path, 0)
+}
+
+fn resolve(path: &Path, followed: usize) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -37,8 +46,18 @@ fn identity(path: &Path) -> PathBuf {
             }
             other => {
                 result.push(other.as_os_str());
-                if let Ok(canonical) = std::fs::canonicalize(&result) {
-                    result = canonical;
+                match std::fs::canonicalize(&result) {
+                    Ok(canonical) => result = canonical,
+                    Err(_) if followed < MAX_LINKS => {
+                        // `canonicalize` stops at a symlink whose target is
+                        // missing; read the link ourselves, relative to its
+                        // parent, bounded so a cycle ends unresolved.
+                        if let Ok(target) = std::fs::read_link(&result) {
+                            let parent = result.parent().unwrap_or(Path::new("/"));
+                            result = resolve(&parent.join(target), followed + 1);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -301,8 +320,9 @@ mod tests {
         std::fs::write(&a, "a").unwrap();
         let post = PostWrite::off();
         let held = post.lock(std::slice::from_ref(&a)).await;
-        // `a/../a` is the same file even though `a` is not a directory: the
-        // identity resolves `..` after the components before it.
+        // `a/../a` does not resolve at the OS level, since a file cannot be
+        // traversed, but the identity folds it back to `a`: the spelling is
+        // conservatively over-blocked.
         for alias in [dir.path().join(".").join("a"), a.join("..").join("a")] {
             let waiting = post.lock(std::slice::from_ref(&alias));
             tokio::pin!(waiting);
@@ -342,6 +362,22 @@ mod tests {
         waiting.await;
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_symlink_aliases_its_future_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let post = PostWrite::off();
+        let held = post.lock(std::slice::from_ref(&link)).await;
+        let waiting = post.lock(std::slice::from_ref(&target));
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(held);
+        waiting.await;
+    }
+
     #[tokio::test]
     async fn overlapping_sets_are_ordered_and_cancelled_acquisitions_release() {
         let dir = tempfile::tempdir().unwrap();
@@ -358,14 +394,18 @@ mod tests {
         let a_guard = post.lock(std::slice::from_ref(&a)).await;
         drop(a_guard);
         drop(held);
-        let (first, second) = tokio::join!(
-            async {
-                let _guard = post.lock(&[a.clone(), b.clone()]).await;
-            },
-            async {
-                let _guard = post.lock(&[b.clone(), a.clone()]).await;
-            }
-        );
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                async {
+                    let _guard = post.lock(&[a.clone(), b.clone()]).await;
+                },
+                async {
+                    let _guard = post.lock(&[b.clone(), a.clone()]).await;
+                }
+            )
+        })
+        .await
+        .expect("overlapping acquisitions in opposite orders both finish");
         assert_eq!((first, second), ((), ()));
     }
 

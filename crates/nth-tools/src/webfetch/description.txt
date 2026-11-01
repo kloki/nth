@@ -9,5 +9,6 @@ Usage notes:
   - The URL must be a fully-formed valid URL starting with http:// or https://
   - Format options: "markdown" (default), "text", or "html"
   - timeout_ms sets the timeout in milliseconds (default 30000, maximum 120000).
+  - Ignores HTTP(S)_PROXY, so a proxy cannot bypass the DNS and cloud-metadata guard.
   - Responses larger than 5 MB are rejected
   - This tool is read-only and does not modify any files

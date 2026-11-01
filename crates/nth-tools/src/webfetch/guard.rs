@@ -32,13 +32,34 @@ fn check_host(host: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The IPv4 address embedded in an IPv4-translated (`::ffff:0:0/96`) or
+/// NAT64 (`64:ff9b::/96`) address; `Ipv6Addr::to_ipv4` decodes neither.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    let translated = segments[..5] == [0, 0, 0, 0, 0xffff] && segments[5] == 0;
+    let nat64 = segments[..2] == [0x64, 0xff9b] && segments[2..6] == [0, 0, 0, 0];
+    if translated || nat64 {
+        let [hi, lo] = [segments[6], segments[7]];
+        Some(Ipv4Addr::new(
+            (hi >> 8) as u8,
+            hi as u8,
+            (lo >> 8) as u8,
+            lo as u8,
+        ))
+    } else {
+        None
+    }
+}
+
 fn check_ip(ip: IpAddr) -> Result<(), String> {
     let blocked = match ip {
         IpAddr::V4(ip) => ip.is_link_local() || ip == Ipv4Addr::new(100, 100, 100, 200),
         IpAddr::V6(ip) => {
-            // Both IPv4-mapped and IPv4-compatible forms; `::1` stays
-            // loopback since `to_ipv4` leaves it out.
-            ip.to_ipv4().is_some_and(|v4| check_ip(v4.into()).is_err())
+            // IPv4-mapped, IPv4-compatible, IPv4-translated and NAT64 forms;
+            // `::1` stays loopback since none of them leave it out.
+            ip.to_ipv4()
+                .or_else(|| embedded_ipv4(ip))
+                .is_some_and(|v4| check_ip(v4.into()).is_err())
                 || ip.is_unicast_link_local()
                 || ip == Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254)
         }
