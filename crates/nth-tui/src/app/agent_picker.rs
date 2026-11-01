@@ -16,7 +16,9 @@ impl App {
             Action::Backspace => picker.backspace(),
             Action::Submit => self.choose_agent(),
             Action::ClearOrQuit if picker.clear_query() => {}
-            Action::Interrupt | Action::ClearOrQuit => self.input = Input::Prompt,
+            Action::Interrupt | Action::ClearOrQuit | Action::AgentPicker => {
+                self.input = Input::Prompt
+            }
             _ => {}
         }
     }
@@ -50,10 +52,53 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use nth_protocol::Mode;
 
     use super::*;
     use crate::app::tests::{app, rows};
+
+    #[test]
+    fn ctrl_a_toggles_picker_preserving_draft_and_clearing_completion() {
+        let mut app = app();
+        for c in "/ag".chars() {
+            app.apply(Action::Insert(c));
+        }
+        assert!(app.completion.is_some());
+        app.prompt.left();
+        let cursor = app.prompt.cursor();
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+
+        app.on_key(ctrl_a);
+        assert!(matches!(app.input, Input::AgentPicker(_)));
+        assert!(app.completion.is_none());
+        app.apply(Action::Insert('p'));
+        app.on_key(ctrl_a);
+
+        assert!(matches!(app.input, Input::Prompt));
+        assert_eq!(app.prompt.text(), "/ag");
+        assert_eq!(app.prompt.cursor(), cursor);
+        assert!(app.completion.is_none());
+        assert_eq!((app.mode, app.agent.as_deref()), (Mode::Act, None));
+    }
+
+    #[test]
+    fn ctrl_a_can_select_the_builtin_review_agent() {
+        let mut app = app();
+        app.context = std::sync::Arc::new(nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        ));
+        app.set_mode(Mode::Plan);
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        for c in "review".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        assert_eq!(app.agent.as_deref(), Some("review"));
+        app.apply(Action::NextTab);
+        assert_eq!((app.mode, app.agent.as_deref()), (Mode::Plan, None));
+    }
 
     #[test]
     fn picking_an_agent_runs_it_until_tab_goes_back_to_the_mode() {

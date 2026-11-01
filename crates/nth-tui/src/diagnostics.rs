@@ -729,6 +729,7 @@ mod tests {
         assert_eq!(text[agents + 3], "▎   ↳ explore       builtin");
         assert_eq!(text[agents + 4], "▎   ↳ general       builtin");
         assert_eq!(text[agents + 5], "▎   ↳ research      builtin");
+        assert_eq!(text[agents + 6], "▎   ↳ review        builtin");
     }
 
     #[test]
