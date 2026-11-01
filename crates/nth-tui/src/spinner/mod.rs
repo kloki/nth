@@ -43,10 +43,14 @@ mod tests {
 
     #[test]
     fn the_tabs_spinner_is_one_character() {
-        assert_eq!(dot(Duration::ZERO), "⠋");
-        assert_eq!(dot(FRAME * 3 / 2), "⠙");
-        assert_eq!(DOTS.len(), 10);
-        assert_eq!(dot(FRAME * 10), dot(Duration::ZERO));
+        assert_eq!(DOTS.as_slice(), ["⢣", "⢎", "⡜", "⡱"]);
+        assert_eq!(dot(Duration::ZERO), "⢣");
+        assert_eq!(dot(FRAME * 3 / 2), "⢎");
+        assert_eq!(dot(FRAME * 4), dot(Duration::ZERO));
         assert!(DOTS.iter().all(|f| f.chars().count() == 1));
+        assert!(
+            DOTS.iter()
+                .all(|f| unicode_width::UnicodeWidthStr::width(*f) == 1)
+        );
     }
 }
