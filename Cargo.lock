@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "nth"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "nth-auth"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "nth-context"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "ignore",
  "serde_norway",
@@ -1866,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "nth-curios"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "nth-format"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "nth-context",
  "serde",
@@ -1900,14 +1900,14 @@ dependencies = [
 
 [[package]]
 name = "nth-icons"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "unicode-width",
 ]
 
 [[package]]
 name = "nth-llm"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "bytes",
  "futures",
@@ -1923,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "nth-lsp"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "futures",
  "nth-context",
@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "nth-notify"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "futures",
  "serde",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "nth-protocol"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "futures",
  "nth-context",
@@ -1963,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "nth-session"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "nth-tools"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "nth-tui"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "nth-worktree"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "tempfile",
  "tokio",
