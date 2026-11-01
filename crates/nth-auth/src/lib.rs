@@ -8,7 +8,7 @@ mod store;
 
 use std::{io, path::PathBuf};
 
-pub use chatgpt::{Account, ChatGpt, Credentials, open_browser};
+pub use chatgpt::{Account, ChatGpt, Credentials, SignedOut, open_browser};
 pub use store::{OAuth, Store};
 
 #[derive(Debug, thiserror::Error)]

@@ -34,6 +34,12 @@ pub(crate) trait Payload: std::error::Error + Send + Sync + 'static {
     fn status_message(_body: &str) -> Option<String> {
         None
     }
+
+    /// Whether a refused request's body says waiting cannot help, though
+    /// its status (a 429, say) would otherwise be retried.
+    fn final_refusal(_body: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +54,8 @@ pub(crate) enum Error<P: Payload> {
         message: String,
         /// The server's `Retry-After`, when it sent one.
         retry_after: Option<Duration>,
+        /// The body said retrying cannot help, whatever the status.
+        final_refusal: bool,
     },
     #[error("bad stream event: {source} in {line:?}")]
     Parse {
@@ -122,7 +130,7 @@ async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Res
 
 /// A failed response as its stream's error; apart from `success` so the
 /// classification is testable without an HTTP response in hand.
-fn status_error<P: Payload>(
+pub(crate) fn status_error<P: Payload>(
     status: reqwest::StatusCode,
     body: String,
     retry_after: Option<Duration>,
@@ -130,11 +138,13 @@ fn status_error<P: Payload>(
     if http::context_overflow(status, &body) {
         return Box::new(ContextOverflow);
     }
+    let final_refusal = P::final_refusal(&body);
     let message = P::status_message(&body).unwrap_or(body);
     Box::new(Error::<P>::Status {
         status,
         message,
         retry_after,
+        final_refusal,
     })
 }
 
@@ -161,6 +171,7 @@ pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
         Error::Status {
             status,
             retry_after,
+            final_refusal: false,
             ..
         } if transient(*status) => Some(Retry {
             after: *retry_after,
@@ -450,6 +461,7 @@ mod tests {
                 status,
                 message: String::new(),
                 retry_after,
+                final_refusal: false,
             })
         };
 

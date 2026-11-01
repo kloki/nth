@@ -39,6 +39,10 @@ const PORT: u16 = 1455;
 const USER_AGENT: &str = concat!("nth/", env!("CARGO_PKG_VERSION"));
 /// Token requests are small; one this slow is not coming back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a revocation that hit a network error or 5xx is tried, and
+/// the first wait between tries, doubled each time.
+const REVOKE_ATTEMPTS: u32 = 3;
+const REVOKE_BACKOFF: Duration = Duration::from_millis(500);
 
 /// What a request to the Responses API is sent with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,18 +110,23 @@ impl ChatGpt {
         )
     }
 
-    /// Ends the renewable session, then forgets its tokens. Revocation is
-    /// best effort: a network that cannot reach OpenAI must not keep you
-    /// signed in locally. The issued client ID and account mapping stay,
-    /// as OpenAI binds a client to its account; signing in again reuses
-    /// them instead of registering another client.
-    pub async fn logout(&self) -> Result<(), Error> {
+    /// Ends the renewable session, then forgets its tokens. A network that
+    /// cannot reach OpenAI must not keep you signed in locally, so the
+    /// tokens go whatever revocation did; the answer says whether OpenAI
+    /// confirmed it. The issued client ID and account mapping stay, as
+    /// OpenAI binds a client to its account; signing in again reuses them
+    /// instead of registering another client.
+    pub async fn logout(&self) -> Result<SignedOut, Error> {
         let Some(auth) = self.inner.store.oauth(Self::ID).await? else {
-            return Ok(());
+            return Ok(SignedOut::Revoked);
         };
-        if let Some(client_id) = &auth.client_id {
-            let _ = self.revoke(client_id, &auth.refresh).await;
-        }
+        let revoked = match &auth.client_id {
+            Some(client_id) if auth.has_session() => {
+                self.revoke(client_id, &auth.refresh).await.is_ok()
+            }
+            // Nothing renewable to revoke.
+            _ => true,
+        };
         let signed_out = OAuth {
             access: String::new(),
             refresh: String::new(),
@@ -127,7 +136,12 @@ impl ChatGpt {
             id_token: None,
             scopes: Vec::new(),
         };
-        self.inner.store.save(Self::ID, &signed_out).await
+        self.inner.store.save(Self::ID, &signed_out).await?;
+        Ok(if revoked {
+            SignedOut::Revoked
+        } else {
+            SignedOut::Unconfirmed
+        })
     }
 
     /// POSTs `form` to the issuer's token endpoint.
@@ -150,27 +164,10 @@ impl ChatGpt {
         Ok(response.json().await?)
     }
 
-    /// The issuer's published keys, for checking the ID token.
-    async fn jwks(&self) -> Result<jwt::Jwks, Error> {
+    /// The issuer's OpenID configuration, which names where its keys and
+    /// its revocation endpoint live.
+    async fn configuration(&self) -> Result<Configuration, Error> {
         let response = self
-            .inner
-            .http
-            .get(format!("{}/.well-known/jwks.json", self.inner.issuer))
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(response.json().await?)
-    }
-
-    /// Revokes `refresh` at the endpoint the issuer's OpenID configuration
-    /// names. An empty 200 means success, including for a token that was
-    /// already gone.
-    async fn revoke(&self, client_id: &str, refresh: &str) -> Result<(), Error> {
-        #[derive(Deserialize)]
-        struct Configuration {
-            revocation_endpoint: String,
-        }
-        let configuration: Configuration = self
             .inner
             .http
             .get(format!(
@@ -179,9 +176,50 @@ impl ChatGpt {
             ))
             .send()
             .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .error_for_status()?;
+        Ok(response.json().await?)
+    }
+
+    /// The issuer's published keys, for checking the ID token.
+    async fn jwks(&self) -> Result<jwt::Jwks, Error> {
+        let configuration = self.configuration().await?;
+        let response = self
+            .inner
+            .http
+            .get(configuration.jwks_uri)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.json().await?)
+    }
+
+    /// Revokes `refresh` at the endpoint the issuer's OpenID configuration
+    /// names. An empty 200 means success, including for a token that was
+    /// already gone; a network error or 5xx is tried again, as OpenAI asks.
+    async fn revoke(&self, client_id: &str, refresh: &str) -> Result<(), Error> {
+        let mut delay = REVOKE_BACKOFF;
+        let mut attempt = 1;
+        loop {
+            let error = match self.revoke_once(client_id, refresh).await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            let transient = match &error {
+                Error::Status { status, .. } => *status >= 500,
+                Error::Http(_) => true,
+                _ => false,
+            };
+            if !transient || attempt == REVOKE_ATTEMPTS {
+                return Err(error);
+            }
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+            attempt += 1;
+        }
+    }
+
+    async fn revoke_once(&self, client_id: &str, refresh: &str) -> Result<(), Error> {
+        let configuration = self.configuration().await?;
         let response = self
             .inner
             .http
@@ -201,6 +239,23 @@ impl ChatGpt {
             }),
         }
     }
+}
+
+/// What a logout did on OpenAI's side; the local tokens are gone either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignedOut {
+    /// OpenAI ended the session, or there was none to end.
+    Revoked,
+    /// OpenAI could not be reached or refused: the session may still be
+    /// live until you disconnect nth in ChatGPT's settings.
+    Unconfirmed,
+}
+
+/// The part of the issuer's OpenID configuration nth reads.
+#[derive(Deserialize)]
+struct Configuration {
+    jwks_uri: String,
+    revocation_endpoint: String,
 }
 
 /// The token endpoint's answer, to a login and to a refresh alike.

@@ -78,7 +78,7 @@ pub(crate) async fn list(
     catalog: Option<&Catalog>,
 ) -> Result<Vec<ModelInfo>, listing::Error> {
     let request = http.get(format!("{base_url}/models"));
-    let list: ModelList = listing::fetch(auth.bearer(request, None)).await?;
+    let list: ModelList = listing::fetch(auth.bearer(request)).await?;
     Ok(models(list, catalog))
 }
 

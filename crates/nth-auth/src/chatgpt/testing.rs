@@ -88,6 +88,9 @@ impl Issuer {
         let answering = reply.clone();
         let jwks = serde_json::to_string(&jwks()).unwrap();
         let configuration = json!({
+            // Not the conventional path, so a test passes only when the
+            // keys are found through the configuration.
+            "jwks_uri": format!("{url}/keys"),
             "revocation_endpoint": format!("{url}/revoke"),
         })
         .to_string();
@@ -125,7 +128,7 @@ impl Issuer {
                     form,
                 });
                 let (status, body) = match (method.as_str(), path.as_str()) {
-                    ("GET", "/.well-known/jwks.json") => (200, jwks.clone()),
+                    ("GET", "/keys") => (200, jwks.clone()),
                     ("GET", "/.well-known/openid-configuration") => (200, configuration.clone()),
                     _ => {
                         let reply = answering.lock().unwrap().clone();
