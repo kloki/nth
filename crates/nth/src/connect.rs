@@ -93,6 +93,9 @@ mod tests {
             refresh: "refresh".into(),
             expires: u64::MAX,
             account_id: None,
+            client_id: Some("oaiapp_issued".into()),
+            id_token: None,
+            scopes: Vec::new(),
         };
         store.save(ChatGpt::ID, &auth).await.expect("saved");
         assert_eq!(

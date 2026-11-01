@@ -180,14 +180,14 @@ mod tests {
         assert_eq!(rows[2], "▎ starting the login…");
         assert_eq!(link, None);
 
-        panel.set_url("https://auth.openai.com/oauth/authorize?client_id=app".into());
+        panel.set_url("https://auth.openai.com/api/accounts/authorize?client_id=app".into());
         let (rows, link) = drawn(&panel, 40);
         assert_eq!(
             rows,
             [
                 "▎ connect        c copy url · esc cancel",
                 "▎ ChatGPT",
-                "▎ https://auth.openai.com/oauth/authori…",
+                "▎ https://auth.openai.com/api/accounts/…",
                 "▎ Waiting for authorization in your brow",
             ]
         );

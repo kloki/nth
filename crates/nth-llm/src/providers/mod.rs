@@ -463,6 +463,9 @@ mod tests {
             refresh: "refresh".into(),
             expires: u64::MAX,
             account_id: Some("account".into()),
+            client_id: Some("oaiapp_issued".into()),
+            id_token: None,
+            scopes: Vec::new(),
         };
         store
             .save(nth_auth::ChatGpt::ID, &auth)
@@ -478,8 +481,8 @@ mod tests {
         Snapshot::of(serde_json::from_value(catalog).expect("a valid catalogue"))
     }
 
-    /// The Codex backend's model list, serving only `gpt-5.5`.
-    const CODEX_MODELS: &[u8] = br#"{"models": [
+    /// OpenAI's model list, serving only `gpt-5.5`.
+    const CHATGPT_MODELS: &[u8] = br#"{"models": [
         {"slug": "gpt-5.5", "visibility": "list", "supported_in_api": true}
     ]}"#;
 
@@ -491,13 +494,13 @@ mod tests {
             models: vec!["glm".into()],
             ..endpoint("lyceum")
         };
-        let (url, head) = crate::testing::serve_json(CODEX_MODELS).await;
-        let codex = EndpointConfig {
+        let (url, head) = crate::testing::serve_json(CHATGPT_MODELS).await;
+        let chatgpt_endpoint = EndpointConfig {
             base_url: url,
             ..EndpointConfig::chatgpt(chatgpt)
         };
         let providers = Providers::build(
-            vec![lyceum, codex],
+            vec![lyceum, chatgpt_endpoint],
             Vec::new(),
             "glm",
             reqwest::Client::new(),
@@ -544,14 +547,11 @@ mod tests {
         let (head, _) = head.await.expect("the list was asked");
         let head = head.to_lowercase();
         let lines: Vec<_> = head.lines().collect();
-        assert_eq!(lines[0], "get /models?client_version=999.0.0 http/1.1");
-        for header in [
-            "authorization: bearer access",
-            "chatgpt-account-id: account",
-            "originator: nth",
-        ] {
-            assert!(lines.contains(&header), "{header} in {head}");
-        }
+        assert_eq!(lines[0], "get /models http/1.1");
+        assert!(
+            lines.contains(&"authorization: bearer access"),
+            "authorization in {head}"
+        );
     }
 
     #[tokio::test]
@@ -575,19 +575,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chatgpt_requests_carry_the_account_and_the_session() {
+    async fn chatgpt_requests_carry_the_session() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let (store, chatgpt) = chatgpt(&dir);
         connect(&store).await;
         let (url, head) =
             crate::testing::serve_once(include_bytes!("../../tests/fixtures/zen_responses.sse"))
                 .await;
-        let codex = EndpointConfig {
+        let chatgpt_endpoint = EndpointConfig {
             base_url: url,
             ..EndpointConfig::chatgpt(chatgpt)
         };
         let providers = Providers::build(
-            vec![codex],
+            vec![chatgpt_endpoint],
             Vec::new(),
             "chatgpt/gpt-5.5",
             reqwest::Client::new(),
@@ -617,12 +617,14 @@ mod tests {
         assert_eq!(lines[0], "post /responses http/1.1", "over responses");
         for header in [
             "authorization: bearer access",
-            "chatgpt-account-id: account",
-            "originator: nth",
             "session-id: ses_1",
+            "thread-id: ses_1",
+            "x-client-request-id: ses_1",
         ] {
             assert!(lines.contains(&header), "{header} in {head}");
         }
+        assert!(!head.contains("originator"), "{head}");
+        assert!(!head.contains("chatgpt-account-id"), "{head}");
     }
 
     #[tokio::test]
@@ -635,12 +637,12 @@ mod tests {
             ..endpoint("lyceum")
         };
         let (url, _) = crate::testing::serve_status(401, br#"{"detail":"expired"}"#).await;
-        let codex = EndpointConfig {
+        let chatgpt_endpoint = EndpointConfig {
             base_url: url,
             ..EndpointConfig::chatgpt(chatgpt)
         };
         let providers = Providers::build(
-            vec![lyceum, codex],
+            vec![lyceum, chatgpt_endpoint],
             Vec::new(),
             "glm",
             reqwest::Client::new(),
@@ -669,12 +671,12 @@ mod tests {
         let (url, sent) =
             crate::testing::serve_once(include_bytes!("../../tests/fixtures/zen_responses.sse"))
                 .await;
-        let codex = EndpointConfig {
+        let chatgpt_endpoint = EndpointConfig {
             base_url: url,
             ..EndpointConfig::chatgpt(chatgpt)
         };
         let providers = Providers::build(
-            vec![codex],
+            vec![chatgpt_endpoint],
             Vec::new(),
             model,
             reqwest::Client::new(),

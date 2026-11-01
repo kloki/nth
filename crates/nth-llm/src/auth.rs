@@ -9,7 +9,7 @@ use reqwest::RequestBuilder;
 pub enum Credentials {
     /// An API key, sent as a bearer token (or `x-api-key` over messages).
     Key(String),
-    /// A ChatGPT subscription, for the Codex backend only.
+    /// A ChatGPT subscription, for the Responses API.
     ChatGpt(nth_auth::ChatGpt),
 }
 
@@ -20,9 +20,9 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
-    /// `request` signed with a bearer token, and for ChatGPT the headers the
-    /// Codex backend expects beside it. `session_id` is the conversation's,
-    /// when the request belongs to one.
+    /// `request` signed with a bearer token, and for ChatGPT the session
+    /// headers the Responses API takes beside it. `session_id` is the
+    /// conversation's, when the request belongs to one.
     pub(crate) fn bearer(
         &self,
         request: RequestBuilder,
@@ -31,14 +31,14 @@ impl Auth {
         match self {
             Self::Key(key) => request.bearer_auth(key),
             Self::ChatGpt(credentials) => {
-                let mut request = request
-                    .bearer_auth(&credentials.access)
-                    .header("originator", "nth");
-                if let Some(account_id) = &credentials.account_id {
-                    request = request.header("ChatGPT-Account-Id", account_id);
-                }
+                let mut request = request.bearer_auth(&credentials.access);
                 if let Some(session_id) = session_id {
-                    request = request.header("session-id", session_id);
+                    // The same conversation id under each name the API reads
+                    // it from, as the Codex client sends it.
+                    request = request
+                        .header("session-id", session_id)
+                        .header("thread-id", session_id)
+                        .header("x-client-request-id", session_id);
                 }
                 request
             }
