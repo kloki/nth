@@ -30,6 +30,7 @@ mod plan;
 mod profiles;
 mod question;
 mod quit;
+mod search;
 mod session_picker;
 mod settings;
 mod subagent;
@@ -198,6 +199,9 @@ pub struct App {
     gh_lookup: Job<Option<PathBuf>>,
     /// What fills the input panel.
     input: Input,
+    /// The row Enter chose in search, waiting for the source to be shown
+    /// with its final width.
+    search_jump: Option<search::Jump>,
     /// The model and effort the next turn runs with.
     pub model: String,
     pub effort: Effort,
@@ -503,6 +507,7 @@ impl App {
             tea_lookup: Job::default(),
             gh_lookup: Job::default(),
             input: Input::Prompt,
+            search_jump: None,
             model: session.model.clone(),
             effort: session.effort,
             cwd: session.cwd.clone(),
@@ -879,9 +884,11 @@ impl App {
                 vec![(Tab::Chat, left), (side, right)]
             }
         };
+        self.apply_search_jump(&panes);
         for &(tab, area) in &panes {
             self.draw_tab(frame, tab, area);
         }
+        self.refresh_search(&panes);
         let focused = panes
             .iter()
             .find(|(tab, _)| *tab == self.content.active())
@@ -948,6 +955,7 @@ impl App {
                     self.areas.cover(popup);
                 }
             }
+            Input::Search(picker) => picker.draw(frame, input),
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
             Input::AgentPicker(picker) => crate::agent_picker::draw(frame, input, picker),
@@ -1146,6 +1154,11 @@ impl App {
                 self.prompt.paste(&text);
                 self.refresh_completion();
             }
+            TermEvent::Paste(text) => {
+                if let Input::Search(picker) = &mut self.input {
+                    picker.insert_str(&text);
+                }
+            }
             _ => {}
         }
         let after = (
@@ -1245,6 +1258,10 @@ impl App {
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
+        if matches!(self.input, Input::Search(_)) {
+            self.input = Input::Prompt;
+        }
+        self.search_jump = None;
         self.session_since = session.created_at;
         self.session_id = session.id;
         self.session = Some(session);

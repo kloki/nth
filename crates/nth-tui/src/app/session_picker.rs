@@ -102,6 +102,10 @@ impl App {
     /// Switches to `session`: its history, model and effort, and its
     /// working directory, so the paths it already talked about still hold.
     pub(super) fn resume(&mut self, mut session: Session) {
+        if matches!(self.input, Input::Search(_)) {
+            self.input = Input::Prompt;
+        }
+        self.search_jump = None;
         session.max_steps = self.max_steps;
         session.compaction = self.compaction;
         self.context = session.context().clone();

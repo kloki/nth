@@ -85,6 +85,15 @@ impl Pager {
         }
     }
 
+    /// Request a row; the next layout clamps it to the restored viewport.
+    pub fn jump_row(&mut self, row: usize) {
+        self.top = row;
+        self.saved_top = row;
+        if let Some(follow) = &mut self.follow {
+            *follow = false;
+        }
+    }
+
     /// Updates the viewport and returns the first visible line.
     pub fn layout(&mut self, total: usize, height: usize) -> usize {
         self.height = height;

@@ -38,6 +38,7 @@ pub struct PlanView {
     /// `/approve` took the plan as it reads now.
     approved: bool,
     cache: Cache,
+    revision: u64,
 }
 
 impl PlanView {
@@ -103,6 +104,7 @@ impl PlanView {
     /// The plan or its baseline changed: count the diff again, and render
     /// it again when next drawn.
     fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.counts = diff::counts(&self.baseline, self.current.as_deref().unwrap_or_default());
         self.cache.invalidate();
     }
@@ -134,6 +136,24 @@ impl PlanView {
         };
         self.pager.render(frame, area, lines.clone());
         self.cache.keep(width, lines);
+    }
+
+    pub fn search_revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn search_rows(&mut self, width: usize, path: &str) -> Vec<crate::search::Row> {
+        let lines = self
+            .cache
+            .take(width)
+            .unwrap_or_else(|| self.lines(path, width));
+        let rows = if self.exists() {
+            crate::search::rows(lines.iter().skip(2), 2)
+        } else {
+            Vec::new()
+        };
+        self.cache.keep(width, lines);
+        rows
     }
 
     /// A header naming the file and what changed, then the plan wrapped to
