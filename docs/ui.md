@@ -71,7 +71,9 @@ Ctrl with a digit, and ctrl+shift+t, only arrive as their own keys in terminals 
 
 ## Context
 
-`/context` opens a read-only preview of the main session's next model input. A summary at the top shows the estimated input, context window, breakdown and last reported usage. Below it are the system prompt, effective conversation and offered tool definitions in full. Scroll to read them; the normal prompt stays available. Estimates are approximate, and the preview identifies work still pending, such as a reply, tool results or compaction. It excludes the unsent prompt. The preview describes nth's logical request; a provider may package or count it differently.
+`/context` opens a read-only preview of the main session's next model input, in grey-barred sections like Diagnostics and Usage. The `summary` at the top is the request's budget: the model, mode and effort, any live state, the estimated input against the context window, a colour-coded budget bar (`■` input, `▒` output reserve, `·` available), the token cost of the system prompt, conversation, tool definitions and images, the reserve, and the last reported usage. The conversation itself is not shown; only its token count stays in that table.
+
+Below the summary is the actual context sent: `context · system prompt` gives the system prompt in full, with the persona, environment, added directories, instruction files, memory, skills and agents, and `context · tool definitions` gives every offered tool with its description and JSON schema. `pending` appears when a prompt, an instruction-file change or a next-turn reminder is waiting to join the request. Scroll to read them; the normal prompt stays available. Estimates are approximate, and the preview identifies work still pending, such as a reply, tool results or compaction. It excludes the unsent prompt. The preview describes nth's logical request; a provider may package or count it differently.
 
 ## Files
 

@@ -86,8 +86,8 @@ pub fn panel_row<'a>(accent: Color, content: impl IntoIterator<Item = Span<'a>>)
     Line::from(spans)
 }
 
-/// The bar down a section of the diagnostics and usage tabs: grey, so the
-/// sections read as the chat's blocks do without competing with them.
+/// The bar down a section of the diagnostics, usage and context tabs: grey,
+/// so the sections read as the chat's blocks do without competing with them.
 pub const SECTION_COLOUR: Color = Color::DarkGray;
 
 /// The diagnostics and usage tabs' sections as barred blocks: the section

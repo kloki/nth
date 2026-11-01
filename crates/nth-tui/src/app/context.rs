@@ -22,15 +22,13 @@ impl App {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
         let preview = session.context_preview_for(&self.tools, &self.inbox, true);
-        self.context_view
-            .update(Some(crate::context::format(&preview)));
+        self.context_view.update(Some(preview));
     }
 
     /// Live snapshots describe committed history, never streaming fragments.
     pub(super) fn context_updated(&mut self, value: &std::sync::Arc<serde_json::Value>) {
         if let Ok(preview) = serde_json::from_value::<Preview>((**value).clone()) {
-            self.context_view
-                .update(Some(crate::context::format(&preview)));
+            self.context_view.update(Some(preview));
         }
     }
 }
