@@ -56,6 +56,7 @@ fn sections() -> Vec<Line<'static>> {
                     "Ctrl+M",
                     "open model picker; use /models if terminal treats it as Enter",
                 ),
+                ("Ctrl+A", "open or close agent picker"),
                 (
                     "Ctrl+P",
                     "cycle configured profiles; first restores a manually changed profile",

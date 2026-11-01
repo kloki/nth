@@ -34,6 +34,8 @@ fn maps_keys_to_actions() {
     assert_eq!(key(KeyCode::End, none), Some(Action::Bottom));
     assert_eq!(key(KeyCode::Char('n'), ctrl), Some(Action::Accept));
     assert_eq!(key(KeyCode::Char('m'), ctrl), Some(Action::LlmPicker));
+    assert_eq!(key(KeyCode::Char('a'), ctrl), Some(Action::AgentPicker));
+    assert_eq!(key(KeyCode::Char('a'), none), Some(Action::Insert('a')));
     assert_eq!(key(KeyCode::Char('p'), ctrl), Some(Action::NextProfile));
     assert_eq!(key(KeyCode::Down, none), Some(Action::SelectNext));
     assert_eq!(key(KeyCode::Up, none), Some(Action::SelectPrev));
