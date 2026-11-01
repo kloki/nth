@@ -1,7 +1,7 @@
-//! The one built-in endpoint: a ChatGPT subscription, through the Codex
-//! backend, as the Codex CLI reaches it. It speaks only responses, and
-//! what it serves is the backend's own model list, which differs by plan
-//! and account, at no price per token.
+//! The one built-in endpoint: a ChatGPT subscription, through the public
+//! Responses API with a token from Sign in with ChatGPT. It speaks only
+//! responses, and what it serves is OpenAI's own model list, which differs
+//! by plan and account, at no price per token.
 
 use nth_protocol::{Cost, Effort, ModelInfo};
 use serde::Deserialize;
@@ -14,13 +14,9 @@ use crate::{
 
 pub const ID: &str = nth_auth::ChatGpt::ID;
 const NAME: &str = "ChatGPT";
-const BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const BASE_URL: &str = "https://api.openai.com/v1";
 /// Whose catalogue entry describes the models.
 const CATALOG_ID: &str = "openai";
-/// The Codex CLI version the model list is asked for. The backend leaves
-/// out models whose `minimal_client_version` is above it, and nth speaks
-/// the protocol of the newest Codex, so it asks as one newer than any.
-const CLIENT_VERSION: &str = "999.0.0";
 
 impl EndpointConfig {
     /// The ChatGPT endpoint, signed in through `chatgpt`. It can be built
@@ -48,16 +44,17 @@ struct ModelList {
     models: Vec<serde_json::Value>,
 }
 
-/// One model as the backend lists it; nth reads only these fields, and
-/// one that leaves out whether to offer it is not offered.
+/// One model as OpenAI lists it; nth reads only these fields, and one
+/// that leaves out whether to offer it is not offered.
 #[derive(Deserialize)]
 struct Listed {
     slug: String,
     display_name: Option<String>,
-    /// `list` for a model to offer; `hide` for the backend's own helpers.
+    /// `list` for a model to offer; `hide` for OpenAI's own helpers.
     #[serde(default)]
     visibility: String,
-    #[serde(default)]
+    /// A list that leaves this out is offering the model.
+    #[serde(default = "yes")]
     supported_in_api: bool,
     context_window: Option<u64>,
     #[serde(default)]
@@ -73,22 +70,24 @@ struct Level {
     effort: String,
 }
 
-/// The models this account is served, from the backend's list.
+/// The models this account is served, from OpenAI's list.
 pub(crate) async fn list(
     http: &reqwest::Client,
     base_url: &str,
     auth: &Auth,
     catalog: Option<&Catalog>,
 ) -> Result<Vec<ModelInfo>, listing::Error> {
-    let request = http
-        .get(format!("{base_url}/models"))
-        .query(&[("client_version", CLIENT_VERSION)]);
-    let list: ModelList = listing::fetch(auth.bearer(request, None)).await?;
+    let request = http.get(format!("{base_url}/models"));
+    let list: ModelList = listing::fetch(auth.bearer(request)).await?;
     Ok(models(list, catalog))
 }
 
-/// The listed models nth can run, with the backend's window and efforts
-/// and the catalogue's output limit, which the list does not give.
+fn yes() -> bool {
+    true
+}
+
+/// The listed models nth can run, with OpenAI's window and efforts and
+/// the catalogue's output limit, which the list does not give.
 fn models(list: ModelList, catalog: Option<&Catalog>) -> Vec<ModelInfo> {
     let mut models: Vec<_> = list
         .models

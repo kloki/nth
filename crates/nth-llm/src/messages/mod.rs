@@ -84,7 +84,7 @@ impl Client {
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
         let builder = auth
-            .api_key(self.post(), Some(request.session_id))
+            .api_key(self.post())
             .header("anthropic-version", VERSION)
             .json(&wire::body(
                 request.model,

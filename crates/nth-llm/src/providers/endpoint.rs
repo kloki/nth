@@ -2,7 +2,7 @@
 //! per protocol a model there may speak. Which protocol a model speaks is
 //! the catalogue's to say; the endpoint only holds the clients. The
 //! ChatGPT endpoint is the exception: it speaks responses, lists its
-//! models from the Codex backend, and runs only while you are connected
+//! models from OpenAI's API, and runs only while you are connected
 //! (`chatgpt.rs`).
 
 use std::{collections::HashMap, sync::Mutex};
@@ -48,7 +48,7 @@ enum Kind {
         only: Vec<String>,
     },
     /// The built-in one (`chatgpt.rs`): a ChatGPT login, always responses
-    /// with OpenAI's catalogue entry, and the Codex backend's own list.
+    /// with OpenAI's catalogue entry, and OpenAI's own model list.
     ChatGpt {
         login: nth_auth::ChatGpt,
         /// The efforts each model took in the last list, by wire id. It is

@@ -23,9 +23,27 @@ pub struct OAuth {
     pub expires: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// The client ID OpenAI issued for this login. Sign in with ChatGPT
+    /// registers one on the first sign-in and reuses it after; a token set
+    /// without one came from the Codex CLI's client and must be replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// The ID token the login returned, kept across refreshes and sent as
+    /// the next sign-in's `id_token_hint`. Signing out clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
+    /// The scopes the token endpoint granted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
 }
 
 impl OAuth {
+    /// Whether the refresh token can still renew `access`. A signed-out entry
+    /// keeps only its client and account mapping, so it has no session.
+    pub fn has_session(&self) -> bool {
+        !self.refresh.trim().is_empty()
+    }
+
     /// Whether `access` runs out within `margin_ms`, so a request sent now
     /// might reach the server with a dead token.
     pub fn expires_within(&self, margin_ms: u64) -> bool {
@@ -142,7 +160,7 @@ fn read(path: &Path, read: io::Result<Vec<u8>>) -> Result<Option<Vec<u8>>, Error
     }
 }
 
-async fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) async fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use tokio::io::AsyncWriteExt;
 
     let mut options = tokio::fs::OpenOptions::new();
@@ -177,6 +195,9 @@ mod tests {
             refresh: "refresh".into(),
             expires: 1_700_000_000_000,
             account_id: Some("acct".into()),
+            client_id: Some("oaiapp_issued".into()),
+            id_token: Some("id-token".into()),
+            scopes: vec!["openid".into(), "offline_access".into()],
         }
     }
 
@@ -215,6 +236,9 @@ mod tests {
                     "refresh": "refresh",
                     "expires": 1_700_000_000_000u64,
                     "account_id": "acct",
+                    "client_id": "oaiapp_issued",
+                    "id_token": "id-token",
+                    "scopes": ["openid", "offline_access"],
                 },
             })
         );

@@ -9,7 +9,7 @@ use reqwest::RequestBuilder;
 pub enum Credentials {
     /// An API key, sent as a bearer token (or `x-api-key` over messages).
     Key(String),
-    /// A ChatGPT subscription, for the Codex backend only.
+    /// A ChatGPT subscription, for the Responses API.
     ChatGpt(nth_auth::ChatGpt),
 }
 
@@ -20,41 +20,22 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
-    /// `request` signed with a bearer token, and for ChatGPT the headers the
-    /// Codex backend expects beside it. `session_id` is the conversation's,
-    /// when the request belongs to one.
-    pub(crate) fn bearer(
-        &self,
-        request: RequestBuilder,
-        session_id: Option<&str>,
-    ) -> RequestBuilder {
+    /// `request` signed with a bearer token. A ChatGPT login needs nothing
+    /// beside it on the public API: the conversation's cache key rides in
+    /// the body as `prompt_cache_key`.
+    pub(crate) fn bearer(&self, request: RequestBuilder) -> RequestBuilder {
         match self {
             Self::Key(key) => request.bearer_auth(key),
-            Self::ChatGpt(credentials) => {
-                let mut request = request
-                    .bearer_auth(&credentials.access)
-                    .header("originator", "nth");
-                if let Some(account_id) = &credentials.account_id {
-                    request = request.header("ChatGPT-Account-Id", account_id);
-                }
-                if let Some(session_id) = session_id {
-                    request = request.header("session-id", session_id);
-                }
-                request
-            }
+            Self::ChatGpt(credentials) => request.bearer_auth(&credentials.access),
         }
     }
 
     /// As `bearer`, but a key goes in `x-api-key`: OpenCode Zen refuses a
     /// bearer token on messages, as Anthropic does.
-    pub(crate) fn api_key(
-        &self,
-        request: RequestBuilder,
-        session_id: Option<&str>,
-    ) -> RequestBuilder {
+    pub(crate) fn api_key(&self, request: RequestBuilder) -> RequestBuilder {
         match self {
             Self::Key(key) => request.header("x-api-key", key),
-            Self::ChatGpt(_) => self.bearer(request, session_id),
+            Self::ChatGpt(_) => self.bearer(request),
         }
     }
 }

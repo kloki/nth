@@ -32,6 +32,25 @@ impl Payload for Provider {
             .map(|error| error.error.message)
     }
 
+    /// A ChatGPT plan refusal that no wait fixes: a usage limit (a 429
+    /// whose reset OpenAI does not say), an account or workspace that may
+    /// not use its plan, or a request the plan does not cover. The 503
+    /// ones (`subscription_sharing_usage_unavailable`,
+    /// `subscription_sharing_user_unavailable`) are retried as usual.
+    fn final_refusal(body: &str) -> bool {
+        serde_json::from_str::<event::ErrorResponse>(body).is_ok_and(|error| {
+            matches!(
+                error.error.code.as_deref(),
+                Some(
+                    "subscription_sharing_usage_limit_exceeded"
+                        | "subscription_sharing_user_not_eligible"
+                        | "subscription_sharing_unsupported_capability"
+                        | "subscription_sharing_route_not_supported"
+                )
+            )
+        })
+    }
+
     /// A rate limit or a server failure.
     fn retryable(&self) -> bool {
         matches!(self.kind.as_str(), "rate_limit_exceeded" | "server_error")
@@ -49,16 +68,14 @@ impl Client {
         reasons: bool,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let builder = auth
-            .bearer(self.post(), Some(request.session_id))
-            .json(&wire::body(
-                request.model,
-                request.session_id,
-                request.effort,
-                reasons,
-                request.messages,
-                request.tools,
-            ));
+        let builder = auth.bearer(self.post()).json(&wire::body(
+            request.model,
+            request.session_id,
+            request.effort,
+            reasons,
+            request.messages,
+            request.tools,
+        ));
         stream::send::<State>(builder, &request).await
     }
 }
@@ -411,5 +428,33 @@ mod tests {
 
         let other: BoxError = Box::new(crate::messages::Error::Incomplete);
         assert_eq!(retry(&other), None, "another protocol's error");
+    }
+
+    /// A ChatGPT plan's usage limit comes as a 429, but waiting does not
+    /// lift it, so it is shown rather than retried.
+    #[test]
+    fn a_plan_usage_limit_is_not_retried() {
+        let refused = |status: u16, code: &str| {
+            crate::stream::status_error::<Provider>(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                serde_json::json!({"error": {"code": code, "message": "plan says no"}}).to_string(),
+                None,
+            )
+        };
+        let limited = refused(429, "subscription_sharing_usage_limit_exceeded");
+        assert_eq!(retry(&limited), None);
+        assert!(limited.to_string().contains("plan says no"), "{limited}");
+        assert_eq!(
+            retry(&refused(403, "subscription_sharing_user_not_eligible")),
+            None
+        );
+        assert_eq!(
+            retry(&refused(503, "subscription_sharing_usage_unavailable")),
+            Some(Retry { after: None })
+        );
+        assert_eq!(
+            retry(&refused(429, "rate_limit_exceeded")),
+            Some(Retry { after: None })
+        );
     }
 }

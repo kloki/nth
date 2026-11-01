@@ -1,7 +1,7 @@
-//! The browser login: nth listens on localhost, sends you to OpenAI's
-//! authorize page, and trades the code the browser brings back for tokens.
-//! The callback server is a few lines of HTTP by hand, since it answers one
-//! request from one browser.
+//! The browser login: nth listens on a loopback port, sends you to OpenAI's
+//! Sign in with ChatGPT page, and trades the code the browser brings back
+//! for tokens. The callback server is a few lines of HTTP by hand, since it
+//! answers one request from one browser.
 
 use std::{net::Ipv4Addr, time::Duration};
 
@@ -13,10 +13,11 @@ use tokio::{
 use url::Url;
 
 use super::{
-    Account, CLIENT_ID, ChatGpt, jwt,
+    AGENT_NAME, AUTHORIZE, Account, ChatGpt, PORT, REGISTRATION_CLIENT_ID, RESOURCE, SCOPES,
+    SHARING_SCOPE, grants_sharing, host, jwt,
     pkce::{self, Pkce},
 };
-use crate::Error;
+use crate::{Error, OAuth};
 
 /// How long you have to finish in the browser.
 const TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -25,7 +26,6 @@ const TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// A request line longer than this is nothing the issuer sent.
 const MAX_REQUEST_LINE: u64 = 8 * 1024;
-const SCOPE: &str = "openid profile email offline_access";
 const CALLBACK_PATH: &str = "/auth/callback";
 
 const SUCCESS_PAGE: &str = include_str!("../../templates/success.html");
@@ -37,23 +37,64 @@ impl ChatGpt {
     /// and opens it (`open_browser`). Gives up after 5 minutes; dropping the
     /// future cancels it and frees the port.
     pub async fn login(&self, on_url: impl FnOnce(&str)) -> Result<Account, Error> {
-        let port = self.inner.port;
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
-            .await
-            .map_err(|source| Error::Port { port, source })?;
+        let previous = self.inner.store.oauth(Self::ID).await?;
+        let listener = self.listener().await?;
         let port = listener.local_addr().map_err(Error::Callback)?.port();
-        let redirect = format!("http://localhost:{port}{CALLBACK_PATH}");
+        let redirect = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
         let pkce = Pkce::new()?;
         let state = pkce::state()?;
+        let nonce = pkce::state()?;
+        let host = host::id(&self.inner.store).await?;
+        let returning = previous.as_ref().and_then(|previous| {
+            previous
+                .client_id
+                .as_deref()
+                .filter(|client_id| !client_id.trim().is_empty())
+                .map(|client_id| Returning {
+                    client_id,
+                    id_token: previous
+                        .id_token
+                        .as_deref()
+                        .filter(|id_token| !id_token.trim().is_empty()),
+                })
+        });
         on_url(&authorize_url(
             &self.inner.issuer,
             &redirect,
             &pkce.challenge,
             &state,
+            &nonce,
+            returning,
+            &host,
         ));
-        tokio::time::timeout(TIMEOUT, self.finish(&listener, &redirect, &pkce, &state))
-            .await
-            .map_err(|_| Error::Timeout)?
+        tokio::time::timeout(
+            TIMEOUT,
+            self.finish(
+                &listener,
+                &redirect,
+                &pkce,
+                &state,
+                &nonce,
+                previous.as_ref(),
+            ),
+        )
+        .await
+        .map_err(|_| Error::Timeout)?
+    }
+
+    /// The callback listener: the registered port, or any free one when it
+    /// is taken so a second nth can still sign in.
+    async fn listener(&self) -> Result<TcpListener, Error> {
+        let port = self.inner.port;
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+            Ok(listener) => Ok(listener),
+            // Only the registered port falls back; a caller that named
+            // another one wants that port, as tests do.
+            Err(_) if port == PORT => TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .map_err(|source| Error::Port { port, source }),
+            Err(source) => Err(Error::Port { port, source }),
+        }
     }
 
     /// Waits for the browser, exchanges its code and tells it how that went.
@@ -63,9 +104,14 @@ impl ChatGpt {
         redirect: &str,
         pkce: &Pkce,
         state: &str,
+        nonce: &str,
+        previous: Option<&OAuth>,
     ) -> Result<Account, Error> {
-        let (mut stream, code) = callback(listener, state).await?;
-        match self.exchange(&code, redirect, &pkce.verifier).await {
+        let (mut stream, callback) = callback(listener, state).await?;
+        match self
+            .complete(callback, redirect, pkce, nonce, previous)
+            .await
+        {
             Ok(account) => {
                 respond(&mut stream, "200 OK", SUCCESS_PAGE).await;
                 Ok(account)
@@ -77,43 +123,140 @@ impl ChatGpt {
         }
     }
 
-    async fn exchange(&self, code: &str, redirect: &str, verifier: &str) -> Result<Account, Error> {
+    /// Trades the callback's code for tokens, checks that they are for this
+    /// sign-in and saves them.
+    async fn complete(
+        &self,
+        callback: Callback,
+        redirect: &str,
+        pkce: &Pkce,
+        nonce: &str,
+        previous: Option<&OAuth>,
+    ) -> Result<Account, Error> {
+        let saved = previous
+            .and_then(|previous| previous.client_id.as_deref())
+            .filter(|client_id| !client_id.trim().is_empty());
+        let returned = callback
+            .client_id
+            .as_deref()
+            .filter(|client_id| !client_id.trim().is_empty());
+        if let (Some(saved), Some(returned)) = (saved, returned)
+            && returned != saved
+        {
+            return Err(Error::Denied(
+                "ChatGPT returned a different client than this connection. Connect again.".into(),
+            ));
+        }
+        let client_id = saved
+            .or(returned.filter(|client_id| *client_id != REGISTRATION_CLIENT_ID))
+            .ok_or_else(|| {
+                Error::Denied("ChatGPT sign-in did not return a client ID. Connect again.".into())
+            })?;
         let tokens = self
-            .token(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", redirect),
-                ("client_id", CLIENT_ID),
-                ("code_verifier", verifier),
-            ])
+            .exchange(&callback.code, redirect, &pkce.verifier, client_id)
             .await?;
-        let email = tokens.id_token.as_deref().and_then(jwt::email);
-        let auth = tokens.into_oauth(None);
+        let scopes: Vec<String> = tokens
+            .scope
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        if !grants_sharing(&scopes) {
+            return Err(Error::Denied(format!(
+                "ChatGPT sign-in finished without {SHARING_SCOPE}. Sign in again and allow token sharing, or connect OpenAI with an API key."
+            )));
+        }
+        let id_token = tokens.id_token.clone().ok_or_else(|| {
+            Error::Denied("ChatGPT sign-in did not return an ID token. Connect again.".into())
+        })?;
+        let claims = jwt::verify(
+            &id_token,
+            &self.jwks().await?,
+            &self.inner.issuer,
+            client_id,
+            nonce,
+        )?;
+        // A retained ID token names the account this connection is for; a
+        // sign-in that names another must not replace its credentials.
+        if let Some(previous) = previous
+            && let Some(subject) = previous.id_token.as_deref().and_then(jwt::subject)
+            && claims.subject() != Some(subject.as_str())
+        {
+            return Err(Error::Denied(
+                "ChatGPT signed in to a different account than this connection. Sign in again."
+                    .into(),
+            ));
+        }
+        let auth = tokens.into_oauth(previous, client_id.to_string());
         self.inner.store.save(Self::ID, &auth).await?;
         Ok(Account {
             id: auth.account_id,
-            email,
+            email: claims.email,
         })
+    }
+
+    async fn exchange(
+        &self,
+        code: &str,
+        redirect: &str,
+        verifier: &str,
+        client_id: &str,
+    ) -> Result<super::Tokens, Error> {
+        self.token(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", redirect),
+            ("resource", RESOURCE),
+        ])
+        .await
     }
 }
 
-fn authorize_url(issuer: &str, redirect: &str, challenge: &str, state: &str) -> String {
-    let mut url = format!("{issuer}/oauth/authorize");
-    url.push('?');
+/// A returning account: its issued client ID, and the ID token kept to
+/// skip the account picker (`id_token_hint`).
+struct Returning<'a> {
+    client_id: &'a str,
+    id_token: Option<&'a str>,
+}
+
+fn authorize_url(
+    issuer: &str,
+    redirect: &str,
+    challenge: &str,
+    state: &str,
+    nonce: &str,
+    returning: Option<Returning<'_>>,
+    host: &str,
+) -> String {
+    let client_id = returning
+        .as_ref()
+        .map(|returning| returning.client_id)
+        .unwrap_or(REGISTRATION_CLIENT_ID);
+    let mut pairs = vec![("client_id", client_id)];
+    if returning.is_none() {
+        pairs.push(("agent_name_hint", AGENT_NAME));
+    }
+    if let Some(hint) = returning.as_ref().and_then(|returning| returning.id_token) {
+        pairs.push(("id_token_hint", hint));
+    }
+    pairs.extend([
+        ("ext_agent_host_id", host),
+        ("response_type", "code"),
+        ("redirect_uri", redirect),
+        ("scope", SCOPES),
+        ("resource", RESOURCE),
+        ("state", state),
+        ("nonce", nonce),
+        ("code_challenge_method", "S256"),
+        ("code_challenge", challenge),
+    ]);
+    let mut url = format!("{issuer}{AUTHORIZE}?");
     url.push_str(
         &url::form_urlencoded::Serializer::new(String::new())
-            .extend_pairs([
-                ("response_type", "code"),
-                ("client_id", CLIENT_ID),
-                ("redirect_uri", redirect),
-                ("scope", SCOPE),
-                ("code_challenge", challenge),
-                ("code_challenge_method", "S256"),
-                ("id_token_add_organizations", "true"),
-                ("codex_cli_simplified_flow", "true"),
-                ("state", state),
-                ("originator", "nth"),
-            ])
+            .extend_pairs(pairs)
             .finish(),
     );
     url
@@ -122,7 +265,10 @@ fn authorize_url(issuer: &str, redirect: &str, challenge: &str, state: &str) -> 
 /// What one request to the callback server asked for.
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
-    Code(String),
+    Code {
+        code: String,
+        client_id: Option<String>,
+    },
     NotFound,
     /// The login is over: the issuer refused, or the request is not the one
     /// nth is waiting for.
@@ -133,7 +279,7 @@ enum Outcome {
 }
 
 fn outcome(target: &str, state: &str) -> Outcome {
-    let Ok(url) = Url::parse("http://localhost").and_then(|base| base.join(target)) else {
+    let Ok(url) = Url::parse("http://127.0.0.1").and_then(|base| base.join(target)) else {
         return Outcome::NotFound;
     };
     if url.path() != CALLBACK_PATH {
@@ -157,13 +303,23 @@ fn outcome(target: &str, state: &str) -> Outcome {
     if param("state").as_deref() != Some(state) {
         return failed("400 Bad Request", "Invalid state - potential CSRF attack");
     }
-    Outcome::Code(code)
+    Outcome::Code {
+        code,
+        client_id: param("client_id"),
+    }
+}
+
+/// What the browser brought back, once `state` checked out.
+#[derive(Debug)]
+struct Callback {
+    code: String,
+    client_id: Option<String>,
 }
 
 /// Serves the callback server until the browser brings a code, answering
 /// everything else. Connections are read side by side, so one the browser
 /// opened and never used holds nothing up.
-async fn callback(listener: &TcpListener, state: &str) -> Result<(TcpStream, String), Error> {
+async fn callback(listener: &TcpListener, state: &str) -> Result<(TcpStream, Callback), Error> {
     let mut reading = FuturesUnordered::new();
     loop {
         tokio::select! {
@@ -176,7 +332,7 @@ async fn callback(listener: &TcpListener, state: &str) -> Result<(TcpStream, Str
                     continue;
                 };
                 match outcome(&target, state) {
-                    Outcome::Code(code) => return Ok((stream, code)),
+                    Outcome::Code { code, client_id } => return Ok((stream, Callback { code, client_id })),
                     Outcome::NotFound => respond(&mut stream, "404 Not Found", "Not found").await,
                     Outcome::Failed { status, message } => {
                         respond(&mut stream, status, &error_page(&message)).await;
@@ -257,7 +413,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        super::{jwt::token, testing::Issuer},
+        super::{
+            AGENT_NAME, REGISTRATION_CLIENT_ID, SCOPES, SHARING_SCOPE, SignedOut, TOKEN,
+            testing::{Issuer, signed},
+        },
         *,
     };
     use crate::Store;
@@ -271,25 +430,32 @@ mod tests {
     }
 
     #[test]
-    fn authorize_url_asks_as_codex_does() {
+    fn first_sign_in_registers_nth() {
         let url = authorize_url(
             "https://auth.openai.com",
-            "http://localhost:1455/auth/callback",
+            "http://127.0.0.1:1455/auth/callback",
             "challenge",
             "state",
+            "nonce",
+            None,
+            "urn:uuid:00000000-0000-4000-8000-000000000000",
         );
-        assert!(url.starts_with("https://auth.openai.com/oauth/authorize?"));
+        assert!(url.starts_with("https://auth.openai.com/api/accounts/authorize?"));
         let expected: HashMap<String, String> = [
+            ("client_id", REGISTRATION_CLIENT_ID),
+            ("agent_name_hint", AGENT_NAME),
+            (
+                "ext_agent_host_id",
+                "urn:uuid:00000000-0000-4000-8000-000000000000",
+            ),
             ("response_type", "code"),
-            ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
-            ("redirect_uri", "http://localhost:1455/auth/callback"),
-            ("scope", "openid profile email offline_access"),
-            ("code_challenge", "challenge"),
-            ("code_challenge_method", "S256"),
-            ("id_token_add_organizations", "true"),
-            ("codex_cli_simplified_flow", "true"),
+            ("redirect_uri", "http://127.0.0.1:1455/auth/callback"),
+            ("scope", SCOPES),
+            ("resource", "https://api.openai.com/v1"),
             ("state", "state"),
-            ("originator", "nth"),
+            ("nonce", "nonce"),
+            ("code_challenge_method", "S256"),
+            ("code_challenge", "challenge"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -298,10 +464,44 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_client_signs_in_again_without_registering() {
+        let url = authorize_url(
+            "https://auth.openai.com",
+            "http://127.0.0.1:1455/auth/callback",
+            "challenge",
+            "state",
+            "nonce",
+            Some(Returning {
+                client_id: "oaiapp_issued",
+                id_token: Some("saved-id-token"),
+            }),
+            "urn:uuid:00000000-0000-4000-8000-000000000000",
+        );
+        let params = params(&url);
+        assert_eq!(params["client_id"], "oaiapp_issued");
+        assert!(!params.contains_key("agent_name_hint"));
+        assert_eq!(params["id_token_hint"], "saved-id-token");
+        assert_eq!(
+            params["ext_agent_host_id"],
+            "urn:uuid:00000000-0000-4000-8000-000000000000"
+        );
+    }
+
+    #[test]
     fn callback_requests() {
         assert_eq!(
+            outcome("/auth/callback?code=abc&state=s&client_id=oaiapp_one", "s"),
+            Outcome::Code {
+                code: "abc".into(),
+                client_id: Some("oaiapp_one".into())
+            }
+        );
+        assert_eq!(
             outcome("/auth/callback?code=abc&state=s", "s"),
-            Outcome::Code("abc".into())
+            Outcome::Code {
+                code: "abc".into(),
+                client_id: None
+            }
         );
         assert_eq!(outcome("/favicon.ico", "s"), Outcome::NotFound);
         assert_eq!(
@@ -358,33 +558,65 @@ mod tests {
         async fn callback(&self, query: &str) -> (u16, String) {
             self.visit(CALLBACK_PATH, query).await
         }
+
+        /// Brings the code back as the issuer does for this login.
+        async fn sign_in(&self, client_id: Option<&str>) -> (u16, String) {
+            let state = self.url["state"].clone();
+            let mut query = format!("code=the-code&state={state}");
+            if let Some(client_id) = client_id {
+                query.push_str(&format!("&client_id={client_id}"));
+            }
+            self.callback(&query).await
+        }
+
+        fn nonce(&self) -> &str {
+            &self.url["nonce"]
+        }
     }
 
     fn chatgpt(issuer: &Issuer, store: Store) -> ChatGpt {
         ChatGpt::with_issuer(store, &issuer.url, 0).unwrap()
     }
 
+    /// The token endpoint's answer for a login with `nonce`.
+    fn answer(issuer: &Issuer, client_id: &str, nonce: &str) -> serde_json::Value {
+        json!({
+            "id_token": signed(
+                json!({
+                    "chatgpt_account_id": "acct",
+                    "email": "you@example.com",
+                }),
+                &issuer.url,
+                client_id,
+                nonce,
+            ),
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "scope": format!("openid profile email offline_access resource.invoke {SHARING_SCOPE}"),
+        })
+    }
+
+    fn saved(client_id: Option<&str>) -> OAuth {
+        OAuth {
+            access: "old-access".into(),
+            refresh: "old-refresh".into(),
+            expires: crate::store::now_ms() + 3_600_000,
+            account_id: None,
+            client_id: client_id.map(String::from),
+            id_token: None,
+            scopes: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn login_saves_the_tokens() {
-        let id_token = token(json!({
-            "chatgpt_account_id": "acct",
-            "email": "you@example.com",
-        }));
-        let issuer = Issuer::start(
-            200,
-            json!({
-                "id_token": id_token,
-                "access_token": "access",
-                "refresh_token": "refresh",
-                "expires_in": 3600,
-            }),
-        )
-        .await;
+        let issuer = Issuer::start(200, json!({})).await;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("auth.json"));
         let login = Login::start(chatgpt(&issuer, store.clone())).await;
         let redirect = Url::parse(&login.url["redirect_uri"]).unwrap();
-        assert_eq!(redirect.host_str(), Some("localhost"));
+        assert_eq!(redirect.host_str(), Some("127.0.0.1"));
         assert_eq!(redirect.path(), CALLBACK_PATH);
 
         // A connection that never sends holds nothing up.
@@ -394,10 +626,10 @@ mod tests {
         let (status, _) = login.visit("/favicon.ico", "").await;
         assert_eq!(status, 404);
 
-        let state = login.url["state"].clone();
-        let (status, page) = login
-            .callback(&format!("code=the-code&state={state}"))
-            .await;
+        // The answer names the client and nonce only the authorize URL knew.
+        let client_id = "oaiapp_issued";
+        issuer.respond(200, answer(&issuer, client_id, login.nonce()));
+        let (status, page) = login.sign_in(Some(client_id)).await;
         assert_eq!(status, 200);
         assert!(page.contains("Authorization successful"), "{page}");
 
@@ -405,14 +637,15 @@ mod tests {
         assert_eq!(account.id.as_deref(), Some("acct"));
         assert_eq!(account.email.as_deref(), Some("you@example.com"));
 
-        let requests = issuer.requests();
+        let requests = issuer.posts();
         assert_eq!(requests.len(), 1);
         let form = &requests[0].form;
-        assert_eq!(requests[0].path, "/oauth/token");
+        assert_eq!(requests[0].path, TOKEN);
         assert_eq!(form["grant_type"], "authorization_code");
         assert_eq!(form["code"], "the-code");
         assert_eq!(form["redirect_uri"], login.url["redirect_uri"]);
-        assert_eq!(form["client_id"], CLIENT_ID);
+        assert_eq!(form["client_id"], client_id);
+        assert_eq!(form["resource"], RESOURCE);
         assert_eq!(
             pkce::challenge(&form["code_verifier"]),
             login.url["code_challenge"]
@@ -421,7 +654,194 @@ mod tests {
         let saved = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
         assert_eq!(saved.access, "access");
         assert_eq!(saved.refresh, "refresh");
+        assert_eq!(saved.client_id.as_deref(), Some(client_id));
         assert_eq!(saved.account_id.as_deref(), Some("acct"));
+        assert_eq!(
+            saved.scopes,
+            [
+                "chatgpt.tokens.use.direct",
+                "email",
+                "offline_access",
+                "openid",
+                "profile",
+                "resource.invoke",
+            ]
+        );
+        assert!(saved.id_token.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_that_names_no_client_is_refused() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+
+        let (status, page) = login.sign_in(None).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("did not return a client ID"), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(
+            matches!(&error, Error::Denied(message) if message.contains("client ID")),
+            "{error}"
+        );
+        assert!(issuer.posts().is_empty());
+        assert_eq!(store.oauth(ChatGpt::ID).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_registration_client_is_not_saved_as_issued() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+
+        let (status, page) = login.sign_in(Some(REGISTRATION_CLIENT_ID)).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("did not return a client ID"), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::Denied(_)), "{error}");
+        assert!(issuer.posts().is_empty());
+        assert_eq!(store.oauth(ChatGpt::ID).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn another_client_on_reauthorization_is_refused() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        store
+            .save(ChatGpt::ID, &saved(Some("oaiapp_issued")))
+            .await
+            .unwrap();
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+        assert_eq!(login.url["client_id"], "oaiapp_issued");
+        assert!(!login.url.contains_key("agent_name_hint"));
+
+        let (status, page) = login.sign_in(Some("oaiapp_other")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("different client"), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::Denied(_)), "{error}");
+        assert!(issuer.posts().is_empty());
+        let kept = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
+        assert_eq!(kept.refresh, "old-refresh");
+    }
+
+    #[tokio::test]
+    async fn reauthorization_hints_the_saved_account() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let mut previous = saved(Some("oaiapp_issued"));
+        previous.id_token = Some(signed(
+            json!({"sub": "user"}),
+            &issuer.url,
+            "oaiapp_issued",
+            "old-nonce",
+        ));
+        store.save(ChatGpt::ID, &previous).await.unwrap();
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+
+        assert_eq!(
+            login.url["id_token_hint"],
+            previous.id_token.as_deref().unwrap(),
+            "the saved account skips the picker"
+        );
+
+        issuer.respond(200, answer(&issuer, "oaiapp_issued", login.nonce()));
+        login.sign_in(None).await;
+        login.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_id_token_for_another_account_is_refused() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let mut previous = saved(Some("oaiapp_issued"));
+        previous.id_token = Some(signed(
+            json!({"sub": "someone-else"}),
+            &issuer.url,
+            "oaiapp_issued",
+            "old-nonce",
+        ));
+        store.save(ChatGpt::ID, &previous).await.unwrap();
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+
+        issuer.respond(200, answer(&issuer, "oaiapp_issued", login.nonce()));
+        let (status, page) = login.sign_in(None).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("different account"), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(
+            matches!(&error, Error::Denied(message) if message.contains("different account")),
+            "{error}"
+        );
+        let kept = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
+        assert_eq!(kept.refresh, "old-refresh");
+    }
+
+    #[tokio::test]
+    async fn reauthorization_reuses_the_saved_client_when_none_returns() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        store
+            .save(ChatGpt::ID, &saved(Some("oaiapp_issued")))
+            .await
+            .unwrap();
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+
+        issuer.respond(200, answer(&issuer, "oaiapp_issued", login.nonce()));
+        let (status, page) = login.sign_in(None).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("Authorization successful"), "{page}");
+
+        login.task.await.unwrap().unwrap();
+        assert_eq!(issuer.posts()[0].form["client_id"], "oaiapp_issued");
+        let kept = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
+        assert_eq!(kept.client_id.as_deref(), Some("oaiapp_issued"));
+    }
+
+    #[tokio::test]
+    async fn a_login_without_token_sharing_is_refused() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+        let mut answer = answer(&issuer, "oaiapp_issued", login.nonce());
+        answer["scope"] = json!("openid profile email offline_access");
+        issuer.respond(200, answer);
+
+        let (status, page) = login.sign_in(Some("oaiapp_issued")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains(SHARING_SCOPE), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::Denied(_)), "{error}");
+        assert_eq!(store.oauth(ChatGpt::ID).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_id_token_for_another_sign_in_is_refused() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let login = Login::start(chatgpt(&issuer, store.clone())).await;
+        issuer.respond(200, answer(&issuer, "oaiapp_issued", "another-nonce"));
+
+        let (status, page) = login.sign_in(Some("oaiapp_issued")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("nonce"), "{page}");
+
+        let error = login.task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::InvalidToken(_)), "{error}");
+        assert_eq!(store.oauth(ChatGpt::ID).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -467,10 +887,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let login = Login::start(chatgpt(&issuer, Store::at(dir.path().join("auth.json")))).await;
 
-        let state = login.url["state"].clone();
-        let (status, page) = login
-            .callback(&format!("code=the-code&state={state}"))
-            .await;
+        let (status, page) = login.sign_in(Some("oaiapp_issued")).await;
         assert_eq!(status, 200);
         assert!(page.contains("Authorization failed"), "{page}");
         assert!(page.contains("invalid_grant"), "{page}");
@@ -480,6 +897,80 @@ mod tests {
             matches!(error, Error::Status { status: 400, .. }),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_the_refresh_token_and_keeps_the_client() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        let mut previous = saved(Some("oaiapp_issued"));
+        previous.account_id = Some("acct".into());
+        previous.id_token = Some("saved-id-token".into());
+        previous.scopes = vec![SHARING_SCOPE.into()];
+        store.save(ChatGpt::ID, &previous).await.unwrap();
+        let chatgpt = chatgpt(&issuer, store.clone());
+
+        assert!(chatgpt.connected());
+        assert_eq!(chatgpt.logout().await.unwrap(), SignedOut::Revoked);
+        assert!(!chatgpt.connected());
+
+        let kept = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
+        assert_eq!(kept.client_id.as_deref(), Some("oaiapp_issued"));
+        assert_eq!(kept.account_id.as_deref(), Some("acct"));
+        assert_eq!(kept.access, "");
+        assert_eq!(kept.refresh, "");
+        assert_eq!(kept.id_token, None, "signing out drops the login hint");
+        assert!(kept.scopes.is_empty());
+        assert!(matches!(
+            chatgpt.credentials().await.unwrap_err(),
+            Error::NotConnected
+        ));
+
+        let posts = issuer.posts();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].path, "/revoke");
+        assert_eq!(posts[0].form["token"], "old-refresh");
+        assert_eq!(posts[0].form["token_type_hint"], "refresh_token");
+        assert_eq!(posts[0].form["client_id"], "oaiapp_issued");
+    }
+
+    #[tokio::test]
+    async fn logout_says_when_revocation_is_unconfirmed() {
+        let issuer = Issuer::start(400, json!({"error": "invalid_request"})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        store
+            .save(ChatGpt::ID, &saved(Some("oaiapp_issued")))
+            .await
+            .unwrap();
+        let chatgpt = chatgpt(&issuer, store.clone());
+
+        assert_eq!(chatgpt.logout().await.unwrap(), SignedOut::Unconfirmed);
+        assert!(!chatgpt.connected(), "the local tokens go regardless");
+        assert_eq!(issuer.posts().len(), 1, "a 4xx is not tried again");
+    }
+
+    #[tokio::test]
+    async fn signing_in_after_logout_reuses_the_saved_client() {
+        let issuer = Issuer::start(200, json!({})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        store
+            .save(ChatGpt::ID, &saved(Some("oaiapp_issued")))
+            .await
+            .unwrap();
+        let chatgpt = chatgpt(&issuer, store.clone());
+        chatgpt.logout().await.unwrap();
+
+        let login = Login::start(chatgpt).await;
+        assert_eq!(login.url["client_id"], "oaiapp_issued");
+        assert!(!login.url.contains_key("agent_name_hint"));
+        assert!(!login.url.contains_key("id_token_hint"));
+
+        issuer.respond(200, answer(&issuer, "oaiapp_issued", login.nonce()));
+        login.sign_in(None).await;
+        login.task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

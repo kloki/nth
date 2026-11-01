@@ -53,15 +53,13 @@ impl Client {
         cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let builder = auth
-            .bearer(self.post(), Some(request.session_id))
-            .json(&wire::body(
-                request.model,
-                request.effort,
-                cache_key,
-                request.messages,
-                request.tools,
-            ));
+        let builder = auth.bearer(self.post()).json(&wire::body(
+            request.model,
+            request.effort,
+            cache_key,
+            request.messages,
+            request.tools,
+        ));
         stream::send::<State>(builder, &request).await
     }
 }

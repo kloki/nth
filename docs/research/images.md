@@ -138,6 +138,10 @@ are likely dropped quietly. Past 26 MiB some endpoints fail.
   this account it lists gpt-6-luna, gpt-5.6-terra and gpt-5.6-luna, all
   with `text` and `image`: exactly the three the backend served in R1.
   opencode has this fetch but it is commented out at the pin.
+  *Since migrated:* nth now signs in with ChatGPT and lists models from
+  `GET https://api.openai.com/v1/models` with a bearer token (see
+  `CLAUDE.md` and `crates/nth-auth`); the findings above describe the old
+  Codex backend.
 
 ## R3 ✓ opencode
 

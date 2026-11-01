@@ -8,7 +8,7 @@ mod store;
 
 use std::{io, path::PathBuf};
 
-pub use chatgpt::{Account, ChatGpt, Credentials, open_browser};
+pub use chatgpt::{Account, ChatGpt, Credentials, SignedOut, open_browser};
 pub use store::{OAuth, Store};
 
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +30,10 @@ pub enum Error {
     Callback(io::Error),
     #[error("authorization failed: {0}")]
     Denied(String),
+    #[error("the ID token is not valid: {0}")]
+    InvalidToken(String),
+    #[error("ChatGPT needs you to sign in again: run /connect or `nth connect`")]
+    Reconnect,
     #[error("authorization took longer than 5 minutes")]
     Timeout,
     #[error("token request failed: {0}")]
