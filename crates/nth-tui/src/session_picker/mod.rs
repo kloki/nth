@@ -42,7 +42,6 @@ impl SessionPicker {
     /// Fills in the list, newest first, highlighting the newest.
     pub fn load(&mut self, sessions: Result<Vec<Summary>, String>) {
         self.state = match sessions {
-            Ok(sessions) if sessions.is_empty() => State::Failed("no saved sessions yet".into()),
             Ok(sessions) => State::Ready {
                 shown: (0..sessions.len()).collect(),
                 sessions,

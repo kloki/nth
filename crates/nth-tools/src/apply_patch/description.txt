@@ -36,4 +36,4 @@ It is important to remember:
 - Paths are relative to the working directory, or absolute
 - Hunks of a file apply in order, each after the one before. A hunk's context and `-` lines must match the file and match only one place; with an `@@` line, the first match after that line is used
 - Add File fails if the file exists, and Move to fails if the new path exists
-- The patch applies as a whole: if any hunk fails, no file is changed
+- All sections are validated before writing: if validation fails, no file is changed. Filesystem write or delete failures can leave a partially applied patch; the error reports completed and unattempted operations.

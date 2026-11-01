@@ -230,15 +230,26 @@ fn rows<'a>(
             panel_row(ACCENT, spans)
         })
         .collect();
-    if shown.is_empty() {
-        lines.push(note(Span::styled("  no matches", dim())));
+    let empty_note = shown.is_empty() && (failed.is_empty() || !filter.is_empty());
+    if empty_note {
+        let message = if models.is_empty() && filter.is_empty() {
+            "  no models available"
+        } else {
+            "  no matches"
+        };
+        lines.push(note(Span::styled(message, dim())));
     }
-    lines.extend(failed.iter().map(|failed| {
+    lines.extend(failed.iter().enumerate().map(|(i, failed)| {
+        let arrow = if selected == shown.len() + i {
+            icons().pick
+        } else {
+            " "
+        };
         panel_row(
             ACCENT,
             [Span::styled(
                 format!(
-                    "  {} {}: {}",
+                    "{arrow} {} {}: {}",
                     icons().fail,
                     failed.origin.name,
                     failed.error
@@ -247,7 +258,8 @@ fn rows<'a>(
             )],
         )
     }));
-    let first = (selected + 1).saturating_sub(height);
+    let selected_row = selected + usize::from(empty_note && !failed.is_empty());
+    let first = (selected_row + 1).saturating_sub(height);
     lines.into_iter().skip(first).take(height).collect()
 }
 
@@ -362,6 +374,46 @@ mod tests {
         let picker = picker(models, "x");
 
         assert_eq!(drawn(&picker, 2, 2), ["▎   kimi", "▎ → qwen"]);
+    }
+
+    #[test]
+    fn failures_remain_reachable_after_many_models_and_no_matches() {
+        let mut picker = picker(
+            (0..200).map(|i| model("p", &format!("model{i}"))).collect(),
+            "x",
+        );
+        let State::Ready { failed, .. } = &mut picker.state else {
+            unreachable!()
+        };
+        for name in ["first", "second"] {
+            failed.push(Failed {
+                origin: Origin {
+                    id: name.into(),
+                    name: name.into(),
+                },
+                error: "offline".into(),
+            });
+        }
+        picker.prev();
+        assert_eq!(picker.chosen(), None);
+        assert!(
+            drawn(&picker, 201, 2)
+                .last()
+                .unwrap()
+                .contains("second: offline")
+        );
+        picker.more();
+        assert_eq!(picker.chosen(), None);
+        for c in "zzz".chars() {
+            picker.insert(c);
+        }
+        picker.next();
+        assert!(
+            drawn(&picker, 1, 2)
+                .last()
+                .unwrap()
+                .contains("second: offline")
+        );
     }
 
     #[test]

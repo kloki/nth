@@ -63,7 +63,14 @@ impl Tool for ApplyPatch {
             let args: Args = nth_protocol::parse_args(args)?;
             let sections =
                 parse::parse(&args.patch_text).map_err(|e| format!("invalid patch: {e}"))?;
-            let writing = self.post_write.lock().await;
+            let paths: Vec<_> = sections.iter().flat_map(|section| {
+                let (path, destination) = match section {
+                    Section::Add { path, .. } | Section::Delete { path } => (path, None),
+                    Section::Update { path, move_to, .. } => (path, move_to.as_ref()),
+                };
+                std::iter::once(path).chain(destination).map(|p| crate::path::resolve(&ctx.cwd, p))
+            }).collect();
+            let writing = self.post_write.lock(&paths).await;
             let mut plan = Plan {
                 cwd: &ctx.cwd,
                 files: BTreeMap::new(),
@@ -206,17 +213,27 @@ impl Plan<'_> {
 
     /// Deletes first, so a file may give way to a directory of its name.
     async fn write(self) -> Result<(), String> {
-        for (path, _) in self.files.iter().filter(|(_, content)| content.is_none()) {
-            tokio::fs::remove_file(path)
-                .await
-                .map_err(|e| format!("cannot delete {}: {e}", path.display()))?;
-        }
-        for (path, content) in &self.files {
-            if let Some(content) = content {
-                write_with_dirs(path, content.as_bytes())
-                    .await
-                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let operations: Vec<_> = self.files.iter().filter(|(_, content)| content.is_none())
+            .chain(self.files.iter().filter(|(_, content)| content.is_some())).collect();
+        let mut completed = Vec::new();
+        for (index, (path, content)) in operations.iter().enumerate() {
+            let (verb, result) = match content {
+                None => ("delete", tokio::fs::remove_file(path).await),
+                Some(content) => ("write", write_with_dirs(path, content.as_bytes()).await),
+            };
+            if let Err(e) = result {
+                let pending: Vec<_> = operations[index + 1..].iter()
+                    .map(|(path, content)| format!("{} {}", if content.is_some() { "write" } else { "delete" }, path.display()))
+                    .collect();
+                return Err(format!(
+                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}{}",
+                    path.display(),
+                    if completed.is_empty() { "none".into() } else { completed.join(", ") },
+                    if pending.is_empty() { "none".into() } else { pending.join(", ") },
+                    if content.is_some() { "\nThe failing write may have partially changed its target." } else { "" },
+                ));
             }
+            completed.push(format!("{verb} {}", path.display()));
         }
         Ok(())
     }
@@ -242,6 +259,34 @@ mod tests {
 
     fn contents(path: &Path) -> String {
         std::fs::read_to_string(path).expect("read back")
+    }
+
+    #[tokio::test]
+    async fn write_failure_reports_completed_and_unattempted_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let deleted = file(dir.path(), "deleted", "old");
+        let first = dir.path().join("a");
+        let blocker = file(dir.path(), "blocker", "not a directory");
+        let failing = blocker.join("child");
+        let last = dir.path().join("z");
+        let plan = Plan {
+            cwd: dir.path(),
+            files: BTreeMap::from([
+                (deleted.clone(), None),
+                (first.clone(), Some("written".into())),
+                (failing.clone(), Some("cannot write".into())),
+                (last.clone(), Some("not reached".into())),
+            ]),
+        };
+        let err = plan.write().await.unwrap_err();
+        assert!(err.contains(&format!("cannot write {}", failing.display())), "{err}");
+        assert!(err.contains(&format!("delete {}", deleted.display())), "{err}");
+        assert!(err.contains(&format!("write {}", first.display())), "{err}");
+        assert!(err.contains(&format!("write {}", last.display())), "{err}");
+        assert!(err.contains("may have partially changed"), "{err}");
+        assert!(!deleted.exists());
+        assert_eq!(contents(&first), "written");
+        assert!(!last.exists());
     }
 
     #[tokio::test]

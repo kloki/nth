@@ -55,7 +55,7 @@ impl Tool for Write {
             ctx.writable.check(&path)?;
             // Under the same lock as edit and apply_patch: a write that lands
             // while an edit's formatter rewrites the file would be undone.
-            let writing = self.post_write.lock().await;
+            let writing = self.post_write.lock(std::slice::from_ref(&path)).await;
             let existing = match tokio::fs::metadata(&path).await {
                 Ok(meta) if meta.is_dir() => {
                     return Err(format!("cannot write {}: is a directory", path.display()));

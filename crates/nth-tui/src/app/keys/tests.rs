@@ -127,7 +127,7 @@ fn arrows_cycle_without_touching_the_prompt() {
     let mut app = typed("/");
     app.apply(Action::SelectNext);
     assert_eq!(selected(&app), Command::Agents);
-    for _ in 0..19 {
+    for _ in 0..20 {
         app.apply(Action::SelectNext);
     }
     assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -170,6 +170,7 @@ fn skills_are_listed_after_the_commands() {
             "compact",
             "connect",
             "context",
+            "copy",
             "copy-id",
             "curios",
             "diagnostics",

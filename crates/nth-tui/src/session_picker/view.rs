@@ -111,7 +111,12 @@ fn rows<'a>(
         shown,
     } = listed;
     if shown.is_empty() {
-        return vec![note(Span::styled("  no matches", dim()))];
+        let message = if sessions.is_empty() && filter.is_empty() {
+            "  no saved sessions yet"
+        } else {
+            "  no matches"
+        };
+        return vec![note(Span::styled(message, dim()))];
     }
     let now = SystemTime::now();
     let home = std::env::var("HOME").ok();

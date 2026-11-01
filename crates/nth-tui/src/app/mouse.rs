@@ -302,7 +302,7 @@ impl App {
     }
 
     /// Puts `text` on the clipboard, and says how it went on the status bar.
-    fn copy(&mut self, text: String) {
+    pub(super) fn copy(&mut self, text: String) {
         if text.len() > terminal::COPY_LIMIT {
             self.hint = Some("too large to copy".into());
             return;

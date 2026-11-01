@@ -91,9 +91,13 @@ impl Tool for Read {
                 None | Some(0) => self.config.default_limit,
                 Some(limit) => limit,
             };
-            let meta = tokio::fs::metadata(&path)
-                .await
-                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let meta = match tokio::fs::metadata(&path).await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    let hint = if e.kind() == std::io::ErrorKind::NotFound { path_hint(&path).await } else { String::new() };
+                    return Err(format!("cannot read {}: {e}{hint}", path.display()));
+                }
+            };
             // A listing's own instruction file counts, a file's is its
             // folder's.
             let (mut content, dir) = if meta.is_dir() {
@@ -150,6 +154,47 @@ impl Tool for Read {
         }
         .boxed()
     }
+}
+
+async fn path_hint(path: &Path) -> String {
+    let mut missing = path;
+    while let Some(parent) = missing.parent() {
+        match tokio::fs::metadata(parent).await {
+            Ok(meta) if meta.is_dir() => {
+                let Some(name) = missing.file_name().and_then(|n| n.to_str()) else {
+                    return String::new();
+                };
+                let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
+                    return String::new();
+                };
+                let mut candidates = Vec::new();
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let candidate = entry.file_name().to_string_lossy().into_owned();
+                    let a = name.to_lowercase();
+                    let b = candidate.to_lowercase();
+                    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+                    if common > 0 || a.contains(&b) || b.contains(&a) {
+                        candidates.push((std::cmp::Reverse(common), candidate));
+                    }
+                }
+                candidates.sort();
+                let names: Vec<_> = candidates.into_iter().take(5).map(|(_, n)| n).collect();
+                return if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\nSimilar entries in {}: {}",
+                        parent.display(),
+                        names.join(", ")
+                    )
+                };
+            }
+            Ok(_) => return String::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing = parent,
+            Err(_) => return String::new(),
+        }
+    }
+    String::new()
 }
 
 /// The first bytes of `path`, enough to tell an image by.
@@ -390,6 +435,17 @@ mod tests {
                 agents.display()
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn missing_intermediate_component_suggests_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("source")).unwrap();
+        let err = read(dir.path(), json!({"filePath":"sourc/missing/file"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot read"));
+        assert!(err.contains("source"), "{err}");
     }
 
     #[tokio::test]

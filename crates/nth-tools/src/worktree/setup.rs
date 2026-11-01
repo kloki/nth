@@ -7,6 +7,7 @@ use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::AsyncReadExt;
 
 use crate::{
+    command_output,
     output::{self, tail},
     process::{self, DRAIN, KillGroupOnDrop, kill_group},
 };
@@ -76,7 +77,7 @@ async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration)
     // Processes the script put in the background may hold the pipe open;
     // take what they already wrote and move on.
     let _ = tokio::time::timeout(DRAIN, stdout.read_to_end(&mut buf)).await;
-    let out = tail(&String::from_utf8_lossy(&buf), output::MAX_CHARS);
+    let out = tail(&command_output::clean(&buf), output::MAX_CHARS);
     Some(format!("Ran {SCRIPT} ({outcome}):\n{}", out.trim_end()))
 }
 
@@ -116,6 +117,21 @@ mod tests {
             "Ran .nth/worktree-setup (timed out after 300ms and was killed):\nstarted"
         );
         assert!(!survived(root).await, "the script outlived its timeout");
+    }
+
+    #[tokio::test]
+    async fn strips_setup_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".nth")).unwrap();
+        std::fs::write(
+            dir.path().join(SCRIPT),
+            "printf '\\033[31mhello\\033[0m\\n'",
+        )
+        .unwrap();
+        let out = run_for(dir.path(), dir.path(), "", Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(out, "Ran .nth/worktree-setup (exit 0):\nhello");
     }
 
     #[tokio::test]

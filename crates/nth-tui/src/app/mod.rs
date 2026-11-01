@@ -856,13 +856,24 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area().inner(Margin::new(1, 0));
+        let status_rows = status::ROWS.min(area.height);
+        let remaining = area.height - status_rows;
+        let header_rows = header::ROWS.min(remaining);
+        let remaining = remaining - header_rows;
+        let requested = self.input.rows(frame.area());
+        let spacing = if remaining >= requested.saturating_add(3) {
+            3
+        } else {
+            0
+        };
+        let input_rows = requested.min(remaining - spacing);
         let [header, content, input, status] = Layout::vertical([
-            Constraint::Length(header::ROWS),
+            Constraint::Length(header_rows),
             Constraint::Min(0),
-            Constraint::Length(self.input.rows(frame.area())),
-            Constraint::Length(status::ROWS),
+            Constraint::Length(input_rows),
+            Constraint::Length(status_rows),
         ])
-        .spacing(1)
+        .spacing(if spacing == 3 { 1 } else { 0 })
         .areas(area);
 
         self.close_answered_subagents();
@@ -1213,10 +1224,45 @@ impl App {
             Command::Approve => self.approve(),
             Command::Compact => self.compact(),
             Command::Close => self.close_content(),
+            Command::Copy => self.copy_answer(),
             Command::CopyId => self.copy_session_id(),
             Command::Settings => self.open_settings(),
             Command::Memory => self.show_memory(),
             Command::Curios => self.open_curios_picker(),
+        }
+    }
+
+    /// `/copy`: the latest completed answer of the prompt's target.
+    fn copy_answer(&mut self) {
+        let (transcript, running) = match self.showing_subagent() {
+            Some(id) => match self.subagent_views.get(&id) {
+                Some(view) => (&view.chat.transcript, view.is_running()),
+                None => {
+                    self.hint = Some("nothing to copy".into());
+                    return;
+                }
+            },
+            None => (&self.chat.transcript, self.is_busy()),
+        };
+        let mut skip = running;
+        let text = transcript.entries().rev().find_map(|entry| match entry {
+            crate::chat::Entry::Compacted(text) if !text.trim().is_empty() => Some(text.clone()),
+            crate::chat::Entry::Answer(text) if !skip && !text.trim().is_empty() => {
+                Some(text.clone())
+            }
+            crate::chat::Entry::TurnError(_) | crate::chat::Entry::Interrupted { .. } => {
+                skip = true;
+                None
+            }
+            crate::chat::Entry::TurnDone { .. } | crate::chat::Entry::User(_) => {
+                skip = false;
+                None
+            }
+            _ => None,
+        });
+        match text {
+            Some(text) => self.copy(text),
+            None => self.hint = Some("nothing to copy".into()),
         }
     }
 

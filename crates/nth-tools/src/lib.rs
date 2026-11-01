@@ -1,6 +1,7 @@
 mod apply_patch;
 mod bash;
 mod bom;
+mod command_output;
 mod context_preview;
 mod curios;
 mod edit;

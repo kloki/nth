@@ -88,6 +88,23 @@ fn ended(event: &SubagentEvent) -> bool {
 }
 
 #[tokio::test]
+async fn rejects_obsolete_timeout_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_with(Vec::new(), Vec::new(), Subagents::default(), LIMITS);
+    let ctx = ctx(dir.path(), Inbox::default());
+    for old in ["timeout", "timeout_secs"] {
+        let mut args = assign(1, "a");
+        args[old] = json!(1);
+        args["timeout_ms"] = json!(100);
+        let err = WorkAssign::new(work.clone())
+            .call(args, &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("use timeout_ms"), "{err}");
+    }
+}
+
+#[tokio::test]
 async fn headless_it_waits_while_the_child_ticks_its_todo() {
     let dir = tempfile::tempdir().unwrap();
     let work = work_with(
@@ -512,7 +529,7 @@ async fn a_timeout_of_zero_is_no_limit() {
     let work = work_with(vec![says("done")], Vec::new(), Subagents::default(), LIMITS);
     let ctx = ctx(dir.path(), Inbox::default());
     write(&work, &ctx, 1, "a").await;
-    let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "timeout_secs": 0 });
+    let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "timeout_ms": 0 });
 
     let result = WorkAssign::new(work).call(args, &ctx).await.unwrap();
 

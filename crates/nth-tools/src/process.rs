@@ -14,6 +14,15 @@ pub(crate) const MIN_TIMEOUT_MS: u64 = 1_000;
 /// its pipes.
 pub(crate) const DRAIN: Duration = Duration::from_millis(100);
 
+pub(crate) fn reject_old_timeout(args: &serde_json::Value) -> Result<(), String> {
+    for key in ["timeout", "timeout_secs"] {
+        if args.get(key).is_some() {
+            return Err(format!("obsolete argument {key}; use timeout_ms"));
+        }
+    }
+    Ok(())
+}
+
 /// `bash -c script` in `cwd`, with no stdin, in its own process group so a
 /// timeout or a stop can kill everything the script started, not just bash.
 ///
@@ -29,6 +38,8 @@ pub(crate) fn shell(script: &str, cwd: &Path, session: &str) -> Command {
         .arg("-c")
         .arg(script)
         .current_dir(cwd)
+        .env("AGENT", "1")
+        .env("AI_AGENT", "nth")
         .stdin(Stdio::null())
         .process_group(0)
         .kill_on_drop(true);
@@ -71,5 +82,43 @@ fn kill_pid_group(pid: u32) {
     // the guard is disarmed then), so it cannot have been reused.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn commands_receive_agent_and_session_environment() {
+        let output = shell(
+            "printf '%s %s %s' \"$AGENT\" \"$AI_AGENT\" \"$AGENT_BROWSER_SESSION\"",
+            Path::new("."),
+            "abc",
+        )
+        .output()
+        .await
+        .unwrap();
+        assert_eq!(output.stdout, b"1 nth nth-abc");
+    }
+
+    #[tokio::test]
+    async fn tools_reject_old_timeout_names_even_with_new_name() {
+        use nth_protocol::{Tool, ToolContext};
+        use serde_json::json;
+        let ctx = ToolContext::new(Path::new(".").to_path_buf());
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(crate::bash::Bash::default()),
+            Box::new(crate::webfetch::WebFetch),
+            Box::new(crate::monitor::Monitor),
+        ];
+        for tool in tools {
+            for old in ["timeout", "timeout_secs"] {
+                let mut args = json!({"command":"true", "description":"test", "url":"http://localhost", "timeout_ms":1000});
+                args[old] = json!(1);
+                let err = tool.call(args, &ctx).await.unwrap_err();
+                assert!(err.contains("use timeout_ms"), "{err}");
+            }
+        }
     }
 }

@@ -79,7 +79,7 @@ struct Args {
     item: String,
     subagent_type: String,
     task_id: Option<TaskIdArg>,
-    timeout_secs: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 impl Tool for WorkAssign {
@@ -94,7 +94,7 @@ impl Tool for WorkAssign {
                     "item": { "type": "string", "description": "The item's slug." },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to put on it" },
                     "task_id": { "type": "integer", "description": "Only to continue the subagent that last worked on this item, with what it remembers; leave it out for a fresh one." },
-                    "timeout_secs": { "type": "integer", "minimum": 0, "description": "Seconds this attempt may run before it returns as timed out, 0 for no limit; the configured limit by default." }
+                    "timeout_ms": { "type": "integer", "minimum": 0, "description": "Milliseconds this attempt may run before it returns as timed out, 0 for no limit; the configured limit by default." }
                 },
                 "required": ["cycle", "item", "subagent_type"]
             }),
@@ -107,6 +107,11 @@ impl Tool for WorkAssign {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
+            for key in ["timeout", "timeout_secs"] {
+                if args.get(key).is_some() {
+                    return Err(format!("obsolete argument {key}; use timeout_ms"));
+                }
+            }
             let args: Args = nth_protocol::parse_args(args)?;
             if ctx.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());
@@ -211,15 +216,15 @@ impl Tool for WorkAssign {
             }
             let before = item.clone();
             // `0` is no limit, as in the config.
-            let timeout = match args.timeout_secs {
+            let timeout = match args.timeout_ms {
                 Some(0) => None,
-                Some(secs) => Some(Duration::from_secs(secs)),
+                Some(ms) => Some(Duration::from_millis(ms)),
                 None => shared.spawner.limits().timeout,
             };
             let limit = match timeout {
                 Some(timeout) => format!(
                     "You have {} minutes. Past that your turn is stopped and the item returns as timed out, with the steps you ticked.",
-                    timeout.as_secs().div_ceil(60)
+                    timeout.as_millis().div_ceil(60_000)
                 ),
                 None => String::new(),
             };

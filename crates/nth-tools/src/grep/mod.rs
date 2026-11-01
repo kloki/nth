@@ -6,7 +6,7 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -19,10 +19,14 @@ const BINARY_SNIFF: usize = 8192;
 pub struct Grep;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Args {
     pattern: String,
     path: Option<String>,
     include: Option<String>,
+    #[serde(default)]
+    literal: bool,
+    case_sensitive: Option<bool>,
 }
 
 impl Tool for Grep {
@@ -35,7 +39,9 @@ impl Tool for Grep {
                 "properties": {
                     "pattern": { "type": "string", "description": "The regex pattern to search for in file contents" },
                     "path": { "type": "string", "description": "The directory to search in. Defaults to the current working directory." },
-                    "include": { "type": "string", "description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")" }
+                    "include": { "type": "string", "description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")" },
+                    "literal": { "type": "boolean", "description": "Treat the pattern as literal text (default false)." },
+                    "caseSensitive": { "type": "boolean", "description": "Match case (default true)." }
                 },
                 "required": ["pattern"]
             }),
@@ -52,7 +58,15 @@ impl Tool for Grep {
             if args.pattern.is_empty() {
                 return Err("pattern is required".into());
             }
-            let regex = Regex::new(&args.pattern).map_err(|e| format!("invalid pattern: {e}"))?;
+            let pattern = if args.literal {
+                regex::escape(&args.pattern)
+            } else {
+                args.pattern
+            };
+            let regex = RegexBuilder::new(&pattern)
+                .case_insensitive(!args.case_sensitive.unwrap_or(true))
+                .build()
+                .map_err(|e| format!("invalid pattern: {e}"))?;
             // Collecting the components drops `.`s, which would otherwise
             // show up in every path printed.
             let root: PathBuf = crate::path::resolve(&ctx.cwd, args.path.as_deref().unwrap_or("."))
@@ -221,6 +235,20 @@ mod tests {
                 old.display()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn literal_and_case_insensitive_search() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.txt", "A.B\naxb\n");
+        let out = grep(
+            dir.path(),
+            json!({"pattern":"a.b", "literal":true, "caseSensitive":false}),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("Line 1: A.B"));
+        assert!(!out.contains("axb"));
     }
 
     #[tokio::test]

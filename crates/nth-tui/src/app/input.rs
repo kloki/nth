@@ -48,7 +48,7 @@ impl Input {
 /// A picker's height: the title, the query and up to 14 items, but never
 /// more than half the screen, so the chat stays in view.
 fn picker_rows(screen: Rect) -> u16 {
-    16.min(screen.height / 2).max(4)
+    16.min(screen.height / 2)
 }
 
 #[cfg(test)]
@@ -60,6 +60,6 @@ mod tests {
         let screen = |height| Rect::new(0, 0, 80, height);
         assert_eq!(picker_rows(screen(60)), 16);
         assert_eq!(picker_rows(screen(20)), 10);
-        assert_eq!(picker_rows(screen(6)), 4);
+        assert_eq!(picker_rows(screen(6)), 3);
     }
 }

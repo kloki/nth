@@ -464,6 +464,44 @@ mod tests {
     }
 
     #[test]
+    fn copy_takes_the_shown_subagents_last_answer() {
+        thread_local! {
+            static COPIED: std::cell::RefCell<Option<String>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let mut app = fronted();
+        app.clipboard = |text| {
+            COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+            Ok(())
+        };
+        app.chat
+            .transcript
+            .apply(&Event::TextDelta("parent answer".into()));
+        app.chat
+            .transcript
+            .finish_turn(Ok(()), "glm", Duration::ZERO);
+        started(&mut app, 1, "explore");
+        prompted(&mut app, 1, "go");
+        let transcript = &mut app
+            .subagent_views
+            .get_mut(&1)
+            .expect("the tab's view")
+            .chat
+            .transcript;
+        transcript.apply(&Event::TextDelta("subagent **answer**".into()));
+        transcript.finish_turn(Ok(()), "glm", Duration::ZERO);
+        app.apply(Action::Content(1));
+        assert_eq!(app.content.active(), Tab::Subagent(1));
+
+        app.run_command(crate::command::Command::Copy);
+        assert_eq!(
+            COPIED.with(|c| c.borrow().clone()),
+            Some("subagent **answer**".to_string()),
+            "the shown subagent's answer, not the parent's"
+        );
+    }
+
+    #[test]
     fn an_answered_tab_closes_by_itself() {
         let mut app = app();
         started(&mut app, 1, "explore");
