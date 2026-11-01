@@ -108,6 +108,7 @@ pub struct Transcript {
     pub(super) width: u16,
     /// What the cached lines show.
     pub(super) settings: ChatSettings,
+    pub(super) revision: u64,
 }
 
 pub(super) struct Item {
@@ -150,6 +151,7 @@ impl Transcript {
             items: Vec::new(),
             width: 0,
             settings: ChatSettings::default(),
+            revision: 0,
         }
     }
 
@@ -239,6 +241,8 @@ impl Transcript {
     }
 
     pub fn apply(&mut self, event: &Event) {
+        // The rendered rows may change, and search watches this.
+        self.revision = self.revision.wrapping_add(1);
         match event {
             Event::ReasoningDelta(delta) => match self.items.last_mut() {
                 Some(Item {
@@ -400,6 +404,7 @@ impl Transcript {
     }
 
     fn push(&mut self, entry: Entry) {
+        self.revision = self.revision.wrapping_add(1);
         self.items.push(Item { entry, lines: None });
     }
 

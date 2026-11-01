@@ -53,6 +53,10 @@ fn sections() -> Vec<Line<'static>> {
             "prompt · normal input",
             &[
                 (
+                    "Ctrl+R",
+                    "search focused chat or plan; arrows select, Enter jumps, Esc closes",
+                ),
+                (
                     "Ctrl+M",
                     "open model picker; use /models if terminal treats it as Enter",
                 ),

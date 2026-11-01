@@ -24,6 +24,7 @@ pub(super) enum Input {
     Question(QuestionPanel),
     Settings(SettingsPanel),
     Connect(ConnectPanel),
+    Search(crate::search::Search),
 }
 
 impl Input {
@@ -37,6 +38,7 @@ impl Input {
             Input::LlmPicker(_)
             | Input::SessionPicker(_)
             | Input::AgentPicker(_)
+            | Input::Search(_)
             | Input::Curios(_) => picker_rows(screen),
             Input::Question(panel) => question::rows(panel, screen),
             Input::Settings(_) => settings::ROWS,

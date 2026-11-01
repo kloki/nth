@@ -23,6 +23,7 @@ impl Transcript {
             self.width = width;
             self.settings = settings;
             self.items.iter_mut().for_each(|item| item.lines = None);
+            self.revision = self.revision.wrapping_add(1);
         }
         let mut previous: Option<&Entry> = None;
         let mut total = 0;
@@ -54,6 +55,21 @@ impl Transcript {
             .take(height)
             .cloned()
             .collect()
+    }
+}
+
+impl Transcript {
+    pub fn search_revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn search_rows(&self) -> Vec<crate::search::Row> {
+        crate::search::rows(
+            self.items
+                .iter()
+                .flat_map(|item| item.lines.iter().flat_map(|w| &w.lines)),
+            0,
+        )
     }
 }
 
