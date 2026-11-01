@@ -45,7 +45,7 @@ pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
 pub use tool::{
     FrontEnd, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
-    failed, failure_reason, parse_args,
+    failed, failure_reason, parse_args, reject_old_timeout,
 };
 pub use workdir::Workdir;
 pub use writable::Writable;

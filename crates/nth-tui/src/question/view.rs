@@ -62,10 +62,13 @@ pub fn rows(panel: &QuestionPanel, screen: Rect) -> u16 {
         .max()
         .unwrap_or(0);
     let rows = u16::try_from(1 + tallest).unwrap_or(u16::MAX);
-    rows.min((screen.height / 2).max(3))
+    rows.min(screen.height / 2)
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, panel: &QuestionPanel) {
+    if area.is_empty() {
+        return;
+    }
     let header = Rect { height: 1, ..area };
     let body = Rect {
         y: area.y + 1,
@@ -127,7 +130,11 @@ pub fn draw(frame: &mut Frame, area: Rect, panel: &QuestionPanel) {
         && let Ok(row) = u16::try_from(first_choice + pane.highlight - top)
     {
         let col = u16::try_from(col).unwrap_or(0);
-        frame.set_cursor_position(Position::new(body.x + BAR_WIDTH + col, body.y + row));
+        let x = body.x.saturating_add(BAR_WIDTH).saturating_add(col);
+        let y = body.y.saturating_add(row);
+        if x < body.right() && y < body.bottom() {
+            frame.set_cursor_position(Position::new(x, y));
+        }
     }
 }
 
@@ -506,5 +513,7 @@ mod tests {
 
         assert_eq!(rows(&p, Rect::new(0, 0, 60, 40)), 7);
         assert_eq!(rows(&p, Rect::new(0, 0, 60, 10)), 5);
+        assert_eq!(rows(&p, Rect::new(0, 0, 60, 2)), 1);
+        assert_eq!(rows(&p, Rect::new(0, 0, 60, 1)), 0);
     }
 }

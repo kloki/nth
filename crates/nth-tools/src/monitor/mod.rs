@@ -19,13 +19,15 @@ use tokio::{
     process::Child,
 };
 
-use crate::process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group};
+use crate::{
+    command_output::Cleaner,
+    process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
+};
 
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 
-/// More stdout lines than this within [`FLOOD_WINDOW`] stop the monitor:
-/// the model could not take them in.
+/// More combined output lines than this within [`FLOOD_WINDOW`] stop the monitor.
 const FLOOD_LINES: usize = 100;
 const FLOOD_WINDOW: Duration = Duration::from_secs(10);
 
@@ -63,6 +65,7 @@ impl Tool for Monitor {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
+            process::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
             if !ctx.monitors.reaches_front_end() {
                 return Err("there is no front-end to deliver monitor events to in this session; use bash and wait for the command instead".into());
@@ -169,18 +172,19 @@ async fn watch(
                 let status = status.ok().and_then(|s| s.code());
                 let drained = tokio::time::timeout(DRAIN, async {
                     while let Some(line) = next_line(&mut out).await {
-                        watch.line(line, Stream::Stdout).await;
+                        if let Some(end) = watch.line(line, Stream::Stdout).await { return Some(end); }
                     }
                     while let Some(line) = next_line(&mut err).await {
-                        watch.line(line, Stream::Stderr).await;
+                        if let Some(end) = watch.line(line, Stream::Stderr).await { return Some(end); }
                     }
+                    None
                 });
-                let _ = drained.await;
+                let drained_end = drained.await.ok().flatten();
                 // Reaped, so the group is no longer ours to kill: its pid
                 // may be reused, and what is left in it was meant to
                 // outlive the command.
                 abandoned.0 = None;
-                break MonitorEnd::Exited(status);
+                break drained_end.unwrap_or(MonitorEnd::Exited(status));
             }
         }
     };
@@ -204,6 +208,7 @@ async fn watch(
 struct Pipe<R> {
     reader: BufReader<R>,
     partial: Vec<u8>,
+    cleaner: Cleaner,
 }
 
 impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
@@ -211,6 +216,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
         Self {
             reader: BufReader::new(reader),
             partial: Vec::new(),
+            cleaner: Cleaner::default(),
         }
     }
 }
@@ -218,7 +224,12 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
 /// The next line from a pipe, without its newline; `None` once it is
 /// closed, and forever after, so a closed pipe's `select!` arm sleeps.
 async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
-    let Some(Pipe { reader, partial }) = pipe else {
+    let Some(Pipe {
+        reader,
+        partial,
+        cleaner,
+    }) = pipe
+    else {
         return std::future::pending().await;
     };
     // `fill_buf` and `consume` rather than `read_until`, so that between
@@ -237,7 +248,7 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
         if newline.is_none() && taken > 0 {
             continue;
         }
-        let mut line = std::mem::take(partial);
+        let mut line = cleaner.push(&std::mem::take(partial));
         if line.ends_with(b"\n") {
             line.pop();
         }
@@ -255,33 +266,33 @@ struct Watch<'a> {
     started: Instant,
     /// Stdout lines so far.
     events: usize,
-    /// When the stdout lines within the flood window came.
+    /// When output lines within the flood window came.
     recent: VecDeque<Instant>,
 }
 
 impl Watch<'_> {
     /// Logs and reports one line; the monitor's end when it should stop.
     async fn line(&mut self, line: String, stream: Stream) -> Option<MonitorEnd> {
+        if stream == Stream::Stdout {
+            self.events += 1;
+        }
+        let now = Instant::now();
+        self.recent.push_back(now);
+        while self
+            .recent
+            .front()
+            .is_some_and(|&t| now.duration_since(t) > FLOOD_WINDOW)
+        {
+            self.recent.pop_front();
+        }
+        if self.recent.len() > FLOOD_LINES {
+            return Some(MonitorEnd::Flooded);
+        }
         let prefix = match stream {
             Stream::Stdout => "",
             Stream::Stderr => "stderr: ",
         };
         self.write_log(&format!("{prefix}{line}")).await;
-        if stream == Stream::Stdout {
-            self.events += 1;
-            let now = Instant::now();
-            self.recent.push_back(now);
-            while self
-                .recent
-                .front()
-                .is_some_and(|&t| now.duration_since(t) > FLOOD_WINDOW)
-            {
-                self.recent.pop_front();
-            }
-            if self.recent.len() > FLOOD_LINES {
-                return Some(MonitorEnd::Flooded);
-            }
-        }
         let output = MonitorEvent::Output {
             id: self.id,
             line,
@@ -500,6 +511,46 @@ mod tests {
         start(&f.ctx, "yes", 10_000).await.expect("starts");
         let seen = until_ended(&mut f.events).await;
         assert_eq!(end(&seen).0, MonitorEnd::Flooded);
+    }
+
+    #[tokio::test]
+    async fn stderr_and_mixed_floods_stop_the_monitor() {
+        for command in [
+            "while :; do echo err >&2; done",
+            "while :; do echo out; echo err >&2; done",
+        ] {
+            let mut f = fixture();
+            start(&f.ctx, command, 10_000).await.unwrap();
+            let seen = tokio::time::timeout(Duration::from_secs(10), until_ended(&mut f.events))
+                .await
+                .unwrap();
+            assert_eq!(end(&seen).0, MonitorEnd::Flooded);
+            assert_eq!(
+                seen.iter()
+                    .filter(|e| matches!(e, MonitorEvent::Ended { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(f.ctx.monitors.running(), 0);
+            assert!(f.events.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn monitor_output_and_log_are_cleaned_per_pipe() {
+        let mut f = fixture();
+        start(
+            &f.ctx,
+            "printf '\\033[31mhello\\033[0m\\t€\\n'; printf '\\033]0;title\\007oops\\n' >&2",
+            10_000,
+        )
+        .await
+        .unwrap();
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["hello\t€"]);
+        let log = std::fs::read_to_string(f.dir.path().join("logs/1.log")).unwrap();
+        assert!(log.contains("stderr: oops"));
+        assert!(!log.contains('\x1b'));
     }
 
     #[tokio::test]

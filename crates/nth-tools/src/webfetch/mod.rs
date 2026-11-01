@@ -1,4 +1,6 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
+
+mod guard;
 
 use futures::{FutureExt, future::BoxFuture};
 use htmd::{
@@ -23,8 +25,8 @@ static CLIENT: OnceCell<reqwest::Client> = OnceCell::const_new();
 /// [`output::MAX_CHARS`] of it; the whole page is read because the
 /// markdown converter needs the HTML complete.
 const MAX_BYTES: usize = 5 * 1024 * 1024;
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const MAX_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
 /// Many sites serve a browser something better than they serve a bot.
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 /// Cloudflare challenges a browser user agent whose TLS fingerprint is not a
@@ -67,7 +69,7 @@ struct Args {
     url: String,
     #[serde(default)]
     format: Format,
-    timeout: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
@@ -110,7 +112,7 @@ impl Tool for WebFetch {
                         "default": "markdown",
                         "description": "The format to return the content in (text, markdown, or html). Defaults to markdown."
                     },
-                    "timeout": { "type": "integer", "minimum": 1, "description": "Optional timeout in seconds (max 120)" }
+                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_MS, "description": "Optional timeout in milliseconds (default 30000, max 120000)" }
                 },
                 "required": ["url"]
             }),
@@ -123,18 +125,16 @@ impl Tool for WebFetch {
         _ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
+            crate::process::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
-            if !args.url.starts_with("http://") && !args.url.starts_with("https://") {
-                return Err("URL must start with http:// or https://".into());
-            }
-            let secs = args
-                .timeout
-                .unwrap_or(DEFAULT_TIMEOUT_SECS)
-                .min(MAX_TIMEOUT_SECS);
+            let ms = args
+                .timeout_ms
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .min(MAX_TIMEOUT_MS);
             let (content_type, body) =
-                tokio::time::timeout(Duration::from_secs(secs), fetch(&args.url, args.format))
+                tokio::time::timeout(Duration::from_millis(ms), fetch(&args.url, args.format))
                     .await
-                    .map_err(|_| format!("request timed out after {secs} s"))??;
+                    .map_err(|_| format!("request timed out after {ms} ms"))??;
 
             let html = content_type.contains("text/html")
                 || content_type.contains("application/xhtml+xml");
@@ -159,25 +159,76 @@ impl Tool for WebFetch {
 /// Returns the content type and a body of at most `MAX_BYTES`.
 async fn fetch(url: &str, format: Format) -> Result<(String, Vec<u8>), String> {
     let client = CLIENT
-        .get_or_try_init(|| async { reqwest::Client::builder().build() })
+        .get_or_try_init(|| async { client(Arc::new(guard::SystemResolver)) })
         .await
         .map_err(|e| describe(&e))?;
-    let get = |user_agent| {
-        client
-            .get(url)
+    fetch_with_client(client, url, format).await
+}
+
+fn client(resolver: Arc<dyn reqwest::dns::Resolve>) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(guard::GuardResolver(resolver)))
+        .build()
+}
+
+async fn request(
+    client: &reqwest::Client,
+    url: &str,
+    format: Format,
+    user_agent: &str,
+) -> Result<reqwest::Response, String> {
+    let mut url = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    for redirects in 0..=10 {
+        guard::check_url(&url)?;
+        let response = client
+            .get(url.clone())
             .header(header::USER_AGENT, user_agent)
             .header(header::ACCEPT, format.accept())
             .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .send()
-    };
-    let mut response = get(BROWSER_USER_AGENT).await.map_err(|e| describe(&e))?;
+            .await
+            .map_err(|e| describe(&e))?;
+        if !matches!(
+            response.status(),
+            StatusCode::MOVED_PERMANENTLY
+                | StatusCode::FOUND
+                | StatusCode::SEE_OTHER
+                | StatusCode::TEMPORARY_REDIRECT
+                | StatusCode::PERMANENT_REDIRECT
+        ) {
+            return Ok(response);
+        }
+        let Some(location) = response.headers().get(header::LOCATION) else {
+            return Ok(response);
+        };
+        if redirects == 10 {
+            return Err("too many redirects".into());
+        }
+        let location = location
+            .to_str()
+            .map_err(|e| format!("invalid redirect location: {e}"))?;
+        url = url
+            .join(location)
+            .map_err(|e| format!("invalid redirect location: {e}"))?;
+    }
+    unreachable!()
+}
+
+async fn fetch_with_client(
+    client: &reqwest::Client,
+    url: &str,
+    format: Format,
+) -> Result<(String, Vec<u8>), String> {
+    let mut response = request(client, url, format, BROWSER_USER_AGENT).await?;
     if response.status() == StatusCode::FORBIDDEN
         && response
             .headers()
             .get("cf-mitigated")
             .is_some_and(|v| v == "challenge")
     {
-        response = get(HONEST_USER_AGENT).await.map_err(|e| describe(&e))?;
+        response = request(client, url, format, HONEST_USER_AGENT).await?;
     }
     let status = response.status();
     if !status.is_success() {
@@ -287,12 +338,158 @@ fn text(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
 
     use super::*;
+
+    struct FixedResolver(Vec<SocketAddr>);
+
+    impl reqwest::dns::Resolve for FixedResolver {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let addresses = self.0.clone();
+            Box::pin(async move { Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs) })
+        }
+    }
+
+    #[test]
+    fn guards_metadata_and_link_local_literals_and_hosts() {
+        for host in [
+            "169.254.169.254",
+            "169.254.1.2",
+            "[fe80::1]",
+            "[::ffff:169.254.1.2]",
+            "100.100.100.200",
+            "[::ffff:100.100.100.200]",
+            "[fd00:ec2::254]",
+            "metadata.google.internal.",
+            "user@169.254.169.254:80",
+            "METADATA.GOOGLE.INTERNAL",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_err(), "{host}");
+        }
+        for host in ["127.0.0.1", "192.168.1.1", "10.0.0.1", "[::1]", "[fd00::1]"] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_ok(), "{host}");
+        }
+    }
+
+    #[test]
+    fn guards_ipv4_compatible_ipv6_literals() {
+        for host in ["[::169.254.169.254]", "[::100.100.100.200]"] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_err(), "{host}");
+        }
+        for host in [
+            "[::1]",
+            "[::127.0.0.1]",
+            "[::192.168.1.1]",
+            "[::10.0.0.1]",
+            "[fd00::1]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_ok(), "{host}");
+        }
+    }
+
+    #[test]
+    fn guards_ipv4_translated_and_nat64_literals() {
+        for host in [
+            "[::ffff:0:169.254.1.2]",
+            "[::ffff:0:169.254.169.254]",
+            "[::ffff:0:100.100.100.200]",
+            "[64:ff9b::169.254.1.2]",
+            "[64:ff9b::169.254.169.254]",
+            "[64:ff9b::100.100.100.200]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_err(), "{host}");
+        }
+        for host in [
+            "[::ffff:0:8.8.8.8]",
+            "[::ffff:0:10.0.0.1]",
+            "[::ffff:0:192.168.1.1]",
+            "[64:ff9b::8.8.8.8]",
+            "[64:ff9b::10.0.0.1]",
+            "[64:ff9b::192.168.1.1]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_ok(), "{host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_mixed_dns_answers_before_connecting() {
+        let resolver = FixedResolver(vec![
+            "127.0.0.1:0".parse().unwrap(),
+            "169.254.169.254:0".parse().unwrap(),
+        ]);
+        let client = client(Arc::new(resolver)).unwrap();
+        let err = fetch_with_client(&client, "http://example.test/", Format::Text)
+            .await
+            .unwrap_err();
+        assert!(err.contains("169.254.169.254"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_redirect_to_metadata() {
+        let url = serve(vec![response(
+            "302 Found",
+            "Location: http://169.254.169.254/latest\r\n",
+            "",
+        )])
+        .await;
+        let err = fetch(json!({"url": url})).await.unwrap_err();
+        assert!(err.contains("blocked destination 169.254.169.254"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn dns_resolved_host_cannot_redirect_to_forbidden_host() {
+        let url = serve(vec![response(
+            "302 Found",
+            "Location: http://metadata.google.internal./latest\r\n",
+            "",
+        )])
+        .await;
+        let port = reqwest::Url::parse(&url).unwrap().port().unwrap();
+        let client = client(Arc::new(FixedResolver(vec![
+            "127.0.0.1:0".parse().unwrap(),
+        ])))
+        .unwrap();
+        let err = fetch_with_client(
+            &client,
+            &format!("http://public.example:{port}/page"),
+            Format::Text,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("metadata.google.internal"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn connects_using_checked_dns_addresses() {
+        let url = serve(vec![response(
+            "200 OK",
+            "Content-Type: text/plain\r\n",
+            "resolved",
+        )])
+        .await;
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let client = client(Arc::new(FixedResolver(vec![
+            "127.0.0.1:0".parse().unwrap(),
+        ])))
+        .unwrap();
+        let target = format!("http://example.test:{}/page", parsed.port().unwrap());
+        let (_, body) = fetch_with_client(&client, &target, Format::Text)
+            .await
+            .unwrap();
+        assert_eq!(body, b"resolved");
+    }
 
     /// Serves `responses` to one connection each, in order, and returns the
     /// URL to fetch them from.
@@ -466,13 +663,13 @@ mod tests {
             let mut buf = [0; 1];
             socket.read(&mut buf).await.expect("client closed")
         });
-        let request = fetch(json!({ "url": format!("http://{addr}/page"), "timeout": 1 }));
+        let request = fetch(json!({ "url": format!("http://{addr}/page"), "timeout_ms": 1000 }));
         let (out, _) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(request, async { received.await.expect("server ready") })
         })
         .await
         .expect("deadline");
-        assert_eq!(out.expect_err("timeout"), "request timed out after 1 s");
+        assert_eq!(out.expect_err("timeout"), "request timed out after 1000 ms");
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(10), server)
                 .await

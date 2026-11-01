@@ -3,21 +3,67 @@
 //! tools write and format holding [`PostWrite::lock`] and ask the servers
 //! after letting it go, each in its own way, so they call the two halves.
 
-use std::{io::ErrorKind, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::ErrorKind,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex as StdMutex, Weak},
+};
 
 use nth_format::{Formatters, Outcome};
 use nth_lsp::{Caller, Diagnostic, Lsp, report};
 use nth_protocol::ToolContext;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::bom;
 
-/// The calls of a turn run in parallel, and two edits of one file would
-/// each read it before the other writes, losing the first. One lock for
-/// every tool that writes files (write, edit and apply_patch), held while
-/// the formatters rewrite the file too, so writes of different files wait
-/// on each other's formatters; a lock per path can come when that shows.
-static EDITS: Mutex<()> = Mutex::const_new(());
+static EDITS: LazyLock<StdMutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+/// The symlinks a dangling chain may follow before it is left unresolved.
+const MAX_LINKS: usize = 40;
+
+/// Resolve existing symlinks, retaining missing components under the nearest
+/// existing parent. A dangling symlink resolves to its target, so a link and
+/// the target it is about to gain share one identity. Resolve `..` only after
+/// following any preceding symlink.
+fn identity(path: &Path) -> PathBuf {
+    resolve(path, 0)
+}
+
+fn resolve(path: &Path, followed: usize) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut result = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                result.pop();
+            }
+            other => {
+                result.push(other.as_os_str());
+                match std::fs::canonicalize(&result) {
+                    Ok(canonical) => result = canonical,
+                    Err(_) if followed < MAX_LINKS => {
+                        // `canonicalize` stops at a symlink whose target is
+                        // missing; read the link ourselves, relative to its
+                        // parent, bounded so a cycle ends unresolved.
+                        if let Ok(target) = std::fs::read_link(&result) {
+                            let parent = result.parent().unwrap_or(Path::new("/"));
+                            result = resolve(&parent.join(target), followed + 1);
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    result
+}
 
 #[derive(Clone)]
 pub struct PostWrite {
@@ -38,13 +84,33 @@ impl PostWrite {
         &self.format
     }
 
-    /// Waits for every other write to finish and holds them off until the
-    /// guard drops. Anything a tool reads to decide what to write is read
-    /// under it too, or a parallel call could change it in between.
-    pub(crate) async fn lock(&self) -> Writing<'_> {
+    /// Acquire all identities in order before reading or writing any of them.
+    pub(crate) async fn lock(&self, paths: &[PathBuf]) -> Writing<'_> {
+        let mut identities: Vec<_> = paths.iter().map(|path| identity(path)).collect();
+        identities.sort();
+        identities.dedup();
+        let locks: Vec<_> = {
+            let mut registry = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+            registry.retain(|_, lock| lock.strong_count() > 0);
+            identities
+                .into_iter()
+                .map(|path| {
+                    let entry = registry.entry(path).or_default();
+                    entry.upgrade().unwrap_or_else(|| {
+                        let lock = Arc::new(Mutex::new(()));
+                        *entry = Arc::downgrade(&lock);
+                        lock
+                    })
+                })
+                .collect()
+        };
+        let mut held = Vec::with_capacity(locks.len());
+        for lock in locks {
+            held.push(lock.lock_owned().await);
+        }
         Writing {
             post_write: self,
-            _held: EDITS.lock().await,
+            _held: held,
         }
     }
 
@@ -92,7 +158,17 @@ pub(crate) fn caller(ctx: &ToolContext) -> Option<Caller> {
 /// tools drop the guard before asking them.
 pub(crate) struct Writing<'a> {
     post_write: &'a PostWrite,
-    _held: MutexGuard<'static, ()>,
+    _held: Vec<OwnedMutexGuard<()>>,
+}
+
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        self._held.clear();
+        EDITS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, lock| lock.strong_count() > 0);
+    }
 }
 
 impl Writing<'_> {
@@ -160,7 +236,7 @@ impl PostWrite {
     /// formatted file (and on up to five others), a blank line apart. Empty
     /// when nothing ran and nothing is wrong.
     async fn after_write(&self, path: &Path, cwd: &Path) -> String {
-        let writing = self.lock().await;
+        let writing = self.lock(&[path.to_path_buf()]).await;
         let notes = writing.format(path, cwd).await;
         drop(writing);
         let errors = self.check(path, None).await;
@@ -235,6 +311,103 @@ pub(crate) fn lsp_off() -> Lsp {
 mod tests {
     use super::*;
     use crate::bom::BOM;
+
+    #[tokio::test]
+    async fn path_locks_exclude_aliases_but_not_other_paths_and_release_on_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, "a").unwrap();
+        let post = PostWrite::off();
+        let held = post.lock(std::slice::from_ref(&a)).await;
+        // `a/../a` does not resolve at the OS level, since a file cannot be
+        // traversed, but the identity folds it back to `a`: the spelling is
+        // conservatively over-blocked.
+        for alias in [dir.path().join(".").join("a"), a.join("..").join("a")] {
+            let waiting = post.lock(std::slice::from_ref(&alias));
+            tokio::pin!(waiting);
+            assert!(
+                futures::poll!(&mut waiting).is_pending(),
+                "{}",
+                alias.display()
+            );
+            // Dropping the pinned future here cancels the acquisition.
+        }
+        // Another path is not held up by the first.
+        let other = post.lock(std::slice::from_ref(&b)).await;
+        drop(other);
+        drop(held);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            post.lock(std::slice::from_ref(&a)),
+        )
+        .await
+        .expect("a cancelled acquisition releases its path");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_aliases_and_missing_descendants_share_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("link")).unwrap();
+        let post = PostWrite::off();
+        let real = dir.path().join("real/missing/file");
+        let link = dir.path().join("link/missing/file");
+        let held = post.lock(std::slice::from_ref(&real)).await;
+        let waiting = post.lock(std::slice::from_ref(&link));
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(held);
+        waiting.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_symlink_aliases_its_future_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let post = PostWrite::off();
+        let held = post.lock(std::slice::from_ref(&link)).await;
+        let waiting = post.lock(std::slice::from_ref(&target));
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(held);
+        waiting.await;
+    }
+
+    #[tokio::test]
+    async fn overlapping_sets_are_ordered_and_cancelled_acquisitions_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        let post = PostWrite::off();
+        let held = post.lock(std::slice::from_ref(&b)).await;
+        {
+            let both = [b.clone(), a.clone()];
+            let waiting = post.lock(&both);
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+        }
+        let a_guard = post.lock(std::slice::from_ref(&a)).await;
+        drop(a_guard);
+        drop(held);
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                async {
+                    let _guard = post.lock(&[a.clone(), b.clone()]).await;
+                },
+                async {
+                    let _guard = post.lock(&[b.clone(), a.clone()]).await;
+                }
+            )
+        })
+        .await
+        .expect("overlapping acquisitions in opposite orders both finish");
+        assert_eq!((first, second), ((), ()));
+    }
 
     #[tokio::test]
     async fn notes_each_formatter_that_ran() {

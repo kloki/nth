@@ -97,7 +97,13 @@ impl App {
     /// stays open while there is one, and closes once there is none.
     pub(super) fn work_read(&mut self, read: Read) {
         if let Some(change) = self.work.took(read) {
-            self.tab_read(Tab::Work, change);
+            self.tab_read(
+                Tab::Work,
+                match change {
+                    Change::Created => Change::Present,
+                    other => other,
+                },
+            );
         }
         if self.work.reading.take_again() {
             self.work.read();
@@ -205,9 +211,9 @@ mod tests {
         read(&mut app).await;
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Work]);
-        assert_eq!(app.content.active(), Tab::Work);
-        assert!(app.flash.is_some(), "it comes in after a blank");
-        app.flash = None;
+        assert_eq!(app.content.active(), Tab::Chat);
+        assert!(app.flash.is_none());
+        app.content.select_tab(Tab::Work);
         let top = rows(&mut app);
         assert!(top[0].starts_with("  › chat [⊞ work 1/2] "), "{top:?}");
         assert!(top[2].starts_with(" ▎ work · 1/2 done"), "{top:?}");

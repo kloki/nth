@@ -129,6 +129,9 @@ pub fn query_row(
     matched: usize,
     total: usize,
 ) {
+    if area.is_empty() {
+        return;
+    }
     frame.render_widget(
         Paragraph::new(panel_row(
             accent,
@@ -142,7 +145,9 @@ pub fn query_row(
         area,
     );
     let col = BAR_WIDTH as usize + PROMPT.len() + query.chars().count();
-    let x = area.x + u16::try_from(col).unwrap_or(u16::MAX);
+    let x = area
+        .x
+        .saturating_add(u16::try_from(col).unwrap_or(u16::MAX));
     frame.set_cursor_position(Position::new(x.min(area.right().saturating_sub(1)), area.y));
 }
 

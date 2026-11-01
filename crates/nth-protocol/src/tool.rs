@@ -206,6 +206,16 @@ pub fn parse_args<T: serde::de::DeserializeOwned>(args: serde_json::Value) -> Re
     serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
 }
 
+/// The timeout arguments tools used to take, refused with the one they take now.
+pub fn reject_old_timeout(args: &serde_json::Value) -> Result<(), String> {
+    for key in ["timeout", "timeout_secs"] {
+        if args.get(key).is_some() {
+            return Err(format!("obsolete argument {key}; use timeout_ms"));
+        }
+    }
+    Ok(())
+}
+
 /// Why a tool the user cut short failed; the model reads it after `Error: `.
 pub const INTERRUPTED: &str = "interrupted by the user";
 

@@ -1,8 +1,8 @@
 //! Every icon nth draws: `PLAIN`, Unicode any terminal font has, which every
 //! front-end reads through `icons()`.
 //!
-//! Each icon is one character one column wide. Separators, ellipses, bars
-//! and spinners are not icons and stay where they are drawn.
+//! Each icon is one character one column wide. Separators, bars and
+//! spinners are not icons and stay where they are drawn.
 
 pub struct Icons {
     /// A published review document.
@@ -39,6 +39,8 @@ pub struct Icons {
     pub subagent: &'static str,
     /// An instruction file that changed, in the chat.
     pub instructions: &'static str,
+    /// More tabs than the header has room for.
+    pub overflow: &'static str,
     /// Lower and higher effort in the model picker.
     pub effort_less: &'static str,
     pub effort_more: &'static str,
@@ -145,6 +147,7 @@ pub static PLAIN: Icons = Icons {
     plan_edits: "±",
     subagent: "↳",
     instructions: "¶",
+    overflow: "…",
     effort_less: "◂",
     effort_more: "▸",
     unchecked: "☐",
@@ -251,6 +254,7 @@ impl Icons {
             plan_edits,
             subagent,
             instructions,
+            overflow,
             effort_less,
             effort_more,
             unchecked,
@@ -280,6 +284,7 @@ impl Icons {
             *plan_edits,
             *subagent,
             *instructions,
+            *overflow,
             *effort_less,
             *effort_more,
             *unchecked,

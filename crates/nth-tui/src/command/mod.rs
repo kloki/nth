@@ -24,6 +24,7 @@ pub enum Command {
     Compact,
     Connect,
     Context,
+    Copy,
     CopyId,
     Curios,
     Diagnostics,
@@ -39,7 +40,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 20] = [
+    const ALL: [Command; 21] = [
         Command::AddDir,
         Command::Agents,
         Command::Approve,
@@ -48,6 +49,7 @@ impl Command {
         Command::Compact,
         Command::Connect,
         Command::Context,
+        Command::Copy,
         Command::CopyId,
         Command::Curios,
         Command::Diagnostics,
@@ -72,6 +74,7 @@ impl Command {
             Command::Compact => "compact",
             Command::Connect => "connect",
             Command::Context => "context",
+            Command::Copy => "copy",
             Command::CopyId => "copy-id",
             Command::Curios => "curios",
             Command::Diagnostics => "diagnostics",
@@ -97,6 +100,7 @@ impl Command {
             Command::Compact => "summarize the session",
             Command::Connect => "sign in to a provider",
             Command::Context => "preview the next model request",
+            Command::Copy => "copy the last answer",
             Command::CopyId => "copy the session id",
             Command::Curios => "open a repository review document",
             Command::Diagnostics => "show what nth found and runs",
@@ -271,6 +275,7 @@ mod tests {
                 Command::Compact,
                 Command::Connect,
                 Command::Context,
+                Command::Copy,
                 Command::CopyId,
                 Command::Curios
             ])
@@ -310,6 +315,7 @@ mod tests {
                 "compact",
                 "connect",
                 "context",
+                "copy",
                 "copy-id",
                 "curios",
                 "diagnostics",
@@ -334,6 +340,7 @@ mod tests {
                 "compact",
                 "connect",
                 "context",
+                "copy",
                 "copy-id",
                 "curios",
                 "config",

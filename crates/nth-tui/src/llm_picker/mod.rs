@@ -152,12 +152,6 @@ impl LlmPicker {
     /// With no model at all, the first provider's failure, if any, is why.
     pub fn load(&mut self, listing: Result<Listing, String>) {
         self.state = match listing {
-            Ok(listing) if listing.models.is_empty() => {
-                State::Failed(match listing.failed.first() {
-                    Some(failed) => format!("{}: {}", failed.origin.name, failed.error),
-                    None => "the endpoint lists no models".into(),
-                })
-            }
             Ok(listing) => {
                 let origins: BTreeSet<&str> = listing
                     .models
@@ -183,21 +177,27 @@ impl LlmPicker {
 
     pub fn next(&mut self) {
         if let State::Ready {
-            shown, selected, ..
+            shown,
+            failed,
+            selected,
+            ..
         } = &mut self.state
-            && !shown.is_empty()
+            && shown.len() + failed.len() > 0
         {
-            *selected = (*selected + 1) % shown.len();
+            *selected = (*selected + 1) % (shown.len() + failed.len());
         }
     }
 
     pub fn prev(&mut self) {
         if let State::Ready {
-            shown, selected, ..
+            shown,
+            failed,
+            selected,
+            ..
         } = &mut self.state
-            && !shown.is_empty()
+            && shown.len() + failed.len() > 0
         {
-            *selected = (*selected + shown.len() - 1) % shown.len();
+            *selected = (*selected + shown.len() + failed.len() - 1) % (shown.len() + failed.len());
         }
     }
 
@@ -468,7 +468,7 @@ pub(crate) mod tests {
         assert_eq!(picker.chosen(), None);
 
         picker.load(Ok(Listing::default()));
-        assert!(matches!(picker.state, State::Failed(_)));
+        assert!(matches!(picker.state, State::Ready { .. }));
         picker.load(Err("offline".into()));
         assert!(matches!(picker.state, State::Failed(ref e) if e == "offline"));
     }

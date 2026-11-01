@@ -63,7 +63,19 @@ impl Tool for ApplyPatch {
             let args: Args = nth_protocol::parse_args(args)?;
             let sections =
                 parse::parse(&args.patch_text).map_err(|e| format!("invalid patch: {e}"))?;
-            let writing = self.post_write.lock().await;
+            let paths: Vec<_> = sections
+                .iter()
+                .flat_map(|section| {
+                    let (path, destination) = match section {
+                        Section::Add { path, .. } | Section::Delete { path } => (path, None),
+                        Section::Update { path, move_to, .. } => (path, move_to.as_ref()),
+                    };
+                    std::iter::once(path)
+                        .chain(destination)
+                        .map(|p| crate::path::resolve(&ctx.cwd, p))
+                })
+                .collect();
+            let writing = self.post_write.lock(&paths).await;
             let mut plan = Plan {
                 cwd: &ctx.cwd,
                 files: BTreeMap::new(),
@@ -206,17 +218,50 @@ impl Plan<'_> {
 
     /// Deletes first, so a file may give way to a directory of its name.
     async fn write(self) -> Result<(), String> {
-        for (path, _) in self.files.iter().filter(|(_, content)| content.is_none()) {
-            tokio::fs::remove_file(path)
-                .await
-                .map_err(|e| format!("cannot delete {}: {e}", path.display()))?;
-        }
-        for (path, content) in &self.files {
-            if let Some(content) = content {
-                write_with_dirs(path, content.as_bytes())
-                    .await
-                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let operations: Vec<_> = self
+            .files
+            .iter()
+            .filter(|(_, content)| content.is_none())
+            .chain(self.files.iter().filter(|(_, content)| content.is_some()))
+            .collect();
+        let mut completed = Vec::new();
+        for (index, (path, content)) in operations.iter().enumerate() {
+            let (verb, result) = match content {
+                None => ("delete", tokio::fs::remove_file(path).await),
+                Some(content) => ("write", write_with_dirs(path, content.as_bytes()).await),
+            };
+            if let Err(e) = result {
+                let pending: Vec<_> = operations[index + 1..]
+                    .iter()
+                    .map(|(path, content)| {
+                        format!(
+                            "{} {}",
+                            if content.is_some() { "write" } else { "delete" },
+                            path.display()
+                        )
+                    })
+                    .collect();
+                return Err(format!(
+                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}{}",
+                    path.display(),
+                    if completed.is_empty() {
+                        "none".into()
+                    } else {
+                        completed.join(", ")
+                    },
+                    if pending.is_empty() {
+                        "none".into()
+                    } else {
+                        pending.join(", ")
+                    },
+                    if content.is_some() {
+                        "\nThe failing write may have partially changed its target."
+                    } else {
+                        ""
+                    },
+                ));
             }
+            completed.push(format!("{verb} {}", path.display()));
         }
         Ok(())
     }
@@ -242,6 +287,187 @@ mod tests {
 
     fn contents(path: &Path) -> String {
         std::fs::read_to_string(path).expect("read back")
+    }
+
+    #[tokio::test]
+    async fn write_failure_reports_completed_and_unattempted_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let deleted = file(dir.path(), "deleted", "old");
+        let first = dir.path().join("a");
+        let blocker = file(dir.path(), "blocker", "not a directory");
+        let failing = blocker.join("child");
+        let last = dir.path().join("z");
+        let plan = Plan {
+            cwd: dir.path(),
+            files: BTreeMap::from([
+                (deleted.clone(), None),
+                (first.clone(), Some("written".into())),
+                (failing.clone(), Some("cannot write".into())),
+                (last.clone(), Some("not reached".into())),
+            ]),
+        };
+        let err = plan.write().await.unwrap_err();
+        assert!(
+            err.contains(&format!("cannot write {}", failing.display())),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("delete {}", deleted.display())),
+            "{err}"
+        );
+        assert!(err.contains(&format!("write {}", first.display())), "{err}");
+        assert!(err.contains(&format!("write {}", last.display())), "{err}");
+        assert!(err.contains("may have partially changed"), "{err}");
+        assert!(!deleted.exists());
+        assert_eq!(contents(&first), "written");
+        assert!(!last.exists());
+    }
+
+    #[tokio::test]
+    async fn a_write_failure_through_the_tool_reports_the_receipt_and_skips_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = ApplyPatch::new(PostWrite::with_formatter(
+            "upper",
+            &[
+                "sh",
+                "-c",
+                "tr a-z A-Z < $FILE > $FILE.tmp && mv $FILE.tmp $FILE",
+            ],
+        ));
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        // Adding `x.txt/child.txt` is valid while `x.txt` is missing, but
+        // writing `x.txt` first turns it into the child's parent file.
+        let err = tool
+            .call(
+                json!({ "patchText": "*** Begin Patch
+*** Add File: x.txt
++one
+*** Add File: x.txt/child.txt
++two
+*** Add File: z.txt
++three
+*** End Patch" }),
+                &ctx,
+            )
+            .await
+            .expect_err("x.txt is a file before its child is written");
+
+        let written = dir.path().join("x.txt");
+        let failing = written.join("child.txt");
+        let unattempted = dir.path().join("z.txt");
+        assert!(
+            err.contains(&format!("cannot write {}", failing.display())),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!(
+                "Completed operations: write {}",
+                written.display()
+            )),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!(
+                "Unattempted operations: write {}",
+                unattempted.display()
+            )),
+            "{err}"
+        );
+        assert!(
+            err.contains("may have partially changed its target"),
+            "{err}"
+        );
+        assert!(!err.contains("Formatted with"), "{err}");
+        assert_eq!(contents(&written), "one\n");
+        assert!(!unattempted.exists());
+    }
+
+    #[tokio::test]
+    async fn a_move_locks_its_source_and_destination_under_canonical_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = file(dir.path(), "a", "a\n");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let to = dir.path().join("b");
+        let post = PostWrite::off();
+        let tool = ApplyPatch::new(post.clone());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        // Both spellings are aliases of the paths the locks are named by.
+        let text = json!({ "patchText": "*** Begin Patch
+*** Update File: sub/../a
+*** Move to: ./b
+@@
+-a
++b
+*** End Patch" });
+
+        let held = post.lock(std::slice::from_ref(&from)).await;
+        {
+            let call = tool.call(text.clone(), &ctx);
+            tokio::pin!(call);
+            assert!(futures::poll!(&mut call).is_pending(), "source is locked");
+        }
+        drop(held);
+
+        let held = post.lock(std::slice::from_ref(&to)).await;
+        {
+            let call = tool.call(text.clone(), &ctx);
+            tokio::pin!(call);
+            assert!(
+                futures::poll!(&mut call).is_pending(),
+                "destination is locked"
+            );
+        }
+        drop(held);
+
+        let out = tool.call(text, &ctx).await.expect("patch");
+        assert_eq!(out, "Success. Updated the following files:\nM ./b");
+        assert!(!from.exists());
+        assert_eq!(contents(&to), "b\n");
+    }
+
+    #[tokio::test]
+    async fn overlapping_patches_in_opposite_order_append_without_losing_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = file(dir.path(), "a", "a\n");
+        let b = file(dir.path(), "b", "b\n");
+        let tool = ApplyPatch::new(PostWrite::off());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let one = tool.call(
+            json!({ "patchText": "*** Begin Patch
+*** Update File: b
+@@
++one-b
+*** Update File: a
+@@
++one-a
+*** End Patch" }),
+            &ctx,
+        );
+        let two = tool.call(
+            json!({ "patchText": "*** Begin Patch
+*** Update File: a
+@@
++two-a
+*** Update File: b
+@@
++two-b
+*** End Patch" }),
+            &ctx,
+        );
+
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(one, two)
+        })
+        .await
+        .expect("patches with overlapping paths do not deadlock");
+        first.expect("first patch");
+        second.expect("second patch");
+        for (path, lines) in [(&a, ["one-a", "two-a"]), (&b, ["one-b", "two-b"])] {
+            let content = contents(path);
+            for line in lines {
+                assert!(content.contains(line), "{}: {content}", path.display());
+            }
+        }
     }
 
     #[tokio::test]

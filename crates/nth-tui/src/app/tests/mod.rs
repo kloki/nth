@@ -235,6 +235,40 @@ fn tiny_terminal_draws_without_overflow() {
         .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect())
         .collect();
     assert!(rows.iter().any(|row| row.contains("act")), "{rows:?}");
+    for width in 1..8 {
+        for height in 1..8 {
+            let _ = buffer_sized(&mut app, width, height);
+        }
+    }
+}
+
+#[test]
+fn a_tiny_terminal_draws_an_empty_picker_without_overflow() {
+    let mut app = app();
+    let mut picker = crate::session_picker::SessionPicker::new(uuid::Uuid::new_v4());
+    picker.load(Ok(Vec::new()));
+    app.input = Input::SessionPicker(picker);
+
+    for width in 1..8 {
+        for height in 1..8 {
+            let _ = buffer_sized(&mut app, width, height);
+        }
+    }
+}
+
+#[test]
+fn a_tiny_terminal_draws_a_question_without_overflow() {
+    use crate::question::tests::{panel, question};
+
+    let mut app = app();
+    let (panel, _reply) = panel(vec![question("auth", false, &["OAuth", "API key"])]);
+    app.input = Input::Question(panel);
+
+    for width in 1..8 {
+        for height in 1..8 {
+            let _ = buffer_sized(&mut app, width, height);
+        }
+    }
 }
 
 #[test]
@@ -959,4 +993,116 @@ async fn copy_id_copies_the_session_id_even_mid_turn() {
     let fresh = app.session.as_ref().expect("idle").id;
     assert_ne!(fresh, first);
     assert_eq!(copied()[2], fresh.to_string());
+}
+
+#[test]
+fn copy_takes_the_last_completed_answer_as_markdown() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let copied = || COPIED.with(|c| c.borrow().clone());
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+        Ok(())
+    };
+    let transcript = &mut app.chat.transcript;
+    transcript.push_user("first".into());
+    transcript.apply(&Event::TextDelta("**old** answer".into()));
+    transcript.finish_turn(Ok(()), "glm", Duration::ZERO);
+    transcript.push_user("second".into());
+    transcript.apply(&Event::TextDelta("the latest\nraw `markdown`".into()));
+    transcript.finish_turn(Ok(()), "glm", Duration::ZERO);
+    transcript.push_user("third, not answered yet".into());
+
+    app.run_command(crate::command::Command::Copy);
+    assert_eq!(copied(), ["the latest\nraw `markdown`".to_string()]);
+    assert_eq!(app.hint.as_deref(), Some("copied"));
+}
+
+#[test]
+fn copy_takes_a_compaction_summary_as_the_latest_answer() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+        Ok(())
+    };
+    let transcript = &mut app.chat.transcript;
+    transcript.push_user("first".into());
+    transcript.apply(&Event::TextDelta("an answer".into()));
+    transcript.finish_turn(Ok(()), "glm", Duration::ZERO);
+    transcript.apply(&Event::Compacted {
+        summary: "## Summary\n- kept **this**".into(),
+    });
+
+    app.run_command(crate::command::Command::Copy);
+    assert_eq!(
+        COPIED.with(|c| c.borrow().clone()),
+        Some("## Summary\n- kept **this**".to_string())
+    );
+}
+
+#[test]
+fn copy_says_when_there_is_nothing_to_copy() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+        Ok(())
+    };
+
+    app.run_command(crate::command::Command::Copy);
+    assert_eq!(app.hint.as_deref(), Some("nothing to copy"));
+    assert!(COPIED.with(|c| c.borrow().is_empty()));
+
+    app.chat.transcript.push_user("only a question".into());
+    app.run_command(crate::command::Command::Copy);
+    assert_eq!(app.hint.as_deref(), Some("nothing to copy"));
+    assert!(COPIED.with(|c| c.borrow().is_empty()));
+}
+
+#[test]
+fn copy_reports_a_clipboard_failure() {
+    let mut app = app();
+    app.clipboard = |_| Err(std::io::Error::other("no clipboard"));
+    app.chat
+        .transcript
+        .apply(&Event::TextDelta("an answer".into()));
+    app.chat
+        .transcript
+        .finish_turn(Ok(()), "glm", Duration::ZERO);
+
+    app.run_command(crate::command::Command::Copy);
+    assert_eq!(app.hint.as_deref(), Some("could not copy: no clipboard"));
+}
+
+#[tokio::test]
+async fn typing_copy_runs_the_command() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+        Ok(())
+    };
+    app.chat
+        .transcript
+        .apply(&Event::TextDelta("the **answer**".into()));
+    app.chat
+        .transcript
+        .finish_turn(Ok(()), "glm", Duration::ZERO);
+
+    app.prompt.insert_str("/copy");
+    app.submit();
+    assert_eq!(
+        COPIED.with(|c| c.borrow().clone()),
+        Some("the **answer**".to_string())
+    );
 }

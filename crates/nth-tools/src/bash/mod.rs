@@ -13,6 +13,7 @@ use tokio::{
 
 use self::rtk::Rtk;
 use crate::{
+    command_output::{self, Cleaner},
     output::{self, tail},
     process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
 };
@@ -24,9 +25,9 @@ const RTK_NOTE: &str = "\n# rtk\n- Common commands (git, cargo, test runners, li
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BashConfig {
-    /// Used when the model gives no `timeout`.
+    /// Used when the model gives no `timeout_ms`.
     pub default_timeout_ms: u64,
-    /// Caps the `timeout` the model asks for.
+    /// Caps the `timeout_ms` the model asks for.
     pub max_timeout_ms: u64,
     /// Longer output keeps only its tail.
     pub max_output_chars: usize,
@@ -50,7 +51,7 @@ impl Default for BashConfig {
 pub struct Bash {
     config: BashConfig,
     /// Runs until the command exits or the call is dropped, whatever
-    /// `timeout` says.
+    /// `timeout_ms` says.
     untimed: bool,
     rtk: Option<Rtk>,
 }
@@ -80,7 +81,7 @@ impl Bash {
 #[derive(Deserialize)]
 struct Args {
     command: String,
-    timeout: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 impl Tool for Bash {
@@ -105,7 +106,7 @@ impl Tool for Bash {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command to execute" },
-                    "timeout": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "description": "Optional timeout in milliseconds" },
+                    "timeout_ms": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "description": "Optional timeout in milliseconds" },
                     "description": { "type": "string", "description": "Clear, concise description of what this command does in 5-10 words" }
                 },
                 "required": ["command", "description"]
@@ -119,11 +120,12 @@ impl Tool for Bash {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
+            crate::process::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
             // The configured default is the user's to set as low as they
             // like; the model's `0` would kill the command before it ran.
             let timeout_ms = args
-                .timeout
+                .timeout_ms
                 .map(|t| t.max(MIN_TIMEOUT_MS))
                 .unwrap_or(self.config.default_timeout_ms)
                 .min(self.config.max_timeout_ms);
@@ -158,7 +160,7 @@ impl Tool for Bash {
                 Err(_) => {
                     kill_group(&child);
                     streamed.rest(&buf).await;
-                    let mut out = tail(&String::from_utf8_lossy(&buf), max_chars);
+                    let mut out = tail(&command_output::clean(&buf), max_chars);
                     out.push_str(&format!(
                         "\n\ncommand terminated after exceeding timeout {timeout_ms} ms. If it is expected to take longer and is not waiting for input, retry with a larger timeout."
                     ));
@@ -170,7 +172,7 @@ impl Tool for Bash {
             let _ = tokio::time::timeout(DRAIN, stdout.read_to_end(&mut buf)).await;
             streamed.rest(&buf).await;
 
-            let mut out = tail(&String::from_utf8_lossy(&buf), max_chars);
+            let mut out = tail(&command_output::clean(&buf), max_chars);
             match status.code() {
                 Some(0) => {}
                 Some(code) => out.push_str(&format!("\n\n(exit code {code})")),
@@ -212,13 +214,18 @@ async fn wait_for_exit(
 /// character split across two reads is never sent in halves.
 struct Streamed<'a> {
     sink: &'a OutputSink,
+    cleaner: Cleaner,
     /// How much of the output has been sent.
     sent: usize,
 }
 
 impl<'a> Streamed<'a> {
     fn new(sink: &'a OutputSink) -> Self {
-        Self { sink, sent: 0 }
+        Self {
+            sink,
+            cleaner: Cleaner::default(),
+            sent: 0,
+        }
     }
 
     /// Sends the complete lines not sent yet. Awaiting a full channel pauses
@@ -228,14 +235,16 @@ impl<'a> Streamed<'a> {
             return;
         };
         let end = self.sent + newline + 1;
-        self.send(&buf[self.sent..end]).await;
+        let clean = self.cleaner.push(&buf[self.sent..end]);
+        self.send(&clean).await;
         self.sent = end;
     }
 
     /// Sends whatever is left, once the command is done.
     async fn rest(&mut self, buf: &[u8]) {
         if self.sent < buf.len() {
-            self.send(&buf[self.sent..]).await;
+            let clean = self.cleaner.push(&buf[self.sent..]);
+            self.send(&clean).await;
             self.sent = buf.len();
         }
     }
@@ -378,6 +387,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strips_escapes_from_results_and_streamed_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let ctx = ToolContext {
+            output: OutputSink::new(tx, "1".into()),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let out = Bash::default().call(json!({"command": "printf '\\033[31mred\\033[0m\\t€\\n'; printf '\\033]0;title\\007error\\n' >&2"}), &ctx).await.unwrap();
+        assert_eq!(out, "red\t€\nerror\n");
+        let mut streamed = String::new();
+        while let Ok(nth_protocol::Event::ToolOutput { text, .. }) = rx.try_recv() {
+            streamed.push_str(&text);
+        }
+        assert_eq!(streamed, out);
+    }
+
+    #[tokio::test]
     async fn reports_exit_code() {
         let out = bash(json!({ "command": "echo no; exit 3", "description": "t" })).await;
         assert_eq!(out, Ok("no\n\n\n(exit code 3)".to_string()));
@@ -478,7 +504,7 @@ mod tests {
         let ctx = ToolContext::new(dir.path().to_path_buf());
         let out = quick(50)
             .call(
-                json!({ "command": "sleep 0.2; echo hi", "timeout": 0, "description": "t" }),
+                json!({ "command": "sleep 0.2; echo hi", "timeout_ms": 0, "description": "t" }),
                 &ctx,
             )
             .await;
@@ -501,9 +527,10 @@ mod tests {
     #[tokio::test]
     async fn background_process_does_not_block() {
         let started = std::time::Instant::now();
-        let out =
-            bash(json!({ "command": "sleep 30 & echo hi", "timeout": 10_000, "description": "t" }))
-                .await;
+        let out = bash(
+            json!({ "command": "sleep 30 & echo hi", "timeout_ms": 10_000, "description": "t" }),
+        )
+        .await;
         assert_eq!(out, Ok("hi\n".to_string()));
         assert!(started.elapsed() < Duration::from_secs(5));
     }

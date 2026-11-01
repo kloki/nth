@@ -17,6 +17,9 @@ pub struct Glob;
 struct Args {
     pattern: String,
     path: Option<String>,
+    #[serde(default)]
+    hidden: bool,
+    limit: Option<usize>,
 }
 
 impl Tool for Glob {
@@ -31,7 +34,9 @@ impl Tool for Glob {
                     "path": {
                         "type": "string",
                         "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided."
-                    }
+                    },
+                    "hidden": { "type": "boolean", "description": "Include hidden files (default false), excluding .git." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Maximum results (default 100)." }
                 },
                 "required": ["pattern"]
             }),
@@ -45,6 +50,8 @@ impl Tool for Glob {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
+            let limit = args.limit.unwrap_or(LIMIT);
+            if limit == 0 { return Err("limit must be positive".into()); }
             let mut dir = match &args.path {
                 Some(path) => crate::path::resolve(&ctx.cwd, path),
                 None => ctx.cwd.clone(),
@@ -65,23 +72,23 @@ impl Tool for Glob {
                 Err(e) => return Err(format!("cannot search {}: {e}", dir.display())),
             }
 
-            let files = tokio::task::spawn_blocking(move || find(&dir, &pattern))
+            let files = tokio::task::spawn_blocking(move || find(&dir, &pattern, args.hidden))
                 .await
                 .map_err(|e| format!("glob failed: {e}"))??;
 
             if files.is_empty() {
                 return Ok("No files found".into());
             }
-            let truncated = files.len() > LIMIT;
+            let truncated = files.len() > limit;
             let mut output: Vec<String> = files
                 .iter()
-                .take(LIMIT)
+                .take(limit)
                 .map(|path| path.display().to_string())
                 .collect();
             if truncated {
                 output.push(String::new());
                 output.push(format!(
-                    "(Results are truncated: showing first {LIMIT} results. Consider using a more specific path or pattern.)"
+                    "(Results are truncated: showing first {limit} results. Consider using a more specific path or pattern.)"
                 ));
             }
             Ok(output.join("\n"))
@@ -93,13 +100,15 @@ impl Tool for Glob {
 /// Every file under `dir` that `pattern` matches, newest first. Like
 /// ripgrep's `--glob`, a pattern without a `/` matches a file name at any
 /// depth. Hidden files and what `.gitignore` excludes are skipped.
-fn find(dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
+fn find(dir: &Path, pattern: &str, hidden: bool) -> Result<Vec<PathBuf>, String> {
     let overrides = OverrideBuilder::new(dir)
         .add(pattern)
         .and_then(|builder| builder.build())
         .map_err(|e| format!("invalid glob pattern: {e}"))?;
     let mut files: Vec<(SystemTime, PathBuf)> = WalkBuilder::new(dir)
         .overrides(overrides)
+        .hidden(!hidden)
+        .filter_entry(|entry| entry.file_name() != ".git")
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
@@ -175,6 +184,24 @@ mod tests {
             .await
             .expect("glob");
         assert_eq!(lines(root, &out), ["src/new.rs", "src/mid.rs"]);
+    }
+
+    #[tokio::test]
+    async fn hidden_and_limit_apply_after_sorting_without_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(&root.join("old.txt"), 100);
+        touch(&root.join(".hidden/new.txt"), 10);
+        touch(&root.join(".git/secret.txt"), 0);
+        let out = glob(root, json!({"pattern":"*.txt", "hidden":true, "limit":1}))
+            .await
+            .unwrap();
+        assert!(
+            out.starts_with(&root.join(".hidden/new.txt").display().to_string()),
+            "{out}"
+        );
+        assert!(!out.contains("secret.txt"));
+        assert!(glob(root, json!({"pattern":"*", "limit":0})).await.is_err());
     }
 
     #[tokio::test]

@@ -65,7 +65,7 @@ impl Tool for Edit {
             }
             let path = crate::path::resolve(&ctx.cwd, &args.file_path);
             ctx.writable.check(&path)?;
-            let writing = self.post_write.lock().await;
+            let writing = self.post_write.lock(std::slice::from_ref(&path)).await;
             let done = edit(&path, &args).await?;
             let notes = writing.format(&path, &ctx.cwd).await;
             drop(writing);
@@ -114,8 +114,8 @@ async fn edit(path: &Path, args: &Args) -> Result<String, String> {
     }
     .map_err(|e| match e {
         MatchError::NotFound => format!(
-            "oldString not found in {}. It must match the file, including whitespace and indentation; read it again if unsure.",
-            path.display()
+            "oldString not found in {}. It must match the file, including whitespace and indentation; read it again if unsure.{}",
+            path.display(), miss_hint(text, &old, &new)
         ),
         MatchError::Ambiguous(n) => format!(
             "oldString matches {n} places in {}. Add surrounding lines to make it unique, or set replaceAll to change every one.",
@@ -139,6 +139,46 @@ async fn edit(path: &Path, args: &Args) -> Result<String, String> {
         1 => format!("Edited file: {}", path.display()),
         n => format!("Edited file: {} ({n} replacements)", path.display()),
     })
+}
+
+fn miss_hint(text: &str, old: &str, new: &str) -> String {
+    if !new.is_empty() && text.contains(new) {
+        return "\nThe replacement text is already present in the file.".into();
+    }
+    let lines: Vec<_> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    // Score by shared words, choosing the first line on ties. Hints never
+    // participate in matching and their output remains bounded.
+    let words: Vec<_> = old.split_whitespace().take(100).collect();
+    let best = lines
+        .iter()
+        .enumerate()
+        .max_by_key(|(i, line)| {
+            (
+                words.iter().filter(|word| line.contains(**word)).count(),
+                std::cmp::Reverse(*i),
+            )
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let start = best.saturating_sub(2);
+    let mut hint = String::from("\nNearby excerpt:");
+    for (i, line) in lines.iter().enumerate().skip(start).take(12) {
+        let cut = line
+            .char_indices()
+            .nth(200)
+            .map(|(i, _)| i)
+            .unwrap_or(line.len());
+        hint.push_str(&format!(
+            "\n{}: {}{}",
+            i + 1,
+            &line[..cut],
+            if cut < line.len() { "..." } else { "" }
+        ));
+    }
+    hint
 }
 
 pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
@@ -244,6 +284,29 @@ mod tests {
         .await
         .expect_err("not found");
         assert!(err.contains("not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn miss_hints_at_existing_replacement_or_bounded_excerpt() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = format!("{BOM}first\r\nreplacement\r\n{}\r\n", "x".repeat(500));
+        let path = file(dir.path(), &source);
+        let err = edit(
+            dir.path(),
+            json!({"filePath":"a.rs", "oldString":"absent", "newString":"replacement"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("replacement text is already present"));
+        let err = edit(
+            dir.path(),
+            json!({"filePath":"a.rs", "oldString":"first missing", "newString":"other"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("1: first"));
+        assert!(err.contains("..."));
+        assert_eq!(contents(&path), source);
     }
 
     #[tokio::test]

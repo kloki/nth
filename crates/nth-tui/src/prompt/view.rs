@@ -50,6 +50,9 @@ pub struct Runs<'a> {
 /// After the mode, a model with its provider and effort, and the profile
 /// it comes from while one is active: ` · opencode/glm-5.3 · high · go`.
 pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, runs: Runs<'_>) {
+    if area.is_empty() {
+        return;
+    }
     let (label, colour, placeholder) = match (prompt.shell(), runs.target) {
         (true, _) => (SHELL_LABEL, SHELL_COLOUR, SHELL_PLACEHOLDER),
         (false, Some(agent)) => (agent, SUBAGENT_COLOUR, PLACEHOLDER),
@@ -87,7 +90,11 @@ pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, runs: Ru
         );
     }
 
-    frame.set_cursor_position(position(area, prompt, prompt.cursor()));
+    let pos = position(area, prompt, prompt.cursor());
+    frame.set_cursor_position(Position::new(
+        pos.x.clamp(area.x, area.right() - 1),
+        pos.y.clamp(area.y, area.bottom() - 1),
+    ));
 }
 
 /// The top row for plan and act: the bar and mode label in the mode's
