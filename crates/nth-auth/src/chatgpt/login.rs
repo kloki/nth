@@ -414,7 +414,7 @@ mod tests {
 
     use super::{
         super::{
-            AGENT_NAME, REGISTRATION_CLIENT_ID, SCOPES, SHARING_SCOPE, TOKEN,
+            AGENT_NAME, REGISTRATION_CLIENT_ID, SCOPES, SHARING_SCOPE, SignedOut, TOKEN,
             testing::{Issuer, signed},
         },
         *,
@@ -912,7 +912,7 @@ mod tests {
         let chatgpt = chatgpt(&issuer, store.clone());
 
         assert!(chatgpt.connected());
-        chatgpt.logout().await.unwrap();
+        assert_eq!(chatgpt.logout().await.unwrap(), SignedOut::Revoked);
         assert!(!chatgpt.connected());
 
         let kept = store.oauth(ChatGpt::ID).await.unwrap().unwrap();
@@ -933,6 +933,22 @@ mod tests {
         assert_eq!(posts[0].form["token"], "old-refresh");
         assert_eq!(posts[0].form["token_type_hint"], "refresh_token");
         assert_eq!(posts[0].form["client_id"], "oaiapp_issued");
+    }
+
+    #[tokio::test]
+    async fn logout_says_when_revocation_is_unconfirmed() {
+        let issuer = Issuer::start(400, json!({"error": "invalid_request"})).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("auth.json"));
+        store
+            .save(ChatGpt::ID, &saved(Some("oaiapp_issued")))
+            .await
+            .unwrap();
+        let chatgpt = chatgpt(&issuer, store.clone());
+
+        assert_eq!(chatgpt.logout().await.unwrap(), SignedOut::Unconfirmed);
+        assert!(!chatgpt.connected(), "the local tokens go regardless");
+        assert_eq!(issuer.posts().len(), 1, "a 4xx is not tried again");
     }
 
     #[tokio::test]

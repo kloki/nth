@@ -43,7 +43,7 @@ pub(crate) async fn listed(
     base_url: &str,
     auth: &Auth,
 ) -> Result<Vec<String>, Error> {
-    let list: ModelList = fetch(auth.bearer(http.get(format!("{base_url}/models")), None)).await?;
+    let list: ModelList = fetch(auth.bearer(http.get(format!("{base_url}/models")))).await?;
     Ok(list.data.into_iter().map(|m| m.id).collect())
 }
 

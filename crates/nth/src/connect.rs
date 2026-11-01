@@ -17,8 +17,15 @@ pub async fn run(status: bool, logout: bool, json: bool) -> Result<()> {
         return write_status(&mut out, &chatgpt, json);
     }
     if logout {
-        chatgpt.logout().await?;
+        let signed_out = chatgpt.logout().await?;
         println!("{} disconnected from ChatGPT", icons().ok.green().bold());
+        if signed_out == nth_auth::SignedOut::Unconfirmed {
+            println!(
+                "{}",
+                "OpenAI did not confirm the session ended; disconnect nth in ChatGPT's settings to be sure."
+                    .yellow()
+            );
+        }
         return Ok(());
     }
     let account = chatgpt

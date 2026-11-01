@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chatgpt_requests_carry_the_session() {
+    async fn chatgpt_requests_carry_only_the_token() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let (store, chatgpt) = chatgpt(&dir);
         connect(&store).await;
@@ -615,16 +615,21 @@ mod tests {
         let head = head.to_lowercase();
         let lines: Vec<_> = head.lines().collect();
         assert_eq!(lines[0], "post /responses http/1.1", "over responses");
+        assert!(lines.contains(&"authorization: bearer access"), "{head}");
+        // The public API takes the token alone; the Codex backend's headers
+        // are gone.
         for header in [
-            "authorization: bearer access",
-            "session-id: ses_1",
-            "thread-id: ses_1",
-            "x-client-request-id: ses_1",
+            "originator:",
+            "chatgpt-account-id:",
+            "session-id:",
+            "thread-id:",
+            "x-client-request-id:",
         ] {
-            assert!(lines.contains(&header), "{header} in {head}");
+            assert!(
+                !lines.iter().any(|line| line.starts_with(header)),
+                "{header} in {head}"
+            );
         }
-        assert!(!head.contains("originator"), "{head}");
-        assert!(!head.contains("chatgpt-account-id"), "{head}");
     }
 
     #[tokio::test]

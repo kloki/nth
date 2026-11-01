@@ -20,41 +20,22 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
-    /// `request` signed with a bearer token, and for ChatGPT the session
-    /// headers the Responses API takes beside it. `session_id` is the
-    /// conversation's, when the request belongs to one.
-    pub(crate) fn bearer(
-        &self,
-        request: RequestBuilder,
-        session_id: Option<&str>,
-    ) -> RequestBuilder {
+    /// `request` signed with a bearer token. A ChatGPT login needs nothing
+    /// beside it on the public API: the conversation's cache key rides in
+    /// the body as `prompt_cache_key`.
+    pub(crate) fn bearer(&self, request: RequestBuilder) -> RequestBuilder {
         match self {
             Self::Key(key) => request.bearer_auth(key),
-            Self::ChatGpt(credentials) => {
-                let mut request = request.bearer_auth(&credentials.access);
-                if let Some(session_id) = session_id {
-                    // The same conversation id under each name the API reads
-                    // it from, as the Codex client sends it.
-                    request = request
-                        .header("session-id", session_id)
-                        .header("thread-id", session_id)
-                        .header("x-client-request-id", session_id);
-                }
-                request
-            }
+            Self::ChatGpt(credentials) => request.bearer_auth(&credentials.access),
         }
     }
 
     /// As `bearer`, but a key goes in `x-api-key`: OpenCode Zen refuses a
     /// bearer token on messages, as Anthropic does.
-    pub(crate) fn api_key(
-        &self,
-        request: RequestBuilder,
-        session_id: Option<&str>,
-    ) -> RequestBuilder {
+    pub(crate) fn api_key(&self, request: RequestBuilder) -> RequestBuilder {
         match self {
             Self::Key(key) => request.header("x-api-key", key),
-            Self::ChatGpt(_) => self.bearer(request, session_id),
+            Self::ChatGpt(_) => self.bearer(request),
         }
     }
 }
