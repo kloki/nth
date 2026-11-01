@@ -4,6 +4,7 @@
 //! splits, the chat's tab sits over the left pane and the others start
 //! over the right one, with the focused tab in bold.
 
+use nth_icons::icons;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -113,7 +114,7 @@ pub fn draw(frame: &mut Frame, area: Rect, tabs: &[TabLabel], split: Option<u16>
         frame.render_widget(Paragraph::new(tab.span()), area);
     }
     for area in indicators {
-        frame.render_widget(Paragraph::new("…"), area);
+        frame.render_widget(Paragraph::new(icons().overflow), area);
     }
     let title = Line::from(vec![
         Span::styled(
@@ -203,5 +204,57 @@ mod tests {
             tabs.iter()
                 .all(|tab| tab.width == 0 || tab.right() <= name.x)
         );
+    }
+
+    #[test]
+    fn every_width_draws_tabs_inside_the_header_and_never_over_the_version() {
+        let mut tabs = labels();
+        for i in 0..6 {
+            tabs.push(TabLabel {
+                icon: "x",
+                name: format!("tab{i}"),
+                state: TabState::Idle,
+                shown: false,
+                focused: false,
+            });
+        }
+        for focus in [0, 3, tabs.len() - 1] {
+            for tab in &mut tabs {
+                tab.focused = false;
+            }
+            tabs[focus].focused = true;
+            tabs[focus].shown = true;
+            for width in 0..60 {
+                let area = Rect::new(1, 0, width, 1);
+                for split in [None, Some(1), Some(area.x + width / 2), Some(area.right())] {
+                    let (areas, indicators, name) = layout(&tabs, area, split);
+                    for draw in areas.iter().chain(&indicators).filter(|r| r.width > 0) {
+                        assert!(
+                            draw.x >= area.x && draw.right() <= area.right(),
+                            "{draw:?} outside {area:?} at split {split:?}"
+                        );
+                        assert!(
+                            draw.right() <= name.x,
+                            "{draw:?} over the version at {name:?}, width {width}, split {split:?}"
+                        );
+                    }
+                    let mut drawn: Vec<Rect> = areas
+                        .iter()
+                        .chain(&indicators)
+                        .copied()
+                        .filter(|r| r.width > 0)
+                        .collect();
+                    drawn.sort_by_key(|r| r.x);
+                    for pair in drawn.windows(2) {
+                        assert!(
+                            pair[0].right() <= pair[1].x,
+                            "{:?} overlaps {:?} at width {width}, split {split:?}",
+                            pair[0],
+                            pair[1]
+                        );
+                    }
+                }
+            }
+        }
     }
 }

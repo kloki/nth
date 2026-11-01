@@ -243,6 +243,35 @@ fn tiny_terminal_draws_without_overflow() {
 }
 
 #[test]
+fn a_tiny_terminal_draws_an_empty_picker_without_overflow() {
+    let mut app = app();
+    let mut picker = crate::session_picker::SessionPicker::new(uuid::Uuid::new_v4());
+    picker.load(Ok(Vec::new()));
+    app.input = Input::SessionPicker(picker);
+
+    for width in 1..8 {
+        for height in 1..8 {
+            let _ = buffer_sized(&mut app, width, height);
+        }
+    }
+}
+
+#[test]
+fn a_tiny_terminal_draws_a_question_without_overflow() {
+    use crate::question::tests::{panel, question};
+
+    let mut app = app();
+    let (panel, _reply) = panel(vec![question("auth", false, &["OAuth", "API key"])]);
+    app.input = Input::Question(panel);
+
+    for width in 1..8 {
+        for height in 1..8 {
+            let _ = buffer_sized(&mut app, width, height);
+        }
+    }
+}
+
+#[test]
 fn prompt_and_status_rows_never_move() {
     let mut app = app();
     let idle = rows(&mut app);
@@ -1050,4 +1079,30 @@ fn copy_reports_a_clipboard_failure() {
 
     app.run_command(crate::command::Command::Copy);
     assert_eq!(app.hint.as_deref(), Some("could not copy: no clipboard"));
+}
+
+#[tokio::test]
+async fn typing_copy_runs_the_command() {
+    thread_local! {
+        static COPIED: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let mut app = app();
+    app.clipboard = |text| {
+        COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+        Ok(())
+    };
+    app.chat
+        .transcript
+        .apply(&Event::TextDelta("the **answer**".into()));
+    app.chat
+        .transcript
+        .finish_turn(Ok(()), "glm", Duration::ZERO);
+
+    app.prompt.insert_str("/copy");
+    app.submit();
+    assert_eq!(
+        COPIED.with(|c| c.borrow().clone()),
+        Some("the **answer**".to_string())
+    );
 }

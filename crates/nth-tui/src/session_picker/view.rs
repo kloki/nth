@@ -170,3 +170,60 @@ fn rows<'a>(
 fn hit(style: Style) -> Style {
     style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{super::tests::summary, *};
+
+    fn loading(sessions: Result<Vec<Summary>, String>) -> SessionPicker {
+        let mut picker = SessionPicker::new(Uuid::new_v4());
+        picker.load(sessions);
+        picker
+    }
+
+    fn drawn(picker: &SessionPicker) -> Vec<String> {
+        let State::Ready {
+            sessions,
+            filter,
+            shown,
+            selected,
+        } = &picker.state
+        else {
+            panic!("not ready");
+        };
+        rows(
+            picker,
+            Listed {
+                sessions,
+                filter,
+                shown,
+            },
+            *selected,
+            80,
+            10,
+        )
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_empty_list_is_neutral_and_a_query_without_matches_is_filtering() {
+        let picker = loading(Ok(Vec::new()));
+        assert!(matches!(picker.state, State::Ready { .. }), "not a failure");
+        assert_eq!(drawn(&picker), ["▎   no saved sessions yet"]);
+
+        let mut picker = loading(Ok(vec![summary("fix the parser", 1)]));
+        picker.insert('z');
+        assert_eq!(drawn(&picker), ["▎   no matches"]);
+    }
+}

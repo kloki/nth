@@ -377,6 +377,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_listing_is_neutral_and_a_failed_one_stays_an_error() {
+        let empty = picker(Vec::new(), "x");
+        assert_eq!(drawn(&empty, 0, 8), ["▎   no models available"]);
+
+        let mut failing = picker(Vec::new(), "x");
+        let State::Ready { failed, .. } = &mut failing.state else {
+            unreachable!()
+        };
+        failed.push(Failed {
+            origin: Origin {
+                id: "p".into(),
+                name: "p".into(),
+            },
+            error: "offline".into(),
+        });
+        let rows = drawn(&failing, 0, 8);
+        assert_eq!(rows.len(), 1, "only the failure: {rows:?}");
+        assert!(rows[0].contains("p: offline"), "{rows:?}");
+        assert!(rows[0].contains(icons().fail), "{rows:?}");
+        assert!(!rows[0].contains("no models available"), "{rows:?}");
+    }
+
+    #[test]
     fn failures_remain_reachable_after_many_models_and_no_matches() {
         let mut picker = picker(
             (0..200).map(|i| model("p", &format!("model{i}"))).collect(),

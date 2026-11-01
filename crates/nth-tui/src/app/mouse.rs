@@ -602,6 +602,101 @@ mod tests {
         assert_eq!(app.content.active(), Tab::Diagnostics);
     }
 
+    /// An app with more tabs than the header has room for, the chat focused.
+    fn overflowing_header() -> App {
+        let mut app = app();
+        for tab in [
+            Tab::Diagnostics,
+            Tab::Usage,
+            Tab::Keymaps,
+            Tab::Context,
+            Tab::Work,
+        ] {
+            app.content.open(tab);
+        }
+        app.apply(super::super::keys::Action::Content(0));
+        app
+    }
+
+    #[tokio::test]
+    async fn an_overflowing_header_keeps_original_indices_and_the_version_clear() {
+        let mut app = overflowing_header();
+        let rows = rows(&mut app);
+        let version = concat!("nth ", env!("CARGO_PKG_VERSION"));
+        let top = rows[0].trim_end();
+        assert!(top.ends_with(version), "{top:?}");
+        let version_x =
+            u16::try_from(top.chars().count() - version.chars().count()).expect("the version fits");
+
+        // The focused chat tab is in the window; a later tab keeps its index.
+        let chat = app.areas.find(&Target::Tab(0)).expect("the chat's target");
+        assert!(chat.width > 0, "the focused tab shows: {chat:?}");
+        let (index, area) = app
+            .content
+            .tabs()
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, _)| {
+                app.areas
+                    .find(&Target::Tab(index))
+                    .filter(|area| area.width > 0)
+                    .map(|area| (index, area))
+            })
+            .expect("one tab after the chat fits");
+        assert!(
+            area.right() <= version_x,
+            "{area:?} ends before the version"
+        );
+        click(&mut app, MouseButton::Left, area.x, 0);
+        assert_eq!(app.content.active(), app.content.tabs()[index]);
+
+        // Neither the gap, the overflow indicator, nor the version is a tab.
+        let before = app.content.active();
+        for x in [version_x.saturating_sub(2), version_x - 1, version_x] {
+            click(&mut app, MouseButton::Left, x, 0);
+            assert_eq!(app.content.active(), before, "clicked at column {x}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_split_overflowing_header_keeps_the_side_tab_clickable() {
+        let mut app = app().with_split_width(80);
+        for tab in [
+            Tab::Diagnostics,
+            Tab::Usage,
+            Tab::Keymaps,
+            Tab::Context,
+            Tab::Work,
+        ] {
+            app.content.open(tab);
+        }
+        app.apply(super::super::keys::Action::Content(0));
+        let rows = rows_of(&mut app, 100);
+        assert!(
+            matches!(app.panes(), crate::app::Panes::Split(Tab::Work)),
+            "{rows:#?}"
+        );
+
+        let index = app.content.tabs().len() - 1;
+        let area = app.areas.find(&Target::Tab(index)).expect("the side tab");
+        assert!(area.width > 0, "the shown side tab stays visible: {area:?}");
+        assert!(area.x >= 50, "it stays over the right pane: {area:?}");
+        click(&mut app, MouseButton::Left, area.x, 0);
+        assert_eq!(app.content.active(), Tab::Work);
+
+        // Focused, it still shows in the window over the right pane.
+        let rows = rows_of(&mut app, 100);
+        let area = app
+            .areas
+            .find(&Target::Tab(index))
+            .expect("the focused tab");
+        assert!(area.width > 0, "the focused tab stays visible: {area:?}");
+        assert!(area.x >= 50, "it stays over the right pane: {area:?}");
+        assert!(rows[0].contains('…'), "the overflow shows: {:?}", rows[0]);
+    }
+
     #[test]
     fn a_right_click_copies_the_entry_under_it() {
         let mut app = with_answer("hello *there*");

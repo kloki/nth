@@ -28,16 +28,16 @@ There are no borders or divider lines. Bands are told apart by coloured bars and
 Heights are decided bottom-up, in lines:
 
 1. **Status bar**: fixed at 2 lines.
-2. **Input panel**: the active input panel's own height. Each input panel declares a fixed number of lines; the prompt is 4, a label row and three rows of text.
+2. **Input panel**: the active input panel's own height. Each input panel declares a fixed number of lines; the prompt is 4, a label row and three rows of text. A picker or question asks for at most half the screen, and every request is clamped to what the header, content, status and spacing leave.
 3. **Content panel**: everything left over.
 
-Swapping input panels therefore resizes the content panel. The content panel keeps its bottom anchored, so a chat scrolled to the end stays at the end. On a terminal too short for all three, the content panel shrinks to zero first and the status bar is the last thing to go.
+Swapping input panels therefore resizes the content panel. The content panel keeps its bottom anchored, so a chat scrolled to the end stays at the end. On a terminal too short for all three, the spacing goes first, then the content panel shrinks to zero, then the input panel; every view tolerates a zero or tiny rectangle, and the status bar keeps its two rows whenever the terminal has them.
 
 ## Content panel
 
 - **Default: chat history.** The transcript, scrolled. Until anything is said, an ASCII field fills it instead (`hero.rs`, after performative-ui's AsciiHero): dim characters that drift with time and ripple and brighten under the mouse.
-- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Usage, Plan, Work, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
-- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  ⊞ work 3/7  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version stay on the right.
+- **Tabs.** The content panel holds a list of tabs, and chat is always the first and can't be closed. Diagnostics, Context, Usage, Plan, Work, Keymaps, a tab per file the model showed, a tab per monitor and a tab per subagent are the others so far. Later come Diff and comment threads on the plan.
+- **Tab strip.** On the left of the header, always shown: `[› chat] ● diagnostics  ≡ plan +3 -1  ⊞ work 3/7  $ ci  @ find tabs`, in the order the tabs were opened. Each tab is its icon and name on the default background; the showing one is wrapped in `[ ]` and the others in spaces, so moving between them never shifts the strip. `nth` and its version own the right side first, and no tab is drawn or clicked over them. When the strip does not fit, each pane shows a window that keeps its focused tab in view, and a plain `…` closes the strip at its right edge; a tab keeps its original index for clicks, and only drawn tabs are clickable.
 - **Split.** On a terminal at least `[layout] split_width` columns wide (160 by default; 0 never splits), once a tab besides chat is open, the content panel splits in two equal halves with no line between them: chat always on the left, the other tabs on the right. The strip splits with it: chat's tab sits over the left pane and the other tabs start over the right one, both showing tabs in `[ ]`, `[› chat]  …  [● diagnostics]  $ ci`. The one with the focus is bold: the scroll keys move it, ctrl+q closes it, and on a subagent's tab the prompt talks to it. Focusing chat keeps the right pane on its tab. Moving the mouse over a pane gives it the focus. Narrower, or with only chat open, one tab fills the panel as before.
 - **Tab colours.** A tab's foreground says how it is doing, the same way for every kind:
 
@@ -49,10 +49,10 @@ Swapping input panels therefore resizes the content panel. The content panel kee
   | red     | failed, until it is something else | turn failed             |              |         | stopped or failed   |
   | magenta | needs you                          | a question waits        |              |         |                     |
 
-  Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays. The work tab is blue while an item runs, magenta while an item is lost (see [Work](#work)), red while an item failed, and green once every item is done.
+  Diagnostics, Context, Usage and Keymaps are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays. The work tab is blue while an item runs, magenta while an item is lost (see [Work](#work)), red while an item failed, and green once every item is done.
 
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys move the focused tab, and the mouse wheel the one under it.
-- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a left click opens the pull request or latest Curio; a right click copies the working directory or branch. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
+- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a left click opens the pull request or latest Curio; a right click copies the working directory or branch. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back. `/copy` copies the last completed answer of the shown chat — a subagent's while its tab shows — as raw Markdown, and the latest compaction summary counts as an answer; with nothing to copy it says `nothing to copy`.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                                                                        |
@@ -336,6 +336,7 @@ Each tool call shows its output under its row as it streams in, and keeps it onc
 - **Context swaps it.** The model picker, the question tool, the session picker and settings are the ones so far; each is its own input panel.
 - **Each input panel declares its height in lines.** The prompt is 4; the model and session pickers are a header, a query row and a list, 16 rows but at most half the screen. The height is fixed while the panel is open, so typing or filtering never makes the layout jump.
 - **The model picker keeps the listing's order** and opens on the model in use. A model that takes images (the read tool shows them) has `◩` in a dim column after its limits; the column is there only when some listed model takes images.
+- **Empty and failed listings.** A successful listing with nothing in it is neutral: `no models available`, or `no saved sessions yet` on `/resume`. A query that matches nothing says `no matches` and stays a filtering state, not an error. A provider that could not be listed is a red row after the models; ↑↓ reaches it, and Enter or an effort change on it does nothing. When every provider fails and no model is usable, those failures remain. A listing that fails outright is one red error.
 - **Tab picks what the model picker changes.** The title row lists `plan · act · subagent · clerk`, the one the pick goes to in bold magenta; it opens on the current mode, and Tab and shift+Tab cycle it, wrapping. Each target marks and highlights what it runs on now. `subagent` is what subagents run on (an agent's own `model` still wins), the current mode's until picked; `clerk` is what the built-in clerk runs on, the subagents' until picked. Enter sets the target to the highlighted model and leaves the picker open, the pick marked and the query kept, so Tab can move on to set another target; esc closes it.
 - **Pickers filter as you type, as telescope does.** The model and session pickers have a query row under the title: `> query`, and how many items match against the right edge. Typing narrows the list by fuzzy matching (`fuzzy.rs`, nucleo, smart case, words in any order) and highlights the best match; the matched characters are bold and underlined. A model matches by its id and name, a session by its title and directory. Backspace widens the list again; ctrl+c clears the query, then closes. With an empty query the list keeps its own order: the listing's for models, newest first for sessions.
 - **One input panel at a time.** Opening one replaces the prompt; finishing or `esc` returns to the prompt. The prompt keeps its text while hidden.
@@ -519,6 +520,10 @@ Opened with `/settings`. What the chats show, for this run of nth only: a change
 - **Tool output.** Off, a tool call is only its row, with any format note and language server errors under it, without what it returned.
 - **Every chat.** Both apply to the main chat and every subagent's tab, and stay through `/clear` and `/resume`.
 
+## Keymaps
+
+`/keymaps` opens a read-only keyboard reference tab, titled `KEYBOARD REFERENCE · scroll to browse · ctrl+q closes this tab`. Its bindings are grouped by where they apply — content tabs, the normal prompt and the mouse — and it scrolls like the other content tabs. ctrl+q or `/close` closes it.
+
 ## Status bar
 
 Fixed at 2 lines, always visible below every input panel, without borders. Four areas keep session, repository, hint and auxiliary information apart. Each row allocates space to its left area first, with a one-column gap before the right area; the right area is clipped first on narrow terminals.
@@ -534,12 +539,12 @@ The working directory in magenta, with home written as `~`, then session age, co
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part    | Shows                                                                                                                    | Colour                 |
-| ------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
-| Place   | The working directory, with home written as `~`                                                                          | magenta                |
-| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                              | white                  |
-| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%     | white, yellow, magenta |
-| Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | yellow                 |
+| Part    | Shows                                                                                                                    | Colour                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Place   | The working directory, with home written as `~`                                                                          | magenta                                      |
+| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                              | ANSI white (`Color::Gray`), not bright white |
+| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%     | white, yellow, magenta                       |
+| Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | yellow                                       |
 
 The context figure shows `◘ 0%` until the first turn reports usage, and is hidden when the model's context window is unknown. It is rounded to the nearest percent and capped at 100%, and turns yellow at 50% and magenta at 80%. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one. The time counts from the session's creation (`created_at`), so a resumed session carries on from where it left off and shows days when it is old, while `/clear` starts it over; it updates at each whole minute even when nothing else happens.
 
@@ -606,3 +611,5 @@ Every colour is one of the terminal's 16 standard colours, so the terminal theme
 | bright white     | bright white    | the `git · ` prefix and the provider in the prompt's label            |
 
 Orange is not a standard terminal colour, so it means yellow.
+
+This doc's white is the terminal's ANSI white, `Color::Gray` in ratatui; bright white is `Color::White`.

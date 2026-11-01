@@ -379,6 +379,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn guards_ipv4_compatible_ipv6_literals() {
+        for host in ["[::169.254.169.254]", "[::100.100.100.200]"] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_err(), "{host}");
+        }
+        for host in [
+            "[::1]",
+            "[::127.0.0.1]",
+            "[::192.168.1.1]",
+            "[::10.0.0.1]",
+            "[fd00::1]",
+        ] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).unwrap();
+            assert!(guard::check_url(&url).is_ok(), "{host}");
+        }
+    }
+
     #[tokio::test]
     async fn rejects_mixed_dns_answers_before_connecting() {
         let resolver = FixedResolver(vec![

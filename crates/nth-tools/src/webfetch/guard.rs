@@ -36,8 +36,9 @@ fn check_ip(ip: IpAddr) -> Result<(), String> {
     let blocked = match ip {
         IpAddr::V4(ip) => ip.is_link_local() || ip == Ipv4Addr::new(100, 100, 100, 200),
         IpAddr::V6(ip) => {
-            ip.to_ipv4_mapped()
-                .is_some_and(|v4| check_ip(v4.into()).is_err())
+            // Both IPv4-mapped and IPv4-compatible forms; `::1` stays
+            // loopback since `to_ipv4` leaves it out.
+            ip.to_ipv4().is_some_and(|v4| check_ip(v4.into()).is_err())
                 || ip.is_unicast_link_local()
                 || ip == Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254)
         }
