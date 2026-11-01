@@ -86,7 +86,7 @@ impl Tool for Write {
             let wrote = format!("{verb} file: {}", path.display());
             let notes = writing.format(&path, &ctx.cwd).await;
             drop(writing);
-            let errors = self.post_write.check(&path).await;
+            let errors = self.post_write.check(&path, post_write::caller(ctx)).await;
             Ok(post_write::append(wrote, &[&notes, &errors]))
         }
         .boxed()

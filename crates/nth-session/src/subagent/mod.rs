@@ -223,6 +223,7 @@ struct Registry {
 struct Child {
     agent: String,
     description: String,
+    session_id: uuid::Uuid,
     /// Whether its tools can change files, which a planning parent may not
     /// continue it with.
     writes: bool,
@@ -267,6 +268,7 @@ impl Subagents {
         let mut registry = self.0.lock();
         registry.next += 1;
         let id = registry.next;
+        let session_id = session.id;
         let actor = tokio::spawn(actor::run(actor::Actor {
             id,
             agent: agent.name.clone(),
@@ -285,6 +287,7 @@ impl Subagents {
             Child {
                 agent: agent.name.clone(),
                 description: description.to_string(),
+                session_id,
                 writes,
                 closed,
                 inbox,
@@ -364,6 +367,14 @@ impl Subagents {
         let registry = self.0.lock();
         let child = registry.children.get(&id)?;
         Some((child.agent.clone(), child.description.clone()))
+    }
+
+    /// The task number and agent name associated with a child session.
+    pub fn describe_session(&self, session: &str) -> Option<(SubagentId, String)> {
+        let id = session.parse::<uuid::Uuid>().ok()?;
+        self.0.lock().children.iter().find_map(|(&number, child)| {
+            (child.session_id == id).then(|| (number, child.agent.clone()))
+        })
     }
 
     /// Whether subagent `id` belonged to a session that was left, for its

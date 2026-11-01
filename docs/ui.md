@@ -17,8 +17,8 @@ The screen is three bands stacked top to bottom. Each band has one job, and none
 ▎ Ask anything.                                                       │ input, 4 rows
 ▎                                                                     │
 ▎                                                                     ┘
- ~/repos/nth 24m ◘ 42%                     git · fix-auth #123 +3 *4 󰊐 2 ┐ status, 2 lines
- ● rust  ● typescript  rustfmt · prettier                              ┘
+ ~/repos/nth 24m ◘ 42% $0.38               git · fix-auth #123 +3 *4  ┐ status, 2 lines
+ > 2 queued · fix the test                     + docs, hoodrich  ● lsp ◇ ┘
 ```
 
 There are no borders or divider lines. Bands are told apart by coloured bars and spacing.
@@ -52,7 +52,7 @@ Swapping input panels therefore resizes the content panel. The content panel kee
   Diagnostics and Usage are always the default. A monitor's tab closes once its process stops, so it is only ever blue; a subagent's closes once it answered, so green shows only on the one you are looking at. Green fades once you have looked at the tab, so it means something new to see; the plan's stays until the plan is revised, since an approval is a fact about it. Red stays. The work tab is blue while an item runs, magenta while an item is lost (see [Work](#work)), red while an item failed, and green once every item is done.
 
 - **Read and navigate only.** Content tabs scroll and select, but text entry always goes through the input panel. Scrolling keys move the focused tab, and the mouse wheel the one under it.
-- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a click on the branch's pull-request link opens the PR, the one thing in the bar that answers a click. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
+- **Mouse.** A click on a tab in the header shows it. In a chat, a click on a link opens it in your browser (markdown links and bare `http(s)://` addresses; nothing else opens, as the model writes the targets), and a right click on an entry copies what it says, an answer as its markdown, a tool row as its output. On the status bar, a left click opens the pull request or latest Curio; a right click copies the working directory or branch. The copy goes through the terminal (OSC 52), so it works over ssh; tmux needs `set-clipboard on`. The status bar says `copied` or `opened …`, meaning the terminal or the opener was told: neither reports back.
 - **Independent of the input panel.** Switching tabs never changes the input panel, and the other way round. The tab keys work with any input panel open. The one exception is a subagent's tab: the prompt stays, but talks to that subagent and says so in its label; see [Subagents](#subagents).
 
 | Key              | Does                                                                                                        |
@@ -218,6 +218,12 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 ▎   ● ruff      ~/.local/bin/ruff  → ~/repos/nth
 ▎   ✗ gopls     not on PATH
 
+▎ lsp usage
+▎   rust  ~/repos/nth  pid 1234  connected · 1 active · last used now · 12% CPU · 80 MiB RSS
+▎   agent usage
+▎     main session  rust → ~/repos/nth · 1 active · last used now
+▎     @explore #1  rust → ~/repos/nth · idle · last used 5s ago
+
 ▎ formatters
 ▎   ✓ rustfmt   rustfmt $FILE
 ▎   ✗ prettier  no package.json here
@@ -227,10 +233,13 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 ▎   ✗ agent-browser  not on PATH, the browser skill installs it
 ```
 
-- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, formatters, tools. Context warnings follow the agents in yellow.
+- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, lsp usage, formatters, tools. Context warnings follow the agents in yellow.
 - **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
 - **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `→` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.
+- **LSP usage.** Separate from the availability inventory, this live section shows actual pooled clients, one process row per server ID and project root, including PID, starting, connected or broken state, active checks, last use, CPU percentage and resident memory in MiB. A broken client includes its failure reason; an empty pool has an explicit empty state. Usage updates while Diagnostics is open. Idle eviction or shutdown removes the process and its usage records.
+- **Agent usage.** Under LSP usage, the main session or primary agent and each subagent have their own group, with stable identities distinguishing children of the same agent type. Each group lists the server/root pairs it used, active operations and last use. Completed operations are idle or recent, not ongoing. Attribution is retained only while the corresponding pool entry exists.
+- **Shared resources.** Language-server processes are shared between agents. CPU and memory appear once per process, not as per-agent consumption. CPU is sampled over an interval, with 100% meaning one fully used logical core; RSS is the language-server process's own resident memory. Unavailable metrics, including before a usable sample, are shown as unavailable rather than zero. Sampling runs while the usage view is subscribed.
 - **Tools.** The programs the tools run through, each a green `✓` with its path in cyan when it is on PATH, or dim with a red `✗` and why: the `rtk` bash would rewrite the model's commands through ("not on PATH", or "disabled in the config" when `[tools.bash] rtk` is off), and the `agent-browser` the browser skill drives a browser with ("not on PATH, the browser skill installs it").
 - **Fresh on open.** Servers, formatters and the tools' programs are looked up each time the tab opens, since programs may have been installed since; "checking…" shows until they are.
 
@@ -249,7 +258,7 @@ Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session
 ▎ per turn
 ▎   #1 glm-5.3             1 step  1.0M in  80% cached  20k out  $0.38
 ▎   #2 @explore kimi-k3  3 steps   40k in     cache ?  900 out
-▎ 
+▎
 ▎   prices are list-price estimates from models.dev, whatever your plan bills
 
 ▎ all time
@@ -384,7 +393,7 @@ Modelled on opencode's prompt, in the [input panel style](#input-panel-style).
 - **Completion popup.** Sits right above the cursor's row, lined up with the `/` or `@` it completes, and moves left when it would run off the right edge.
 - **Agents and files.** `@` starting a word lists the agents whose name starts with what follows (not opencode's `hidden` ones, and none on a subagent's tab), `@explore` with the first line of its description, then the files under the working directory that fuzzy-match it, and the files under a directory added with `/add-dir` after them, by absolute path, at most 8 rows in all; a query with a `/` in it is a path and lists files only. Ctrl+N or Enter fills in `@name `. Sent, `@explore` tells the model to call the task tool with that agent, as in opencode: you pick the agent, the model writes the task. The chat shows the prompt as typed; a word that is also a file under the working directory is the file.
 - **Skills as commands.** `/` lists nth's commands first, then every skill, at most 10 rows; typing narrows them. A skill's row shows the first line of its description. Ctrl+N or Enter fills in `/name ` for the arguments, and Enter on a fully typed `/name [args]` runs it. The chat shows the command as typed; the model gets the skill's body with `$1`…`$N` and `$ARGUMENTS` filled in, `` !`cmd` `` replaced by the command's output and `@path` files attached. A skill named like a command is hidden behind the command.
-- **Added directories.** `/add-dir <dir>` adds a working directory to the session, as Claude Code's does: the path expanded (`~`, or against the working directory) and canonicalized, and only when it names a directory that is not inside the working directory or one already added, nor around one. Typing after `/add-dir ` completes to the directories under the one being typed, symlinked ones too; Ctrl+N fills the highlighted one in over the whole argument, and so does Enter until the argument is a directory ending in `/`, when it runs the command, so Enter on `/add-dir ` or `/add-dir ~` walks down rather than adding the working or the home directory. `/add-dir` with nothing says how it is used. How many were added shows on the status bar as `(+N)` after the working directory; their files list in `@` (20,000 in all, the working directory's first), and the model and its subagents are told of them in their system prompts and may read and edit them by absolute path. They are saved with the session at once and kept by `/clear` and `/resume`, as the working directory is.
+- **Added directories.** `/add-dir <dir>` adds a working directory to the session, as Claude Code's does: the path expanded (`~`, or against the working directory) and canonicalized, and only when it names a directory that is not inside the working directory or one already added, nor around one. Typing after `/add-dir ` completes to the directories under the one being typed, symlinked ones too; Ctrl+N fills the highlighted one in over the whole argument, and so does Enter until the argument is a directory ending in `/`, when it runs the command, so Enter on `/add-dir ` or `/add-dir ~` walks down rather than adding the working or the home directory. `/add-dir` with nothing says how it is used. Their names show in the status bar's widget area; their files list in `@` (20,000 in all, the working directory's first), and the model and its subagents are told of them in their system prompts and may read and edit them by absolute path. They are saved with the session at once and kept by `/clear` and `/resume`, as the working directory is.
 - **History.** Up and Down recall sent prompts, newest first, and Down past the newest gives back what was being typed. An edited recalled prompt is never replaced: Up and Down do nothing until it is sent or cleared. The last 100 prompts are kept across runs in `$XDG_DATA_HOME/nth/prompt-history.jsonl`, one JSON string per line. Builtin commands are not recorded.
 - **External editor.** ctrl+g opens the prompt in `$VISUAL`, else `$EDITOR`, else vi, as the plan does on its tab. The text you save and quit comes back into the prompt; an empty prompt opens an empty buffer. Saving with no change or quitting with an error (vim's `:cq`) leaves the prompt as it was, the latter with a hint. While the plan tab shows, ctrl+g edits the plan, not the prompt (see [Plan](#plan)).
 
@@ -505,29 +514,29 @@ Opened with `/settings`. What the chats show, for this run of nth only: a change
 
 ## Status bar
 
-Fixed at 2 lines, always visible, below the input panel. It holds general state; the one thing in it you interact with is the branch's pull-request link. Line 1 is where you are; line 2 is what is queued and what checks the model's writes. The right side of a line is cut first when it is too narrow.
+Fixed at 2 lines, always visible below every input panel, without borders. Four areas keep session, repository, hint and auxiliary information apart. Each row allocates space to its left area first, with a one-column gap before the right area; the right area is clipped first on narrow terminals.
 
 ```
- ~/repos/nth 24m ◘ 42%                       git · fix-auth #123 +3 *4 󰊐 2
- > 2 queued · fix the failing test                  ● rust  ● typescript
+ ~/repos/nth 24m ◘ 42% $0.38                 git · fix-auth #123 +3 *4
+ > 2 queued · fix the failing test             + docs, hoodrich  ● lsp ◇
 ```
 
-**Line 1: where you are**
+**Session section: top left**
 
-Left-aligned: the place in magenta — the working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)` — then how long the session has run, context used and what it spent. The model and effort the next turn runs with sit on the prompt's label row, not here. The git branch and status sit against the right edge.
+The working directory in magenta, with home written as `~`, then session age, context used and session cost. The model and effort the next turn runs with sit on the prompt's label row.
 
 Colours here are the terminal's standard colours; see [Colours](#colours). Purple in the starship config is magenta.
 
-| Part    | Shows                                                                                                                                                                                          | Colour                 |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| Place   | The working directory, with home written as `~`, then how many were added with `/add-dir` as `(+N)`                                                                                            | magenta                |
-| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                                                                                                    | white                  |
-| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%                                                                           | white, yellow, magenta |
-| Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | white                  |
+| Part    | Shows                                                                                                                    | Colour                 |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
+| Place   | The working directory, with home written as `~`                                                                          | magenta                |
+| Time    | How long the session has run, from its creation: `24m`, then `1h32m`, and `2d3h` past a day                              | white                  |
+| Context | Context used as a percentage of the model's window behind `◘`: `42%`, rounded to the nearest percent, capped at 100%     | white, yellow, magenta |
+| Spent   | What the session spent, subagents included: its price at the catalogue's rates, `$3.10`; nothing while no price is known | yellow                 |
 
 The context figure shows `◘ 0%` until the first turn reports usage, and is hidden when the model's context window is unknown. It is rounded to the nearest percent and capped at 100%, and turns yellow at 50% and magenta at 80%. What the session spent shows from the first reported usage on. The price is a list-price estimate from models.dev, whatever the plan bills, and ends in `+` when some model had no price; it is left out when none had one. The time counts from the session's creation (`created_at`), so a resumed session carries on from where it left off and shows days when it is old, while `/clear` starts it over; it updates at each whole minute even when nothing else happens.
 
-**Line 1, right: git status**
+**Repository section: top right**
 
 Prefixed with a bright white `git · ` and the current branch in green, then the parts of starship's `git_status`, in its order. Each part shows only when its count is non-zero, and the whole section is hidden outside a git repo.
 
@@ -554,22 +563,21 @@ After the branch, when the branch has one, the pull request's `#N` in yellow: a 
 
 Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHub remote (github.com, or an instance under it), `tea pr list` on any other, matched to the branch. The check runs at start-up, at the end of each turn and when the session moves, not after every write, since it goes over the network; no PR found by either is no error — there is simply no link. When the line is too narrow the link is cut with the rest of the right side, and cut off it is not clickable.
 
-**Line 2, left: hints and queued prompts**
+**Hint area: bottom left**
 
 A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in as a wave so it catches the eye: over 640ms (eight ticks) a reversed head, black on yellow and two cells wide, runs left to right, the cells ahead of it still blank and those behind it plain, so the hint is typed in. It goes at the next key, at once, or after a second, when the same head runs across again and wipes it out behind it.
 
 Otherwise, while prompts wait — queued behind the turn, or on their way into it — `> N queued · ` and the first line of the next one, in white. Blank otherwise.
 
-**Line 2, right: the language servers**
+**Widget area: bottom right**
 
-Against the right edge. A dot and the id of every language server the tools have started, in the order they started. Nothing shows until a server starts. A server runs once per project root, so the same one can run several times: in a worktree and the main checkout, or in a dependency's source the model read. It shows once, as `● rust ×2`, its dot the colour of its worst client: red over yellow over green.
+Conditional widgets appear in order: extra directories, language-server health, then the Curio shortcut. Each is hidden when unavailable.
 
-| Part       | Shows                                                 | Colour             |
-| ---------- | ----------------------------------------------------- | ------------------ |
-| Server dot | `●`, by state: connected, starting, broken            | green, yellow, red |
-| Server id  | The server's id, as in opencode: `rust`, `typescript` | white              |
+- **Extra directories.** `+ docs, hoodrich`: a plain `+`, magenta names and neutral punctuation. Duplicate basenames use the shortest distinguishing path suffix. Names fit whole within the available widget space, reserving room for LSP and Curio; `+N` counts omitted directories. An individually overlong name is shortened with an ellipsis when possible, preserving the overflow count. These names have no click action.
+- **Language servers.** `● lsp`, lowercase and without a count, appears once any server exists. Its dot reflects the worst state across all clients and roots: broken red, otherwise starting yellow, otherwise connected green. Servers start on the first read or write of a file they cover; Diagnostics gives their per-process and per-agent usage. Formatters are not shown here; `nth formatters` lists them.
+- **Curio.** A cyan `◇` appears when a Curio is available; left click opens the latest one, and hover gives the existing link feedback.
 
-Servers start on the first read or write of a file they cover, so none show at start-up. Their states come from the same language servers the tools use, over a `watch` channel. The formatters that run on writes are not shown; `nth formatters` lists them.
+Fully clipped pointer targets are inactive. The working directory and branch remain right-click copy targets, and the PR remains a left-click target on the first row.
 
 ## Icons
 

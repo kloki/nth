@@ -6,7 +6,8 @@
 use std::{io::ErrorKind, path::Path, sync::Arc};
 
 use nth_format::{Formatters, Outcome};
-use nth_lsp::{Diagnostic, Lsp, report};
+use nth_lsp::{Caller, Diagnostic, Lsp, report};
+use nth_protocol::ToolContext;
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::bom;
@@ -50,16 +51,38 @@ impl PostWrite {
     /// The errors language servers report on `path` as it now is, and on
     /// up to five other files. Called after formatting, so positions match
     /// the file as it now is.
-    pub(crate) async fn check(&self, path: &Path) -> String {
-        let diagnostics = self.lsp.touch(path, true).await;
+    pub(crate) async fn check(&self, path: &Path, caller: Option<Caller>) -> String {
+        let diagnostics = self.touch(path, caller).await;
         report::after_write(path, &diagnostics)
     }
 
     /// What the language servers report on `path` once they have seen it
     /// as it now is; other files' diagnostics are left out.
-    pub(crate) async fn diagnostics(&self, path: &Path) -> Vec<Diagnostic> {
-        let mut all = self.lsp.touch(path, true).await;
+    pub(crate) async fn diagnostics(&self, path: &Path, caller: Option<Caller>) -> Vec<Diagnostic> {
+        let mut all = self.touch(path, caller).await;
         all.remove(path).unwrap_or_default()
+    }
+    async fn touch(
+        &self,
+        path: &Path,
+        caller: Option<Caller>,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<Diagnostic>> {
+        match caller {
+            Some(caller) => self.lsp.touch_attributed(path, true, caller).await,
+            None => self.lsp.touch(path, true).await,
+        }
+    }
+}
+
+pub(crate) fn caller(ctx: &ToolContext) -> Option<Caller> {
+    if ctx.session.is_empty() {
+        None
+    } else {
+        Some(Caller {
+            session: ctx.session.clone(),
+            is_subagent: ctx.is_subagent,
+            agent: ctx.agent.as_ref().map(|a| a.name.clone()),
+        })
     }
 }
 
@@ -140,7 +163,7 @@ impl PostWrite {
         let writing = self.lock().await;
         let notes = writing.format(path, cwd).await;
         drop(writing);
-        let errors = self.check(path).await;
+        let errors = self.check(path, None).await;
         join_sections(&notes, &errors)
     }
 

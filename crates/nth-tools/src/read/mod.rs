@@ -122,7 +122,10 @@ impl Tool for Read {
                 // meant to outlive it.
                 let lsp = self.lsp.clone();
                 let file = path.clone();
-                tokio::spawn(async move { lsp.touch(&file, false).await });
+                let caller = crate::post_write::caller(ctx);
+                tokio::spawn(async move {
+                    match caller { Some(caller) => lsp.touch_attributed(&file, false, caller).await, None => lsp.touch(&file, false).await }
+                });
                 let dir = path.parent().map(Path::to_path_buf).unwrap_or(path);
                 (content, dir)
             };

@@ -92,8 +92,12 @@ impl Tool for ApplyPatch {
                 notes.extend(ran.lines().map(|note| format!("{name}: {note}")));
             }
             drop(writing);
-            let diagnostics =
-                join_all(changed.iter().map(|p| self.post_write.diagnostics(p))).await;
+            let diagnostics = join_all(
+                changed
+                    .iter()
+                    .map(|p| self.post_write.diagnostics(p, post_write::caller(ctx))),
+            )
+            .await;
             let errors: Vec<String> = changed
                 .iter()
                 .zip(&diagnostics)

@@ -1,16 +1,11 @@
-//! The status bar under the input panel. Line 1 is where the session is:
-//! the working directory in magenta (then how many were added with
-//! `/add-dir` as `(+N)`), how long it has run, context used as a percentage
-//! and what the session spent on the left, git branch and status on the
-//! right, with the branch's pull request as a clickable `#N`; a right click
-//! copies the working directory or the branch. Line 2 shows
-//! a hint about the last key (typed in by a wave, wiped out by one after a
-//! few seconds) or the queued prompts on the left, and the language servers
-//! that check a write on the right: a dot per server, coloured by the
-//! worst of its clients, with how many roots it runs in when more than
-//! one. The right side is cut first when a line is too narrow.
+//! Two status rows: session and repository above, hint and widgets below.
+//! The left side takes priority, with a gap before the right side. Directory
+//! and branch copy targets and the PR and Curio links follow what is drawn.
 
-use std::{path::Path, time::SystemTime};
+use std::{
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use nth_icons::icons;
 use nth_lsp::ServerState;
@@ -21,15 +16,15 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{app::App, git};
 
 /// Always this tall, whichever input panel is open.
 pub const ROWS: u16 = 2;
 
-/// Draws the two lines. Where line 1's working directory, branch,
-/// pull-request link and curio ended up, for the pointer to land on;
+/// Draws the two lines. Where the working directory, branch,
+/// pull-request link and Curio ended up, for the pointer to land on;
 /// `None` when one does not show or is cut off.
 #[derive(Default)]
 pub struct HitAreas {
@@ -42,16 +37,9 @@ pub struct HitAreas {
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     let [state, checks] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
 
-    // The working directory, and how many were added with `/add-dir`,
-    // say where the session works: magenta. Only the count, since each
-    // path would crowd out the rest.
-    let mut dirs = app.place.clone();
-    if !app.extra_dirs.is_empty() {
-        dirs.push_str(&format!(" (+{})", app.extra_dirs.len()));
-    }
-    let dirs_width = dirs.width();
+    let dirs_width = app.place.width();
     let mut place = vec![
-        Span::styled(dirs, magenta()),
+        Span::styled(app.place.clone(), magenta()),
         Span::raw(" "),
         Span::styled(
             session_time(SystemTime::now(), app.session_since),
@@ -99,21 +87,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
             summary.clear();
         }
     }
-    // The icon alone is one column at the edge, hard to hit: its target
-    // takes the space before it too.
-    let curio = if app.has_curios() {
-        let at = summary.iter().map(Span::width).sum::<usize>();
-        let wide = if summary.is_empty() {
-            1
-        } else {
-            summary.push(Span::raw(" "));
-            2
-        };
-        summary.push(Span::styled(icons().curio, Style::new().fg(Color::Cyan)));
-        Some((at, wide))
-    } else {
-        None
-    };
     let width = summary.iter().map(Span::width).sum();
     let right = split_line(frame, state, place, summary);
     let link_area = link.and_then(|(at, wide)| link_rect(right, width, at, wide));
@@ -121,7 +94,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
         Some(hint) => hint.spans(),
         None => queued(app),
     };
-    split_line(frame, checks, left, servers(app));
+    let left_width = left
+        .iter()
+        .map(Span::width)
+        .sum::<usize>()
+        .min(checks.width as usize);
+    let available =
+        (checks.width as usize).saturating_sub(left_width + usize::from(left_width > 0));
+    let (widgets, curio) = widgets(app, available);
+    let widget_width = widgets.iter().map(Span::width).sum();
+    let widget_area = split_line(frame, checks, left, widgets);
     // The left side starts at the line's edge, cut at its end.
     let place_width = u16::try_from(dirs_width)
         .unwrap_or(u16::MAX)
@@ -133,7 +115,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
         }),
         branch: branch_at.and_then(|(at, wide)| link_rect(right, width, at, wide)),
         pr: link_area,
-        curio: curio.and_then(|(at, wide)| link_rect(right, width, at, wide)),
+        curio: curio.and_then(|(at, wide)| link_rect(widget_area, widget_width, at, wide)),
     }
 }
 
@@ -146,7 +128,7 @@ fn spent(app: &App) -> Vec<Span<'static>> {
     match app.price() {
         Some(price) => vec![Span::styled(
             format!(" {price}"),
-            Style::new().fg(Color::Gray),
+            Style::new().fg(Color::Yellow),
         )],
         None => Vec::new(),
     }
@@ -216,36 +198,129 @@ fn queued(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(line, Style::new().fg(Color::Gray))]
 }
 
-/// Line 2, right: `● rust ×2  ● typescript`. The pool runs a client per
-/// (server, root), so one server can run in several roots (a worktree, a
-/// dependency's source); it shows once, with the worst client's colour.
-fn servers(app: &App) -> Vec<Span<'static>> {
-    let mut grouped: Vec<(&str, &ServerState, usize)> = Vec::new();
-    for server in &app.servers {
-        match grouped.iter_mut().find(|(id, ..)| *id == server.id) {
-            Some((_, state, count)) => {
-                *count += 1;
-                if rank(&server.state) > rank(state) {
-                    *state = &server.state;
-                }
-            }
-            None => grouped.push((&server.id, &server.state, 1)),
-        }
-    }
-    let mut spans = Vec::new();
-    for (id, state, count) in grouped {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(
+/// The lower-right widgets reserve space for LSP and Curio before directories.
+fn widgets(app: &App, available: usize) -> (Vec<Span<'static>>, Option<(usize, usize)>) {
+    let mut tail = Vec::new();
+    if let Some(state) = app.servers.iter().map(|s| &s.state).max_by_key(|s| rank(s)) {
+        tail.push(Span::styled(
             format!("{} ", icons().dot),
             Style::new().fg(state_colour(state)),
         ));
-        let name = match count {
-            1 => id.to_string(),
-            _ => format!("{id} ×{count}"),
+        tail.push(Span::styled("lsp", Style::new().fg(Color::Gray)));
+    }
+    let tail_width: usize = tail.iter().map(Span::width).sum();
+    let reserved = tail_width
+        + usize::from(app.has_curios())
+        + usize::from(tail_width > 0 && app.has_curios());
+    let budget = available.saturating_sub(reserved + usize::from(reserved > 0));
+    let mut spans = directories(
+        &app.extra_dirs,
+        if reserved == 0 { available } else { budget },
+    );
+    if !spans.is_empty() && !tail.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    spans.extend(tail);
+    let curio = if app.has_curios() {
+        let at = spans.iter().map(Span::width).sum::<usize>();
+        let wide = if spans.is_empty() {
+            1
+        } else {
+            spans.push(Span::raw(" "));
+            2
         };
-        spans.push(Span::styled(name, Style::new().fg(Color::Gray)));
+        spans.push(Span::styled(icons().curio, Style::new().fg(Color::Cyan)));
+        Some((at, wide))
+    } else {
+        None
+    };
+    (spans, curio)
+}
+
+/// Shortest suffixes that distinguish directory names from one another.
+fn directory_names(paths: &[PathBuf]) -> Vec<String> {
+    let parts: Vec<Vec<String>> = paths
+        .iter()
+        .map(|p| {
+            p.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect()
+        })
+        .collect();
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            for n in 1..=path.len() {
+                let suffix = &path[path.len() - n..];
+                if parts
+                    .iter()
+                    .enumerate()
+                    .all(|(j, other)| i == j || !other.ends_with(suffix))
+                {
+                    return suffix.join("/");
+                }
+            }
+            paths[i].display().to_string()
+        })
+        .collect()
+}
+
+fn directories(paths: &[PathBuf], budget: usize) -> Vec<Span<'static>> {
+    let names = directory_names(paths);
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let mut shown = Vec::new();
+    let mut used = 2; // "+ "
+    for (i, name) in names.iter().enumerate() {
+        let separator = if i == 0 { 0 } else { 2 };
+        let remaining = names.len() - i - 1;
+        let overflow = if remaining > 0 {
+            2 + format!("+{remaining}").width()
+        } else {
+            0
+        };
+        if used + separator + name.width() + overflow <= budget {
+            used += separator + name.width();
+            shown.push(name.clone());
+        } else {
+            // Only shorten the first name; later names remain whole.
+            if i == 0 {
+                let room = budget.saturating_sub(used + overflow);
+                if room >= 2 {
+                    let mut short = String::new();
+                    for ch in name.chars() {
+                        if short.width() + ch.width().unwrap_or(0) + 1 > room {
+                            break;
+                        }
+                        short.push(ch);
+                    }
+                    short.push('…');
+                    shown.push(short);
+                }
+            }
+            break;
+        }
+    }
+    let omitted = names.len() - shown.len();
+    if shown.is_empty() {
+        let text = format!("+{omitted}");
+        return if text.width() <= budget {
+            vec![Span::raw(text)]
+        } else {
+            Vec::new()
+        };
+    }
+    let mut spans = vec![Span::raw("+ ")];
+    for (i, name) in shown.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(", "));
+        }
+        spans.push(Span::styled(name, magenta()));
+    }
+    if omitted > 0 {
+        spans.push(Span::raw(format!(", +{omitted}")));
     }
     spans
 }
@@ -325,6 +400,23 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn directory_widget_disambiguates_and_fits_unicode() {
+        let paths: Vec<PathBuf> = ["/one/docs", "/two/docs", "/src/界面"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(directory_names(&paths), ["one/docs", "two/docs", "界面"]);
+        let text = |width| Line::from(directories(&paths, width)).to_string();
+        assert_eq!(text(40), "+ one/docs, two/docs, 界面");
+        assert_eq!(text(14), "+ one/docs, +2");
+        assert_eq!(text(9), "+ on…, +2");
+        assert_eq!(text(2), "+3");
+        for width in 0..40 {
+            assert!(text(width).width() <= width);
+        }
+    }
 
     #[test]
     fn place_abbreviates_home_by_path_components() {

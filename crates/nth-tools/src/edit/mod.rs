@@ -69,7 +69,13 @@ impl Tool for Edit {
             let done = edit(&path, &args).await?;
             let notes = writing.format(&path, &ctx.cwd).await;
             drop(writing);
-            let errors = report::after_edit(&path, &self.post_write.diagnostics(&path).await);
+            let errors = report::after_edit(
+                &path,
+                &self
+                    .post_write
+                    .diagnostics(&path, post_write::caller(ctx))
+                    .await,
+            );
             Ok(post_write::append(done, &[&notes, &errors]))
         }
         .boxed()
