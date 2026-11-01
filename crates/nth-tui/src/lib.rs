@@ -25,6 +25,7 @@ mod popup;
 mod prompt;
 mod question;
 mod rich;
+mod search;
 mod session_picker;
 mod settings;
 mod spinner;

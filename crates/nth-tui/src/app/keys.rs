@@ -7,6 +7,7 @@ use super::{App, input::Input};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     CopyCurio,
+    Search,
     Submit,
     Interrupt,
     /// Highlights the next or previous entry in the completion popup or a
@@ -60,6 +61,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let action = match key.code {
         KeyCode::Char('c') if ctrl => Action::ClearOrQuit,
+        KeyCode::Char('r') if ctrl => Action::Search,
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('u') if ctrl => Action::PageUp,
         KeyCode::Char('d') if ctrl => Action::PageDown,
@@ -132,6 +134,7 @@ impl App {
             _ => {}
         }
         match &self.input {
+            Input::Search(_) => return self.key_search(action),
             Input::Curios(_) => return self.key_curios(action),
             Input::LlmPicker(_) => return self.key_llm_picker(action),
             Input::SessionPicker(_) => return self.key_session_picker(action),
@@ -185,6 +188,7 @@ impl App {
             | Action::Top
             | Action::Bottom => {}
             Action::LlmPicker => self.open_llm_picker(),
+            Action::Search => self.open_search(),
             Action::AgentPicker => self.open_agent_picker(),
             Action::NextProfile => self.next_profile(),
             Action::Edit => self.edit(),
