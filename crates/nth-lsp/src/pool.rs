@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use futures::{
@@ -50,6 +50,33 @@ pub struct ServerInfo {
 }
 
 type Key = (String, PathBuf);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Caller {
+    pub session: String,
+    pub is_subagent: bool,
+    pub agent: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallerUsage {
+    pub caller: Caller,
+    pub active: usize,
+    pub last_used: SystemTime,
+}
+/// Shared process metrics; CPU is percent of one core, memory is RSS bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessUsage {
+    pub id: String,
+    pub root: PathBuf,
+    pub state: ServerState,
+    pub pid: Option<u32>,
+    pub active: usize,
+    pub last_used: SystemTime,
+    pub cpu_percent: Option<f32>,
+    pub memory_bytes: Option<u64>,
+    pub callers: Vec<CallerUsage>,
+}
+
 /// One client's start, shared by everyone who touches its (id, root). The
 /// first runs it in a task of its own, since a cancelled turn drops its tool
 /// futures and must not take a server that is still starting down with it;
@@ -64,6 +91,7 @@ struct Entry {
     touched: Instant,
     /// Touches using it right now: never idle while there are any.
     busy: usize,
+    usage: ProcessUsage,
 }
 
 /// One touch's use of an entry, from asking for its client until the touch
@@ -71,6 +99,7 @@ struct Entry {
 struct Busy {
     inner: Arc<Inner>,
     key: Key,
+    caller: Option<Caller>,
 }
 
 impl Drop for Busy {
@@ -83,6 +112,15 @@ impl Drop for Busy {
         if let Some(entry) = clients.get_mut(&self.key) {
             entry.busy -= 1;
             entry.touched = Instant::now();
+            entry.usage.active -= 1;
+            entry.usage.last_used = SystemTime::now();
+            if let Some(caller) = &self.caller
+                && let Some(usage) = entry.usage.callers.iter_mut().find(|u| &u.caller == caller)
+            {
+                usage.active -= 1;
+                usage.last_used = SystemTime::now();
+            }
+            self.inner.publish(&clients);
         }
     }
 }
@@ -100,6 +138,8 @@ struct Inner {
     servers: Arc<[Server]>,
     clients: Mutex<HashMap<Key, Entry>>,
     status: watch::Sender<Vec<ServerStatus>>,
+    usage: watch::Sender<Vec<ProcessUsage>>,
+    sampling: std::sync::atomic::AtomicBool,
     cancel: CancellationToken,
     idle: Option<Duration>,
 }
@@ -121,6 +161,8 @@ impl Lsp {
                 servers: servers.into(),
                 clients: Mutex::new(HashMap::new()),
                 status: watch::Sender::new(Vec::new()),
+                usage: watch::Sender::new(Vec::new()),
+                sampling: std::sync::atomic::AtomicBool::new(false),
                 cancel: CancellationToken::new(),
                 idle,
             }),
@@ -130,6 +172,22 @@ impl Lsp {
     /// Every client nth has tried to start, as it changes.
     pub fn status(&self) -> watch::Receiver<Vec<ServerStatus>> {
         self.inner.status.subscribe()
+    }
+
+    /// Subscribe to process and caller usage. Sampling stops after subscribers leave.
+    /// Clone the snapshot and release the watch borrow before awaiting, cancelling
+    /// a touch, or otherwise calling into the pool: publishing needs its write lock.
+    pub fn usage(&self) -> watch::Receiver<Vec<ProcessUsage>> {
+        let receiver = self.inner.usage.subscribe();
+        if !self
+            .inner
+            .sampling
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let weak = Arc::downgrade(&self.inner);
+            tokio::task::spawn_blocking(move || sample_usage(weak));
+        }
+        receiver
     }
 
     /// The servers that would handle files in `cwd`. Blocking.
@@ -153,11 +211,29 @@ impl Lsp {
     /// if needed. With `wait`, gives them a moment to report on it. Returns
     /// all the diagnostics those servers know of, for this file and others.
     pub async fn touch(&self, path: &Path, wait: bool) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
+        self.touch_inner(path, wait, None).await
+    }
+
+    pub async fn touch_attributed(
+        &self,
+        path: &Path,
+        wait: bool,
+        caller: Caller,
+    ) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
+        self.touch_inner(path, wait, Some(caller)).await
+    }
+
+    async fn touch_inner(
+        &self,
+        path: &Path,
+        wait: bool,
+        caller: Option<Caller>,
+    ) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
         let path = match std::path::absolute(path) {
             Ok(path) => path,
             Err(_) => return BTreeMap::new(),
         };
-        let (_busy, clients) = self.clients_for(&path).await;
+        let (_busy, clients) = self.clients_for(&path, caller).await;
         let alive = join_all(clients.iter().map(|client| async {
             let after = Instant::now();
             match client.open_or_change(&path).await {
@@ -202,9 +278,21 @@ impl Lsp {
         };
         join_all(clients.iter().map(|client| client.shutdown())).await;
         self.inner.cancel.cancel();
+        let mut clients = self
+            .inner
+            .clients
+            .lock()
+            .expect("lsp client map lock poisoned");
+        clients.clear();
+        self.inner.publish(&clients);
+        self.inner.status.send_replace(Vec::new());
     }
 
-    async fn clients_for(&self, path: &Path) -> (Vec<Busy>, Vec<Arc<Client>>) {
+    async fn clients_for(
+        &self,
+        path: &Path,
+        caller: Option<Caller>,
+    ) -> (Vec<Busy>, Vec<Arc<Client>>) {
         let servers = Arc::clone(&self.inner.servers);
         let file = path.to_path_buf();
         let matches = tokio::task::spawn_blocking(move || {
@@ -224,14 +312,19 @@ impl Lsp {
         let started = join_all(
             matches
                 .into_iter()
-                .map(|(server, root)| self.client(server, root)),
+                .map(|(server, root)| self.client(server, root, caller.clone())),
         )
         .await;
         let (busy, clients): (Vec<_>, Vec<_>) = started.into_iter().unzip();
         (busy, clients.into_iter().flatten().collect())
     }
 
-    async fn client(&self, server: Server, root: PathBuf) -> (Busy, Option<Arc<Client>>) {
+    async fn client(
+        &self,
+        server: Server,
+        root: PathBuf,
+        caller: Option<Caller>,
+    ) -> (Busy, Option<Arc<Client>>) {
         let key = (server.id.clone(), root.clone());
         let slot = {
             let mut clients = self
@@ -242,6 +335,17 @@ impl Lsp {
             let entry = clients
                 .entry((server.id.clone(), root.clone()))
                 .or_insert_with(|| {
+                    let usage = ProcessUsage {
+                        id: server.id.clone(),
+                        root: root.clone(),
+                        state: ServerState::Starting,
+                        pid: None,
+                        active: 0,
+                        last_used: SystemTime::now(),
+                        cpu_percent: None,
+                        memory_bytes: None,
+                        callers: Vec::new(),
+                    };
                     let lsp = self.clone();
                     let started = tokio::spawn(async move { lsp.start(server, root).await });
                     Entry {
@@ -251,14 +355,32 @@ impl Lsp {
                             .shared(),
                         touched: Instant::now(),
                         busy: 0,
+                        usage,
                     }
                 });
             entry.busy += 1;
-            entry.slot.clone()
+            entry.usage.active += 1;
+            entry.usage.last_used = SystemTime::now();
+            if let Some(caller) = &caller {
+                if let Some(usage) = entry.usage.callers.iter_mut().find(|u| &u.caller == caller) {
+                    usage.active += 1;
+                    usage.last_used = SystemTime::now();
+                } else {
+                    entry.usage.callers.push(CallerUsage {
+                        caller: caller.clone(),
+                        active: 1,
+                        last_used: SystemTime::now(),
+                    });
+                }
+            }
+            let slot = entry.slot.clone();
+            self.inner.publish(&clients);
+            slot
         };
         let busy = Busy {
             inner: Arc::clone(&self.inner),
             key,
+            caller,
         };
         (busy, slot.await)
     }
@@ -275,6 +397,17 @@ impl Lsp {
         let cancel = self.inner.cancel.child_token();
         match Client::spawn(&server.id, launch, cancel.clone(), stderr.clone()).await {
             Ok(client) => {
+                {
+                    let mut clients = self
+                        .inner
+                        .clients
+                        .lock()
+                        .expect("lsp client map lock poisoned");
+                    if let Some(entry) = clients.get_mut(&(server.id.clone(), root.clone())) {
+                        entry.usage.pid = client.pid();
+                    }
+                    self.inner.publish(&clients);
+                }
                 self.set_state(&server.id, &root, ServerState::Connected);
                 let client = Arc::new(client);
                 if let Some(idle) = self.inner.idle {
@@ -295,6 +428,17 @@ impl Lsp {
     /// Only a change wakes the watchers: a broken server is reported again
     /// on every touch, and the front-end need not redraw for that.
     fn set_state(&self, id: &str, root: &Path, state: ServerState) {
+        {
+            let mut clients = self
+                .inner
+                .clients
+                .lock()
+                .expect("lsp client map lock poisoned");
+            if let Some(entry) = clients.get_mut(&(id.to_string(), root.to_path_buf())) {
+                entry.usage.state = state.clone();
+            }
+            self.inner.publish(&clients);
+        }
         self.inner.status.send_if_modified(|all| {
             match all.iter_mut().find(|s| s.id == id && s.root == root) {
                 Some(status) if status.state == state => false,
@@ -312,6 +456,80 @@ impl Lsp {
                 }
             }
         });
+    }
+}
+
+impl Inner {
+    fn publish(&self, clients: &HashMap<Key, Entry>) {
+        let mut usage: Vec<_> = clients.values().map(|e| e.usage.clone()).collect();
+        usage.sort_by(|a, b| (&a.id, &a.root).cmp(&(&b.id, &b.root)));
+        self.usage.send_if_modified(|old| {
+            if *old == usage {
+                false
+            } else {
+                *old = usage;
+                true
+            }
+        });
+    }
+}
+
+fn sample_usage(inner: Weak<Inner>) {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let mut system = System::new();
+    let mut identities = HashMap::<u32, u64>::new();
+    loop {
+        let Some(pool) = inner.upgrade() else { return };
+        if pool.usage.receiver_count() == 0 {
+            pool.sampling
+                .store(false, std::sync::atomic::Ordering::Release);
+            // A subscriber may have arrived before the flag was cleared.
+            if pool.usage.receiver_count() == 0
+                || pool
+                    .sampling
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                return;
+            }
+        }
+        let pids: Vec<_> = {
+            let clients = pool.clients.lock().expect("lsp client map lock poisoned");
+            clients.values().filter_map(|e| e.usage.pid).collect()
+        };
+        identities.retain(|pid, _| pids.contains(pid));
+        let ids: Vec<_> = pids.iter().map(|id| Pid::from_u32(*id)).collect();
+        if !ids.is_empty() {
+            system.refresh_processes(ProcessesToUpdate::Some(&ids), true);
+        }
+        {
+            let mut clients = pool.clients.lock().expect("lsp client map lock poisoned");
+            for entry in clients.values_mut() {
+                let Some(pid) = entry.usage.pid else { continue };
+                let process = system.process(Pid::from_u32(pid));
+                if let Some(process) = process {
+                    let identity = process.start_time();
+                    let previous = identities.get(&pid).copied();
+                    if previous.is_none() || previous == Some(identity) {
+                        identities.insert(pid, identity);
+                        entry.usage.memory_bytes = Some(process.memory());
+                        entry.usage.cpu_percent = if previous == Some(identity) {
+                            Some(process.cpu_usage())
+                        } else {
+                            None
+                        };
+                    } else {
+                        entry.usage.memory_bytes = None;
+                        entry.usage.cpu_percent = None;
+                    }
+                } else {
+                    entry.usage.memory_bytes = None;
+                    entry.usage.cpu_percent = None;
+                }
+            }
+            pool.publish(&clients);
+        }
+        drop(pool);
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -344,6 +562,7 @@ async fn stop_when_idle(
             continue;
         }
         clients.remove(&key);
+        inner.publish(&clients);
         // Under the lock, so a start for the same key that follows cannot
         // have its status taken away.
         inner
@@ -469,6 +688,55 @@ done
     }
 
     #[tokio::test]
+    async fn callers_share_process_and_cancelled_checks_become_idle() {
+        let (_tmp, file, lsp) = scripted_idling(&[], Some(Duration::from_millis(300)));
+        let mut usage = lsp.usage();
+        let caller = |session: &str| Caller {
+            session: session.into(),
+            is_subagent: true,
+            agent: Some("explore".into()),
+        };
+        let first_lsp = lsp.clone();
+        let first_file = file.clone();
+        let first_caller = caller("one");
+        let first = tokio::spawn(async move {
+            first_lsp
+                .touch_attributed(&first_file, true, first_caller)
+                .await
+        });
+        // `wait_for` returns a watch read guard. Release it before aborting:
+        // cancellation drops Busy, which synchronously publishes usage.
+        drop(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                usage.wait_for(|u| u.first().is_some_and(|p| p.active == 1)),
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+        );
+        first.abort();
+        let _ = first.await;
+        assert_eq!(usage.borrow()[0].callers[0].active, 0);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            lsp.touch_attributed(&file, true, caller("two")),
+        )
+        .await
+        .expect("second caller's check completed");
+        let snapshot = usage.borrow().clone();
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].pid.is_some());
+        assert_eq!(snapshot[0].active, 0);
+        assert_eq!(snapshot[0].callers.len(), 2);
+        assert!(snapshot[0].callers.iter().all(|c| c.active == 0));
+        tokio::time::timeout(Duration::from_secs(5), usage.wait_for(|u| u.is_empty()))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn a_touch_given_up_on_leaves_the_server_starting() {
         let (_tmp, file, lsp) = scripted(&[]);
         let mut status = lsp.status();
@@ -540,7 +808,9 @@ done
 
         // A touch that is still waiting on its client long after the idle
         // time is up, as a slow start or a long wait for diagnostics is.
-        let (busy, client) = lsp.client(server.clone(), tmp.path().to_path_buf()).await;
+        let (busy, client) = lsp
+            .client(server.clone(), tmp.path().to_path_buf(), None)
+            .await;
         assert!(client.is_some());
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(state_of(&status.borrow()), Some(ServerState::Connected));

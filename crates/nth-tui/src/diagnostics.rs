@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use nth_context::Context;
 use nth_format::FormatterStatus;
 use nth_icons::icons;
-use nth_lsp::{ServerInfo, ServerState, ServerStatus};
+use nth_lsp::{ProcessUsage, ServerInfo, ServerState, ServerStatus};
 use nth_protocol::Failed;
 use ratatui::{
     Frame,
@@ -78,25 +78,32 @@ pub struct Facts<'a> {
     /// Whether bash passes the model's commands through rtk.
     pub rtk: bool,
     pub running: &'a [ServerStatus],
+    pub lsp_usage: &'a [ProcessUsage],
+    pub agent_label: &'a dyn Fn(&nth_lsp::Caller) -> String,
     pub context: &'a Context,
     pub home: Option<&'a str>,
 }
 
 impl Diagnostics {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, facts: &Facts) {
-        let lines = self.lines(facts);
+        let lines = self
+            .lines(facts)
+            .into_iter()
+            .flat_map(|line| crate::rich::wrap(line, usize::from(area.width).max(1)))
+            .collect();
         self.pager.render(frame, area, lines);
     }
 
     fn lines(&self, facts: &Facts) -> Vec<Line<'static>> {
         theme::sections(vec![
+            section(|l| lsp_usage(l, facts)),
             section(|l| model(l, facts)),
             section(|l| instructions(l, facts)),
             section(|l| skills(l, facts)),
             section(|l| agents(l, facts)),
+            section(|l| self.tools(l, facts)),
             section(|l| self.servers(l, facts)),
             section(|l| self.formatters(l, facts)),
-            section(|l| self.tools(l, facts)),
         ])
     }
 
@@ -198,6 +205,87 @@ impl Diagnostics {
         );
         program(lines, "tea", width, &self.tea, "not on PATH", facts.home);
         program(lines, "gh", width, &self.gh, "not on PATH", facts.home);
+    }
+}
+
+fn elapsed(since: std::time::SystemTime) -> String {
+    let secs = since.elapsed().unwrap_or_default().as_secs();
+    match secs {
+        0..=1 => "now".into(),
+        2..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        _ => format!("{}h ago", secs / 3600),
+    }
+}
+
+fn lsp_usage(lines: &mut Vec<Line<'static>>, facts: &Facts) {
+    lines.push(title("lsp usage"));
+    if facts.lsp_usage.is_empty() {
+        lines.push(note("no running language servers".into()));
+        return;
+    }
+    for process in facts.lsp_usage {
+        let state = match &process.state {
+            ServerState::Starting => "starting".to_string(),
+            ServerState::Connected => "connected".to_string(),
+            ServerState::Broken(reason) => format!("broken: {reason}"),
+        };
+        let pid = process
+            .pid
+            .map_or_else(|| "pid unavailable".into(), |p| format!("pid {p}"));
+        let cpu = process
+            .cpu_percent
+            .map_or_else(|| "CPU unavailable".into(), |v| format!("{v:.1}% CPU"));
+        let memory = process.memory_bytes.map_or_else(
+            || "RSS unavailable".into(),
+            |v| format!("{:.1} MiB RSS", v as f64 / 1_048_576.0),
+        );
+        lines.push(row(
+            Span::styled(
+                icons().dot,
+                Style::new().fg(status::state_colour(&process.state)),
+            ),
+            process.id.clone(),
+            format!(
+                "{} · {pid} · {state} · {} active · last used {} · {cpu} · {memory}",
+                path(&process.root, facts.home),
+                process.active,
+                elapsed(process.last_used)
+            ),
+        ));
+    }
+    lines.push(note("agent usage".into()));
+    let mut agents = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for process in facts.lsp_usage {
+        for usage in &process.callers {
+            agents
+                .entry((facts.agent_label)(&usage.caller))
+                .or_default()
+                .push(format!(
+                    "{} → {} · {} · last used {}",
+                    process.id,
+                    path(&process.root, facts.home),
+                    if usage.active == 0 {
+                        "idle".into()
+                    } else {
+                        format!("{} active", usage.active)
+                    },
+                    elapsed(usage.last_used)
+                ));
+        }
+    }
+    if agents.is_empty() {
+        lines.push(note("no attributed usage".into()));
+    }
+    for (agent, uses) in agents {
+        for (index, usage) in uses.into_iter().enumerate() {
+            let label = if index == 0 {
+                agent.clone()
+            } else {
+                String::new()
+            };
+            lines.push(row(Span::raw(icons().subagent), label, usage));
+        }
     }
 }
 
@@ -471,9 +559,44 @@ mod tests {
             checks: true,
             rtk: true,
             running,
+            lsp_usage: &[],
+            agent_label: &|caller| caller.session.clone(),
             context,
             home: None,
         }
+    }
+
+    #[test]
+    fn usage_shows_shared_process_once_and_each_agent() {
+        let context = Context::default();
+        let now = std::time::SystemTime::now();
+        let caller = |session: &str, active| nth_lsp::CallerUsage {
+            caller: nth_lsp::Caller {
+                session: session.into(),
+                is_subagent: session != "main",
+                agent: None,
+            },
+            active,
+            last_used: now,
+        };
+        let usage = [ProcessUsage {
+            id: "rust".into(),
+            root: "/repo".into(),
+            state: ServerState::Connected,
+            pid: Some(42),
+            active: 1,
+            last_used: now,
+            cpu_percent: Some(12.5),
+            memory_bytes: Some(2_097_152),
+            callers: vec![caller("main", 1), caller("child", 0)],
+        }];
+        let mut facts = facts(&context, &[]);
+        facts.lsp_usage = &usage;
+        let lines = text(&Diagnostics::default(), &facts).join("\n");
+        assert_eq!(lines.matches("pid 42").count(), 1);
+        assert!(lines.contains("12.5% CPU · 2.0 MiB RSS"));
+        assert!(lines.contains("main  rust → /repo · 1 active"));
+        assert!(lines.contains("child  rust → /repo · idle"));
     }
 
     #[test]
@@ -510,9 +633,12 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[5], "▎   3 models served");
+        assert_eq!(text[section(&text, "model") + 5], "▎   3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
+        assert_eq!(section(&text, "lsp usage"), 0);
+        assert!(section(&text, "tools") < servers);
+        assert!(section(&text, "tools") < section(&text, "formatters"));
         assert_eq!(
             text[servers + 1],
             "▎   ● rust   /bin/rust-analyzer  → /repo  exited"
@@ -534,7 +660,7 @@ mod tests {
         assert_eq!(bar.content, theme::BAR);
         assert_eq!(bar.style.fg, Some(Color::DarkGray));
         let gap = lines.iter().position(|l| l.spans.is_empty()).expect("gap");
-        assert_eq!(lines[gap + 1].to_string(), "▎ instructions");
+        assert_eq!(lines[gap + 1].to_string(), "▎ model");
     }
 
     #[test]
@@ -542,8 +668,9 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
         let acting = text(&Diagnostics::default(), &facts);
+        let model = section(&acting, "model");
         assert_eq!(
-            acting[1..5],
+            acting[model + 1..model + 5],
             [
                 "▎     plan      kimi",
                 "▎   → act       glm · high · 128k context",
@@ -571,8 +698,9 @@ mod tests {
             inherits: None,
         };
         let planning = text(&Diagnostics::default(), &facts);
+        let model = section(&planning, "model");
         assert_eq!(
-            planning[1..5],
+            planning[model + 1..model + 5],
             [
                 "▎   → plan      kimi",
                 "▎     act       glm · high · 128k context",

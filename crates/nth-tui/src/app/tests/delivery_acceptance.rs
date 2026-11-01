@@ -194,7 +194,7 @@ async fn repository_icon_survives_switch_but_feedback_only_runs_after_owner_resu
     assert!(!app.is_busy());
     app.place = "repo".into();
     assert!(
-        crate::app::tests::status_row(&rows_of(&mut app, 100), 0)
+        crate::app::tests::status_row(&rows_of(&mut app, 100), 1)
             .contains(nth_icons::icons().curio)
     );
     assert!(app.areas.find(&crate::app::mouse::Target::Curio).is_some());

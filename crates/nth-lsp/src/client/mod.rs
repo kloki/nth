@@ -166,6 +166,7 @@ impl Stderr {
 pub struct Client {
     id: String,
     root: PathBuf,
+    pid: Option<u32>,
     commands: mpsc::Sender<Command>,
     store: watch::Receiver<Store>,
     /// The server answers `textDocument/diagnostic` without registering.
@@ -227,6 +228,7 @@ impl Client {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let pid = child.as_ref().and_then(|child| child.id());
         let (commands, commands_rx) = mpsc::channel(32);
         let (store_tx, store) = watch::channel(Store::default());
         let task = task::Task::new(
@@ -241,6 +243,7 @@ impl Client {
         let mut client = Self {
             id: id.to_string(),
             root: root.to_path_buf(),
+            pid,
             commands,
             store,
             pull: false,
@@ -301,6 +304,10 @@ impl Client {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// The task is gone: the server exited or the connection broke.

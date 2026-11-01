@@ -17,5 +17,5 @@ pub mod uri;
 
 pub use client::{Client, Error};
 pub use config::{LspConfig, ServerConfig};
-pub use pool::{Lsp, ServerInfo, ServerState, ServerStatus};
+pub use pool::{Caller, CallerUsage, Lsp, ProcessUsage, ServerInfo, ServerState, ServerStatus};
 pub use types::Diagnostic;

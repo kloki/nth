@@ -82,6 +82,15 @@ pub(super) async fn lsp_changed(lsp: &mut Option<watch::Receiver<Vec<ServerStatu
     }
 }
 
+pub(super) async fn usage_changed(
+    usage: &mut Option<watch::Receiver<Vec<nth_lsp::ProcessUsage>>>,
+) -> bool {
+    match usage {
+        Some(usage) => usage.changed().await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -122,9 +131,9 @@ mod tests {
         let mut app = app().with_lsp(rx);
         let starting = buffer(&mut app);
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
-        assert_eq!(row.trim(), "● rust");
+        assert_eq!(row.trim(), "● lsp");
         assert!(
-            row.trim_end().ends_with("● rust"),
+            row.trim_end().ends_with("● lsp"),
             "against the right edge: {row:?}"
         );
         assert_eq!(starting[(dot(&row, 0), 15)].fg, Color::Yellow, "starting");
@@ -138,11 +147,10 @@ mod tests {
         let after = buffer(&mut app);
 
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
-        assert!(row.trim_end().ends_with("● rust  ● bash"), "{row:?}");
-        assert_eq!(after[(dot(&row, 0), 15)].fg, Color::Green, "connected");
-        assert_eq!(after[(dot(&row, 1), 15)].fg, Color::Red, "broken");
+        assert!(row.trim_end().ends_with("● lsp"), "{row:?}");
+        assert_eq!(after[(dot(&row, 0), 15)].fg, Color::Red, "broken");
 
-        // A server in a second root, a worktree, shows once with a count,
+        // A server in a second root, a worktree, shows once,
         // in the colour of its worst client.
         tx.send_replace(vec![
             server("rust", ServerState::Connected),
@@ -152,7 +160,7 @@ mod tests {
         app.servers_changed(changed);
         let twice = buffer(&mut app);
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
-        assert_eq!(row.trim(), "● rust ×2");
+        assert_eq!(row.trim(), "● lsp");
         assert_eq!(twice[(dot(&row, 0), 15)].fg, Color::Yellow, "worst client");
 
         tx.send_replace(vec![
@@ -166,7 +174,7 @@ mod tests {
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(row.starts_with(" > 1 queued · lint "), "{row:?}");
         assert!(
-            row.trim_end().ends_with("● rust  ● bash"),
+            row.trim_end().ends_with("● lsp"),
             "the queue shares it: {row:?}"
         );
 

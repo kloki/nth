@@ -63,7 +63,7 @@ pub use mode::{Llm, ModeLlms};
 use monitor::due;
 use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
-use nth_lsp::{ServerInfo, ServerStatus};
+use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
     Ask, BoxError, Compaction, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId,
@@ -242,6 +242,7 @@ pub struct App {
     pub servers: Vec<ServerStatus>,
     /// Where `servers` comes from; `None` once its sender is gone.
     lsp: Option<watch::Receiver<Vec<ServerStatus>>>,
+    lsp_usage: Option<watch::Receiver<Vec<ProcessUsage>>>,
     /// What the last model reply used; `None` until the first one.
     pub usage: Option<Usage>,
     /// What the session spent, its subagents included, as heard so far.
@@ -420,6 +421,7 @@ enum Step {
     GhFound(Result<Option<PathBuf>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
+    LspUsageChanged(bool),
     /// The notification backend failed for the first time.
     NotifyFailed,
     Tick,
@@ -521,6 +523,7 @@ impl App {
             pr: None,
             servers: Vec::new(),
             lsp: None,
+            lsp_usage: None,
             usage: None,
             spent: Spent::new(session.usage.clone()),
             git_loading: Job::default(),
@@ -650,6 +653,12 @@ impl App {
         let mut curio_tick = tokio::time::interval(Duration::from_secs(1));
 
         while !self.quit {
+            let showing_diagnostics = self.panes().shows(Tab::Diagnostics);
+            if showing_diagnostics && self.lsp_usage.is_none() {
+                self.lsp_usage = self.checkers.as_ref().map(|c| c.lsp.usage());
+            } else if !showing_diagnostics {
+                self.lsp_usage = None;
+            }
             if self.pending_editor.is_some() {
                 self.open_editor(&mut input).await;
             }
@@ -704,6 +713,7 @@ impl App {
                 tea = self.tea_lookup.join() => Step::TeaFound(tea),
                 gh = self.gh_lookup.join() => Step::GhFound(gh),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
+                changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
                 _ = curio_tick.tick() => { self.poll_curios(); self.refresh_context(); Step::Tick },
             };
@@ -799,6 +809,15 @@ impl App {
                     });
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
+                Step::LspUsageChanged(changed) => {
+                    if changed {
+                        if let Some(usage) = &mut self.lsp_usage {
+                            usage.borrow_and_update();
+                        }
+                    } else {
+                        self.lsp_usage = None;
+                    }
+                }
                 // Nothing changed but time: the redraw advances the timers.
                 Step::Tick => {}
             }
@@ -1022,6 +1041,26 @@ impl App {
                     false,
                     self.mode_llms.clerk.is_none().then_some("subagent"),
                 );
+                let usage = self
+                    .lsp_usage
+                    .as_ref()
+                    .map(|rx| rx.borrow().clone())
+                    .unwrap_or_default();
+                let agent_label = |caller: &nth_lsp::Caller| {
+                    if caller.session == self.session_id.to_string() {
+                        self.agent
+                            .as_ref()
+                            .map_or_else(|| "main session".into(), |name| format!("main @{name}"))
+                    } else if let Some((id, agent)) =
+                        self.subagents.describe_session(&caller.session)
+                    {
+                        format!("@{agent} #{id}")
+                    } else if caller.is_subagent {
+                        format!("subagent {}", caller.session)
+                    } else {
+                        format!("session {}", caller.session)
+                    }
+                };
                 let facts = crate::diagnostics::Facts {
                     models: [plan, act, subagent, clerk],
                     llms: self.llms.as_ref().map(|l| l.models.len()),
@@ -1030,6 +1069,8 @@ impl App {
                     checks: self.checkers.is_some(),
                     rtk: self.checkers.as_ref().is_some_and(|checkers| checkers.rtk),
                     running: &self.servers,
+                    lsp_usage: &usage,
+                    agent_label: &agent_label,
                     context: &self.context,
                     home: self.home.as_deref(),
                 };

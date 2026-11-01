@@ -414,6 +414,37 @@ fn the_status_bar_shows_the_session_time() {
 }
 
 #[test]
+fn status_widgets_show_directories_and_worst_lsp_state() {
+    use nth_lsp::{ServerState, ServerStatus};
+    let mut app = app();
+    app.extra_dirs = vec!["/a/docs".into(), "/b/docs".into()];
+    app.servers = vec![
+        ServerStatus {
+            id: "rust".into(),
+            root: "/a".into(),
+            state: ServerState::Connected,
+        },
+        ServerStatus {
+            id: "rust".into(),
+            root: "/b".into(),
+            state: ServerState::Broken("failed".into()),
+        },
+    ];
+    let drawn = buffer_of(&mut app, 80);
+    let y = drawn.area.height - 1;
+    let row: String = (0..drawn.area.width)
+        .map(|x| drawn[(x, y)].symbol())
+        .collect();
+    assert!(
+        row.trim_end().ends_with("+ a/docs, b/docs ● lsp"),
+        "{row:?}"
+    );
+    let dot = row.chars().position(|c| c == '●').unwrap() as u16;
+    assert_eq!(drawn[(dot, y)].fg, Color::Red);
+    assert!(!status_row(&rows_of(&mut app, 80), 0).contains("(+2)"));
+}
+
+#[test]
 fn the_minute_wake_lands_within_the_minute() {
     let before = tokio::time::Instant::now();
     let at = super::next_minute();
@@ -528,6 +559,13 @@ fn the_status_bar_shows_what_the_session_spent() {
         "{:?}",
         status_row(&rows(&mut app), 0)
     );
+    let drawn = buffer(&mut app);
+    let y = drawn.area.height - crate::status::ROWS;
+    let row: String = (0..drawn.area.width)
+        .map(|x| drawn[(x, y)].symbol())
+        .collect();
+    let x = row.chars().position(|c| c == '$').unwrap() as u16;
+    assert_eq!(drawn[(x, y)].fg, Color::Yellow);
 }
 
 #[tokio::test]
@@ -684,16 +722,12 @@ async fn tabs_open_switch_and_close() {
         opened[0].starts_with("  › chat [● diagnostics] "),
         "{opened:#?}"
     );
-    assert!(opened[2].starts_with(" ▎ model "), "{:?}", opened[2]);
-    assert!(opened[3].starts_with(" ▎     plan      glm"));
+    assert!(opened[2].starts_with(" ▎ lsp usage"), "{:?}", opened[2]);
+    assert!(opened[5].starts_with(" ▎ model "), "{:?}", opened[5]);
+    assert!(opened[6].starts_with(" ▎     plan      glm"));
     assert!(
-        opened[4].starts_with(" ▎   → act       glm"),
+        opened[7].starts_with(" ▎   → act       glm"),
         "a bare app acts"
-    );
-    assert!(
-        opened[5].starts_with(" ▎     subagent  glm · as the mode"),
-        "{:?}",
-        opened[5]
     );
 
     app.apply(Action::Content(0));

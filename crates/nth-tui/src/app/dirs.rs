@@ -175,17 +175,15 @@ mod tests {
 
         app.add_dir("../other");
         app.add_dir("../lib");
-        // Only how many, not where.
-        let added = format!("{} (+2)", app.place);
-
         let buffer = wide_buffer(&mut app);
-        let line = row(&buffer, 14);
-        assert!(line.contains(&added), "{line:?}");
-        assert!(!line.contains("other"), "{line:?}");
-        // The working directory and the count are magenta.
-        let at = |needle: &str| u16::try_from(line.find(needle).expect(needle)).expect("fits");
-        for needle in [app.place.as_str(), "(+2)"] {
-            assert_eq!(buffer[(at(needle), 14)].fg, Color::Magenta, "{needle}");
+        let session = row(&buffer, 14);
+        let widgets = row(&buffer, 15);
+        assert!(session.contains(&app.place), "{session:?}");
+        assert!(!session.contains("(+2)"), "{session:?}");
+        assert!(widgets.contains("+ other, lib"), "{widgets:?}");
+        for needle in ["other", "lib"] {
+            let at = u16::try_from(widgets.find(needle).expect(needle)).expect("fits");
+            assert_eq!(buffer[(at, 15)].fg, Color::Magenta, "{needle}");
         }
     }
 

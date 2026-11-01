@@ -720,7 +720,7 @@ mod tests {
         let (_dir, mut app, _store, _c) = fixture();
         app.place = "repo".into();
         let rows = rows_of(&mut app, 100);
-        assert!(crate::app::tests::status_row(&rows, 0).contains(nth_icons::icons().curio));
+        assert!(crate::app::tests::status_row(&rows, 1).contains(nth_icons::icons().curio));
         let rect = app.areas.find(&crate::app::mouse::Target::Curio).unwrap();
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -743,7 +743,7 @@ mod tests {
         );
         assert!(!app.hint.as_deref().unwrap().contains("127.0.0.1"));
         assert_eq!(app.curios.hosts.len(), 1);
-        app.place = "x".repeat(200);
+        app.hint = Some("x".repeat(200).into());
         rows_of(&mut app, 20);
         assert!(app.areas.find(&crate::app::mouse::Target::Curio).is_none());
         app.start_fresh_session();
@@ -786,9 +786,10 @@ mod tests {
             .find(&crate::app::mouse::Target::PullRequest)
             .unwrap();
         let curio = app.areas.find(&crate::app::mouse::Target::Curio).unwrap();
+        assert_eq!(curio.y, pr.y + 1);
         assert!(!pr.intersects(curio));
-        // The space before the icon counts, so a near miss still opens it.
-        assert_eq!(curio.width, 2);
+        // The icon is clickable on its new row.
+        assert_eq!(curio.width, 1);
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: curio.x,
