@@ -252,7 +252,8 @@ impl App {
         match self.pane_at(at)? {
             Tab::Chat => Some(&self.chat),
             Tab::Subagent(id) => self.subagent_views.get(&id).map(|view| &view.chat),
-            Tab::Diagnostics
+            Tab::Context
+            | Tab::Diagnostics
             | Tab::File(_)
             | Tab::Keymaps
             | Tab::Monitor(_)

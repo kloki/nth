@@ -1,10 +1,12 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{ToolCall, ToolResult, Usage};
 
 /// What a running session reports to its front-ends.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// A committed logical request projection, encoded as the session preview.
+    ContextUpdated(Arc<serde_json::Value>),
     TextDelta(String),
     ReasoningDelta(String),
     ToolStarted(ToolCall),

@@ -392,7 +392,7 @@ impl App {
     /// one's saved limits still fire its compaction — and a switch to a
     /// model it does not name drops them rather than size against the old
     /// one's window.
-    fn adopt_llm(&self, session: &mut Session) {
+    pub(super) fn adopt_llm(&self, session: &mut Session) {
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
@@ -488,6 +488,7 @@ impl App {
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
         self.session = Some(session);
+        self.refresh_context();
         self.index_files();
         self.load_git();
         self.load_pr();

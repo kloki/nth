@@ -1,6 +1,7 @@
 Switch what the user sees in the content panel above their prompt. The panels:
 - chat: the conversation, which is where the user always starts.
 - diagnostics: nth's own state: the model, the language servers, the formatters, and the instruction files and skills it found.
+- context: a read-only preview of the main session's next model request, including its estimated budget, system prompt, conversation, and tool definitions.
 - plan: the plan file of plan mode, with what its latest change added in green and removed in red.
 - work: the work plan you orchestrate: its cycles, each item with how it is doing and who works on it, and the todo lists of the items in play.
 

@@ -21,6 +21,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tab {
     Chat,
+    Context,
     Diagnostics,
     /// A file the model showed you; its view is on the app.
     File(FileId),
@@ -49,6 +50,7 @@ impl Tab {
         let tab = &icons().tab;
         match self {
             Tab::Chat => tab.chat,
+            Tab::Context => tab.context,
             Tab::Diagnostics => tab.diagnostics,
             Tab::Plan => tab.plan,
             Tab::File(_) => tab.file,
@@ -83,6 +85,7 @@ impl From<Panel> for Tab {
     fn from(panel: Panel) -> Self {
         match panel {
             Panel::Chat => Tab::Chat,
+            Panel::Context => Tab::Context,
             Panel::Diagnostics => Tab::Diagnostics,
             Panel::Plan => Tab::Plan,
             Panel::Work => Tab::Work,
@@ -280,6 +283,7 @@ impl App {
     pub(super) fn tab_label(&self, tab: Tab) -> String {
         match tab {
             Tab::Chat => "chat".into(),
+            Tab::Context => "context".into(),
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),
             Tab::Plan => self.plan.view.label(),
@@ -361,7 +365,9 @@ impl App {
             Tab::Chat if matches!(self.input, Input::Question(_)) => TabState::NeedsYou,
             Tab::Chat if self.is_busy() => TabState::Working,
             Tab::Chat => self.last_turn,
-            Tab::Diagnostics | Tab::Usage | Tab::File(_) | Tab::Keymaps => TabState::Idle,
+            Tab::Context | Tab::Diagnostics | Tab::Usage | Tab::File(_) | Tab::Keymaps => {
+                TabState::Idle
+            }
             Tab::Plan => self.plan.view.state(),
             Tab::Work => self.work.view.state(&self.live_work()),
             // Its tab closes once the process stops.
@@ -449,6 +455,7 @@ impl App {
     pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
         Some(match tab {
             Tab::Chat => &mut self.chat.pager,
+            Tab::Context => &mut self.context_view.pager,
             Tab::Diagnostics => &mut self.diagnostics.pager,
             Tab::Usage => &mut self.usage_view.pager,
             Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,

@@ -76,7 +76,8 @@ mod tests {
             }
         );
 
-        p.home();
+        p.left();
+        p.left();
         p.left();
         p.left();
         assert_eq!((p.wrap(4).cursor_row, p.wrap(4).cursor_col), (1, 1));

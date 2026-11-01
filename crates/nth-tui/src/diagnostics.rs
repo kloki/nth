@@ -96,14 +96,14 @@ impl Diagnostics {
 
     fn lines(&self, facts: &Facts) -> Vec<Line<'static>> {
         theme::sections(vec![
+            section(|l| lsp_usage(l, facts)),
             section(|l| model(l, facts)),
             section(|l| instructions(l, facts)),
             section(|l| skills(l, facts)),
             section(|l| agents(l, facts)),
-            section(|l| self.servers(l, facts)),
-            section(|l| lsp_usage(l, facts)),
-            section(|l| self.formatters(l, facts)),
             section(|l| self.tools(l, facts)),
+            section(|l| self.servers(l, facts)),
+            section(|l| self.formatters(l, facts)),
         ])
     }
 
@@ -633,9 +633,12 @@ mod tests {
         };
 
         let text = text(&diagnostics, &facts(&context, &running));
-        assert_eq!(text[5], "▎   3 models served");
+        assert_eq!(text[section(&text, "model") + 5], "▎   3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
+        assert_eq!(section(&text, "lsp usage"), 0);
+        assert!(section(&text, "tools") < servers);
+        assert!(section(&text, "tools") < section(&text, "formatters"));
         assert_eq!(
             text[servers + 1],
             "▎   ● rust   /bin/rust-analyzer  → /repo  exited"
@@ -657,7 +660,7 @@ mod tests {
         assert_eq!(bar.content, theme::BAR);
         assert_eq!(bar.style.fg, Some(Color::DarkGray));
         let gap = lines.iter().position(|l| l.spans.is_empty()).expect("gap");
-        assert_eq!(lines[gap + 1].to_string(), "▎ instructions");
+        assert_eq!(lines[gap + 1].to_string(), "▎ model");
     }
 
     #[test]
@@ -665,8 +668,9 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
         let acting = text(&Diagnostics::default(), &facts);
+        let model = section(&acting, "model");
         assert_eq!(
-            acting[1..5],
+            acting[model + 1..model + 5],
             [
                 "▎     plan      kimi",
                 "▎   → act       glm · high · 128k context",
@@ -694,8 +698,9 @@ mod tests {
             inherits: None,
         };
         let planning = text(&Diagnostics::default(), &facts);
+        let model = section(&planning, "model");
         assert_eq!(
-            planning[1..5],
+            planning[model + 1..model + 5],
             [
                 "▎   → plan      kimi",
                 "▎     act       glm · high · 128k context",

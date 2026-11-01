@@ -67,7 +67,11 @@ Swapping input panels therefore resizes the content panel. The content panel kee
 
 Ctrl with a digit, and ctrl+shift+t, only arrive as their own keys in terminals that disambiguate escape codes (kitty, foot, wezterm, ghostty); elsewhere ctrl+t reaches every tab.
 
-- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
+- **Opening.** A command opens its tab, or shows it when it is already open. The agent can switch tabs too, with the `panel` tool (`chat`, `context`, `diagnostics`, `plan` or `work`); in `nth run` there is nothing to switch, and the tool tells the model so.
+
+## Context
+
+`/context` opens a read-only preview of the main session's next model input. A summary at the top shows the estimated input, context window, breakdown and last reported usage. Below it are the system prompt, effective conversation and offered tool definitions in full. Scroll to read them; the normal prompt stays available. Estimates are approximate, and the preview identifies work still pending, such as a reply, tool results or compaction. It excludes the unsent prompt. The preview describes nth's logical request; a provider may package or count it differently.
 
 ## Files
 
@@ -198,6 +202,12 @@ The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles
 Opened with `/diagnostics`, or by the agent. What nth found and runs for this project, for when something does not work as expected. It scrolls like the chat, with the same scrollbar while it does not all fit.
 
 ```
+▎ lsp usage
+▎   rust  ~/repos/nth  pid 1234  connected · 1 active · last used now · 12% CPU · 80 MiB RSS
+▎   agent usage
+▎     main session  rust → ~/repos/nth · 1 active · last used now
+▎     @explore #1  rust → ~/repos/nth · idle · last used 5s ago
+
 ▎ model
 ▎     plan  kimi-k3 · high · 256k context
 ▎   → act   glm-5.3 · 128k context
@@ -213,27 +223,22 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 ▎   ↳ explore  builtin
 ▎   ↳ general  builtin
 
+▎ tools
+▎   ✓ rtk            ~/.cargo/bin/rtk
+▎   ✗ agent-browser  not on PATH, the browser skill installs it
+
 ▎ language servers
 ▎   ✓ rust      ~/.cargo/bin/rust-analyzer  → ~/repos/nth
 ▎   ● ruff      ~/.local/bin/ruff  → ~/repos/nth
 ▎   ✗ gopls     not on PATH
 
-▎ lsp usage
-▎   rust  ~/repos/nth  pid 1234  connected · 1 active · last used now · 12% CPU · 80 MiB RSS
-▎   agent usage
-▎     main session  rust → ~/repos/nth · 1 active · last used now
-▎     @explore #1  rust → ~/repos/nth · idle · last used 5s ago
-
 ▎ formatters
 ▎   ✓ rustfmt   rustfmt $FILE
 ▎   ✗ prettier  no package.json here
 
-▎ tools
-▎   ✓ rtk            ~/.cargo/bin/rtk
-▎   ✗ agent-browser  not on PATH, the browser skill installs it
 ```
 
-- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: model, instructions, skills, agents, language servers, lsp usage, formatters, tools. Context warnings follow the agents in yellow.
+- **Sections.** Each a block marked with a grey (bright black) `▎` bar down its left, as chat entries are: a bold title, and rows under it: lsp usage, model, instructions, skills, agents, tools, language servers, formatters. Context warnings follow the agents in yellow.
 - **Skills and agents.** Each row names where it came from: its source and, for one found on disk, the folder it lives in with `~` for home (`global  ~/.claude/skills`), so the Claude Code, opencode, agents and nth folders are told apart. A built-in or internal one has no folder and shows its source alone (`internal`, `builtin`).
 - **Model.** A row per mode, plan then act, each with the model, effort and context window it runs with, in blue. A `→` marks the mode the next turn runs in; the other mode's name is dim.
 - **Servers and formatters.** Every one nth knows, the ones that can run here first: a green `✓` with the name in cyan, the program and where it would run dim. A server the tools started shows its status-bar dot in place of the tick, and a broken one its reason in red. One that can't run is dim with a red `✗` and why.

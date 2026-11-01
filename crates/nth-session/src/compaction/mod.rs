@@ -273,11 +273,11 @@ pub(crate) fn text_tokens(text: &str) -> u64 {
 
 /// What one image a tool showed is counted as: what a screenshot at the
 /// read tool's 1920 px cost the models measured, give or take.
-const IMAGE_TOKENS: u64 = 2_500;
+pub(crate) const IMAGE_TOKENS: u64 = 2_500;
 
 /// A message's size in tokens, estimated from its serialized form, which
 /// leaves an image's bytes out, so each image counts as `IMAGE_TOKENS`.
-fn tokens(message: &Message) -> u64 {
+pub(crate) fn tokens(message: &Message) -> u64 {
     let images = match message {
         Message::ToolResult { images, .. } => images.len() as u64,
         _ => 0,

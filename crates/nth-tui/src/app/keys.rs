@@ -35,8 +35,6 @@ pub enum Action {
     Delete,
     Left,
     Right,
-    LineStart,
-    LineEnd,
     PageUp,
     PageDown,
     Top,
@@ -92,10 +90,8 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::Up => Action::SelectPrev,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
-        KeyCode::Home if ctrl => Action::Top,
-        KeyCode::End if ctrl => Action::Bottom,
-        KeyCode::Home => Action::LineStart,
-        KeyCode::End => Action::LineEnd,
+        KeyCode::Home => Action::Top,
+        KeyCode::End => Action::Bottom,
         KeyCode::Left => Action::Left,
         KeyCode::Right => Action::Right,
         KeyCode::Backspace => Action::Backspace,
@@ -219,8 +215,6 @@ impl App {
             Action::Delete => self.prompt.delete(),
             Action::Left => self.prompt.left(),
             Action::Right => self.prompt.right(),
-            Action::LineStart => self.prompt.home(),
-            Action::LineEnd => self.prompt.end(),
             Action::CopyCurio => {}
         }
         match action {
