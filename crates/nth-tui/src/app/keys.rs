@@ -19,6 +19,8 @@ pub enum Action {
     ClearOrQuit,
     /// Opens the LLM picker, or closes any picker.
     LlmPicker,
+    /// Opens or closes the agent picker.
+    AgentPicker,
     /// Cycles to the next profile, both modes on its model and effort; a
     /// model picked by hand is put back on the current profile first.
     NextProfile,
@@ -65,6 +67,7 @@ pub fn action(key: KeyEvent) -> Option<Action> {
         // Only told apart from Enter when the terminal disambiguates escape
         // codes; elsewhere ctrl+m is Enter and `/models` opens the picker.
         KeyCode::Char('m') if ctrl => Action::LlmPicker,
+        KeyCode::Char('a') if ctrl => Action::AgentPicker,
         KeyCode::Char('p') if ctrl => Action::NextProfile,
         KeyCode::Char('g') if ctrl => Action::Edit,
         KeyCode::Char('y') if ctrl => Action::CopyCurio,
@@ -182,6 +185,7 @@ impl App {
             | Action::Top
             | Action::Bottom => {}
             Action::LlmPicker => self.open_llm_picker(),
+            Action::AgentPicker => self.open_agent_picker(),
             Action::NextProfile => self.next_profile(),
             Action::Edit => self.edit(),
             Action::Submit => self.submit(),
