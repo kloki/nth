@@ -2,7 +2,7 @@
 //! (opencode's built-in `general` and `explore`, nth's `clerk` and
 //! `experimenter`) and the
 //! primary agents you run a session as in place of plan or act (nth's
-//! `research`), plus one
+//! `research`), nth's `review` in both roles, plus one
 //! markdown file per agent of your own, read where Claude Code and opencode
 //! keep them, so an agent written for either works here too. The
 //! frontmatter names and describes the agent and may pick its mode, model
@@ -27,11 +27,14 @@ const CLERK: &str = include_str!("clerk.md");
 const EXPERIMENTER: &str = include_str!("experimenter.md");
 /// The research agent's prompt, nth's own.
 const RESEARCH: &str = include_str!("research.md");
+/// The review agent's prompt, nth's own.
+const REVIEW: &str = include_str!("review.md");
 /// opencode's descriptions, `agent/agent.ts`.
 const GENERAL_DESCRIPTION: &str = "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.";
 const EXPLORE_DESCRIPTION: &str = "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.";
 const EXPERIMENTER_DESCRIPTION: &str = "Settles a question by running something: a benchmark, a prototype, a reproduction, a check that a change still works. It works in a git worktree of its own, so it may change code freely, and reports the branch, the commands and the results in numbers. Give it the hypothesis and what result would settle it.";
 const RESEARCH_DESCRIPTION: &str = "Long-running research: splits a question across subagents, has the experimenter test claims, and keeps its findings in a notes file shown in a tab.";
+const REVIEW_DESCRIPTION: &str = "Reviews code changes for actionable defects, with evidence and severity. By default reviews staged, unstaged and untracked changes without modifying files.";
 const CLERK_DESCRIPTION: &str = "Cheap, fast agent for small one-off tasks with a clear result: writing a commit message, a pull request title or description, summarising a diff or a file, a quick lookup. Give it everything it needs in the prompt. Use general instead for anything that takes several steps or judgement.";
 /// What the experimenter may do: change and run code, in the worktree the
 /// worktree tools, which only an agent naming them gets, put it in.
@@ -51,6 +54,19 @@ const EXPERIMENTER_TOOLS: [&str; 12] = [
 ];
 /// What opencode's explore may do, in nth's tool names.
 const EXPLORE_TOOLS: [&str; 6] = ["read", "glob", "grep", "bash", "webfetch", "websearch"];
+const REVIEW_TOOLS: [&str; 11] = [
+    "read",
+    "glob",
+    "grep",
+    "bash",
+    "webfetch",
+    "websearch",
+    "skill",
+    "question",
+    "panel",
+    "context",
+    "show_user",
+];
 
 /// Deep enough for `agents/<group>/<agent>.md`. opencode goes any depth
 /// and names a nested agent by its path, `group/agent`; nth names it by its
@@ -253,7 +269,7 @@ pub(crate) fn discover(cwd: &Path, paths: &Paths, warnings: &mut Vec<String>) ->
     agents
 }
 
-fn builtin() -> [Agent; 5] {
+fn builtin() -> [Agent; 6] {
     [
         Agent {
             name: "general".into(),
@@ -317,6 +333,20 @@ fn builtin() -> [Agent; 5] {
             description: Some(RESEARCH_DESCRIPTION.into()),
             prompt: Some(RESEARCH.trim().into()),
             tools: None,
+            denied: Vec::new(),
+            model: None,
+            clerk: false,
+            hidden: false,
+            path: None,
+            source: Source::Builtin,
+            root: None,
+        },
+        Agent {
+            name: "review".into(),
+            mode: Mode::All,
+            description: Some(REVIEW_DESCRIPTION.into()),
+            prompt: Some(REVIEW.trim().into()),
+            tools: Some(REVIEW_TOOLS.iter().map(|t| t.to_string()).collect()),
             denied: Vec::new(),
             model: None,
             clerk: false,
@@ -570,8 +600,31 @@ mod tests {
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
             names,
-            ["clerk", "experimenter", "explore", "general", "research"]
+            [
+                "clerk",
+                "experimenter",
+                "explore",
+                "general",
+                "research",
+                "review"
+            ]
         );
+        let review = agents.primary("review").expect("review primary");
+        assert_eq!(agents.subagent("review"), Some(review));
+        assert_eq!(review.mode, Mode::All);
+        assert_eq!(review.model, None);
+        assert!(
+            review
+                .prompt
+                .as_deref()
+                .is_some_and(|p| p.contains("Find actionable defects"))
+        );
+        for tool in REVIEW_TOOLS {
+            assert!(review.allows(tool), "{tool}");
+        }
+        for tool in ["write", "edit", "apply_patch", "task", "enter_worktree"] {
+            assert!(!review.allows(tool), "{tool}");
+        }
         let experimenter = agents.subagent("experimenter").expect("experimenter");
         assert!(experimenter.names("enter_worktree") && experimenter.names("write"));
         assert!(!experimenter.allows("task"));
@@ -825,7 +878,14 @@ mod tests {
         let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
             names,
-            ["clerk", "experimenter", "general", "research", "secret"]
+            [
+                "clerk",
+                "experimenter",
+                "general",
+                "research",
+                "review",
+                "secret"
+            ]
         );
         assert!(agents.get("secret").expect("secret").hidden);
     }

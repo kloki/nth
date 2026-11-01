@@ -425,7 +425,7 @@ mod tests {
         let unknown = json!({ "description": "d", "prompt": "p", "subagent_type": "nobody" });
         assert_eq!(
             task.call(unknown, &ctx()).await.unwrap_err(),
-            "Agent \"nobody\" not found. Available agents: clerk, experimenter, explore, general"
+            "Agent \"nobody\" not found. Available agents: clerk, experimenter, explore, general, review"
         );
         let stale =
             json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "task_id": 7 });
