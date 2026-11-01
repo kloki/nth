@@ -32,7 +32,9 @@ fn identity(path: &Path) -> PathBuf {
     for component in absolute.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => { result.pop(); }
+            Component::ParentDir => {
+                result.pop();
+            }
             other => {
                 result.push(other.as_os_str());
                 if let Ok(canonical) = std::fs::canonicalize(&result) {
@@ -71,20 +73,26 @@ impl PostWrite {
         let locks: Vec<_> = {
             let mut registry = EDITS.lock().unwrap_or_else(|e| e.into_inner());
             registry.retain(|_, lock| lock.strong_count() > 0);
-            identities.into_iter().map(|path| {
-                let entry = registry.entry(path).or_default();
-                entry.upgrade().unwrap_or_else(|| {
-                    let lock = Arc::new(Mutex::new(()));
-                    *entry = Arc::downgrade(&lock);
-                    lock
+            identities
+                .into_iter()
+                .map(|path| {
+                    let entry = registry.entry(path).or_default();
+                    entry.upgrade().unwrap_or_else(|| {
+                        let lock = Arc::new(Mutex::new(()));
+                        *entry = Arc::downgrade(&lock);
+                        lock
+                    })
                 })
-            }).collect()
+                .collect()
         };
         let mut held = Vec::with_capacity(locks.len());
         for lock in locks {
             held.push(lock.lock_owned().await);
         }
-        Writing { post_write: self, _held: held }
+        Writing {
+            post_write: self,
+            _held: held,
+        }
     }
 
     /// The errors language servers report on `path` as it now is, and on
@@ -137,7 +145,9 @@ pub(crate) struct Writing<'a> {
 impl Drop for Writing<'_> {
     fn drop(&mut self) {
         self._held.clear();
-        EDITS.lock().unwrap_or_else(|e| e.into_inner())
+        EDITS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|_, lock| lock.strong_count() > 0);
     }
 }
@@ -291,15 +301,28 @@ mod tests {
         std::fs::write(&a, "a").unwrap();
         let post = PostWrite::off();
         let held = post.lock(std::slice::from_ref(&a)).await;
-        let alias = dir.path().join(".").join("a");
-        let waiting = post.lock(std::slice::from_ref(&alias));
-        tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending());
-        let other = post.lock(&[b]).await;
+        // `a/../a` is the same file even though `a` is not a directory: the
+        // identity resolves `..` after the components before it.
+        for alias in [dir.path().join(".").join("a"), a.join("..").join("a")] {
+            let waiting = post.lock(std::slice::from_ref(&alias));
+            tokio::pin!(waiting);
+            assert!(
+                futures::poll!(&mut waiting).is_pending(),
+                "{}",
+                alias.display()
+            );
+            // Dropping the pinned future here cancels the acquisition.
+        }
+        // Another path is not held up by the first.
+        let other = post.lock(std::slice::from_ref(&b)).await;
         drop(other);
-        drop(waiting);
         drop(held);
-        let _again = post.lock(&[a]).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            post.lock(std::slice::from_ref(&a)),
+        )
+        .await
+        .expect("a cancelled acquisition releases its path");
     }
 
     #[cfg(unix)]
@@ -335,11 +358,14 @@ mod tests {
         let a_guard = post.lock(std::slice::from_ref(&a)).await;
         drop(a_guard);
         drop(held);
-        let (first, second) = tokio::join!(async {
-            let _guard = post.lock(&[a.clone(), b.clone()]).await;
-        }, async {
-            let _guard = post.lock(&[b.clone(), a.clone()]).await;
-        });
+        let (first, second) = tokio::join!(
+            async {
+                let _guard = post.lock(&[a.clone(), b.clone()]).await;
+            },
+            async {
+                let _guard = post.lock(&[b.clone(), a.clone()]).await;
+            }
+        );
         assert_eq!((first, second), ((), ()));
     }
 
