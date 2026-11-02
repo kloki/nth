@@ -106,10 +106,12 @@
       "second saved comment",
       async () => savedCount(await state()) === 2,
     );
-    await waitFor("pending count", () =>
-      /2/.test(`${button.textContent} ${button.getAttribute("aria-label")}`),
+    await waitFor(
+      "pending count",
+      () => $("send-count").textContent === "2" && !button.disabled,
     );
     assert("Dock shows two pending comments", !button.disabled);
+    assert("Thread count is absent from dock", !$("thread-count"));
     assert(
       "Dock fits the viewport",
       document.documentElement.scrollWidth <= innerWidth,
@@ -120,8 +122,9 @@
   if (window.CURIOS_TEST_STAGE === "send") {
     let snapshot = await state();
     assert("Reload retains both saved comments", savedCount(snapshot) === 2);
-    await waitFor("count after reload", () =>
-      /2/.test(`${button.textContent} ${button.getAttribute("aria-label")}`),
+    await waitFor(
+      "count after reload",
+      () => $("send-count").textContent === "2" && !button.disabled,
     );
     const retained = thread(snapshot, "heading");
     await waitFor("retained pin", () => pin(retained));
@@ -251,10 +254,25 @@
       () => /1/.test(button.textContent) && !button.disabled,
     );
     escape();
+    const revisionToggle = $("current-revision");
+    revisionToggle.click();
+    await waitFor("revision drawer opens", () => !$("revisions").hidden);
+    assert(
+      "Revision toggle reports expanded",
+      revisionToggle.getAttribute("aria-expanded") === "true",
+    );
+    assert(
+      "Current revision is marked",
+      $("revisions").querySelector('[aria-current="true"]')?.textContent ===
+        "r2",
+    );
     const previous = [...$("revisions").querySelectorAll("button")].find(
       (b) => b.textContent.trim() === "r1",
     );
-    await waitFor("revision selector ready", () => !previous.disabled);
+    await waitFor(
+      "revision selector ready",
+      () => previous && !previous.disabled,
+    );
     previous.click();
     await waitFor(
       "revision one document",

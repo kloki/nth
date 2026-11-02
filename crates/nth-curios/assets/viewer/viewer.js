@@ -250,7 +250,8 @@
     $("current-revision").textContent = `r${revision}`;
     // The other revisions, as niri shows workspaces: one button each.
     const picker = $("revisions");
-    const others = state.revisions.filter((item) => item.number !== revision);
+    picker.setAttribute("aria-label", `Revisions, current r${revision}`);
+    const others = state.revisions;
     const buttons = new Map(
       Array.from(picker.children).map((node) => [node.dataset.number, node]),
     );
@@ -265,22 +266,20 @@
           button.textContent = `r${key}`;
           button.addEventListener("click", () => changeRevision(item.number));
         }
-        button.title = item.title || "Revision";
+        button.title = item.title || `Revision ${key}`;
+        button.setAttribute("aria-current", String(item.number === revision));
         button.disabled = busy;
         return button;
       }),
     );
     $("update").hidden = state.curio.current_revision === revision;
     $("update").textContent = `latest r${state.curio.current_revision}`;
-    const open = state.threads.filter(
-      (thread) => thread.status !== "resolved",
-    ).length;
-    $("thread-count").textContent = open
-      ? `${open} open`
-      : state.threads.length
-        ? "all resolved"
-        : "no threads";
     renderSend();
+    $("current-revision").textContent = `r${revision}`;
+    $("current-revision").setAttribute(
+      "aria-expanded",
+      String(!$("revisions").hidden),
+    );
     $("status-dot").classList.toggle("listening", state.listening);
     $("status-dot").setAttribute(
       "aria-label",
@@ -295,7 +294,13 @@
       ...sendBacklog,
       ...pending().map((message) => message.id),
     ]).size;
-    $("send-all").textContent = `Send all (${count})`;
+    $("send-count").textContent = String(count);
+    $("send-all").setAttribute(
+      "aria-label",
+      `Send all pending feedback (${count})`,
+    );
+    $("send-all").title =
+      `Save the current comment and send all pending feedback (${count})`;
     $("send-all").disabled = busy || (!count && !editing() && !retrySend);
   }
   function renderPopover() {
@@ -798,12 +803,30 @@
   async function changeRevision(number) {
     if (busy || editing()) {
       say("Save or clear your comment before changing revisions.");
-      return;
+      return false;
     }
     closePopover();
+    $("revisions").hidden = true;
+    $("current-revision").setAttribute("aria-expanded", "false");
     revision = Number(number);
     await refresh();
+    return true;
   }
+  function toggleRevisions(force) {
+    const picker = $("revisions");
+    const open = force ?? picker.hidden;
+    picker.hidden = !open;
+    $("current-revision").setAttribute("aria-expanded", String(open));
+    if (open) picker.querySelector('[aria-current="true"]')?.focus();
+    else $("current-revision").focus();
+  }
+  $("current-revision").addEventListener("click", () => {
+    if (!busy) toggleRevisions();
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("revisions").hidden && !$("dock").contains(event.target))
+      toggleRevisions(false);
+  });
   $("comment-body").addEventListener("input", () => {
     const slot = draftSlot();
     if (slot) writeDraft(slot, $("comment-body").value || null);
@@ -883,6 +906,11 @@
   );
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!$("revisions").hidden) {
+        event.preventDefault();
+        toggleRevisions(false);
+        return;
+      }
       event.preventDefault();
       closePopover();
     }
