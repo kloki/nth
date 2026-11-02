@@ -40,12 +40,16 @@ pub fn suspend() {
 
 /// Takes the terminal back after `suspend`, on the same `terminal`, whose
 /// next draw repaints everything. Not `enter` again: that would add
-/// another panic hook.
+/// another panic hook. A resize to the current size clears the screen and
+/// the back buffer as `clear` does, without `clear`'s question for the
+/// cursor position, whose answer can go missing right after the editor
+/// quits and would end nth.
 pub fn resume(terminal: &mut DefaultTerminal) -> Result<()> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     capture();
-    terminal.clear()?;
+    let area = terminal.size()?.into();
+    terminal.resize(area)?;
     Ok(())
 }
 
