@@ -85,7 +85,7 @@ iframe {
 }
 
 /* The dock: bottom right, as wide as what it shows. Collapsed it is the
-   status, the revision and the comment toggle; hover or focus opens the
+   status, the revision, send action and comment toggle; hover or focus opens the
    rest to the left, so the toggle never moves under the pointer. */
 #dock {
   position: fixed;
@@ -161,6 +161,14 @@ iframe {
 }
 #update {
   color: var(--purple);
+}
+#send-all {
+  flex: none;
+  padding: 6px 8px;
+  color: var(--purple);
+}
+#send-all:hover:not(:disabled) {
+  color: var(--foreground);
 }
 #comments {
   display: flex;
@@ -392,6 +400,12 @@ iframe {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+#messages .pending {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  opacity: 0.7;
 }
 #working {
   display: flex;

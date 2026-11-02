@@ -41,7 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 curio_id: Some(published.curio.id.clone()),
                 expected_revision: Some(1),
                 title: None,
-                html: html.replace("id=\"summary\"", "id=\"replacement\""),
+                html: html
+                    .replace("id=\"summary\"", "id=\"replacement\"")
+                    .replace("Independent browser fixture", "Revised browser fixture"),
             })?;
             revised = true;
         }

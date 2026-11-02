@@ -68,6 +68,20 @@ struct Entry {
     revisions: Vec<Revision>,
     threads: Vec<Thread>,
 }
+impl Entry {
+    fn attached(&self, thread: &Thread, revision: &Revision) -> bool {
+        if thread.created_revision == revision.number {
+            return true;
+        }
+        thread.target.element_id.as_ref().is_some_and(|id| {
+            self.revisions
+                .iter()
+                .find(|r| r.number == thread.created_revision)
+                .is_some_and(|r| r.anchors.iter().any(|anchor| &anchor.id == id))
+                && revision.anchors.iter().any(|anchor| &anchor.id == id)
+        })
+    }
+}
 #[derive(Serialize, Deserialize)]
 struct Receipt {
     fingerprint: String,
@@ -476,19 +490,7 @@ impl Store {
             .clone();
         let mut threads = entry.threads.clone();
         for thread in &mut threads {
-            let original = entry
-                .revisions
-                .iter()
-                .find(|r| r.number == thread.created_revision);
-            let attached = if thread.created_revision == number {
-                true
-            } else if let Some(target) = &thread.target.element_id {
-                let old = original.and_then(|r| r.anchors.iter().find(|a| &a.id == target));
-                let new = rev.anchors.iter().find(|a| &a.id == target);
-                old.zip(new).is_some_and(|(a, b)| a.label == b.label)
-            } else {
-                false
-            };
+            let attached = entry.attached(thread, &rev);
             thread.attachment = if attached { "attached" } else { "detached" }.into();
         }
         Ok(Snapshot {
@@ -585,18 +587,7 @@ impl Store {
             let detached_thread_ids = entry
                 .threads
                 .iter()
-                .filter(|t| {
-                    !t.target.element_id.as_ref().is_some_and(|target| {
-                        revision.anchors.iter().any(|a| {
-                            &a.id == target
-                                && entry
-                                    .revisions
-                                    .iter()
-                                    .find(|r| r.number == t.created_revision)
-                                    .is_some_and(|r| r.anchors.contains(a))
-                        })
-                    })
-                })
+                .filter(|t| !entry.attached(t, &revision))
                 .map(|t| t.id.clone())
                 .collect();
             entry.revisions.push(revision.clone());

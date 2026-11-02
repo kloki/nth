@@ -129,6 +129,70 @@ fn durable_review_retry_and_history() {
 }
 
 #[test]
+fn attachments_follow_ids_across_label_changes_removal_and_restoration() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("p1")).unwrap().curio.id;
+    let original = comment("element");
+    let element = store.comment(&cid, original.clone()).unwrap();
+    let mut document_comment = comment("document");
+    document_comment.target.kind = TargetKind::Document;
+    document_comment.target.element_id = None;
+    let document = store.comment(&cid, document_comment).unwrap();
+    let mut region_comment = comment("region");
+    region_comment.target.kind = TargetKind::Region;
+    region_comment.target.rect = Some(Rect {
+        x: 0.1,
+        y: 0.2,
+        width: 0.3,
+        height: 0.4,
+    });
+    let region = store.comment(&cid, region_comment.clone()).unwrap();
+
+    for (number, html, detached) in [
+        (2, "<h1 id='heading'>Revised heading</h1>", false),
+        (3, "<h1 id='elsewhere'>Revised heading</h1>", true),
+        (4, "<h2 id='heading'>Restored differently</h2>", false),
+    ] {
+        let mut update = publication(&format!("p{number}"));
+        update.curio_id = Some(cid.clone());
+        update.expected_revision = Some(number - 1);
+        update.html = html.into();
+        let published = store.publish(update).unwrap();
+        assert_eq!(
+            published.detached_thread_ids.contains(&element.id),
+            detached
+        );
+        assert_eq!(published.detached_thread_ids.contains(&region.id), detached);
+        assert!(published.detached_thread_ids.contains(&document.id));
+        let snapshot = store.snapshot(&cid, Some(number)).unwrap();
+        for thread in &snapshot.threads {
+            assert_eq!(
+                thread.attachment == "detached",
+                published.detached_thread_ids.contains(&thread.id)
+            );
+        }
+        assert_eq!(snapshot.threads[0].target, original.target);
+        assert_eq!(snapshot.threads[2].target, region_comment.target);
+    }
+    let resumed = Store::new(dir.path(), "session-one").unwrap();
+    for (number, element_attachment) in [
+        (1, "attached"),
+        (2, "attached"),
+        (3, "detached"),
+        (4, "attached"),
+    ] {
+        let snapshot = resumed.snapshot(&cid, Some(number)).unwrap();
+        assert_eq!(snapshot.threads[0].attachment, element_attachment);
+        assert_eq!(snapshot.threads[2].attachment, element_attachment);
+        assert_eq!(
+            snapshot.threads[1].attachment,
+            if number == 1 { "attached" } else { "detached" }
+        );
+        assert_eq!(snapshot.threads[0].target, original.target);
+    }
+}
+
+#[test]
 fn receipts_keep_one_message_so_state_grows_with_the_thread() {
     let (_dir, store) = setup();
     let cid = store.publish(publication("publish")).unwrap().curio.id;
