@@ -27,11 +27,15 @@
     authenticated = false,
     refreshing = false,
     refreshAgain = false;
+  let mutationGeneration = 0;
   let frameCleanup = () => {},
     pinFrame = 0;
   const frame = $("document");
   const drafts = new Map();
   const requests = new Map();
+  let retrySend = null;
+  const sendBacklog = new Set();
+  const sentHere = new Set();
   // Off, clicks reach the document so its own interactive parts work.
   let commenting = true;
   const HINT = "Click an element to comment.";
@@ -162,7 +166,11 @@
           "Review authorization expired or was rejected. Reopen this curio from nth for a fresh link.",
         );
       }
-      throw new Error(error.message || `Request failed (${response.status}).`);
+      const failure = new Error(
+        error.message || `Request failed (${response.status}).`,
+      );
+      failure.status = response.status;
+      throw failure;
     }
     return response.status === 204 ? null : response.json();
   }
@@ -181,15 +189,18 @@
     return state.threads
       .flatMap((thread) => thread.messages)
       .filter(
-        (message) => message.author === "human" && message.delivery === "saved",
+        (message) =>
+          message.author === "human" &&
+          message.delivery === "saved" &&
+          !sentHere.has(message.id),
       );
   }
-  // Sent and not answered yet: an agent reply answers what came before it.
+  // Delivery tracks whether each submitted message has been answered.
   function waiting(thread) {
-    const last = thread.messages.at(-1);
-    return (
-      last?.author === "human" &&
-      (last.delivery === "queued" || last.delivery === "recorded")
+    return thread.messages.some(
+      (message) =>
+        message.author === "human" &&
+        (message.delivery === "queued" || message.delivery === "recorded"),
     );
   }
   // Waiting with a session running to answer it; with none, the feedback
@@ -198,15 +209,24 @@
     return waiting(thread) && state.listening;
   }
   async function refresh() {
+    if (busy) {
+      refreshAgain = true;
+      return;
+    }
     if (refreshing) {
       refreshAgain = true;
       return;
     }
     refreshing = true;
+    const generation = mutationGeneration;
     try {
       const snapshot = await api(
         `/api/state${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`,
       );
+      if (busy || generation !== mutationGeneration) {
+        refreshAgain = true;
+        return;
+      }
       state = snapshot;
       revision = snapshot.revision.number;
       const url = new URL(location.href);
@@ -230,7 +250,8 @@
     $("current-revision").textContent = `r${revision}`;
     // The other revisions, as niri shows workspaces: one button each.
     const picker = $("revisions");
-    const others = state.revisions.filter((item) => item.number !== revision);
+    picker.setAttribute("aria-label", `Revisions, current r${revision}`);
+    const others = state.revisions;
     const buttons = new Map(
       Array.from(picker.children).map((node) => [node.dataset.number, node]),
     );
@@ -245,21 +266,20 @@
           button.textContent = `r${key}`;
           button.addEventListener("click", () => changeRevision(item.number));
         }
-        button.title = item.title || "Revision";
+        button.title = item.title || `Revision ${key}`;
+        button.setAttribute("aria-current", String(item.number === revision));
         button.disabled = busy;
         return button;
       }),
     );
     $("update").hidden = state.curio.current_revision === revision;
     $("update").textContent = `latest r${state.curio.current_revision}`;
-    const open = state.threads.filter(
-      (thread) => thread.status !== "resolved",
-    ).length;
-    $("thread-count").textContent = open
-      ? `${open} open`
-      : state.threads.length
-        ? "all resolved"
-        : "no threads";
+    renderSend();
+    $("current-revision").textContent = `r${revision}`;
+    $("current-revision").setAttribute(
+      "aria-expanded",
+      String(!$("revisions").hidden),
+    );
     $("status-dot").classList.toggle("listening", state.listening);
     $("status-dot").setAttribute(
       "aria-label",
@@ -268,6 +288,20 @@
     if (selected && !currentThread()) selected = null;
     renderPopover();
     schedulePins();
+  }
+  function renderSend() {
+    const count = new Set([
+      ...sendBacklog,
+      ...pending().map((message) => message.id),
+    ]).size;
+    $("send-count").textContent = String(count);
+    $("send-all").setAttribute(
+      "aria-label",
+      `Send all pending feedback (${count})`,
+    );
+    $("send-all").title =
+      `Save the current comment and send all pending feedback (${count})`;
+    $("send-all").disabled = busy || (!count && !editing() && !retrySend);
   }
   function renderPopover() {
     const thread = currentThread();
@@ -285,7 +319,11 @@
       setTimeout(() => popover.classList.remove("opening"), 500);
     }
     $("submit").disabled = busy;
-    $("submit").setAttribute("aria-label", thread ? "Reply" : "Comment");
+    $("submit").setAttribute(
+      "aria-label",
+      thread ? "Save reply" : "Save comment",
+    );
+    $("resolve").disabled = busy;
     $("resolve").hidden = !thread;
     const messages = $("messages");
     $("working").hidden = !thread || !waiting(thread);
@@ -301,7 +339,11 @@
     $("resolve").classList.toggle("reopen", resolved);
     // Only the conversation itself: who said what.
     const signature = JSON.stringify(
-      thread.messages.map((message) => [message.author, message.body]),
+      thread.messages.map((message) => [
+        message.author,
+        message.body,
+        message.delivery,
+      ]),
     );
     if (messages.dataset.signature === signature) return;
     // Messages that arrive while the thread shows rise in on their own.
@@ -318,6 +360,12 @@
         item.style.setProperty("--i", String(index));
         author.textContent = message.author === "agent" ? "nth" : "You";
         item.append(author, document.createTextNode(message.body));
+        if (message.author === "human" && message.delivery === "saved") {
+          const label = document.createElement("span");
+          label.className = "pending";
+          label.textContent = "Pending";
+          item.append(label);
+        }
         return item;
       }),
     );
@@ -325,7 +373,7 @@
   function openPopover(next) {
     if (busy || !commenting) return false;
     if (editing()) {
-      say("Send or clear your comment first.");
+      say("Save or clear your comment first.");
       $("comment-body").focus();
       return false;
     }
@@ -672,6 +720,7 @@
   async function mutate(steps) {
     if (busy) return false;
     busy = true;
+    mutationGeneration++;
     render();
     $("comment-body").readOnly = true;
     try {
@@ -686,66 +735,142 @@
       await refresh();
     }
   }
-  // Everything saved goes to nth at once, so a send that failed before
-  // goes along with the next comment.
-  // `saved` is the thread just written, newer than `state` may be.
+  // Retry an uncertain send with its original payload and request ID first.
+  // A newly saved thread may be newer than the last snapshot.
   async function sendPending(saved) {
-    const ids = new Set(pending().map((message) => message.id));
-    for (const message of saved.messages)
-      if (message.author === "human" && message.delivery === "saved")
-        ids.add(message.id);
-    const payload = { message_ids: [...ids] };
-    if (!payload.message_ids.length) return;
-    await api("/api/send", {
-      request_id: requestId("send", payload),
-      ...payload,
-    });
-    requests.delete("send");
+    const snapshot = await api(
+      `/api/state${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`,
+    );
+    for (const thread of snapshot.threads)
+      for (const message of thread.messages)
+        if (
+          message.author === "human" &&
+          message.delivery === "saved" &&
+          !sentHere.has(message.id)
+        )
+          sendBacklog.add(message.id);
+    for (const message of saved?.messages || [])
+      if (
+        message.author === "human" &&
+        message.delivery === "saved" &&
+        !sentHere.has(message.id)
+      )
+        sendBacklog.add(message.id);
+    while (retrySend || sendBacklog.size) {
+      if (!retrySend) {
+        const payload = { message_ids: [...sendBacklog].slice(0, 200) };
+        retrySend = { request_id: requestId("send", payload), ...payload };
+      }
+      try {
+        await api("/api/send", retrySend);
+      } catch (error) {
+        if (error.status !== 409) throw error;
+        // A definitive conflict cannot have committed this request. Another
+        // viewer may have sent some of its messages; fetch authoritative state
+        // before changing the request or dropping anything from the backlog.
+        const snapshot = await api(
+          `/api/state${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`,
+        );
+        const available = new Set(
+          snapshot.threads
+            .flatMap((thread) => thread.messages)
+            .filter(
+              (message) =>
+                message.author === "human" && message.delivery === "saved",
+            )
+            .map((message) => message.id),
+        );
+        let changed = false;
+        for (const id of sendBacklog) {
+          if (!available.has(id)) {
+            sendBacklog.delete(id);
+            changed = true;
+          }
+        }
+        retrySend = null;
+        requests.delete("send");
+        if (!changed) throw error;
+        continue;
+      }
+      for (const id of retrySend.message_ids) {
+        sendBacklog.delete(id);
+        sentHere.add(id);
+      }
+      retrySend = null;
+      requests.delete("send");
+    }
   }
   async function changeRevision(number) {
     if (busy || editing()) {
-      say("Send or clear your comment before changing revisions.");
-      return;
+      say("Save or clear your comment before changing revisions.");
+      return false;
     }
     closePopover();
+    $("revisions").hidden = true;
+    $("current-revision").setAttribute("aria-expanded", "false");
     revision = Number(number);
     await refresh();
+    return true;
   }
+  function toggleRevisions(force) {
+    const picker = $("revisions");
+    const open = force ?? picker.hidden;
+    picker.hidden = !open;
+    $("current-revision").setAttribute("aria-expanded", String(open));
+    if (open) picker.querySelector('[aria-current="true"]')?.focus();
+    else $("current-revision").focus();
+  }
+  $("current-revision").addEventListener("click", () => {
+    if (!busy) toggleRevisions();
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("revisions").hidden && !$("dock").contains(event.target))
+      toggleRevisions(false);
+  });
   $("comment-body").addEventListener("input", () => {
     const slot = draftSlot();
     if (slot) writeDraft(slot, $("comment-body").value || null);
     fitComment();
+    if (state) renderSend();
   });
   $("popover").addEventListener("animationend", (event) => {
     if (event.target === $("popover")) $("popover").classList.remove("closing");
   });
-  $("comment-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
+  async function saveComment() {
     const body = $("comment-body").value.trim();
     const slot = draftSlot();
     if (!body || !slot) return;
     const thread = currentThread();
+    let saved;
+    if (thread) {
+      const payload = { expected_version: thread.version, revision, body };
+      saved = await api(
+        `/api/threads/${encodeURIComponent(thread.id)}/messages`,
+        { request_id: requestId(slot, payload), ...payload },
+      );
+    } else {
+      const payload = { revision, target, body };
+      saved = await api("/api/comments", {
+        request_id: requestId(slot, payload),
+        ...payload,
+      });
+      target = null;
+      selected = saved.id;
+    }
+    requests.delete(slot);
+    writeDraft(slot, null);
+    $("comment-body").value = "";
+    fitComment();
+    return saved;
+  }
+  $("comment-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!editing()) return;
+    await mutate(saveComment);
+  });
+  $("send-all").addEventListener("click", async () => {
     await mutate(async () => {
-      let saved;
-      if (thread) {
-        const payload = { expected_version: thread.version, revision, body };
-        saved = await api(
-          `/api/threads/${encodeURIComponent(thread.id)}/messages`,
-          { request_id: requestId(slot, payload), ...payload },
-        );
-      } else {
-        const payload = { revision, target, body };
-        saved = await api("/api/comments", {
-          request_id: requestId(slot, payload),
-          ...payload,
-        });
-        target = null;
-        selected = saved.id;
-      }
-      requests.delete(slot);
-      writeDraft(slot, null);
-      $("comment-body").value = "";
-      fitComment();
+      const saved = await saveComment();
       await sendPending(saved);
     });
   });
@@ -781,18 +906,25 @@
   );
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!$("revisions").hidden) {
+        event.preventDefault();
+        toggleRevisions(false);
+        return;
+      }
       event.preventDefault();
       closePopover();
     }
-    // Enter sends, as in a chat; Shift+Enter is a new line.
+    // Enter saves; Shift+Enter also sends the whole batch.
     if (
       event.key === "Enter" &&
-      !event.shiftKey &&
       !event.isComposing &&
-      event.target.tagName === "TEXTAREA"
+      event.target === $("comment-body")
     ) {
       event.preventDefault();
-      if (!busy) event.target.form.requestSubmit();
+      if (!busy) {
+        if (event.shiftKey) $("send-all").click();
+        else event.target.form.requestSubmit();
+      }
     }
   });
   window.addEventListener("resize", schedulePins);

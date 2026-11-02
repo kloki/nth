@@ -39,6 +39,7 @@
               maxlength="16000"
               aria-label="Comment"
               placeholder="Comment for nth…"
+              title="Enter to save; Shift+Enter to save and send all"
             ></textarea>
             <button type="button" id="resolve" hidden aria-label="Resolve">
               <svg
@@ -57,7 +58,12 @@
                 <path d="M3 3v5h5" />
               </svg>
             </button>
-            <button type="submit" id="submit" aria-label="Comment">
+            <button
+              type="submit"
+              id="submit"
+              aria-label="Save comment"
+              title="Save comment (Enter); save and send all (Shift+Enter)"
+            >
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 19V5M5 12l7-7 7 7" />
               </svg>
@@ -69,15 +75,33 @@
     <header id="dock" aria-label="Curio">
       <span class="lead">
         <span id="status-dot" role="img" aria-label="Connecting"></span>
-        <span id="current-revision">r…</span>
+        <button
+          id="current-revision"
+          type="button"
+          aria-expanded="false"
+          aria-controls="revisions"
+        >
+          r…
+        </button>
       </span>
       <span class="more">
         <span class="separator" aria-hidden="true">│</span>
         <h1 id="title">Opening curio…</h1>
-        <nav id="revisions" aria-label="Other revisions"></nav>
         <button id="update" type="button" hidden></button>
-        <span id="thread-count"></span>
       </span>
+      <nav id="revisions" aria-label="Revisions" hidden></nav>
+      <button
+        id="send-all"
+        type="button"
+        disabled
+        aria-label="Send all pending feedback (0)"
+        title="Save the current comment and send all pending feedback"
+      >
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 12h14M13 5l7 7-7 7" />
+        </svg>
+        <span id="send-count" aria-hidden="true">0</span>
+      </button>
       <button
         id="comments"
         type="button"
@@ -90,12 +114,7 @@
         </svg>
       </button>
     </header>
-    <p
-      id="notice"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    >
+    <p id="notice" role="status" aria-live="polite" aria-atomic="true">
       Connecting…
     </p>
     <noscript
