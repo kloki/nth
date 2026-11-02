@@ -159,12 +159,12 @@ iframe {
 }
 #revisions {
   position: absolute;
-  right: 36px;
+  left: 30px;
   bottom: calc(100% + 8px);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: min(220px, calc(100vw - 28px));
+  width: 54px;
   max-height: min(52vh, 360px);
   overflow-y: auto;
   padding: 6px;
@@ -175,10 +175,10 @@ iframe {
 }
 #revisions button {
   flex: none;
-  padding: 9px 12px;
+  padding: 9px 4px;
   border-radius: var(--radius-bubble);
   color: var(--comment);
-  text-align: left;
+  text-align: center;
 }
 #revisions button[aria-current="true"] {
   background: var(--pink);
@@ -201,25 +201,25 @@ iframe {
   height: 28px;
   margin-left: 2px;
   border-radius: var(--radius-control);
-  color: var(--purple);
+  background: var(--purple);
+  color: var(--background);
+}
+#send-all:disabled {
+  background: var(--purple);
+  color: var(--background);
+}
+#send-all .icon {
+  width: 12px;
+  height: 12px;
 }
 #send-all #send-count {
-  position: absolute;
-  top: -3px;
-  right: -4px;
-  display: grid;
-  min-width: 14px;
-  height: 14px;
-  place-items: center;
-  padding-inline: 3px;
-  border: 1px solid var(--background);
-  border-radius: var(--radius-control);
-  background: var(--pink);
+  min-width: 7px;
   color: var(--background);
   font: 700 9px/1 var(--mono);
 }
 #send-all:hover:not(:disabled) {
-  color: var(--foreground);
+  background: var(--pink);
+  color: var(--background);
 }
 #comments {
   display: flex;
