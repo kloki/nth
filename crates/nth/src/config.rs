@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use nth_context::Paths;
 use nth_icons::icons;
 use nth_protocol::{Effort, Mode};
