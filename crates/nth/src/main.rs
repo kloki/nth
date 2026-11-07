@@ -170,10 +170,7 @@ enum Command {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        None => match load(cli.config.as_deref(), cli.model) {
-            Ok(config) => chat::run(cli.resume, config).await,
-            Err(e) => Err(e),
-        },
+        None => chat::start(cli.resume, cli.config, cli.model).await,
         Some(command) => dispatch(command, cli.config, cli.model).await,
     };
     match result {
@@ -187,7 +184,16 @@ async fn main() -> ExitCode {
 
 /// The config, with `--model` applied over it.
 fn load(path: Option<&std::path::Path>, model: Option<String>) -> Result<Config> {
-    let mut config = Config::load(path)?;
+    let cwd = std::env::current_dir().context("no working directory")?;
+    load_for(path, model, &cwd)
+}
+
+fn load_for(
+    path: Option<&std::path::Path>,
+    model: Option<String>,
+    cwd: &std::path::Path,
+) -> Result<Config> {
+    let mut config = Config::load_for(path, cwd)?;
     if let Some(model) = model {
         config.set_model(model);
     }
@@ -221,7 +227,9 @@ async fn dispatch(
         Command::Init { force } => config::init(config_path.clone(), force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
-        Command::Context { session, json } => context::run(session, json, config()?).await,
+        Command::Context { session, json } => {
+            context::run(session, json, config_path.clone(), model.clone()).await
+        }
         Command::Work { session, json } => work::run(session, json).await,
         Command::Memory { json } => memory::run(json, &config()?),
         Command::Session { command } => session::run(command).await,
@@ -252,6 +260,9 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     let (model, effort) = config.llm_for(mode);
     let model = providers.qualify(&model);
     let mut session = Session::new(model, cwd.clone()).with_context(context(cwd, paths).await);
+    for warning in apply_directories(&mut session, config) {
+        eprintln!("{} {warning}", icons().warn.yellow().bold());
+    }
     session.mode = mode;
     session.effort = effort;
     session.max_steps = config.session.max_steps;
@@ -265,6 +276,28 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     session.subagent_llm = config.subagent_for().map(picked);
     session.clerk_llm = config.clerk_for().map(picked);
     Ok((session, providers))
+}
+
+/// Add configured directories to a session without losing manually added ones.
+fn apply_directories(session: &mut Session, config: &Config) -> Vec<String> {
+    let configured: Vec<_> = config.directories.paths.iter().map(PathBuf::from).collect();
+    let resolved =
+        nth_session::directories::resolve(&session.cwd, &session.extra_dirs, &configured);
+    let warnings = resolved
+        .warnings
+        .into_iter()
+        .filter_map(|warning| {
+            use nth_session::directories::Refusal;
+            let message = match warning {
+                Refusal::Inaccessible { path, error } => format!("{}: {error}", path.display()),
+                Refusal::NotDirectory(path) => format!("{} is not a directory", path.display()),
+                Refusal::Overlap { .. } => return None,
+            };
+            Some(format!("directories.paths: {message}"))
+        })
+        .collect();
+    session.set_extra_dirs(resolved.directories);
+    warnings
 }
 
 /// Sizes the session's compaction to its model: the `[context]` policy,

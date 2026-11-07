@@ -2,6 +2,7 @@
 
 use std::{
     io::{self, IsTerminal, Write},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -14,13 +15,20 @@ use nth_session::{
 };
 use serde_json::json;
 
-use crate::config::Config;
-
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
-pub async fn run(id: Option<String>, json: bool, config: Config) -> Result<()> {
+#[cfg(test)]
+use crate::config::Config;
+
+pub async fn run(
+    id: Option<String>,
+    json: bool,
+    config_path: Option<PathBuf>,
+    model: Option<String>,
+) -> Result<()> {
     let store = Store::open()?;
     let mut session = crate::session::pick(&store, id.as_deref()).await?;
+    let config = crate::load_for(config_path.as_deref(), model, &session.cwd)?;
     // Agent definitions are needed for offered-tool filtering. set_context also
     // rewrites the system prompt, so retain exactly the messages that were saved.
     let messages = session.messages.clone();

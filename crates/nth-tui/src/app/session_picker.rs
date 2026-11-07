@@ -9,7 +9,16 @@ use nth_session::{Session, Summary, store};
 use super::{App, TabState, input::Input, keys::Action, usage::Spent};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
+pub(super) enum Loaded {
+    Session(Box<Session>),
+    Runtime(Box<super::PreparedRuntime>),
+}
+
 impl App {
+    pub fn with_runtime_loader(mut self, loader: Option<Arc<dyn super::RuntimeLoader>>) -> Self {
+        self.runtime_loader = loader;
+        self
+    }
     /// A key while the session picker is open.
     pub(super) fn key_session_picker(&mut self, action: Action) {
         let Input::SessionPicker(picker) = &mut self.input else {
@@ -73,29 +82,75 @@ impl App {
         }
         if let Some(store) = self.store.clone() {
             let paths = self.paths.clone();
+            let loader = self.runtime_loader.clone();
             self.session_loading.start(|_| {
                 tokio::spawn(async move {
                     let mut session = store.load(id).await?;
+                    if let Some(loader) = loader {
+                        return Ok(Loaded::Runtime(Box::new(loader.prepare(session).await?)));
+                    }
                     // Read for the session's own directory, which may not be
                     // the one nth started in.
                     let context = Context::load(session.cwd.clone(), paths).await;
                     session.set_context(Arc::new(context));
-                    Ok(session)
+                    Ok(Loaded::Session(Box::new(session)))
                 })
             });
         }
     }
 
-    pub(super) fn session_loaded(&mut self, session: Result<Session, store::Error>) {
+    pub(super) fn session_loaded(&mut self, session: anyhow::Result<Loaded>) {
         match session {
             // A turn started while it was being read; switching now would
             // lose that turn's session when it ends.
             Ok(_) if self.is_busy() => self.hint = Some("a turn is running".into()),
-            Ok(session) => self.resume(session),
+            Ok(Loaded::Session(session)) => self.resume(*session),
+            Ok(Loaded::Runtime(runtime)) => self.install_runtime(*runtime),
             Err(e) => self
                 .chat
                 .transcript
-                .push_error(format!("could not resume: {e}")),
+                .push_error(format!("could not resume: {e:#}")),
+        }
+    }
+
+    fn install_runtime(&mut self, runtime: super::PreparedRuntime) {
+        let super::PreparedRuntime {
+            session,
+            paths,
+            provider,
+            model_tools,
+            shell,
+            checkers,
+            mode_llms,
+            profiles,
+            warnings,
+        } = runtime;
+        self.paths = paths;
+        self.provider = provider;
+        self.llms = None;
+        self.llm_listing = Default::default();
+        self.tools = model_tools;
+        self.shell = Some(shell);
+        self.max_steps = session.max_steps;
+        self.compaction = session.compaction;
+        self.mode_llms = mode_llms;
+        self.profiles = profiles;
+        self.profile = (!self.profiles.is_empty()).then_some(0);
+        self.agent_llms.clear();
+        let mut lsp = checkers.lsp.status();
+        self.servers = lsp.borrow_and_update().clone();
+        self.lsp = Some(lsp);
+        self.lsp_usage = None;
+        self.checkers = Some(checkers);
+        self.servers_lookup = Default::default();
+        self.formatters_lookup = Default::default();
+        self.diagnostics = Default::default();
+        self.resume(session);
+        for warning in warnings {
+            self.chat.transcript.push_error(warning);
+        }
+        if self.content.active() == super::Tab::Diagnostics {
+            self.diagnose();
         }
     }
 
@@ -228,6 +283,113 @@ mod tests {
         );
         // The built-in agents follow the instructions.
         assert!(prompt.contains(&expected), "{prompt}");
+    }
+
+    struct Loader {
+        fail: bool,
+    }
+
+    impl crate::RuntimeLoader for Loader {
+        fn prepare(
+            &self,
+            mut session: Session,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow::Result<crate::PreparedRuntime>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                if self.fail {
+                    return Err(anyhow::anyhow!("invalid key").context("bad repository config"));
+                }
+                session.max_steps = 17;
+                session.compaction.auto = false;
+                session.set_extra_dirs(vec!["/configured".into()]);
+                Ok(crate::PreparedRuntime {
+                    session,
+                    paths: Default::default(),
+                    provider: Arc::new(crate::app::tests::Scripted::idle()),
+                    model_tools: Arc::new(Vec::new()),
+                    shell: Arc::new(nth_tools::Bash::new(Default::default())),
+                    checkers: crate::Checkers {
+                        lsp: nth_lsp::Lsp::new(&Default::default()),
+                        formatters: Arc::new(nth_format::Formatters::new(&Default::default())),
+                        rtk: false,
+                    },
+                    mode_llms: super::super::ModeLlms::same(nth_protocol::Llm {
+                        model: "new-default".into(),
+                        effort: Default::default(),
+                    }),
+                    profiles: Vec::new(),
+                    warnings: Vec::new(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_is_installed_together_and_clear_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut saved = Session::new("saved-model", dir.path().into());
+        saved.messages.push(Message::User("hello".into()));
+        store.save(&saved).await.unwrap();
+        let mut app = app()
+            .with_store(store)
+            .with_runtime_loader(Some(Arc::new(Loader { fail: false })));
+        let old_provider = app.provider.clone();
+        app.open_session_picker();
+        let listed = app.session_listing.join().await.unwrap();
+        app.sessions_listed(listed);
+        app.choose_session();
+        let loaded = app.session_loading.join().await.unwrap();
+        app.session_loaded(loaded);
+        assert_eq!(app.session_id, saved.id);
+        assert_eq!(app.model, "saved-model");
+        assert!(!Arc::ptr_eq(&app.provider, &old_provider));
+        assert_eq!(app.max_steps, 17);
+        assert!(!app.compaction.auto);
+        assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/configured")]);
+        assert!(!app.checkers.as_ref().unwrap().rtk);
+        app.start_fresh_session();
+        let fresh = app.session.as_ref().unwrap();
+        assert_eq!(fresh.max_steps, 17);
+        assert_eq!(fresh.extra_dirs, [std::path::PathBuf::from("/configured")]);
+    }
+
+    #[tokio::test]
+    async fn loader_failure_keeps_the_old_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut saved = Session::new("saved", dir.path().into());
+        saved.messages.push(Message::User("hello".into()));
+        store.save(&saved).await.unwrap();
+        let mut app = app()
+            .with_store(store)
+            .with_runtime_loader(Some(Arc::new(Loader { fail: true })));
+        let original = app.session_id;
+        app.open_session_picker();
+        let listed = app.session_listing.join().await.unwrap();
+        app.sessions_listed(listed);
+        app.choose_session();
+        let loaded = app.session_loading.join().await.unwrap();
+        app.session_loaded(loaded);
+        assert_eq!(app.session_id, original);
+        assert_eq!(app.model, "glm");
+        assert!(
+            app.chat
+                .transcript
+                .entries()
+                .any(|entry| format!("{entry:?}").contains("invalid key"))
+        );
+        assert!(
+            app.chat
+                .transcript
+                .entries()
+                .any(|entry| format!("{entry:?}").contains("bad repository config"))
+        );
     }
 
     #[test]

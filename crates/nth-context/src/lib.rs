@@ -143,6 +143,12 @@ pub fn project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// The main checkout for the nearest repository, including from a worktree.
+pub fn main_project_root(cwd: &Path) -> Option<PathBuf> {
+    let root = project_root(cwd)?;
+    Some(main_checkout(&root).unwrap_or(root))
+}
+
 /// The main checkout of the linked worktree at `root`, whose `.git` is a
 /// file naming `<main>/.git/worktrees/<name>`.
 pub(crate) fn main_checkout(root: &Path) -> Option<PathBuf> {

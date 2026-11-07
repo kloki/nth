@@ -90,7 +90,7 @@ use turn::{Ended, Queued};
 use usage::Spent;
 
 use crate::{
-    Checkers,
+    Checkers, PreparedRuntime, RuntimeLoader,
     chat::Chat,
     command::Command,
     context::ContextView,
@@ -271,6 +271,7 @@ pub struct App {
     /// Where instruction files are looked for when a resumed session moves
     /// to another directory.
     paths: Paths,
+    runtime_loader: Option<Arc<dyn RuntimeLoader>>,
     /// The session's instruction files and skills; kept here too, since
     /// the session is in the turn task while one runs and `/` still has to
     /// list the skills.
@@ -283,7 +284,7 @@ pub struct App {
     compaction: Compaction,
     session_listing: Job<Result<Vec<Summary>, store::Error>>,
     /// The session chosen in the session picker, being read.
-    session_loading: Job<Result<Session, store::Error>>,
+    session_loading: Job<anyhow::Result<session_picker::Loaded>>,
     /// A save between turns, after a change no turn would save, such as
     /// `/add-dir`; one asked for mid-save runs after it.
     session_saving: Job<Result<(), store::Error>>,
@@ -401,7 +402,7 @@ enum Step {
     Subagent(SubagentEvent),
     NoticesDue,
     HintExpired,
-    TurnEnded(Result<Ended, JoinError>),
+    TurnEnded(Box<Result<Ended, JoinError>>),
     Indexed(Result<Vec<String>, JoinError>),
     GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
     PrLoaded(Result<Option<Pr>, JoinError>),
@@ -409,7 +410,7 @@ enum Step {
     LoginUrl(String),
     Connected(Result<Result<nth_auth::Account, nth_auth::Error>, JoinError>),
     SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
-    SessionLoaded(Result<Result<Session, store::Error>, JoinError>),
+    SessionLoaded(Result<anyhow::Result<session_picker::Loaded>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
     SessionSaved(Result<Result<(), store::Error>, JoinError>),
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
@@ -540,6 +541,7 @@ impl App {
             connect_url: None,
             store: None,
             paths: Paths::default(),
+            runtime_loader: None,
             context: session.context().clone(),
             max_steps: session.max_steps,
             compaction: session.compaction,
@@ -696,7 +698,7 @@ impl App {
                 _ = due(self.hint.as_ref().map(hint::Hint::expires)) => Step::HintExpired,
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
-                ended = self.turn.join() => Step::TurnEnded(ended),
+                ended = self.turn.join() => Step::TurnEnded(Box::new(ended)),
                 files = self.indexing.join() => Step::Indexed(files),
                 status = self.git_loading.join() => Step::GitLoaded(status),
                 pr = self.pr_loading.join() => Step::PrLoaded(pr),
@@ -744,8 +746,10 @@ impl App {
                 Step::Subagent(event) => self.on_subagent(event),
                 Step::NoticesDue => self.notices_due(),
                 Step::HintExpired => self.hint_expired(),
-                Step::TurnEnded(Ok(ended)) => self.end_turn(ended),
-                Step::TurnEnded(Err(e)) => self.turn_task_failed(e),
+                Step::TurnEnded(ended) => match *ended {
+                    Ok(ended) => self.end_turn(ended),
+                    Err(e) => self.turn_task_failed(e),
+                },
                 Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
                 Step::GitLoaded(status) => {
                     self.git_loaded(status.context("reading git status failed")?)

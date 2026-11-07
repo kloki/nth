@@ -37,7 +37,9 @@ mod usage;
 mod work;
 
 use std::{
+    future::Future,
     io::{IsTerminal, stdin, stdout},
+    pin::Pin,
     sync::Arc,
 };
 
@@ -72,6 +74,27 @@ pub struct Tools {
     pub shell: Arc<dyn Tool>,
     pub subagents: Subagents,
     pub subagent_rx: mpsc::Receiver<SubagentEvent>,
+}
+
+/// A complete repository-specific runtime, prepared before switching sessions.
+pub struct PreparedRuntime {
+    pub session: Session,
+    pub paths: Paths,
+    pub provider: Arc<dyn Provider>,
+    pub model_tools: Arc<Vec<Box<dyn Tool>>>,
+    pub shell: Arc<dyn Tool>,
+    pub checkers: Checkers,
+    pub mode_llms: ModeLlms,
+    pub profiles: Vec<Profile>,
+    pub warnings: Vec<String>,
+}
+
+/// Prepare a saved session and its repository runtime using the shared subagent registry.
+pub trait RuntimeLoader: Send + Sync {
+    fn prepare(
+        &self,
+        session: Session,
+    ) -> Pin<Box<dyn Future<Output = Result<PreparedRuntime>> + Send + '_>>;
 }
 
 /// What the config decided: where nth looks for project files, the model
@@ -113,6 +136,44 @@ pub async fn run(
         chatgpt,
     }: Settings,
 ) -> Result<()> {
+    run_with_loader(
+        session,
+        provider,
+        tools,
+        checkers,
+        store,
+        Settings {
+            paths,
+            mode_llms,
+            profiles,
+            notifier,
+            chat,
+            split_width,
+            chatgpt,
+        },
+        None,
+    )
+    .await
+}
+
+/// Run the chat with a loader for repository-specific settings on `/resume`.
+pub async fn run_with_loader(
+    session: Session,
+    provider: Arc<dyn Provider>,
+    tools: Tools,
+    checkers: Checkers,
+    store: Store,
+    Settings {
+        paths,
+        mode_llms,
+        profiles,
+        notifier,
+        chat,
+        split_width,
+        chatgpt,
+    }: Settings,
+    loader: Option<Arc<dyn RuntimeLoader>>,
+) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
     // codes into the pipe and then fail on raw mode.
     if !stdin().is_terminal() || !stdout().is_terminal() {
@@ -133,6 +194,7 @@ pub async fn run(
         .with_subagents(tools.subagents, tools.subagent_rx)
         .with_store(store)
         .with_paths(paths)
+        .with_runtime_loader(loader)
         .with_history(history)
         .with_llm_usage(llm_usage)
         .with_checkers(checkers)
