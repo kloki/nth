@@ -20,10 +20,18 @@ A plan usually looks like this:
 2. **Build**: one or more cycles of items that make the change.
 3. **Test**: after each build cycle that adds something substantial, a dedicated cycle whose items only write and run tests for what was just built, one item per area. Do not rely on the builders' own checks: someone who did not write the code tests it against the brief. A failing test goes back to a build item, rewritten and assigned again, before you move on.
 4. **Integrate**: when items ran on their own branches, merge them before the work that needs the whole change (see "Manage branches, merges and pull requests").
-5. **Review**: the last cycle is always a bug hunt over the whole change, by subagents that did not write it. One item per angle: correctness and edge cases, error handling and failure paths, tests that are missing or assert too little, consistency with the codebase's conventions. Tell each to look for real bugs, reproduce every one it reports, and give file:line and the failing input. Then check each finding yourself, fix the real ones (yourself, or as fix items in one more cycle), and run the full test suite, formatter and linter before you call the plan done.
+5. **Review**: the last cycle is always a bug hunt over the whole change, by subagents that did not write it. Use `review` when available. One item per angle: correctness and edge cases, error handling and failure paths, tests that are missing or assert too little, consistency with the codebase's conventions. Tell each to look for real bugs, reproduce every one it reports, and give file:line and the failing input. Then check each finding yourself, fix the real ones (yourself, or as fix items in one more cycle), and run the full test suite, formatter and linter before you call the plan done.
 6. **Deliver**: push and open the pull requests the plan set out to make, or tell the user which branch holds the result.
 
 Write the later cycles' items when you know enough to brief them, and rewrite them with what earlier cycles taught you before assigning them.
+
+## Reconsider the plan
+
+Start with a clear goal, cycle structure, dependencies, verification criteria and branch layout. These are the best approach with what you know now, not a commitment to ignore new evidence.
+
+Reconsider after the survey, at each cycle boundary before assigning the next, and when a finding, failing test, blocker or review result materially changes assumptions, scope or dependencies. Routine progress need not trigger replanning. Compare what you learned with the goal and remaining work: keep what still fits, rewrite briefs or verification, split or close obsolete items, and add investigation, fix or verification cycles as needed. Preserve the user's goal and tell them about material scope changes.
+
+Record what changed and why in `plan.md`, including affected dependencies and branch layout, before assigning the affected work. Use the work tools to revise items; stop affected running agents before changing their briefs, and close obsolete pending items with an explanatory note. Keep completed results and respect cycle barriers when rearranging the remaining work.
 
 ## Size an item
 
@@ -43,7 +51,13 @@ Seed the todo with the steps you expect; the subagent ticks them and adds its ow
 
 ## Pick the agent
 
-`work_assign` takes `subagent_type`, an agent from your agents list. Use `general` for items that change code and `explore` for read-only investigation; a project agent (an opencode-style markdown agent with `mode: subagent`) when one fits the item better, such as a reviewer whose tools cannot write.
+`work_assign` takes `subagent_type`, an agent from your agents list. Choose the one that fits the work:
+
+- `general` for implementation, fixes, tests and tasks needing several steps or judgement.
+- `explore` for read-only codebase investigation and surveys.
+- `review`, when available, for an independent bug hunt over completed changes. Give it the comparison base, scope and review angle; ask for actionable findings with severity and evidence.
+- `clerk` for a small, well-defined task such as a commit message, PR title or description, short summary or quick lookup. Supply the context it needs; use `general` when substantial investigation or judgement is needed. Use `task` for a small one-off instead of creating a work item solely for it.
+- A project agent (an opencode-style markdown agent with `mode: subagent`) when its specialization fits better.
 
 ## Give items their own worktrees
 
@@ -68,13 +82,14 @@ Git is part of the plan, not an afterthought. Decide the layout before the first
 ## Run it
 
 1. Write `plan.md` in the plan's folder (work_status names it): a `# Title` line, then the goal and the branch layout. The user sees it above the cycles.
-2. Write the current cycle's items with work_item.
+2. Reconsider the plan at the cycle boundary, then write the current cycle's items with work_item.
 3. Assign every item of the cycle with work_assign, all in one message, so they run in parallel (items in their own worktrees are assigned one after another, each after its enter_worktree).
 4. End your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep, poll, or call work_status to wait.
 
 ## Judge what comes back
 
 - Read the answer, then check the work as far as you need to: the diff, the verification command. Close an item as done only once you checked it.
+- Reconsider the remaining plan when a result materially changes what you know, and again before assigning the next cycle.
 - When it falls short, rewrite the brief with work_item and assign it again. Ticked steps and the last result are kept for the next subagent; pass `task_id` to continue the same subagent when what it remembers helps.
 - When it cannot be done, close it as failed and plan around it.
 - When an item stalls, wait, or stop it with task_stop and assign it again.
