@@ -11,9 +11,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nth_directories::project_root;
 pub use template::parse;
 
-use crate::{Paths, frontmatter, project_root};
+use crate::{Paths, frontmatter};
 
 const FILE: &str = "SKILL.md";
 /// What the model gets when a skill is loaded, as in opencode.

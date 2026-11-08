@@ -9,6 +9,7 @@ use std::{
 };
 
 use fs2::FileExt;
+use nth_directories::Directories;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
@@ -217,7 +218,10 @@ fn no_symlinks(path: &Path) -> Result<()> {
                 "Curios paths must not contain symlinks".into(),
             ));
         }
-        if ancestor.file_name().is_some_and(|name| name == ".nth") {
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name == nth_directories::NTH)
+        {
             break;
         }
     }
@@ -384,7 +388,8 @@ impl Store {
         if repository_root(&root)? != root {
             return Err(Error::RepoRequired);
         }
-        let base = root.join(".nth/curios");
+        let dirs = Directories::from_root(&root);
+        let base = dirs.curios();
         no_symlinks(&base)?;
         fs::create_dir_all(&base)?;
         let ignore = base.join(".gitignore");
@@ -400,10 +405,11 @@ impl Store {
         }
         // Require the actual owner directory to be ignored too, protecting future
         // curio/revisions directories and arbitrary source filenames.
-        let owner = base.join(session_id);
+        let owner = dirs.curio_owner(session_id);
+        let source = dirs.curio_source(session_id);
         no_symlinks(&owner)?;
-        no_symlinks(&owner.join("source"))?;
-        fs::create_dir_all(owner.join("source"))?;
+        no_symlinks(&source)?;
+        fs::create_dir_all(&source)?;
         if walked {
             // This session's own folder is walked every time, even when the
             // tree is trusted: the model writes its source workspace, and its
@@ -412,7 +418,7 @@ impl Store {
         }
         paths.extend([
             owner.clone(),
-            owner.join("source"),
+            source,
             owner.join("state.json"),
             owner.join("lock"),
             owner.join("delivery.lock"),
@@ -453,10 +459,13 @@ impl Store {
         &self.session
     }
     pub fn path(&self) -> PathBuf {
-        self.root.join(".nth/curios").join(&self.session)
+        self.dirs().curio_owner(&self.session)
     }
     pub fn source_dir(&self) -> PathBuf {
-        self.path().join("source")
+        self.dirs().curio_source(&self.session)
+    }
+    fn dirs(&self) -> Directories {
+        Directories::from_root(&self.root)
     }
     /// Where an adopted curio's HTML was copied to edit; see [`Self::adopt`].
     pub fn adopted_source(&self, curio_id: &str) -> PathBuf {
@@ -542,7 +551,7 @@ impl Store {
                 fs::remove_dir_all(item.path())?;
                 continue;
             };
-            let revisions = item.path().join("revisions");
+            let revisions = self.dirs().curio_revisions(&self.session, &cid);
             no_symlinks(&revisions)?;
             for revision in fs::read_dir(&revisions)? {
                 let revision = revision?;
@@ -641,10 +650,8 @@ impl Store {
     /// it was adopted.
     fn updated_at(&self, curio: &Curio) -> Option<u64> {
         let path = self
-            .path()
-            .join(&curio.id)
-            .join("revisions")
-            .join(curio.current_revision.to_string())
+            .dirs()
+            .curio_revision(&self.session, &curio.id, curio.current_revision)
             .join("index.html");
         let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
         Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs())
@@ -731,7 +738,7 @@ impl Store {
                 anchors,
                 html_url: format!("/content/{number}"),
             };
-            let dir = self.path().join(&cid).join("revisions");
+            let dir = self.dirs().curio_revisions(&self.session, &cid);
             no_symlinks(&dir)?;
             fs::create_dir_all(&dir)?;
             let destination = dir.join(number.to_string());
@@ -779,10 +786,8 @@ impl Store {
         component(curio_id)?;
         self.snapshot(curio_id, Some(revision))?;
         let path = self
-            .path()
-            .join(curio_id)
-            .join("revisions")
-            .join(revision.to_string())
+            .dirs()
+            .curio_revision(&self.session, curio_id, revision)
             .join("index.html");
         no_symlinks(&path)?;
         let mut html = String::new();
@@ -1120,7 +1125,7 @@ impl Store {
             if state.curios.len() >= 100 {
                 return Err(Error::Invalid("Curio limit reached".into()));
             }
-            let dir = self.path().join(curio_id);
+            let dir = self.dirs().curio(&self.session, curio_id);
             no_symlinks(&dir)?;
             // What an earlier attempt copied before it was cut short.
             if dir.exists() {
@@ -1128,10 +1133,12 @@ impl Store {
             }
             let staging = tempfile::tempdir_in(self.path())?;
             for revision in &entry.revisions {
-                let number = revision.number.to_string();
-                let source = old.path().join(curio_id).join("revisions").join(&number);
+                let source = old
+                    .dirs()
+                    .curio_revision(&old.session, curio_id, revision.number);
                 no_symlinks(&source)?;
-                let target = staging.path().join("revisions").join(&number);
+                let target =
+                    Directories::revisions_in(staging.path()).join(revision.number.to_string());
                 fs::create_dir_all(&target)?;
                 for file in ["index.html", "revision.json"] {
                     atomic(&target.join(file), &fs::read(source.join(file))?)?;
@@ -1180,7 +1187,7 @@ impl Store {
             from_state.batches.retain(|b| b.curio_id != curio_id);
             old.save(&mut from_state)?;
         }
-        let gone = old.path().join(curio_id);
+        let gone = old.dirs().curio(&old.session, curio_id);
         if gone.exists() {
             fs::remove_dir_all(gone)?;
         }
@@ -1191,10 +1198,8 @@ impl Store {
         if !source.exists() {
             fs::create_dir_all(source.parent().expect("adopted folder"))?;
             let html = fs::read(
-                self.path()
-                    .join(curio_id)
-                    .join("revisions")
-                    .join(entry.curio.current_revision.to_string())
+                self.dirs()
+                    .curio_revision(&self.session, curio_id, entry.curio.current_revision)
                     .join("index.html"),
             )?;
             atomic(&source, &html)?;
@@ -1261,7 +1266,7 @@ struct Seen {
 impl Discovery {
     pub fn refresh(&mut self, repo_root: &Path) -> Result<Vec<Curio>> {
         self.skipped.clear();
-        let base = repo_root.join(".nth/curios");
+        let base = Directories::from_root(repo_root).curios();
         if !base.exists() {
             self.seen.clear();
             return Ok(vec![]);

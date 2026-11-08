@@ -182,7 +182,8 @@ pub struct Session {
 impl Session {
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
-        let state_root = Some(nth_context::main_project_root(&cwd).unwrap_or_else(|| cwd.clone()));
+        let state_root =
+            Some(nth_directories::main_project_root(&cwd).unwrap_or_else(|| cwd.clone()));
         let context = Arc::<Context>::default();
         let id = Uuid::new_v4();
         let messages = vec![Message::System(system_prompt(
@@ -332,7 +333,7 @@ impl Session {
     pub fn state_root(&self) -> PathBuf {
         self.state_root.clone().unwrap_or_else(|| {
             let start = self.origin.as_ref().unwrap_or(&self.cwd);
-            nth_context::main_project_root(start).unwrap_or_else(|| start.clone())
+            nth_directories::main_project_root(start).unwrap_or_else(|| start.clone())
         })
     }
 

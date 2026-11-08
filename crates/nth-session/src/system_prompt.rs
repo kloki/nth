@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use jiff::Zoned;
-use nth_context::{Context, Memory, memory, project_root};
+use nth_context::{Context, Memory, memory};
+use nth_directories::project_root;
 use uuid::Uuid;
 
 /// The default system prompt, opencode's `default.txt`.

@@ -13,7 +13,7 @@ const GITIGNORE: &str = "# nth's memory of this project, kept out of git.\n*\n";
 /// outside one there is no git to keep it from, and no folder is made
 /// before the model saves something.
 pub(crate) async fn ensure_dir(dir: &Path, cwd: &Path) -> io::Result<()> {
-    if nth_context::project_root(cwd).is_none() {
+    if nth_directories::project_root(cwd).is_none() {
         return Ok(());
     }
     tokio::fs::create_dir_all(dir).await?;

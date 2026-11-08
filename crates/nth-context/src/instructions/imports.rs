@@ -92,7 +92,7 @@ fn walk(
 /// relative to `dir`, the importing file's folder. `None` when that is no
 /// file.
 fn resolve(raw: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
-    let path = crate::expand_home(raw, home).unwrap_or_else(|| dir.join(raw));
+    let path = nth_directories::expand_home(raw, home).unwrap_or_else(|| dir.join(raw));
     let path = normalize(&path);
     path.is_file().then_some(path)
 }

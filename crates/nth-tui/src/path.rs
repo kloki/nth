@@ -58,7 +58,7 @@ fn parts<'a>(cwd: &Path, home: Option<&str>, arg: &'a str) -> (PathBuf, String, 
             let dir = if arg.starts_with('/') {
                 Path::new("/").join(spelled)
             } else {
-                nth_session::directories::expand(cwd, home.map(Path::new), spelled)
+                nth_directories::added::expand(cwd, home.map(Path::new), spelled)
             };
             (dir, format!("{spelled}/"), &name[1..])
         }

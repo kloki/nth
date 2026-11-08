@@ -154,7 +154,7 @@ impl App {
                 let end = self.prompt.text().len();
                 let arg = self.prompt.text()[start..].to_string();
                 let named = arg.ends_with('/')
-                    && nth_session::directories::expand(
+                    && nth_directories::added::expand(
                         &self.cwd,
                         self.home.as_deref().map(Path::new),
                         &arg,

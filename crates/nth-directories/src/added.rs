@@ -1,4 +1,5 @@
-//! Validation and merging of additional working directories.
+//! Validation and merging of the directories `/add-dir` and `[directories]`
+//! add to a session beside its working directory.
 
 use std::{
     io,
@@ -8,7 +9,7 @@ use std::{
 /// Expand a typed path relative to the working directory, including `~`.
 pub fn expand(cwd: &Path, home: Option<&Path>, arg: &str) -> PathBuf {
     let home = home.filter(|home| !home.as_os_str().is_empty());
-    nth_context::expand_home(arg, home).unwrap_or_else(|| {
+    crate::expand_home(arg, home).unwrap_or_else(|| {
         let path = Path::new(arg);
         if path.is_absolute() {
             path.to_path_buf()

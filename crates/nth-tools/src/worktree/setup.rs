@@ -2,15 +2,23 @@
 //! created: installing dependencies, copying untracked config, whatever a
 //! fresh checkout needs before it builds.
 
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
+
+use nth_directories::{Directories, NTH};
 
 use crate::{
     output,
     process::{self, Outcome, Tail},
 };
 
-/// Where the script lives, relative to the main checkout.
-pub(super) const SCRIPT: &str = ".nth/worktree-setup";
+/// Where the script lives in the main checkout `root`.
+pub(super) fn script(root: &Path) -> PathBuf {
+    Directories::from_root(root).worktree_setup()
+}
 
 /// Long enough for a dependency install, short enough that a script
 /// waiting for input does not hold the turn forever.
@@ -23,23 +31,27 @@ pub(super) async fn run(root: &Path, worktree: &Path, session: &str) -> Option<S
 }
 
 async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration) -> Option<String> {
-    if !root.join(SCRIPT).is_file() {
+    let path = script(root);
+    if !path.is_file() {
         return None;
     }
+    // The result names it relative to the project, as the user wrote it.
+    let name = Path::new(NTH).join("worktree-setup");
+    let name = name.display();
     // Run through bash so the script needs no executable bit, and named
     // through the variable so no path needs quoting.
-    let script = format!("exec 2>&1\nexec bash \"$NTH_WORKTREE_BASE/{SCRIPT}\"");
-    let spawned = process::shell(&script, worktree, session)
+    let command = format!("exec 2>&1\nexec bash \"$NTH_WORKTREE_BASE/{name}\"");
+    let spawned = process::shell(&command, worktree, session)
         .env("NTH_WORKTREE_BASE", root)
         .env("NTH_WORKTREE_PATH", worktree)
         .stdout(Stdio::piped())
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
-        Err(e) => return Some(format!("Could not run {SCRIPT}: {e}")),
+        Err(e) => return Some(format!("Could not run {name}: {e}")),
     };
     let Some(mut stdout) = child.stdout.take() else {
-        return Some(format!("Could not run {SCRIPT}: its stdout is not piped"));
+        return Some(format!("Could not run {name}: its stdout is not piped"));
     };
     let mut ring = Tail::new(output::MAX_CHARS);
     let outcome = process::run_to_exit(&mut child, &mut stdout, Some(timeout), &mut ring).await;
@@ -52,7 +64,7 @@ async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration)
         Outcome::Failed(e) => format!("failed: {e}"),
     };
     let out = ring.text();
-    Some(format!("Ran {SCRIPT} ({outcome}):\n{}", out.trim_end()))
+    Some(format!("Ran {name} ({outcome}):\n{}", out.trim_end()))
 }
 
 #[cfg(test)]
@@ -65,7 +77,7 @@ mod tests {
     fn hanging(root: &Path) {
         std::fs::create_dir_all(root.join(".nth")).expect("mkdir");
         std::fs::write(
-            root.join(SCRIPT),
+            script(root),
             "echo started\nbash -c 'sleep 1; touch \"$NTH_WORKTREE_PATH/survived\"'\n",
         )
         .expect("write");
@@ -97,11 +109,7 @@ mod tests {
     async fn strips_setup_output() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".nth")).unwrap();
-        std::fs::write(
-            dir.path().join(SCRIPT),
-            "printf '\\033[31mhello\\033[0m\\n'",
-        )
-        .unwrap();
+        std::fs::write(script(dir.path()), "printf '\\033[31mhello\\033[0m\\n'").unwrap();
         let out = run_for(dir.path(), dir.path(), "", Duration::from_secs(5))
             .await
             .unwrap();

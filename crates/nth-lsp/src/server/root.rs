@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nth_context::project_root;
+use nth_directories::project_root;
 
 /// How far up a search may go. opencode stops at the session's directory;
 /// nth's pool is shared across sessions, so it stops at the file's git
