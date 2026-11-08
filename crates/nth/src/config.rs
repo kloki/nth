@@ -426,6 +426,12 @@ impl Config {
             std::env::current_dir()?.join(cwd)
         };
         let global = path.map(Path::to_path_buf).or_else(Self::default_path);
+        // Where a refused project path belongs, named even when that file
+        // does not exist yet.
+        let global_name = global.as_ref().map_or_else(
+            || "the global config".to_string(),
+            |p| p.display().to_string(),
+        );
         let mut sources = Vec::new();
         let mut value = toml::Value::Table(Default::default());
         if let Some(global) = global.filter(|p| path.is_some() || p.exists()) {
@@ -437,7 +443,7 @@ impl Config {
         if let Some((root, file)) = repo_config(&cwd, home) {
             let mut layer = read_layer(&file, true)?;
             normalize_paths(&mut layer, &root, home);
-            paths_inside(&layer, &root)
+            paths_inside(&layer, &root, &global_name)
                 .with_context(|| format!("invalid config {}", file.display()))?;
             merge(&mut value, layer, "");
             sources.push(file);
@@ -544,7 +550,7 @@ fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
             } else {
                 base.join(path)
             };
-            let path = canonicalize_existing_prefix(&path);
+            let path = resolve_path(&path);
             *value = toml::Value::String(path.to_string_lossy().into_owned());
             seen.insert(path)
         });
@@ -554,9 +560,15 @@ fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
 /// Refuses a project layer's normalized `skills.paths` or `directories.paths`
 /// entry outside `root`: a cloned repository must not hand the session a
 /// directory such as `~/.ssh` or load prompt text from elsewhere on disk.
-/// The entries are already symlink-resolved, so a prefix check suffices.
-fn paths_inside(value: &toml::Value, root: &Path) -> Result<()> {
-    let root = canonicalize_existing_prefix(root);
+/// `normalize_paths` resolved every existing component through `resolve_path`,
+/// so a prefix check sees where a symlink really points.
+///
+/// The check holds only at load: a path missing then (or a dangling symlink)
+/// can become an outward symlink before the session uses it, say after a
+/// branch switch. Outside Git a `~/.nth/config` is a project config whose root
+/// is home, so it may name anything under home; that file is the user's own.
+fn paths_inside(value: &toml::Value, root: &Path, global: &str) -> Result<()> {
+    let root = resolve_path(root);
     for section in ["skills", "directories"] {
         let Some(paths) = value
             .get(section)
@@ -567,37 +579,35 @@ fn paths_inside(value: &toml::Value, root: &Path) -> Result<()> {
         };
         for path in paths.iter().filter_map(toml::Value::as_str) {
             if !Path::new(path).starts_with(&root) {
-                bail!(
-                    "{section}.paths entry {path} is outside the repository; put it in ~/.config/nth/config.toml"
-                );
+                bail!("{section}.paths entry {path} is outside the repository; put it in {global}");
             }
         }
     }
     Ok(())
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+/// `path` made absolute and free of `.` and `..`, each existing prefix
+/// canonicalized as it is reached, so a symlink is followed before a later
+/// `..` and wherever it sits, even after a missing folder (`missing/../link`).
+/// Components that do not exist are kept as written.
+fn resolve_path(path: &Path) -> PathBuf {
     use std::path::Component;
-    let mut result = PathBuf::new();
+    let mut resolved = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                result.pop();
+                resolved.pop();
             }
-            part => result.push(part.as_os_str()),
+            part => {
+                resolved.push(part.as_os_str());
+                if let Ok(canonical) = std::fs::canonicalize(&resolved) {
+                    resolved = canonical;
+                }
+            }
         }
     }
-    result
-}
-
-fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
-    for prefix in path.ancestors() {
-        if let Ok(canonical) = std::fs::canonicalize(prefix) {
-            return normalize_path(&canonical.join(path.strip_prefix(prefix).expect("ancestor")));
-        }
-    }
-    normalize_path(path)
+    resolved
 }
 
 fn merge(base: &mut toml::Value, overlay: toml::Value, key: &str) {
@@ -783,7 +793,14 @@ mod tests {
         std::fs::write(&global, "").unwrap();
         let sibling = sibling.canonicalize().unwrap();
         for section in ["skills", "directories"] {
-            for entry in [sibling.to_str().unwrap(), "../sibling", "link", "link/x"] {
+            for entry in [
+                sibling.to_str().unwrap(),
+                "../sibling",
+                "link",
+                "link/x",
+                "missing/../link",
+                "missing/../link/x",
+            ] {
                 std::fs::write(&repo, format!("[{section}]\npaths = ['{entry}']")).unwrap();
                 let err = Config::load_for(Some(&global), &root).unwrap_err();
                 let message = format!("{err:#}");
@@ -796,9 +813,10 @@ mod tests {
                     "{entry}: {message}"
                 );
                 assert!(
-                    message.ends_with(
-                        "is outside the repository; put it in ~/.config/nth/config.toml"
-                    ),
+                    message.ends_with(&format!(
+                        "is outside the repository; put it in {}",
+                        global.display()
+                    )),
                     "{entry}: {message}"
                 );
             }
@@ -819,6 +837,22 @@ mod tests {
             Config::load_for(Some(&global), &root).unwrap();
             std::fs::write(&global, "").unwrap();
         }
+        // Outside Git the root is the folder holding `.nth`.
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(plain.join(".nth")).unwrap();
+        std::fs::create_dir_all(plain.join("docs")).unwrap();
+        std::fs::write(plain.join(".nth/config"), "[directories]\npaths = ['docs']").unwrap();
+        Config::load_layers(Some(&global), &plain, None).unwrap();
+        std::fs::write(
+            plain.join(".nth/config"),
+            "[directories]\npaths = ['../sibling']",
+        )
+        .unwrap();
+        let err = Config::load_layers(Some(&global), &plain, None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("is outside the repository"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -1468,7 +1502,7 @@ mod tests {
         std::fs::create_dir_all(shared.join("docs")).unwrap();
         std::os::unix::fs::symlink(shared.join("team"), repo.join("link")).unwrap();
         assert_eq!(
-            canonicalize_existing_prefix(&repo.join("link/../docs")),
+            resolve_path(&repo.join("link/../docs")),
             shared.join("docs").canonicalize().unwrap()
         );
     }

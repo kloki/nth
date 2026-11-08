@@ -197,8 +197,8 @@ paths = ["~/my-skills", "./team-skills"]   # ~ is home; relative is from cwd
 ```
 
 Searched after the standard places; a skill there replaces an internal one of
-the same name. In a project `.nth/config` only folders under the project root
-are allowed.
+the same name. In a project `.nth/config` relative paths resolve against the
+project root, and only folders under it are allowed.
 
 ### Formatters
 

@@ -205,14 +205,14 @@ url = "https://mcp.exa.ai/mcp"
 
 [skills]
 # Extra folders searched for SKILL.md files, after the standard ones.
-# ~/ is the home directory; relative paths are from the working directory.
-# A project .nth/config may only name folders under the project root.
+# ~/ is the home directory; relative paths are from the working directory,
+# project config paths from the project root, under which they must stay.
 paths = []
 
 [directories]
 # Additional directories available to sessions, like /add-dir. Relative paths
 # use the initial working directory; project config paths use the project root
-# and must stay under it, so a directory elsewhere goes in this file.
+# and must stay under it, so a directory elsewhere goes in the global config.
 paths = []
 
 [format]
