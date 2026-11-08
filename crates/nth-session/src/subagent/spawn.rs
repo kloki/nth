@@ -6,7 +6,7 @@ use std::{borrow::Cow, sync::Arc};
 use nth_context::Agent;
 use nth_protocol::{Provider, Tool, ToolContext, Writable};
 
-use super::{Limits, SubagentId, Subagents, child_session, tools_for};
+use super::{Limits, Reserved, SubagentId, Subagents, child_session, tools_for};
 
 /// The subagent the model named, or the refusal listing the ones there
 /// are.
@@ -58,10 +58,12 @@ impl Spawner {
         tools_for(&self.tools, agent, writable)
     }
 
-    /// Starts a subagent of `agent` for the call `ctx`, with `extra` tools
-    /// beside its share, and returns its id.
+    /// Starts a subagent of `agent` for the call `ctx` as the number
+    /// `reserved` holds, with `extra` tools beside its share, and returns
+    /// its id.
     pub(crate) fn spawn(
         &self,
+        reserved: Reserved,
         agent: &Agent,
         description: &str,
         ctx: &ToolContext,
@@ -80,8 +82,14 @@ impl Spawner {
         let session = child_session(agent, ctx, self.limits.max_steps);
         let mut tools = self.tools_for(agent, &ctx.writable);
         tools.extend(extra);
-        self.subagents
-            .spawn(agent, description, session, self.provider.clone(), tools)
+        self.subagents.spawn(
+            reserved,
+            agent,
+            description,
+            session,
+            self.provider.clone(),
+            tools,
+        )
     }
 
     /// Refuses to continue subagent `id` from a planning parent when it
@@ -141,6 +149,7 @@ mod tests {
         agent.model = Some("glm".into());
 
         spawner.spawn(
+            spawner.subagents().reserve(),
             &agent,
             "look",
             &ToolContext::new("/repo".into()),

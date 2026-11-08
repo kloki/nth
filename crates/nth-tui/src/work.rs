@@ -5,12 +5,10 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use nth_icons::icons;
-use nth_session::{
-    subagent::SubagentId,
-    work::{
-        Item, Plan, Status,
-        outline::{CycleState, Kind, Outline},
-    },
+use nth_session::subagent::SubagentId;
+use nth_work::{
+    Item, Plan, Status,
+    outline::{CycleState, Kind, Outline},
 };
 use ratatui::{
     Frame,
@@ -377,7 +375,7 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use nth_session::work::{Cycle, ItemRef, Todo, WorkOutcome};
+    use nth_work::{Cycle, ItemRef, Todo, WorkOutcome};
     use ratatui::style::Modifier;
 
     use super::*;

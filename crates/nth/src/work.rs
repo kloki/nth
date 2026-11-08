@@ -6,12 +6,10 @@ use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, bail};
 use nth_icons::icons;
-use nth_session::{
-    Session, Store,
-    work::{
-        self, Item, Plan, Status,
-        outline::{CycleState, Guide, Kind, Row},
-    },
+use nth_session::{Session, Store};
+use nth_work::{
+    Item, Plan, Status,
+    outline::{CycleState, Guide, Kind, Row},
 };
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
@@ -19,7 +17,7 @@ use serde_json::{Value, json};
 pub async fn run(session: Option<String>, json: bool) -> Result<()> {
     let store = Store::open()?;
     let session = crate::session::pick(&store, session.as_deref()).await?;
-    let Some(plan) = work::Store::new(session.work_dir()).load().await? else {
+    let Some(plan) = nth_work::Store::new(session.work_dir()).load().await? else {
         bail!(
             "session {} has no work plan in {}",
             session.id,
@@ -233,7 +231,7 @@ fn item_json(item: &Item) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use nth_session::work::{Cycle, ItemRef, Todo, WorkOutcome};
+    use nth_work::{Cycle, ItemRef, Todo, WorkOutcome};
 
     use super::*;
 

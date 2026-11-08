@@ -2,10 +2,11 @@
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_work::{Item, ItemRef, Status, Todo, cycle_name, one_line, slug, splits_sections};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Item, ItemRef, Status, Todo, Work, cycle_name, slug, store::splits_sections};
+use super::Work;
 use crate::plan;
 
 pub(super) struct WorkItem {
@@ -114,7 +115,7 @@ impl Tool for WorkItem {
             let todos: Vec<Todo> = args
                 .todos
                 .iter()
-                .map(|text| super::one_line(text))
+                .map(|text| one_line(text))
                 .filter(|text| !text.is_empty())
                 .map(|text| Todo {
                     done: ticked(&text),
@@ -161,8 +162,10 @@ impl Tool for WorkItem {
 
 #[cfg(test)]
 mod tests {
+    use nth_work::{Store, work_dir};
+
     use super::*;
-    use crate::work::{Store, tests::ctx, work_dir};
+    use crate::work::tests::ctx;
 
     fn args(cycle: u32, name: Option<&str>, item: &str) -> serde_json::Value {
         json!({

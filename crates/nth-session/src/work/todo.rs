@@ -2,20 +2,19 @@
 //! item. Each call replaces the item's todo list and tells the model that
 //! assigned it.
 
-use std::sync::{Arc, OnceLock};
-
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, tool_names};
+use nth_work::{Status, Todo, one_line, todo_counts};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Assignment, Status, Todo, WorkNotice, WorkState, one_line, todo_counts};
+use super::{Assignment, WorkNotice, WorkState};
 
-/// Empty until `work_assign` knows which subagent it went to.
-pub(super) struct WorkTodo(Arc<OnceLock<Assignment>>);
+/// Bound to the item and subagent `work_assign` built it for.
+pub(super) struct WorkTodo(Assignment);
 
 impl WorkTodo {
-    pub(super) fn new(assignment: Arc<OnceLock<Assignment>>) -> Self {
+    pub(super) fn new(assignment: Assignment) -> Self {
         Self(assignment)
     }
 }
@@ -65,9 +64,7 @@ impl Tool for WorkTodo {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
-            let Some(a) = self.0.get() else {
-                return Err("you have no work item yet".into());
-            };
+            let a = &self.0;
             let todos: Vec<Todo> = args
                 .todos
                 .into_iter()

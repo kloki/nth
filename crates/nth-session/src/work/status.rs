@@ -5,9 +5,10 @@ use std::time::SystemTime;
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_work::{Cycle, Item, Plan, Status};
 use serde_json::json;
 
-use super::{Cycle, Item, Plan, Status, Work};
+use super::Work;
 
 pub(super) struct WorkStatus {
     work: Work,
@@ -121,8 +122,10 @@ fn ago(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use nth_work::{ItemRef, Store, work_dir};
+
     use super::*;
-    use crate::work::{ItemRef, Store, item::WorkItem, tests::ctx, work_dir};
+    use crate::work::{item::WorkItem, tests::ctx};
 
     #[tokio::test]
     async fn it_shows_each_cycle_and_item_with_where_it_stands() {

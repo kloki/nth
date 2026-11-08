@@ -9,9 +9,7 @@ mod assign;
 mod close;
 mod item;
 mod notice;
-pub mod outline;
 mod status;
-pub mod store;
 mod todo;
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -20,15 +18,14 @@ pub use assign::Assigned;
 use assign::WorkAssign;
 use close::WorkClose;
 use item::WorkItem;
-pub use notice::{Todo, WorkNotice, WorkOutcome, WorkState};
-pub(crate) use notice::{one_line, todo_counts, todo_lines};
+pub use notice::{WorkNotice, WorkState};
 use nth_protocol::{Provider, Tool, ToolContext};
+use nth_work::{Cycle, Item, ItemRef, Plan, Status, Store, WorkOutcome, work_dir};
 use status::WorkStatus;
-pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir};
 
 use crate::{
     Error, Inbox, SubagentId, Subagents,
-    subagent::{Limits, Spawner, TaskId},
+    subagent::{Limits, Spawner},
 };
 
 /// The tools that write and read the plan, which no subagent gets: the one
@@ -50,7 +47,7 @@ pub(crate) struct Live {
     /// it again rather than taking the file for a gone run's. Process
     /// memory is the right scope, since a run that ends takes its
     /// subagents with it.
-    unreturned: BTreeMap<PathBuf, (TaskId, WorkOutcome)>,
+    unreturned: BTreeMap<PathBuf, (SubagentId, WorkOutcome)>,
     /// The last one on each item, running or not: the only one `task_id`
     /// may continue it with, since an id in a file may be another run's.
     worked: BTreeMap<PathBuf, SubagentId>,
@@ -264,32 +261,13 @@ struct Assignment {
     files: Arc<Files>,
     store: Store,
     at: ItemRef,
-    task: TaskId,
+    task: SubagentId,
     agent: String,
     /// The orchestrator's.
     inbox: Inbox,
     /// Cancelled once the subagent is forgotten with the session that
     /// assigned it: what it says after goes to no model.
     closed: tokio_util::sync::CancellationToken,
-}
-
-/// A name for a cycle or an item: lowercase letters and digits, words
-/// joined by single hyphens, at most 48 characters.
-pub fn slug(text: &str) -> Result<(), String> {
-    let fine = !text.is_empty()
-        && text.len() <= 48
-        && text.split('-').all(|word| {
-            !word.is_empty()
-                && word
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        });
-    match fine {
-        true => Ok(()),
-        false => Err(format!(
-            "{text:?} is not a slug: use lowercase letters and digits, words joined by single hyphens, at most 48 characters"
-        )),
-    }
 }
 
 /// `01-foundation/store: running` style lists of what keeps a cycle open.
@@ -456,16 +434,6 @@ pub(crate) mod tests {
         assert!(live.running.is_empty() && live.unreturned.is_empty());
     }
 
-    #[test]
-    fn slugs_are_lowercase_words() {
-        for fine in ["store", "a-b-2", "x", &"a".repeat(48)] {
-            assert_eq!(slug(fine), Ok(()), "{fine}");
-        }
-        for bad in ["", "Foo", "a--b", "-a", "a-", "a b", "ä", &"a".repeat(49)] {
-            assert!(slug(bad).is_err(), "{bad}");
-        }
-    }
-
     #[tokio::test]
     async fn an_item_left_running_by_a_gone_run_returns_interrupted() {
         let dir = tempfile::tempdir().unwrap();
@@ -493,7 +461,7 @@ pub(crate) mod tests {
         let plan = reconciled(&store, &mut Live::default()).await.unwrap();
         let item = plan.item(&at).unwrap();
         assert_eq!(item.status, Status::Returned);
-        assert_eq!(item.outcome, Some(crate::work::WorkOutcome::Interrupted));
+        assert_eq!(item.outcome, Some(WorkOutcome::Interrupted));
         assert_eq!(
             store.read(&at).await.unwrap().unwrap().status,
             Status::Returned,

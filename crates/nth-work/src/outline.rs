@@ -2,7 +2,7 @@
 //! lines and `nth work` as coloured text: the tree's shape is decided here
 //! once, and each front-end picks the glyphs and colours.
 
-use super::{Item, Plan, Status};
+use crate::{Item, Plan, Status};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outline {
@@ -149,7 +149,7 @@ pub fn shows_todos(status: &Status) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::work::{Cycle, ItemRef, Todo};
+    use crate::{Cycle, ItemRef, Todo};
 
     fn item(cycle: &str, slug: &str, status: Status, todos: &[(&str, bool)]) -> Item {
         let at = ItemRef {

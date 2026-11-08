@@ -12,7 +12,7 @@ use clap::Subcommand;
 use jiff::Timestamp;
 use nth_directories::Directories;
 use nth_icons::icons;
-use nth_session::{Session, Store, Summary, plan, store::age, work};
+use nth_session::{Session, Store, Summary, plan, store::age};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -144,10 +144,10 @@ async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
     }
     let mut work_dirs = vec![
         session.work_dir(),
-        work::work_dir(&session.cwd, &session.id.to_string()),
+        nth_work::work_dir(&session.cwd, &session.id.to_string()),
     ];
     if let Some(origin) = &session.origin {
-        work_dirs.push(work::work_dir(origin, &session.id.to_string()));
+        work_dirs.push(nth_work::work_dir(origin, &session.id.to_string()));
     }
     work_dirs.sort();
     work_dirs.dedup();

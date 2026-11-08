@@ -373,11 +373,10 @@ impl Pending {
 
 #[cfg(test)]
 mod tests {
+    use nth_work::{Todo, WorkOutcome};
+
     use super::*;
-    use crate::{
-        subagent::{TaskId, TaskOutcome},
-        work::{Todo, WorkOutcome},
-    };
+    use crate::{SubagentId, subagent::TaskOutcome};
 
     fn task() -> TaskNotice {
         TaskNotice {
@@ -560,7 +559,7 @@ mod tests {
         assert!(inbox.wakes(), "a return is one");
     }
 
-    fn stall(id: TaskId, secs: u64) -> TaskStall {
+    fn stall(id: SubagentId, secs: u64) -> TaskStall {
         TaskStall {
             id,
             agent: "explore".into(),
