@@ -7,8 +7,8 @@ use std::{
 
 use nth_context::{Agent, Context, instructions::Watch};
 use nth_protocol::{
-    AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Provider, SubagentLlm,
-    Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
+    AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Phase, Provider,
+    SubagentLlm, Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -794,6 +794,8 @@ impl Session {
         let held = self.held(front_end);
         // Only `Turn::run` writes the trigger's usage: a compaction's is the
         // summary request's, not the conversation's size.
+        // As a turn does: what the slot holds from here on is this one's.
+        front_end.context_preview.reset();
         let mut turn = self.turn(&held, provider, tools, events, cancel);
         let result = turn.compact().await;
         // In a turn the next request shows the summary; here nothing follows.
@@ -801,7 +803,7 @@ impl Session {
             Ok(true) => None,
             _ => *turn.last_usage,
         };
-        turn.publish_preview("idle", false, usage);
+        turn.publish_preview(Phase::Idle, false, usage);
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.

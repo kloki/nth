@@ -18,7 +18,9 @@ mod workdir;
 mod writable;
 
 pub use compaction::Compaction;
-pub use context_preview::{ContextPreview, Snapshot as ContextSnapshot};
+pub use context_preview::{
+    Budget, ContextPreview, Entry, Phase, Preview, Snapshot as ContextSnapshot, ToolDefinition,
+};
 pub use curios::{CurioDelivery, CurioNotice, Curios, nth_curios};
 pub use event::{Event, retry_label};
 pub use image::{

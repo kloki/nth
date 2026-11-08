@@ -3,7 +3,7 @@
 //! A monitor's tab closes by itself once its process has stopped, and only
 //! then, so nothing keeps running out of sight; the log keeps its output.
 
-use nth_protocol::{MonitorEvent, monitor_log_dir};
+use nth_protocol::{MonitorEvent, Stream, monitor_log_dir};
 
 use super::{App, NOTICE_DELAY, Tab};
 use crate::monitor::MonitorView;
@@ -24,11 +24,17 @@ impl App {
                 self.content.add(Tab::Monitor(id));
             }
             MonitorEvent::Output { id, line, stream } => {
+                // Its stdout goes into the inbox, which the idle preview
+                // lists as pending.
+                if stream == Stream::Stdout {
+                    self.context_stale();
+                }
                 if let Some(view) = self.monitor_views.get_mut(&id) {
                     view.push(stream, line);
                 }
             }
             MonitorEvent::Ended { id, .. } => {
+                self.context_stale();
                 self.monitor_views.remove(&id);
                 self.content.remove(Tab::Monitor(id));
             }

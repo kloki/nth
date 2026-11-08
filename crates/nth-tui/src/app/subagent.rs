@@ -59,18 +59,22 @@ impl App {
                 if let Event::Usage(usage) = event {
                     self.spent.subagent_usage(id, usage);
                 }
-                // A subagent on a work item ticked its todo.
+                // A subagent on a work item ticked its todo, whose notice
+                // the idle preview lists as pending.
                 if let Event::ToolFinished { call, .. } = &event
                     && call.name == tool_names::WORK_TODO
                 {
                     self.work.read();
+                    self.context_stale();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
                 }
             }
-            // Its notice is in the inbox; waking the model for it is below.
+            // Its notice is in the inbox, which the idle preview lists as
+            // pending; waking the model for it is below.
             SubagentEvent::Stalled { id, .. } => {
+                self.context_stale();
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.stalled();
                 }
@@ -81,6 +85,8 @@ impl App {
                 elapsed,
                 model,
             } => {
+                // Its answer is in the inbox too.
+                self.context_stale();
                 self.spent.subagent_ended(id);
                 // A work item's subagent returned it.
                 if self.work.view.exists() {
