@@ -10,8 +10,7 @@ use nth_context::{Agent, Context, instructions::Watch};
 use tokio::sync::mpsc;
 
 use crate::{
-    Asker, Attachments, Compaction, Event, Inbox, Llm, Monitors, Screen, SubagentLlm, Workdir,
-    Writable,
+    Asker, Attachments, Compaction, Event, Llm, Monitors, Screen, SubagentLlm, Workdir, Writable,
 };
 
 #[derive(Debug, Clone)]
@@ -53,8 +52,6 @@ pub struct ToolContext {
     pub screen: Screen,
     /// The commands left running in the background.
     pub monitors: Monitors,
-    /// Where what the background says waits for the model.
-    pub inbox: Inbox,
     /// The files the tools may write: all of them, or in plan mode only
     /// the plan file.
     pub writable: Writable,
@@ -97,24 +94,11 @@ pub struct ToolContext {
     pub tool_timeout: Option<Duration>,
 }
 
-/// How tools reach the person at the front-end: to ask them questions, to
-/// switch what they see, to leave commands running, and to leave the model
-/// a notice it is woken for, and where the turn publishes its context
-/// preview. The default reaches nobody, as in a headless run.
-#[derive(Debug, Clone, Default)]
-pub struct FrontEnd {
-    pub asker: Asker,
-    pub screen: Screen,
-    pub monitors: Monitors,
-    pub inbox: Inbox,
-    pub context_preview: crate::ContextPreview,
-}
-
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;
 
 impl ToolContext {
     /// A context whose output goes nowhere, that has loaded nothing and has
-    /// nobody to ask or show anything to, no monitors and no inbox.
+    /// nobody to ask or show anything to and no monitors.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
             context_preview: crate::ContextPreview::default(),
@@ -131,7 +115,6 @@ impl ToolContext {
             asker: Asker::default(),
             screen: Screen::default(),
             monitors: Monitors::default(),
-            inbox: Inbox::default(),
             writable: Writable::Any,
             agent: None,
             llm: Llm::default(),
@@ -167,7 +150,6 @@ impl ToolContext {
             asker: self.asker.for_call(call_id),
             screen: self.screen.clone(),
             monitors: self.monitors.clone(),
-            inbox: self.inbox.clone(),
             writable: self.writable.clone(),
             agent: self.agent.clone(),
             llm: self.llm.clone(),
@@ -272,5 +254,67 @@ impl<T: Tool + ?Sized> Tool for Arc<T> {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         (**self).call(args, ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::{Ask, Image};
+
+    fn image(sha256: &str) -> Image {
+        Image {
+            mime: "image/png".into(),
+            sha256: sha256.into(),
+            width: 1,
+            height: 1,
+            path: format!("/data/{sha256}.png").into(),
+            data: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn for_call_gives_each_call_its_own_attachments_and_asker_tag() {
+        let (asks_tx, mut asks) = mpsc::channel::<Ask>(2);
+        let turn = ToolContext {
+            asker: Asker::new(asks_tx),
+            ..ToolContext::new("/repo".into())
+        };
+        turn.workdir
+            .enter(Path::new("/repo"), "/repo/.nth/worktrees/x".into());
+
+        let one = turn.for_call("1".into(), OutputSink::default());
+        let two = turn.for_call("2".into(), OutputSink::default());
+        one.attachments.add(image("a"));
+
+        assert_eq!(one.attachments.take().len(), 1);
+        assert!(two.attachments.take().is_empty(), "calls never mix images");
+        assert!(turn.attachments.take().is_empty());
+        assert_eq!(
+            one.cwd,
+            Path::new("/repo/.nth/worktrees/x"),
+            "where an earlier step moved the session"
+        );
+        one.instructions
+            .lock()
+            .expect("not poisoned")
+            .insert("/repo/AGENTS.md".into());
+        assert_eq!(
+            two.instructions.lock().expect("not poisoned").len(),
+            1,
+            "loaded instructions are the turn's"
+        );
+
+        // Nobody answers: the ask only has to reach the front-end tagged.
+        let asking = two.asker.ask(Vec::new());
+        let (_, ask) = tokio::join!(asking, async {
+            let ask = asks.recv().await.expect("the ask reached the front-end");
+            let call_id = ask.call_id.clone();
+            drop(ask);
+            call_id
+        });
+        assert_eq!(ask, "2");
     }
 }

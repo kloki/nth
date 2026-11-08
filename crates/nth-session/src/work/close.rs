@@ -1,11 +1,11 @@
 //! `work_close`: the orchestrator's verdict on an item, done or failed.
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, one_line};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ItemRef, Plan, Status, Work, open_items};
+use super::{ItemRef, Plan, Status, Work, one_line, open_items};
 
 pub(super) struct WorkClose {
     work: Work,

@@ -1,11 +1,11 @@
 //! `work_item`: writes an item of the plan, new or again.
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Todo, Tool, ToolContext, ToolResult, ToolSpec};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Item, ItemRef, Status, Work, cycle_name, slug, store::splits_sections};
+use super::{Item, ItemRef, Status, Todo, Work, cycle_name, slug, store::splits_sections};
 use crate::plan;
 
 pub(super) struct WorkItem {
@@ -114,7 +114,7 @@ impl Tool for WorkItem {
             let todos: Vec<Todo> = args
                 .todos
                 .iter()
-                .map(|text| nth_protocol::one_line(text))
+                .map(|text| super::one_line(text))
                 .filter(|text| !text.is_empty())
                 .map(|text| Todo {
                     done: ticked(&text),

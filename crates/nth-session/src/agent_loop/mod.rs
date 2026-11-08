@@ -28,7 +28,7 @@ pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Compaction, Spend};
+use crate::{Compaction, Inbox, Spend};
 
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
@@ -124,6 +124,9 @@ pub struct Turn<'a> {
     pub tools: &'a [Box<dyn Tool>],
     /// What the tool calls run with.
     pub ctx: &'a ToolContext,
+    /// What waits for the model: the turn hands it over between steps, and
+    /// a prompt in it pre-empts the next tool calls.
+    pub inbox: &'a Inbox,
     /// The history. Everything the model and tools produce is appended to it.
     pub messages: &'a mut Vec<Message>,
     /// What the requests used, counted as they report it, so a turn that
@@ -191,7 +194,7 @@ impl Turn<'_> {
             max_output: self.route.max_output,
             policy: self.route.compaction,
             last_usage: usage,
-            pending: self.ctx.inbox.preview(self.route.session_id),
+            pending: self.inbox.preview(self.route.session_id),
             phase,
             last_step: last,
         });

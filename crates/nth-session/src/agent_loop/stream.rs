@@ -185,11 +185,13 @@ mod tests {
 
         let mut spent = spend();
         let mut last_usage = None;
+        let inbox = crate::Inbox::default();
         let turn = Turn {
             provider: &provider,
             route: ROUTE,
             tools: &[],
             ctx: &ctx,
+            inbox: &inbox,
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -236,6 +238,7 @@ mod tests {
             route: ROUTE,
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -283,6 +286,7 @@ mod tests {
             route: ROUTE,
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -333,6 +337,7 @@ mod tests {
             route: ROUTE,
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,

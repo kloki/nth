@@ -233,8 +233,7 @@ fn item_json(item: &Item) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Todo, WorkOutcome};
-    use nth_session::work::{Cycle, ItemRef};
+    use nth_session::work::{Cycle, ItemRef, Todo, WorkOutcome};
 
     use super::*;
 

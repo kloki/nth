@@ -8,6 +8,7 @@
 mod assign;
 mod close;
 mod item;
+mod notice;
 pub mod outline;
 mod status;
 pub mod store;
@@ -19,15 +20,15 @@ pub use assign::Assigned;
 use assign::WorkAssign;
 use close::WorkClose;
 use item::WorkItem;
-use nth_protocol::{
-    Inbox, Provider, TaskId, Tool, ToolContext, WorkNotice, WorkOutcome, WorkState,
-};
+pub use notice::{Todo, WorkNotice, WorkOutcome, WorkState};
+pub(crate) use notice::{one_line, todo_counts, todo_lines};
+use nth_protocol::{Provider, Tool, ToolContext};
 use status::WorkStatus;
 pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir};
 
 use crate::{
-    Error, SubagentId, Subagents,
-    subagent::{Limits, Spawner},
+    Error, Inbox, SubagentId, Subagents,
+    subagent::{Limits, Spawner, TaskId},
 };
 
 /// The tools that write and read the plan, which no subagent gets: the one
@@ -70,21 +71,27 @@ pub struct Work(Arc<Shared>);
 struct Shared {
     spawner: Spawner,
     files: Arc<Files>,
+    /// Where the items' changes wait for the model: the front-end's, or
+    /// none headless, when `work_assign` waits for the return itself.
+    inbox: Inbox,
 }
 
 impl Work {
     /// `limits` are what an assigned item's subagent may spend: the item
     /// returns as timed out past its time, and the orchestrator hears it
-    /// stalled once it has said nothing for long enough.
+    /// stalled once it has said nothing for long enough. `inbox` must be
+    /// the one the front-end empties, or the notices go to no model.
     pub fn new(
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         subagents: Subagents,
+        inbox: Inbox,
         limits: Limits,
     ) -> Self {
         Self(Arc::new(Shared {
             spawner: Spawner::new(provider, tools, subagents, limits),
             files: Arc::default(),
+            inbox,
         }))
     }
 
@@ -308,9 +315,16 @@ pub(crate) mod tests {
         replies: Vec<Vec<nth_protocol::StreamEvent>>,
         tools: Vec<Arc<dyn Tool>>,
         subagents: Subagents,
+        inbox: Inbox,
         limits: Limits,
     ) -> Work {
-        Work::new(Arc::new(Scripted::new(replies)), tools, subagents, limits)
+        Work::new(
+            Arc::new(Scripted::new(replies)),
+            tools,
+            subagents,
+            inbox,
+            limits,
+        )
     }
 
     pub(crate) const LIMITS: Limits = Limits {
@@ -321,7 +335,13 @@ pub(crate) mod tests {
 
     /// Work tools with no subagent to run.
     pub(crate) fn work() -> Work {
-        work_with(Vec::new(), Vec::new(), Subagents::default(), LIMITS)
+        work_with(
+            Vec::new(),
+            Vec::new(),
+            Subagents::default(),
+            Inbox::default(),
+            LIMITS,
+        )
     }
 
     /// A call in session `s1`, in `dir`.
@@ -473,7 +493,7 @@ pub(crate) mod tests {
         let plan = reconciled(&store, &mut Live::default()).await.unwrap();
         let item = plan.item(&at).unwrap();
         assert_eq!(item.status, Status::Returned);
-        assert_eq!(item.outcome, Some(nth_protocol::WorkOutcome::Interrupted));
+        assert_eq!(item.outcome, Some(crate::work::WorkOutcome::Interrupted));
         assert_eq!(
             store.read(&at).await.unwrap().unwrap().status,
             Status::Returned,

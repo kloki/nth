@@ -65,16 +65,17 @@ mod tests {
     use std::sync::Arc;
 
     use nth_context::{Context, Paths};
-    use nth_protocol::{Inbox, Llm, TaskOutcome};
+    use nth_protocol::Llm;
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::{
+        Inbox,
         agent_loop::tests::Scripted,
-        subagent::{Limits, SubagentEvent, Task, tests::says},
+        subagent::{Limits, SubagentEvent, Task, TaskOutcome, tests::says},
     };
 
-    fn ctx(inbox: Inbox) -> ToolContext {
+    fn ctx() -> ToolContext {
         ToolContext {
             context: Arc::new(Context::discover(
                 std::path::Path::new("/nowhere"),
@@ -84,7 +85,6 @@ mod tests {
                 model: "glm-5.3".into(),
                 ..Llm::default()
             },
-            inbox,
             ..ToolContext::new("/repo".into())
         }
     }
@@ -104,18 +104,17 @@ mod tests {
             Arc::new(Scripted::stalled()),
             Vec::new(),
             subagents.clone(),
+            inbox.clone(),
             LIMITS,
         );
         let stop = TaskStop::new(subagents.clone());
         let start = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
-        task.call(start, &ctx(inbox.clone())).await.unwrap();
+        task.call(start, &ctx()).await.unwrap();
         // Stopping what still waits in the inbox skips it without a turn;
         // the test is about a turn under way.
         while !matches!(rx.recv().await, Some(SubagentEvent::Prompted { .. })) {}
 
-        let result = stop
-            .call(json!({ "task_id": 1 }), &ctx(inbox.clone()))
-            .await;
+        let result = stop.call(json!({ "task_id": 1 }), &ctx()).await;
 
         assert_eq!(
             result.unwrap(),
@@ -136,7 +135,7 @@ mod tests {
             "<task id=\"1\" agent=\"explore\" description=\"d\" state=\"interrupted\"/>"
         );
         assert_eq!(
-            stop.call(json!({ "task_id": "1" }), &ctx(inbox))
+            stop.call(json!({ "task_id": "1" }), &ctx())
                 .await
                 .unwrap_err(),
             "subagent 1 is not running",
@@ -150,11 +149,17 @@ mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let provider = Arc::new(crate::agent_loop::tests::Scripted::new(vec![says("done")]));
-        let task = Task::new(provider, Vec::new(), subagents.clone(), LIMITS);
+        let task = Task::new(
+            provider,
+            Vec::new(),
+            subagents.clone(),
+            inbox.clone(),
+            LIMITS,
+        );
         let stop = TaskStop::new(subagents.clone());
         task.call(
             json!({ "description": "d", "prompt": "p", "subagent_type": "explore" }),
-            &ctx(inbox.clone()),
+            &ctx(),
         )
         .await
         .unwrap();
@@ -163,13 +168,13 @@ mod tests {
         }
 
         assert_eq!(
-            stop.call(json!({ "task_id": 1 }), &ctx(inbox.clone()))
+            stop.call(json!({ "task_id": 1 }), &ctx())
                 .await
                 .unwrap_err(),
             "subagent 1 is not running"
         );
         assert_eq!(
-            stop.call(json!({ "task_id": 7 }), &ctx(inbox))
+            stop.call(json!({ "task_id": 7 }), &ctx())
                 .await
                 .unwrap_err(),
             "no subagent with task_id 7"

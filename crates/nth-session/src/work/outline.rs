@@ -148,10 +148,8 @@ pub fn shows_todos(status: &Status) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Todo;
-
     use super::*;
-    use crate::work::{Cycle, ItemRef};
+    use crate::work::{Cycle, ItemRef, Todo};
 
     fn item(cycle: &str, slug: &str, status: Status, todos: &[(&str, bool)]) -> Item {
         let at = ItemRef {

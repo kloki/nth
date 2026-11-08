@@ -27,7 +27,7 @@ pub(crate) fn app() -> App {
     App::new(runtime(session, Arc::new(Scripted::idle())))
 }
 
-/// `session` on `provider` with no tools, a shell, idle checkers and each
+/// `session` on `provider` with no tools, an inbox of its own, a shell, idle checkers and each
 /// mode on the session's llm, as a repository with an empty config would
 /// prepare it, but for two keys: notifications are off, so no test reaches
 /// your desktop, and the panel never splits unless a test asks.
@@ -38,6 +38,7 @@ pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> Prepared
     };
     PreparedRuntime {
         session,
+        inbox: nth_session::Inbox::new(),
         paths: Paths::default(),
         provider,
         model_tools: Arc::new(Vec::new()),

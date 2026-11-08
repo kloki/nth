@@ -416,7 +416,10 @@ mod tests {
 
     #[tokio::test]
     async fn wakeable_notice_suppresses_success_but_todo_does_not() {
-        use nth_protocol::{TaskNotice, TaskOutcome, WorkNotice, WorkState};
+        use nth_session::{
+            subagent::{TaskNotice, TaskOutcome},
+            work::{WorkNotice, WorkState},
+        };
         let (mut app, mut rx) = answering("ok");
         app.last_turn = TabState::Done;
         app.inbox.post_task(TaskNotice {

@@ -4,8 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use nth_protocol::{Event, TaskOutcome};
-use nth_session::subagent::State;
+use nth_protocol::Event;
+use nth_session::subagent::{State, TaskOutcome};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},

@@ -271,6 +271,7 @@ mod tests {
             route: route(40),
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -343,7 +344,7 @@ mod tests {
             Message::User("second question".into()),
             assistant("second answer"),
         ];
-        let front_end = nth_protocol::FrontEnd::default();
+        let front_end = crate::FrontEnd::default();
         let _watching = front_end.context_preview.subscribe();
         let (tx, _rx) = mpsc::channel(16);
         session
@@ -395,6 +396,7 @@ mod tests {
             route: route(40),
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -475,6 +477,7 @@ mod tests {
             route: route(40),
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -515,6 +518,7 @@ mod tests {
             route: route(40),
             tools: &tools,
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -559,6 +563,7 @@ mod tests {
             route: route(40),
             tools: &[],
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -620,6 +625,7 @@ mod tests {
             },
             tools: &tools,
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -674,6 +680,7 @@ mod tests {
             },
             tools: &tools,
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -725,6 +732,7 @@ mod tests {
             route: route(100),
             tools: &tools,
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,
@@ -788,6 +796,7 @@ mod tests {
             route: route(100),
             tools: &tools,
             ctx: &ctx,
+            inbox: &crate::Inbox::default(),
             messages: &mut messages,
             spend: &mut spent,
             last_usage: &mut last_usage,

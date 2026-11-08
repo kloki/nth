@@ -7,12 +7,15 @@ use std::{
     time::Duration,
 };
 
-use nth_protocol::{Event, FrontEnd, Message, Provider, TaskNotice, TaskOutcome, TaskStall, Tool};
+use nth_protocol::{Event, Message, Provider, Tool};
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::{ChildState, Done, Job, State, SubagentEvent, SubagentId, task_outcome};
-use crate::{Error, Session, Spend, agent_loop::settle_unanswered};
+use super::{
+    ChildState, Done, Job, State, SubagentEvent, SubagentId, TaskNotice, TaskOutcome, TaskStall,
+    task_outcome,
+};
+use crate::{Error, FrontEnd, Session, Spend, agent_loop::settle_unanswered};
 
 /// How long a turn has to end once it was cancelled, by its budget, a stop
 /// or a front-end that is gone, before the actor drops it. Cancelling is
@@ -487,12 +490,14 @@ fn lock(shared: &Mutex<ChildState>) -> std::sync::MutexGuard<'_, ChildState> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Inbox, StreamEvent, quiet_text};
+    use nth_protocol::StreamEvent;
     use tokio::sync::oneshot;
 
     use super::*;
     use crate::{
+        Inbox,
         agent_loop::tests::{Reply, Scripted, call},
+        inbox::quiet_text,
         subagent::{
             Subagents,
             tests::{explore, job, session},

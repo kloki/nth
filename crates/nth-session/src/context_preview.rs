@@ -4,11 +4,11 @@
 //! plus 2,500 per image), not a tokenizer or provider accounting.
 
 use nth_protocol::{
-    Budget, Compaction, Effort, Entry, Inbox, Message, Mode, Phase, Preview, Tool, ToolDefinition,
+    Budget, Compaction, Effort, Entry, Message, Mode, Phase, Preview, Tool, ToolDefinition,
     ToolSpec, Usage,
 };
 
-use crate::{Session, agent_loop::offered_tools, compaction};
+use crate::{Inbox, Session, agent_loop::offered_tools, compaction};
 
 impl Session {
     /// Project committed history and offered tools without changing session or inbox.
@@ -218,10 +218,10 @@ mod tests {
 
     /// A front-end that watches the turn's preview, and its receiver.
     fn watching() -> (
-        nth_protocol::FrontEnd,
+        crate::FrontEnd,
         tokio::sync::watch::Receiver<Option<nth_protocol::ContextSnapshot>>,
     ) {
-        let front_end = nth_protocol::FrontEnd::default();
+        let front_end = crate::FrontEnd::default();
         let rx = front_end.context_preview.subscribe();
         (front_end, rx)
     }
@@ -240,9 +240,10 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_builds_without_a_subscriber() {
-        use nth_protocol::FrontEnd;
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
+
+        use crate::FrontEnd;
 
         let mut session = Session::new("model", ".".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
@@ -327,16 +328,15 @@ mod tests {
         use nth_protocol::ToolContext;
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
-        let ctx = ToolContext {
-            inbox: Inbox::new(),
-            ..ToolContext::new(".".into())
-        };
+        let ctx = ToolContext::new(".".into());
+        let inbox = Inbox::new();
         let _watching = ctx.context_preview.subscribe();
         // Sent while the first reply streamed: its call never runs.
-        ctx.inbox.post_prompt("stop that".into());
+        inbox.post_prompt("stop that".into());
         let mut messages = vec![Message::User("go".into())];
         let (result, _) =
-            crate::agent_loop::tests::turn(&tool_step(), &tools, &ctx, &mut messages).await;
+            crate::agent_loop::tests::turn_with(&tool_step(), &tools, &ctx, &inbox, &mut messages)
+                .await;
         result.expect("the turn goes on with the prompt");
         assert_eq!(
             phases(),
@@ -352,11 +352,14 @@ mod tests {
     #[tokio::test]
     async fn asking_for_a_snapshot_opens_the_gate_headless() {
         use futures::FutureExt;
-        use nth_protocol::{FrontEnd, StreamEvent, ToolContext, ToolResult, ToolSpec};
+        use nth_protocol::{StreamEvent, ToolContext, ToolResult, ToolSpec};
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
-        use crate::agent_loop::tests::{Scripted, call};
+        use crate::{
+            FrontEnd,
+            agent_loop::tests::{Scripted, call},
+        };
 
         /// Asks for snapshots as the `context` tool does.
         struct Want;
@@ -494,11 +497,11 @@ mod tests {
         use std::sync::Arc;
 
         use nth_context::{Context, Instruction};
-        use nth_protocol::{FrontEnd, StreamEvent};
+        use nth_protocol::StreamEvent;
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
-        use crate::agent_loop::tests::Scripted;
+        use crate::{FrontEnd, agent_loop::tests::Scripted};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("AGENTS.md");

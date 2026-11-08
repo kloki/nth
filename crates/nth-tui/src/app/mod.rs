@@ -69,11 +69,11 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Compaction, ContextSnapshot, Event, Inbox, Listing, Llm, Mode, MonitorEvent,
-    Monitors, Provider, Show, Tool, Usage, tool_names,
+    Ask, BoxError, Compaction, ContextSnapshot, Event, Listing, Llm, Mode, MonitorEvent, Monitors,
+    Provider, Show, Tool, Usage, tool_names,
 };
 use nth_session::{
-    Session, Store, Subagents, Summary, ToolUse, store,
+    Inbox, Session, Store, Subagents, Summary, ToolUse, store,
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
@@ -460,6 +460,9 @@ impl App {
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
+        // `install` puts the runtime's in, the one its tools post to. A
+        // `bare` App, in tests only, keeps this one of its own, so tools
+        // built with another inbox would lose their answers there.
         let inbox = Inbox::new();
         // `with_store` puts each session's monitor logs beside its save; a
         // chat without one, as in tests, logs in a temporary folder rather
@@ -600,6 +603,7 @@ impl App {
     fn install(&mut self, runtime: PreparedRuntime) -> (Session, Vec<String>) {
         let PreparedRuntime {
             session,
+            inbox,
             paths,
             provider,
             model_tools,
@@ -616,6 +620,8 @@ impl App {
         self.llms = None;
         self.llm_listing = Default::default();
         self.tools = model_tools;
+        // The one those tools post to, so their answers wake this chat.
+        self.inbox = inbox;
         self.shell = Some(shell);
         // Whatever prepared it, it runs as and on what the session does.
         self.selection = mode::of_session(selection, &session);

@@ -8,8 +8,8 @@ use std::{
 use anyhow::Result;
 use nth_icons::icons;
 use nth_llm::{Credentials, EndpointConfig, Providers};
-use nth_protocol::{Entry, Inbox, Message, Preview, Tool};
-use nth_session::{Session, Store, Subagents};
+use nth_protocol::{Entry, Message, Preview, Tool};
+use nth_session::{Inbox, Session, Store, Subagents};
 use owo_colors::OwoColorize;
 use serde_json::json;
 
@@ -49,7 +49,13 @@ async fn reconstruct(
     let config = runtime.config_for(&start)?;
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let prepared = runtime
-        .prepare(config, offline_provider()?, start, Subagents::new(tx))
+        .prepare(
+            config,
+            offline_provider()?,
+            start,
+            Subagents::new(tx),
+            Inbox::default(),
+        )
         .await?;
     let mut session = prepared.session;
     session.model = model;
@@ -356,6 +362,7 @@ mod tests {
             crate::runtime::post_write(&config),
             offline_provider().unwrap(),
             Subagents::new(tx),
+            Inbox::default(),
         );
         let session = Session::new("model", "/repo".into());
         let preview = session.context_preview(&tools, &Inbox::default());

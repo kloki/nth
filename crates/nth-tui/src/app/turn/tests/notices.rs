@@ -59,7 +59,7 @@ async fn notices_wake_an_idle_agent() {
     assert_eq!(sent(&app), [NOTICE]);
     assert!(matches!(
         app.chat.transcript.entries().next(),
-        Some(Entry::Notice(nth_protocol::NoticeSummary::Monitor {
+        Some(Entry::Notice(nth_session::inbox::NoticeSummary::Monitor {
             lines: 1,
             ..
         }))
@@ -195,4 +195,83 @@ async fn dropping_the_app_aborts_the_running_turn() {
         dropped.load(Ordering::SeqCst),
         "turn kept running after quit"
     );
+}
+
+#[tokio::test]
+async fn a_task_answer_lands_in_the_inbox_it_was_built_with() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let context = Arc::new(nth_context::Context::discover(
+        dir.path(),
+        &nth_context::Paths::default(),
+    ));
+    let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
+    let call = ToolCall {
+        id: "1".into(),
+        name: "task".into(),
+        arguments: serde_json::json!({
+            "description": "find tabs",
+            "prompt": "where?",
+            "subagent_type": "explore",
+        })
+        .to_string(),
+    };
+    // The parent's first step starts the subagent; it and every later
+    // request, the subagent's included, get "ok".
+    let provider: Arc<dyn Provider> = Arc::new(Scripted::new([vec![StreamEvent::ToolCall(call)]]));
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    // What `nth`'s runtime does: the tools and the prepared runtime carry
+    // the same inbox, and the chat adopts it.
+    let inbox = nth_session::Inbox::new();
+    let task = nth_session::Task::new(
+        provider.clone(),
+        Vec::new(),
+        subagents.clone(),
+        inbox.clone(),
+        nth_session::subagent::Limits {
+            max_steps: 10,
+            timeout: None,
+            stall: None,
+        },
+    );
+    let mut app = App::new(crate::PreparedRuntime {
+        inbox,
+        model_tools: Arc::new(vec![Box::new(task)]),
+        ..crate::app::tests::runtime(session, provider)
+    })
+    .with_subagents(subagents, rx);
+
+    send(&mut app, "go");
+    // The answer may come before the turn ends, and go with the next one,
+    // or after, and wake the model on its own.
+    let answer = "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">";
+    let heard = |app: &App| {
+        app.session.as_ref().is_some_and(|session| {
+            session
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::User(text) if text.starts_with(answer)))
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if app.is_busy() {
+                end(&mut app).await;
+            } else if heard(&app) {
+                break;
+            } else if app.inbox.wakes() {
+                app.notices_due();
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+    })
+    .await
+    .expect("the answer reached the model through the chat's inbox");
+
+    let session = app.session.as_ref().expect("session came back");
+    let started = session.messages.iter().any(|m| {
+        matches!(m, Message::ToolResult { content, .. } if content.starts_with("Started subagent 1"))
+    });
+    assert!(started, "the tool saw an inbox that reaches the model");
 }

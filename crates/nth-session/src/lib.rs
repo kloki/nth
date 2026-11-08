@@ -7,6 +7,8 @@ mod curios_tests;
 #[cfg(test)]
 mod delivery_acceptance;
 pub mod directories;
+mod front_end;
+pub mod inbox;
 mod memory;
 pub mod plan;
 mod primary;
@@ -19,6 +21,8 @@ pub mod work;
 
 pub use agent_loop::{DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error};
 pub(crate) use agent_loop::{Route, Turn};
+pub use front_end::FrontEnd;
+pub use inbox::Inbox;
 pub(crate) use nth_protocol::Compaction;
 pub use session::{SHELL_PROMPT, Session};
 pub use store::{Store, Summary};

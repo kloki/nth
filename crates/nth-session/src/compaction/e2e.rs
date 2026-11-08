@@ -5,13 +5,13 @@
 use futures::{FutureExt, future::BoxFuture};
 use nth_context::{Context, Paths};
 use nth_protocol::{
-    AssistantMessage, FrontEnd, Llm, Message, Provider, StreamEvent, Tool, ToolContext, Usage,
+    AssistantMessage, Llm, Message, Provider, StreamEvent, Tool, ToolContext, Usage,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Compaction, DEFAULT_MAX_STEPS, Error, Session, Store,
+    Compaction, DEFAULT_MAX_STEPS, Error, FrontEnd, Session, Store,
     agent_loop::tests::{Echo, Failure, Reply, Scripted, call},
     compaction,
     subagent::child_session,

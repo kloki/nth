@@ -11,7 +11,9 @@ use std::{
 };
 
 use nth_context::frontmatter;
-use nth_protocol::{TaskId, Todo, WorkOutcome, one_line, todo_counts, todo_lines};
+
+use super::{Todo, WorkOutcome, one_line, todo_counts, todo_lines};
+use crate::subagent::TaskId;
 
 const TODO: &str = "## Todo";
 const RESULT: &str = "## Result";

@@ -5,151 +5,24 @@
 //! the transcript reads back out of them. Both sides are here so they cannot
 //! drift apart.
 
-use std::{fmt, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 use nth_context::instructions::{Change, ChangeKind};
+use nth_protocol::{MonitorEnd, MonitorId};
 
-use crate::{MonitorEnd, MonitorId};
+use crate::{
+    subagent::{TaskId, TaskNotice, TaskOutcome, TaskStall},
+    work::{WorkNotice, WorkOutcome, WorkState, todo_counts, todo_lines},
+};
 
 /// At most this many lines of one monitor go into a notice; the rest are
 /// counted, and the log has them.
-pub const NOTICE_LINES: usize = 50;
+pub(crate) const NOTICE_LINES: usize = 50;
 
 /// A monitor line in a notice is cut at this many characters, whatever the
 /// command printed: the log keeps it whole, and the model's context should
 /// not take megabytes from one line.
-pub const NOTICE_LINE_CHARS: usize = 2000;
-
-/// Numbers a subagent for as long as the front-end runs, like a monitor.
-pub type TaskId = u32;
-
-/// A subagent's answer to a task, posted by whoever ran it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskNotice {
-    pub id: TaskId,
-    pub agent: String,
-    pub description: String,
-    pub outcome: TaskOutcome,
-}
-
-/// A subagent whose turn has said nothing for `quiet`, though it still
-/// runs: no reply, no tool call. Told again while it stays silent, so the
-/// model can decide to stop it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskStall {
-    pub id: TaskId,
-    pub agent: String,
-    pub description: String,
-    pub quiet: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskOutcome {
-    /// The subagent's last answer.
-    Completed(String),
-    /// Why its turn failed.
-    Failed(String),
-    /// Someone stopped it before it answered.
-    Interrupted,
-}
-
-/// One step of a work item's todo list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Todo {
-    pub text: String,
-    pub done: bool,
-}
-
-/// How the subagent on a work item ended its turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkOutcome {
-    /// Its last answer.
-    Completed(String),
-    /// Why its turn failed.
-    Failed(String),
-    /// Someone stopped it before it answered.
-    Interrupted,
-    /// It ran past its time; the error says how long that was.
-    TimedOut(String),
-}
-
-impl WorkOutcome {
-    /// The `outcome` attribute, and the item file's `outcome` key.
-    pub fn name(&self) -> &'static str {
-        match self {
-            WorkOutcome::Completed(_) => "completed",
-            WorkOutcome::Failed(_) => "failed",
-            WorkOutcome::Interrupted => "interrupted",
-            WorkOutcome::TimedOut(_) => "timed_out",
-        }
-    }
-
-    /// The outcome a name stands for, without its text: an item file keeps
-    /// the text apart, under its result.
-    pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "completed" => WorkOutcome::Completed(String::new()),
-            "failed" => WorkOutcome::Failed(String::new()),
-            "interrupted" => WorkOutcome::Interrupted,
-            "timed_out" => WorkOutcome::TimedOut(String::new()),
-            _ => return None,
-        })
-    }
-
-    /// The answer or the error, empty for a stopped one.
-    pub fn text(&self) -> &str {
-        match self {
-            WorkOutcome::Completed(text)
-            | WorkOutcome::Failed(text)
-            | WorkOutcome::TimedOut(text) => text,
-            WorkOutcome::Interrupted => "",
-        }
-    }
-}
-
-impl fmt::Display for WorkOutcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-/// What happened to a work item, for the orchestrator that assigned it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkNotice {
-    /// The cycle's folder, such as `01-foundation`.
-    pub cycle: String,
-    /// The item's slug in it.
-    pub item: String,
-    /// The subagent working on it.
-    pub task: TaskId,
-    pub agent: String,
-    pub state: WorkState,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkState {
-    /// The subagent changed the todo list; the whole list as it is now.
-    Todo(Vec<Todo>),
-    /// The subagent's turn ended, with how many steps it had ticked.
-    Returned {
-        outcome: WorkOutcome,
-        done: usize,
-        total: usize,
-    },
-    /// Nothing heard from the subagent for this long; it still runs.
-    Stalled { quiet: Duration },
-}
-
-impl WorkState {
-    /// The `state` attribute.
-    pub fn name(&self) -> &'static str {
-        match self {
-            WorkState::Todo(_) => "todo",
-            WorkState::Returned { .. } => "returned",
-            WorkState::Stalled { .. } => "stalled",
-        }
-    }
-}
+pub(crate) const NOTICE_LINE_CHARS: usize = 2000;
 
 impl WorkNotice {
     /// The notice as the model reads it, for a caller that hands it over
@@ -159,31 +32,8 @@ impl WorkNotice {
     }
 }
 
-/// The todo list as markdown checkboxes, one step a line, the way an item
-/// file keeps it. A step's text stays on its line.
-pub fn todo_lines(todos: &[Todo]) -> String {
-    todos
-        .iter()
-        .map(|todo| {
-            let mark = if todo.done { 'x' } else { ' ' };
-            format!("- [{mark}] {}", one_line(&todo.text))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Ticked steps and all of them.
-pub fn todo_counts(todos: &[Todo]) -> (usize, usize) {
-    (todos.iter().filter(|todo| todo.done).count(), todos.len())
-}
-
-/// Text folded onto one line, for a todo step or a note.
-pub fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// `2m0s`, or `45s` under a minute: whole seconds.
-pub fn quiet_text(quiet: Duration) -> String {
+pub(crate) fn quiet_text(quiet: Duration) -> String {
     let secs = quiet.as_secs();
     match secs / 60 {
         0 => format!("{secs}s"),
@@ -196,23 +46,6 @@ impl TaskNotice {
     /// over itself rather than through the inbox.
     pub fn render(&self) -> String {
         render_task(self)
-    }
-}
-
-impl TaskOutcome {
-    /// The `state` attribute, as opencode names it.
-    pub fn state(&self) -> &'static str {
-        match self {
-            TaskOutcome::Completed(_) => "completed",
-            TaskOutcome::Failed(_) => "failed",
-            TaskOutcome::Interrupted => "interrupted",
-        }
-    }
-}
-
-impl fmt::Display for TaskOutcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.state())
     }
 }
 
@@ -524,6 +357,7 @@ fn value(attrs: &str, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::work::Todo;
 
     fn monitor(
         id: MonitorId,
