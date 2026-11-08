@@ -201,6 +201,11 @@ async fn watch(
         .await;
 }
 
+/// A line longer than this is cut where it reaches it and marked, and what
+/// follows starts the next line: a command that never ends a line, such as
+/// one redrawing a bar, must not grow one without bound.
+const MAX_LINE_BYTES: usize = 4096;
+
 /// One of the command's pipes with the start of a line that has not ended
 /// yet. The line is kept here rather than in the reading future, which the
 /// `select!` drops whenever another arm wins: a half-read line must survive
@@ -209,6 +214,10 @@ struct Pipe<R> {
     reader: BufReader<R>,
     partial: Vec<u8>,
     cleaner: Cleaner,
+    /// The last line ended with a `\r` that was the last byte read, so a
+    /// `\n` that comes next is the rest of a `\r\n` rather than a blank
+    /// line.
+    after_cr: bool,
 }
 
 impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
@@ -217,17 +226,21 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
             reader: BufReader::new(reader),
             partial: Vec::new(),
             cleaner: Cleaner::default(),
+            after_cr: false,
         }
     }
 }
 
-/// The next line from a pipe, without its newline; `None` once it is
-/// closed, and forever after, so a closed pipe's `select!` arm sleeps.
+/// The next line from a pipe, without its end; `None` once it is closed,
+/// and forever after, so a closed pipe's `select!` arm sleeps. A line ends
+/// at `\n`, `\r\n` or a lone `\r`, the last being how a progress bar
+/// redraws itself, so each redraw is a line of its own.
 async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
     let Some(Pipe {
         reader,
         partial,
         cleaner,
+        after_cr,
     }) = pipe
     else {
         return std::future::pending().await;
@@ -241,22 +254,56 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
             Ok([]) | Err(_) => &[],
             Ok(available) => available,
         };
-        let newline = available.iter().position(|&b| b == b'\n');
-        let taken = newline.map_or(available.len(), |i| i + 1);
-        partial.extend_from_slice(&available[..taken]);
-        Pin::new(&mut *reader).consume(taken);
-        if newline.is_none() && taken > 0 {
+        if std::mem::take(after_cr) && available.first() == Some(&b'\n') {
+            Pin::new(&mut *reader).consume(1);
             continue;
         }
-        let mut line = cleaner.push(&std::mem::take(partial));
-        if line.ends_with(b"\n") {
-            line.pop();
+        let end = available.iter().position(|&b| b == b'\n' || b == b'\r');
+        let content = end.unwrap_or(available.len());
+        if partial.len() + content > MAX_LINE_BYTES {
+            let room = MAX_LINE_BYTES - partial.len();
+            partial.extend_from_slice(&available[..room]);
+            Pin::new(&mut *reader).consume(room);
+            // Marked after cleaning, so a cut inside an escape sequence
+            // cannot swallow the mark; the cleaner keeps that sequence's
+            // state, and a split character's, for the next line.
+            let mut line = finish_line(partial, cleaner);
+            line.push('…');
+            return Some(line);
         }
-        if line.ends_with(b"\r") {
-            line.pop();
+        let taken = match end {
+            Some(i) if available[i] == b'\r' => match available.get(i + 1) {
+                Some(b'\n') => i + 2,
+                Some(_) => i + 1,
+                // The `\n` of a `\r\n` may be in the next read.
+                None => {
+                    *after_cr = true;
+                    i + 1
+                }
+            },
+            Some(i) => i + 1,
+            None => available.len(),
+        };
+        partial.extend_from_slice(&available[..taken]);
+        Pin::new(&mut *reader).consume(taken);
+        if end.is_none() && taken > 0 {
+            continue;
         }
-        return Some(String::from_utf8_lossy(&line).into_owned());
+        return Some(finish_line(partial, cleaner));
     }
+}
+
+/// The line in `partial`, cleaned of escapes and its end, leaving `partial`
+/// empty for the next one.
+fn finish_line(partial: &mut Vec<u8>, cleaner: &mut Cleaner) -> String {
+    let mut line = cleaner.push(&std::mem::take(partial));
+    if line.ends_with(b"\n") {
+        line.pop();
+    }
+    if line.ends_with(b"\r") {
+        line.pop();
+    }
+    String::from_utf8_lossy(&line).into_owned()
 }
 
 struct Watch<'a> {
@@ -468,6 +515,25 @@ mod tests {
         let seen = until_ended(&mut f.events).await;
         assert_eq!(stdout(&seen), ["partial", "no newline"]);
         assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 2));
+    }
+
+    #[tokio::test]
+    async fn a_progress_bar_arrives_as_short_lines() {
+        let mut f = fixture();
+        // Lone `\r`s redraw a bar; a `\r\n` is one end, also when the
+        // `\n` comes in a later read.
+        let command = "printf 'a\\rb\\rc\\n'; printf 'd\\r\\ne\\n'; printf 'f\\r'; sleep 0.1; printf '\\ng\\n'";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["a", "b", "c", "d", "e", "f", "g"]);
+
+        let mut f = fixture();
+        let command = "head -c 10240 /dev/zero | tr '\\0' x; echo; echo after";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        let cut = format!("{}…", "x".repeat(MAX_LINE_BYTES));
+        let rest = "x".repeat(10240 - 2 * MAX_LINE_BYTES);
+        assert_eq!(stdout(&seen), [&cut, &cut, &rest, "after"]);
     }
 
     /// Through `kill -0`, as macOS has no `/proc`.
