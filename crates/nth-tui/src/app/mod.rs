@@ -460,8 +460,9 @@ impl App {
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
-        // `install` puts the runtime's in, the one its tools post to; `bare`
-        // keeps this one.
+        // `install` puts the runtime's in, the one its tools post to. A
+        // `bare` App, in tests only, keeps this one of its own, so tools
+        // built with another inbox would lose their answers there.
         let inbox = Inbox::new();
         // `with_store` puts each session's monitor logs beside its save; a
         // chat without one, as in tests, logs in a temporary folder rather

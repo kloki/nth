@@ -347,20 +347,55 @@ pub(crate) mod tests {
         Subagents::new(tx)
     }
 
+    /// Waits for something worth waking the model for in `inbox`, and
+    /// takes it.
+    async fn notice_in(inbox: &Inbox) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if inbox.wakes() {
+                    return inbox.take_notices().expect("a notice");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a notice reached the runtime's inbox")
+    }
+
     #[tokio::test]
-    async fn the_task_tool_posts_to_the_inbox_the_runtime_carries() {
+    async fn the_task_and_work_tools_post_to_the_inbox_the_runtime_carries() {
         let dir = tempfile::tempdir().unwrap();
         let start = Start::Fresh {
             cwd: dir.path().into(),
             mode: Mode::Act,
         };
         let inbox = Inbox::new();
+        // Heard, so a subagent's turn runs rather than stopping for nobody.
+        let (tx, _heard) = tokio::sync::mpsc::channel(64);
+        // `gone` is a provider whose key is missing: a subagent on it fails
+        // its request at once, with no connection and no retry, and how its
+        // turn ended still comes back as a notice.
+        let providers = Providers::offline(
+            vec![EndpointConfig {
+                id: "zen".into(),
+                name: "Zen".into(),
+                base_url: "http://127.0.0.1".into(),
+                credentials: Credentials::Key("unused".into()),
+                models: vec!["a".into()],
+            }],
+            vec![nth_llm::Unavailable {
+                id: "gone".into(),
+                api_key_env: "GONE_API_KEY".into(),
+            }],
+            "",
+        )
+        .expect("providers");
         let prepared = runtime(dir.path(), None)
             .prepare(
                 config("model = \"zen/a\""),
-                zen(&["a"]),
+                Arc::new(providers),
                 start,
-                subagents(),
+                Subagents::new(tx),
                 inbox.clone(),
             )
             .await
@@ -368,26 +403,57 @@ pub(crate) mod tests {
 
         assert!(inbox.post_prompt("hello".into()));
         assert_eq!(
-            prepared.inbox.prompts_waiting(),
-            Some((1, "hello".to_string())),
+            prepared.inbox.take_prompts().as_deref(),
+            Some("hello"),
             "the chat empties the inbox it was prepared with"
         );
-        let task = prepared
-            .model_tools
-            .iter()
-            .find(|tool| tool.spec().name == "task")
-            .expect("a task tool");
+        let tool = |name: &str| {
+            prepared
+                .model_tools
+                .iter()
+                .find(|tool| tool.spec().name == name)
+                .unwrap_or_else(|| panic!("a {name} tool"))
+        };
         let ctx = nth_protocol::ToolContext {
             context: prepared.session.context().clone(),
-            llm: llm("zen/a", Effort::default()),
+            llm: llm("gone/a", Effort::default()),
+            session: "s1".into(),
             ..nth_protocol::ToolContext::new(dir.path().into())
         };
         let args =
             serde_json::json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
-        let started = task.call(args, &ctx).await.expect("starts");
+        let started = tool("task").call(args, &ctx).await.expect("starts");
         assert!(
             started.starts_with("Started subagent 1"),
-            "returns at once, its answer to come through that inbox: {started}"
+            "returns at once: {started}"
+        );
+        let answer = notice_in(&prepared.inbox).await;
+        assert!(answer.starts_with("<task id=\"1\" "), "{answer}");
+
+        let item = serde_json::json!({
+            "cycle": 1,
+            "cycle_name": "c1",
+            "item": "a",
+            "title": "A",
+            "instruction": "Do a.",
+        });
+        tool("work_item").call(item, &ctx).await.expect("writes");
+        let assign = serde_json::json!({ "cycle": 1, "item": "a", "subagent_type": "general" });
+        let assigned = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tool("work_assign").call(assign, &ctx),
+        )
+        .await
+        .expect("returns")
+        .expect("assigns");
+        assert!(
+            assigned.starts_with("Assigned 01-c1/a to subagent 2"),
+            "returns at once: {assigned}"
+        );
+        let returned = notice_in(&prepared.inbox).await;
+        assert!(
+            returned.contains("<work_item cycle=\"01-c1\" item=\"a\" task=\"2\""),
+            "{returned}"
         );
     }
 
