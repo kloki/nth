@@ -14,6 +14,7 @@ use std::{
 
 use base64::Engine;
 use nth_context::Paths;
+use nth_directories::Directories;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -32,8 +33,12 @@ pub enum Error {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("listing sessions failed: {0}")]
-    Listing(#[from] tokio::task::JoinError),
+    #[error("a blocking task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+    #[error("saved Curios root {} {reason}", root.display())]
+    CurioRoot { root: PathBuf, reason: &'static str },
+    #[error("refusing Curios deletion through symlink {}", path.display())]
+    CurioSymlink { path: PathBuf },
 }
 
 /// What the resume picker shows of a saved session.
@@ -203,6 +208,44 @@ impl Store {
         Ok(())
     }
 
+    /// Removes `session`'s save, then whatever else it kept, each only if it
+    /// is there: its plan, its work folder, its monitor logs, its images and
+    /// its Curios workspace. Its worktrees stay, since they may hold work
+    /// not merged yet. Returns what went besides the save.
+    ///
+    /// A Curios folder it refuses to follow fails the call before anything
+    /// is removed, so the session can still be deleted once that is fixed.
+    pub async fn delete_session(&self, session: &Session) -> Result<Vec<PathBuf>, Error> {
+        let (state_root, cached, id) = (
+            session.state_root(),
+            session.curio_root.clone(),
+            session.id.to_string(),
+        );
+        // Asks git and walks the folder's ancestors, so off the runtime.
+        let curios = tokio::task::spawn_blocking(move || {
+            curio_owner_dir(&state_root, cached.as_deref(), &id)
+        })
+        .await??;
+        self.delete(session.id).await?;
+        let mut removed = Vec::new();
+        let plan = session.plan_path();
+        if gone(tokio::fs::remove_file(&plan).await, &plan)? {
+            removed.push(plan);
+        }
+        let dirs = [
+            session.work_dir(),
+            self.monitor_dir(session.id),
+            // Its subagents' images too: they keep theirs in its folder.
+            self.images_dir(session.id),
+        ];
+        for dir in dirs.into_iter().chain(curios) {
+            if gone(tokio::fs::remove_dir_all(&dir).await, &dir)? {
+                removed.push(dir);
+            }
+        }
+        Ok(removed)
+    }
+
     /// The session used last, if any was saved.
     pub async fn latest(&self) -> Result<Option<Session>, Error> {
         match self.list().await?.first() {
@@ -226,6 +269,62 @@ impl Store {
 
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
+    }
+}
+
+/// Session `id`'s Curios folder in the main checkout of `state_root`, where
+/// the tools made it; the `cached` root when git cannot say, because that
+/// is no longer a repository or git itself is missing, so the save can go
+/// all the same. Never follows a replaced ancestor into another directory.
+fn curio_owner_dir(
+    state_root: &Path,
+    cached: Option<&Path>,
+    id: &str,
+) -> Result<Option<PathBuf>, Error> {
+    let root = match nth_curios::owner_root(state_root) {
+        Ok(root) => root,
+        Err(_) => match cached {
+            Some(root) => root.to_path_buf(),
+            None => return Ok(None),
+        },
+    };
+    let refused = |reason| Error::CurioRoot {
+        root: root.clone(),
+        reason,
+    };
+    if !root.is_absolute() {
+        return Err(refused("is not absolute"));
+    }
+    if root
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(refused("contains a parent traversal"));
+    }
+    // The root and what Curios made below it; its ancestors are the
+    // system's (macOS keeps temporary folders under `/var`, a symlink).
+    let dirs = Directories::from_root(&root);
+    let dir = dirs.curio_owner(id);
+    for current in [root.clone(), dirs.nth(), dirs.curios(), dir.clone()] {
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::CurioSymlink { path: current });
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_at(&current)(e)),
+        }
+    }
+    Ok(Some(dir))
+}
+
+/// Whether a removal took something away; one that was never there is
+/// not an error.
+fn gone(result: io::Result<()>, path: &Path) -> Result<bool, Error> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io_at(path)(e)),
     }
 }
 
@@ -686,5 +785,177 @@ mod tests {
         assert_eq!(ago(5 * 60 + 59), "5m");
         assert_eq!(ago(3 * 3_600), "3h");
         assert_eq!(ago(2 * 86_400 + 1), "2d");
+    }
+
+    /// A session in `repo` with a prompt, saved in `store`.
+    async fn saved(store: &Store, repo: PathBuf) -> Session {
+        let mut session = Session::new("glm", repo);
+        session.messages.push(Message::User("fix it".into()));
+        store.save(&session).await.expect("saves");
+        session
+    }
+
+    fn touch(file: &Path) {
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("creates");
+        std::fs::write(file, "x").expect("writes");
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_every_folder_it_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        let mut session = Session::new("glm", repo.clone());
+        session.messages.push(Message::User("fix it".into()));
+        // Moved into a worktree: everything it kept is still under the
+        // main checkout, and the worktree is left for its unmerged work.
+        let worktree = repo.join(".nth/worktrees/x");
+        session.set_cwd(worktree.clone(), Some(repo.clone()));
+        // Not a repository, so the cached root is where its Curios are.
+        session.curio_root = Some(repo.clone());
+        store.save(&session).await.expect("saves");
+        let other = Session::new("glm", repo.clone());
+        let plan = session.plan_path();
+        let work = session.work_dir();
+        let monitors = store.monitor_dir(session.id);
+        let images = store.images_dir(session.id);
+        let curios = repo.join(".nth/curios").join(session.id.to_string());
+        let kept = [
+            other.plan_path(),
+            worktree.join("main.rs"),
+            repo.join(".nth/curios/another-session/source/index.html"),
+        ];
+        for file in [
+            &plan,
+            &work.join("01-a/item.md"),
+            &monitors.join("1.log"),
+            &images.join("ab.png"),
+            &curios.join("source/index.html"),
+        ]
+        .into_iter()
+        .chain(&kept)
+        {
+            touch(file);
+        }
+
+        let removed = store.delete_session(&session).await.expect("deletes");
+
+        let all = [plan, work, monitors, images, curios];
+        assert_eq!(removed, all);
+        assert!(all.iter().all(|path| !path.exists()), "{all:?}");
+        assert!(store.list().await.expect("lists").is_empty());
+        assert!(kept.iter().all(|path| path.exists()), "{kept:?}");
+        assert!(store.delete_session(&session).await.is_err(), "gone");
+    }
+
+    #[tokio::test]
+    async fn delete_session_without_a_plan_or_work_removes_only_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let session = saved(&store, dir.path().join("repo")).await;
+
+        let removed = store.delete_session(&session).await.expect("deletes");
+
+        assert!(removed.is_empty(), "{removed:?}");
+        assert!(store.list().await.expect("lists").is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_session_finds_curios_in_the_state_root_not_a_stale_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("creates");
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&repo)
+            .status()
+            .expect("runs git");
+        assert!(init.success());
+        let stale = dir.path().join("stale");
+        let mut session = Session::new("glm", repo.clone());
+        session.curio_root = Some(stale.clone());
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.expect("saves");
+        let id = session.id.to_string();
+        let own = repo
+            .canonicalize()
+            .expect("exists")
+            .join(".nth/curios")
+            .join(&id);
+        let cached = stale.join(".nth/curios").join(&id);
+        std::fs::create_dir_all(&own).expect("creates");
+        std::fs::create_dir_all(&cached).expect("creates");
+
+        let removed = store.delete_session(&session).await.expect("deletes");
+
+        assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
+        assert!(!own.exists());
+        assert!(cached.exists(), "a stale cached root is left alone");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_session_refuses_a_curio_folder_through_a_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("creates");
+        std::os::unix::fs::symlink(target.path(), repo.join(".nth")).expect("links");
+        let mut session = Session::new("glm", repo.clone());
+        session.curio_root = Some(repo);
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.expect("saves");
+        let followed = target.path().join("curios").join(session.id.to_string());
+        std::fs::create_dir_all(&followed).expect("creates");
+
+        let refused = store.delete_session(&session).await;
+
+        assert!(
+            matches!(refused, Err(Error::CurioSymlink { .. })),
+            "{refused:?}"
+        );
+        assert!(followed.exists(), "nothing behind the link is removed");
+        assert_eq!(
+            store.list().await.expect("lists").len(),
+            1,
+            "the save stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_session_refuses_a_relative_or_traversing_curio_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        for root in ["repo".into(), dir.path().join("repo/../elsewhere")] {
+            let mut session = Session::new("glm", dir.path().join("repo"));
+            session.curio_root = Some(root);
+            session.messages.push(Message::User("review".into()));
+            store.save(&session).await.expect("saves");
+
+            let refused = store.delete_session(&session).await;
+
+            assert!(
+                matches!(refused, Err(Error::CurioRoot { .. })),
+                "{refused:?}"
+            );
+            store.delete(session.id).await.expect("the save was kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_session_with_its_repository_gone_still_removes_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let mut session = Session::new("glm", dir.path().join("gone"));
+        session.curio_root = Some(session.cwd.clone());
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.expect("saves");
+
+        let removed = store.delete_session(&session).await.expect("deletes");
+
+        assert!(removed.is_empty(), "{removed:?}");
+        assert!(store.list().await.expect("lists").is_empty());
     }
 }
