@@ -13,9 +13,9 @@ use std::{
 };
 
 pub use notice::{
-    NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, TaskStall, Todo, WorkNotice,
-    WorkOutcome, WorkState, instructions_notice, one_line, quiet_text, split_notices, todo_counts,
-    todo_lines,
+    NOTICE_LINE_CHARS, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, TaskStall,
+    Todo, WorkNotice, WorkOutcome, WorkState, instructions_notice, one_line, quiet_text,
+    split_notices, todo_counts, todo_lines,
 };
 
 use crate::{MonitorEnd, MonitorId};
@@ -167,7 +167,7 @@ impl Inbox {
         let mut pending = lock(pending);
         let notice = monitor_notice(&mut pending, id, description, log);
         if notice.lines.len() < NOTICE_LINES {
-            notice.lines.push(line);
+            notice.lines.push(cut_line(line));
         } else {
             notice.more += 1;
         }
@@ -280,6 +280,15 @@ impl Inbox {
             lock(pending).clear();
         }
     }
+}
+
+/// The line, or its first [`NOTICE_LINE_CHARS`] characters marked as cut.
+fn cut_line(mut line: String) -> String {
+    if let Some((end, _)) = line.char_indices().nth(NOTICE_LINE_CHARS) {
+        line.truncate(end);
+        line.push('…');
+    }
+    line
 }
 
 fn lock(pending: &Mutex<Vec<Pending>>) -> std::sync::MutexGuard<'_, Vec<Pending>> {
@@ -453,6 +462,24 @@ mod tests {
         inbox.clear();
         assert!(!inbox.has_notices(), "shared, and cleared");
     }
+
+    #[test]
+    fn a_notice_line_is_cut_at_the_cap() {
+        let inbox = Inbox::new();
+        let log = Path::new("/logs/1.log");
+        inbox.monitor_line(1, "bar", log, "é".repeat(5000));
+        inbox.monitor_line(1, "bar", log, "x".repeat(NOTICE_LINE_CHARS));
+        let notices = inbox.take_notices().unwrap();
+        let lines: Vec<&str> = notices.lines().collect();
+        let cut = format!("{}…", "é".repeat(NOTICE_LINE_CHARS));
+        assert_eq!(lines[1], cut, "cut on a character, and marked");
+        assert_eq!(
+            lines[2],
+            "x".repeat(NOTICE_LINE_CHARS),
+            "a line at the cap is whole"
+        );
+    }
+
     fn work(item: &str, state: WorkState) -> WorkNotice {
         WorkNotice {
             cycle: "01-a".into(),
