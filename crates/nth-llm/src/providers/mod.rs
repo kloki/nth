@@ -153,6 +153,23 @@ impl Providers {
     }
 }
 
+/// A sign-in that failed while readying a request, as the stream's error:
+/// retryable when the token server could not be reached or failed (a
+/// connection dropped, a 5xx), so the turn survives a blip; final when only
+/// you can fix it (signing in again, a refusal, a token that does not
+/// check out), which no wait helps.
+pub(crate) fn auth_error(error: nth_auth::Error) -> stream::Error {
+    let retryable = match &error {
+        nth_auth::Error::Http(e) => crate::http::retryable(e),
+        nth_auth::Error::Status { status, .. } => (500..600).contains(status),
+        _ => false,
+    };
+    stream::Error::Auth {
+        message: error.to_string(),
+        retryable,
+    }
+}
+
 impl Drop for Providers {
     fn drop(&mut self) {
         if let Some(fetch) = &self.fetch {
@@ -607,6 +624,75 @@ mod tests {
             lines.contains(&"authorization: bearer access"),
             "authorization in {head}"
         );
+    }
+
+    /// What `providers` answers a ChatGPT request whose token must be
+    /// refreshed first at `issuer`: the error's text, and whether it is
+    /// retried.
+    async fn refreshed_at(issuer: &str) -> (String, Option<Retry>) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let store = nth_auth::Store::at(dir.path().join("auth.json"));
+        let login = nth_auth::ChatGpt::with_issuer(store.clone(), issuer, 0).expect("a client");
+        connect(&store).await;
+        let mut auth = store
+            .oauth(nth_auth::ChatGpt::ID)
+            .await
+            .expect("readable")
+            .expect("connected");
+        auth.expires = 0;
+        store
+            .save(nth_auth::ChatGpt::ID, &auth)
+            .await
+            .expect("saved");
+        let providers = Providers::build(
+            vec![EndpointConfig::chatgpt(login)],
+            Vec::new(),
+            "chatgpt/gpt-5.5",
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("connected");
+        let request = Request {
+            model: "chatgpt/gpt-5.5",
+            session_id: "ses_1",
+            parent_session_id: None,
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        };
+        let error = providers.stream(request).await.err().expect("refused");
+        (error.to_string(), providers.retry(&error))
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_fails_on_the_network_is_retried() {
+        let (message, retry) = refreshed_at(&crate::testing::serve_reset().await).await;
+        assert!(message.starts_with("token request failed:"), "{message}");
+        assert_eq!(retry, Some(Retry { after: None }), "{message}");
+
+        let (url, _) = crate::testing::serve_status(503, b"{}").await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert_eq!(message, "token request answered 503: {}");
+        assert_eq!(retry, Some(Retry { after: None }));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_only_you_can_fix_is_never_retried() {
+        let (url, _) = crate::testing::serve_status(400, br#"{"error":"invalid_grant"}"#).await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert_eq!(
+            message,
+            "ChatGPT needs you to sign in again: run /connect or `nth connect`"
+        );
+        assert_eq!(retry, None);
+
+        let (url, _) = crate::testing::serve_status(400, br#"{"error":"invalid_client"}"#).await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert!(
+            message.starts_with("token request answered 400:"),
+            "{message}"
+        );
+        assert_eq!(retry, None);
     }
 
     #[tokio::test]

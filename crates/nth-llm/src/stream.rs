@@ -53,6 +53,17 @@ pub(crate) enum Error {
         /// upfront. Only chat completions' gateways say so in-stream.
         overflow: bool,
     },
+    /// Signing the request failed before it was sent: a ChatGPT login
+    /// whose token could not be refreshed. Classified by
+    /// `providers::auth_error`, which knows the login's errors.
+    #[error("{message}")]
+    Auth {
+        /// The login's own wording, which says what to do about it.
+        message: String,
+        /// The token server could not be reached or failed, so the same
+        /// refresh may work in a moment.
+        retryable: bool,
+    },
     #[error("stream ended before the response was complete")]
     Incomplete,
     #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
@@ -209,6 +220,9 @@ fn retry(error: &Error) -> Option<Retry> {
             after: *retry_after,
         }),
         Error::Provider {
+            retryable: true, ..
+        }
+        | Error::Auth {
             retryable: true, ..
         } => Some(Retry { after: None }),
         Error::Http(e) if retryable(e) => Some(Retry { after: None }),

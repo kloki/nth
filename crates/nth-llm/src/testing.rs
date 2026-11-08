@@ -145,6 +145,19 @@ pub(crate) async fn serve_silent() -> String {
     url
 }
 
+/// A server on a free local port that accepts a connection and closes it
+/// without reading the request, which resets it: a dropped connection.
+pub(crate) async fn serve_reset() -> String {
+    let (listener, url) = listen().await;
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("a request");
+        // Wait for the request to arrive, so it is unread when closed.
+        stream.readable().await.expect("readable");
+        drop(stream);
+    });
+    url
+}
+
 /// A server on a free local port that refuses one request with `status`
 /// and `Retry-After: retry_after` seconds, then never sends the body its
 /// headers promise, as a proxy that holds a refusal's body back does.
