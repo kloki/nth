@@ -153,7 +153,7 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 - **Nothing to send.** Saving without changes says `no changes to the plan`. Quitting the editor with an error, vim's `:cq`, drops the edits. An editor that fails to start says why on the status bar.
 - **While the editor runs.** nth keeps running but draws nothing: a turn goes on, monitors keep reporting, and their output shows when you come back. Edits made during a turn wait for it to end.
 
-**`/approve`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets opencode's approval, `The plan at <path> has been approved, you can now edit files. Execute the plan`, followed by the reminder that plan mode ended. The chat shows `/approve`. While a turn runs, the mode switches at once and the approval waits for it to end. Without a plan file it only says `no plan to approve` on the status bar.
+**`/approve [instructions]`.** Approves the plan: the mode switches to act, the chat shows, the marks clear, and the model gets the approval and the reminder that plan mode ended. Optional final instructions are shown in the chat and sent to the model; they override conflicting details in the plan. For example, `/approve Use SQLite instead of Postgres` approves the plan with that change. While a turn runs, the mode switches at once and the approval waits for it to end. If that turn is interrupted or fails, the status bar says `plan approval discarded`, and the instructions return to the prompt as ordinary text alongside other unsent prompts. Without a plan file, the status bar says `no plan to approve`, and an argument-bearing command remains in the prompt for editing.
 
 ## Work
 
