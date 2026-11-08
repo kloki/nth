@@ -91,7 +91,7 @@ impl Tool for Monitor {
                 .ok_or("the front-end is gone")?;
             let id = registered.id;
             let (log, log_note) = match open_log(&registered.log).await {
-                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}; read it if you need output before a notice arrives.", registered.log.display())),
+                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}, each line once it ends (a progress bar's once it ends its line or the monitor ends); read it if you need output before a notice arrives.", registered.log.display())),
                 Err(e) => (None, format!("Its output is not logged: {e}.")),
             };
             tokio::spawn(watch(
@@ -193,6 +193,15 @@ async fn watch(
         kill_group(&child);
         abandoned.0 = None;
     }
+    // A line that never ended, such as the latest redraw of a bar, is the
+    // last thing the command said: it goes out as the close of a pipe
+    // would send it, past the flood guard, since the watch is over anyway.
+    if let Some(line) = unfinished(&mut out) {
+        watch.last_line(line, Stream::Stdout).await;
+    }
+    if let Some(line) = unfinished(&mut err) {
+        watch.last_line(line, Stream::Stderr).await;
+    }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
     watch.flush_log().await;
@@ -200,6 +209,13 @@ async fn watch(
         .event(MonitorEvent::Ended { id, end, events })
         .await;
 }
+
+/// A line longer than this is cut where it reaches it and marked, and what
+/// follows starts the next line: a command that never ends a line must not
+/// grow one without bound. A redraw is cut the same way, so of a redraw
+/// longer than this the first `MAX_LINE_BYTES` go out as a line and the
+/// rest is replaced by the next redraw.
+const MAX_LINE_BYTES: usize = 4096;
 
 /// One of the command's pipes with the start of a line that has not ended
 /// yet. The line is kept here rather than in the reading future, which the
@@ -209,6 +225,12 @@ struct Pipe<R> {
     reader: BufReader<R>,
     partial: Vec<u8>,
     cleaner: Cleaner,
+    /// The last byte read was a `\r`, held back: a `\n` next makes it a
+    /// `\r\n` that ends the line, anything else a redraw.
+    pending_cr: bool,
+    /// The line so far was replaced by a redraw, so if nothing is left of
+    /// it at its end it is no line at all.
+    redrawn: bool,
 }
 
 impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
@@ -217,17 +239,25 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
             reader: BufReader::new(reader),
             partial: Vec::new(),
             cleaner: Cleaner::default(),
+            pending_cr: false,
+            redrawn: false,
         }
     }
 }
 
-/// The next line from a pipe, without its newline; `None` once it is
-/// closed, and forever after, so a closed pipe's `select!` arm sleeps.
+/// The next line from a pipe, without its end; `None` once it is closed,
+/// and forever after, so a closed pipe's `select!` arm sleeps. A line ends
+/// at `\n` or `\r\n`. A lone `\r` is how a progress bar redraws itself: what
+/// follows replaces the line so far, so a bar arrives as its latest state
+/// in one line rather than as a line per redraw, which would trip the flood
+/// guard and stop a monitor that only waits for the bar to finish.
 async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
     let Some(Pipe {
         reader,
         partial,
         cleaner,
+        pending_cr,
+        redrawn,
     }) = pipe
     else {
         return std::future::pending().await;
@@ -241,22 +271,104 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
             Ok([]) | Err(_) => &[],
             Ok(available) => available,
         };
-        let newline = available.iter().position(|&b| b == b'\n');
-        let taken = newline.map_or(available.len(), |i| i + 1);
+        if std::mem::take(pending_cr) {
+            match available.first() {
+                Some(b'\n') => {
+                    Pin::new(&mut *reader).consume(1);
+                    match finish_line(partial, cleaner, redrawn) {
+                        Some(line) => return Some(line),
+                        None => continue,
+                    }
+                }
+                Some(_) => redraw(partial, cleaner, redrawn),
+                // Closed: the latest redraw is the last line.
+                None => {}
+            }
+        }
+        let end = available.iter().position(|&b| b == b'\n' || b == b'\r');
+        let content = end.unwrap_or(available.len());
+        if partial.len() + content > MAX_LINE_BYTES {
+            let room = MAX_LINE_BYTES - partial.len();
+            partial.extend_from_slice(&available[..room]);
+            Pin::new(&mut *reader).consume(room);
+            // Marked after cleaning, so a cut inside an escape sequence
+            // cannot swallow the mark; the cleaner keeps that sequence's
+            // state, and a split character's, for the next line.
+            let line = finish_line(partial, cleaner, redrawn).unwrap_or_default();
+            return Some(line + "…");
+        }
+        let taken = match end {
+            None if available.is_empty() => {
+                return finish_line(partial, cleaner, redrawn);
+            }
+            None => {
+                let taken = available.len();
+                partial.extend_from_slice(available);
+                Pin::new(&mut *reader).consume(taken);
+                continue;
+            }
+            Some(i) if available[i] == b'\n' => i + 1,
+            Some(i) => match available.get(i + 1) {
+                Some(b'\n') => i + 2,
+                Some(_) => {
+                    partial.extend_from_slice(&available[..i]);
+                    Pin::new(&mut *reader).consume(i + 1);
+                    redraw(partial, cleaner, redrawn);
+                    continue;
+                }
+                // Whether it is a `\r\n` or a redraw shows with the next read.
+                None => {
+                    partial.extend_from_slice(&available[..i]);
+                    Pin::new(&mut *reader).consume(i + 1);
+                    *pending_cr = true;
+                    continue;
+                }
+            },
+        };
         partial.extend_from_slice(&available[..taken]);
         Pin::new(&mut *reader).consume(taken);
-        if newline.is_none() && taken > 0 {
-            continue;
+        if let Some(line) = finish_line(partial, cleaner, redrawn) {
+            return Some(line);
         }
-        let mut line = cleaner.push(&std::mem::take(partial));
-        if line.ends_with(b"\n") {
-            line.pop();
-        }
-        if line.ends_with(b"\r") {
-            line.pop();
-        }
-        return Some(String::from_utf8_lossy(&line).into_owned());
     }
+}
+
+/// What a pipe holds of a line that has not ended, for a watch that ends
+/// before the line does.
+fn unfinished<R>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
+    let Pipe {
+        partial,
+        cleaner,
+        redrawn,
+        ..
+    } = pipe.as_mut()?;
+    if partial.is_empty() {
+        return None;
+    }
+    finish_line(partial, cleaner, redrawn)
+}
+
+/// A `\r` replaced the line so far. Its bytes still go through the cleaner,
+/// whose state must follow the whole stream.
+fn redraw(partial: &mut Vec<u8>, cleaner: &mut Cleaner, redrawn: &mut bool) {
+    cleaner.push(&std::mem::take(partial));
+    *redrawn = true;
+}
+
+/// The line in `partial`, cleaned of escapes and its end, leaving `partial`
+/// empty for the next one; `None` when redraws left nothing of it.
+fn finish_line(partial: &mut Vec<u8>, cleaner: &mut Cleaner, redrawn: &mut bool) -> Option<String> {
+    let mut line = cleaner.push(&std::mem::take(partial));
+    if line.ends_with(b"\n") {
+        line.pop();
+    }
+    if line.ends_with(b"\r") {
+        line.pop();
+    }
+    if std::mem::take(redrawn) && line.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&line).into_owned())
 }
 
 struct Watch<'a> {
@@ -288,6 +400,19 @@ impl Watch<'_> {
         if self.recent.len() > FLOOD_LINES {
             return Some(MonitorEnd::Flooded);
         }
+        self.send(line, stream).await
+    }
+
+    /// Logs and reports a line left when the watch ended, which no flood
+    /// can stop any more.
+    async fn last_line(&mut self, line: String, stream: Stream) {
+        if stream == Stream::Stdout {
+            self.events += 1;
+        }
+        self.send(line, stream).await;
+    }
+
+    async fn send(&mut self, line: String, stream: Stream) -> Option<MonitorEnd> {
         let prefix = match stream {
             Stream::Stdout => "",
             Stream::Stderr => "stderr: ",
@@ -468,6 +593,75 @@ mod tests {
         let seen = until_ended(&mut f.events).await;
         assert_eq!(stdout(&seen), ["partial", "no newline"]);
         assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 2));
+    }
+
+    #[tokio::test]
+    async fn a_progress_bar_arrives_as_its_latest_redraw() {
+        let mut f = fixture();
+        // A lone `\r` redraws, also when what follows comes in a later
+        // read; a `\r\n` is one end, also split across reads; a line only
+        // redraws emptied is none; at the close the latest redraw is the
+        // last line.
+        let command = [
+            r"printf 'a\rb\rc\n'",
+            r"printf 'd\r\ne\n'",
+            r"printf 'f\r'; sleep 0.1; printf '\ng\n'",
+            r"printf 'h\r'; sleep 0.1; printf 'i\n'",
+            r"printf '\r\r\nj\n'",
+            r"printf 'k\r'",
+        ]
+        .join("; ");
+        start(&f.ctx, &command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["c", "d", "e", "f", "g", "i", "j", "k"]);
+
+        // A thousand redraws, far past the cap together: one line, no flood.
+        let mut f = fixture();
+        let command = r"for i in $(seq 1000); do printf '\r%0100d' $i; done; echo";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), [format!("{:0100}", 1000)]);
+        assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 1));
+
+        let mut f = fixture();
+        let command = r"head -c 10240 /dev/zero | tr '\0' x; echo; echo after";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        let cut = format!("{}…", "x".repeat(MAX_LINE_BYTES));
+        let rest = "x".repeat(10240 - 2 * MAX_LINE_BYTES);
+        assert_eq!(stdout(&seen), [&cut, &cut, &rest, "after"]);
+    }
+
+    #[tokio::test]
+    async fn a_redraw_reaches_the_cleaner_even_when_replaced() {
+        let mut f = fixture();
+        // The cut leaves the cleaner inside the colour sequence, which the
+        // replaced redraw finishes; without it, `o` would end the sequence.
+        let command = r"head -c 4095 /dev/zero | tr '\0' x; printf '\033[31m\rok\n'";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        let cut = format!("{}…", "x".repeat(4095));
+        assert_eq!(stdout(&seen), [cut.as_str(), "ok"]);
+    }
+
+    #[tokio::test]
+    async fn the_latest_redraw_arrives_when_the_watch_ends_first() {
+        let mut f = fixture();
+        start(
+            &f.ctx,
+            r"printf '\rone\rtwo'; printf 'oops\r' >&2; sleep 30",
+            1_000,
+        )
+        .await
+        .expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["two"]);
+        assert_eq!(end(&seen), (MonitorEnd::TimedOut { after_ms: 1_000 }, 1));
+        let log = std::fs::read_to_string(f.dir.path().join("logs/1.log")).expect("log");
+        assert!(log.contains("] two\n"), "{log}");
+        assert!(log.contains("] stderr: oops\n"), "{log}");
+        let notices = f.ctx.inbox.take_notices().expect("notices");
+        assert!(notices.contains("\ntwo\n</monitor>"), "{notices}");
     }
 
     /// Through `kill -0`, as macOS has no `/proc`.
