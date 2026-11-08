@@ -166,15 +166,22 @@ impl Session {
         }
     }
 
-    /// Readies this session's Curios store and keeps its root.
+    /// Readies this session's Curios store and keeps its root. One that
+    /// cannot be readied forgets the root, so plan mode neither names nor
+    /// lets the model write a source folder no store backs; the next turn
+    /// end looks for it again.
     pub(crate) async fn ready_curios(&mut self) {
         let (subagent, state_root, id) = (self.subagent, self.state_root(), self.id.to_string());
-        if let Ok(root) = nth_curios::offload(move || {
+        match nth_curios::offload(move || {
             Ok(open(subagent, &state_root, &id)?.repo_root().to_path_buf())
         })
         .await
         {
-            self.curio_root = Some(root);
+            Ok(root) => self.curio_root = Some(root),
+            Err(_) => {
+                self.curio_root = None;
+                self.curio_root_found = false;
+            }
         }
     }
 

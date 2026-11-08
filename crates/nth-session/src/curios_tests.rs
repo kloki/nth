@@ -30,6 +30,56 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
 
 use crate::{FrontEnd, Inbox, Session, Store};
 
+#[tokio::test]
+async fn plan_mode_names_no_source_folder_its_store_cannot_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Plan;
+    session.curio_root = Some(dir.path().join("stale"));
+    crate::session::tests::send(&mut session, "plan it").await;
+    assert!(session.curio_root.is_none());
+    assert!(session.curio_source_dir().is_none());
+    let said = session
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::User(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !said
+            .iter()
+            .any(|t| t.contains("author review documents only in")),
+        "{said:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_session_outside_a_repository_asks_git_once_per_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Act;
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(session.curio_root.is_none());
+    // Becoming a repository mid-run goes unseen: the answer is remembered.
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    crate::session::tests::send(&mut session, "again").await;
+    assert!(session.curio_root.is_none());
+    // A resumed session asks again.
+    let mut resumed: Session =
+        serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+    crate::session::tests::send(&mut resumed, "resumed").await;
+    assert_eq!(resumed.curio_root, Some(dir.path().canonicalize().unwrap()));
+}
+
 /// Posts the batches a poll read that `inbox` does not hold yet: a child
 /// another test forks shares the store's lock until it execs, and a poll
 /// that finds it held reads nothing.

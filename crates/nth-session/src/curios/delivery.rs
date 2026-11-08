@@ -3,7 +3,7 @@
 //! viewer's feedback wakes one model; the others wait and try again.
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -67,7 +67,6 @@ pub struct Delivery {
 
 /// What a poll reads on a blocking thread: plain values, so a job owns them.
 pub struct Poll {
-    root: PathBuf,
     me: String,
     claim: bool,
     delivering: Option<Store>,
@@ -160,12 +159,12 @@ impl Delivery {
         self.next_claim = now;
     }
 
-    /// The poll to run at `now` for session `me` of the repository at
-    /// `root`: it tries for the lease when none is held and the retry time
-    /// has come, and reads the pending feedback while one is.
-    pub fn poll(&self, root: PathBuf, me: String, stores: Stores, now: Instant) -> Poll {
+    /// The poll to run at `now` for session `me`: it tries for the lease
+    /// when none is held and the retry time has come, and reads the pending
+    /// feedback while one is. The repository is named when it runs, so a
+    /// front-end can find it on the same blocking thread.
+    pub fn poll(&self, me: String, stores: Stores, now: Instant) -> Poll {
         Poll {
-            root,
             me,
             claim: self.lease.is_none() && now >= self.next_claim,
             delivering: self.store().cloned(),
@@ -249,18 +248,19 @@ impl Poll {
         self
     }
 
-    /// Tries for the lease when due and reads the pending feedback. Builds
-    /// a store and takes its lock, so it runs on a blocking thread.
-    pub fn run(self) -> Read {
+    /// Tries for the lease of the store in the repository at `root` when
+    /// due, and reads the pending feedback. Builds a store and takes its
+    /// lock, so it runs on a blocking thread.
+    pub fn run(self, root: &Path) -> Read {
         let attempt = if !self.claim {
             Attempt::NotTried
-        } else if !Directories::from_root(self.root.clone())
+        } else if !Directories::from_root(root.to_path_buf())
             .curio_owner(&self.me)
             .is_dir()
         {
             Attempt::NoFolder
         } else {
-            match self.stores.get(&self.root, &self.me) {
+            match self.stores.get(root, &self.me) {
                 Ok(store) => {
                     let root = store.repo_root().to_path_buf();
                     CurioDelivery::claim(store).map_or(Attempt::Refused(root), Attempt::Lease)
@@ -305,8 +305,8 @@ mod tests {
     fn tick(delivery: &mut Delivery, session: &Session, stores: &Stores, now: Instant) -> Polled {
         let root = session.curio_root.clone().expect("prepared");
         let read = delivery
-            .poll(root, session.id.to_string(), stores.clone(), now)
-            .run();
+            .poll(session.id.to_string(), stores.clone(), now)
+            .run(&root);
         delivery.apply(read, &session.curio_receipts, now)
     }
 

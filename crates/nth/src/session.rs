@@ -160,11 +160,17 @@ async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-/// Use persisted ownership, including when the checkout is no longer a Git
+/// The session's Curios folder in the main checkout of its state root, where
+/// the tools made it; the cached root only once that is no longer a Git
 /// repository. Never follow a replaced ancestor into another directory.
 fn curio_dir(session: &Session) -> Result<Option<PathBuf>> {
-    let Some(root) = &session.curio_root else {
-        return Ok(None);
+    let root = match nth_curios::owner_root(&session.state_root()) {
+        Ok(root) => root,
+        Err(nth_curios::Error::RepoRequired) => match &session.curio_root {
+            Some(root) => root.clone(),
+            None => return Ok(None),
+        },
+        Err(error) => return Err(error.into()),
     };
     if !root.is_absolute() {
         bail!("saved Curios root must be absolute");
@@ -434,6 +440,36 @@ mod tests {
         assert!(!own.exists());
         assert!(other.exists());
         assert!(root.join("project.html").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_curios_finds_the_store_in_the_state_root_not_a_stale_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let stale = dir.path().join("stale");
+        let mut session = Session::new("glm", repo.clone());
+        session.curio_root = Some(stale.clone());
+        session.messages.push(Message::User("review".into()));
+        store.save(&session).await.unwrap();
+        let id = session.id.to_string();
+        let own = repo.canonicalize().unwrap().join(".nth/curios").join(&id);
+        let cached = stale.join(".nth/curios").join(&id);
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&cached).unwrap();
+        let removed = delete(&store, &session).await.unwrap();
+        assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
+        assert!(!own.exists());
+        assert!(cached.exists(), "a stale cached root is left alone");
     }
 
     #[cfg(unix)]

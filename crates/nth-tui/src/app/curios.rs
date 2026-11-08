@@ -43,31 +43,62 @@ pub(super) struct Opened {
 
 /// What one poll found, read on a blocking thread for the loop to apply.
 pub(super) struct Tick {
+    /// The repository it read, `None` when the session is in none.
+    root: Option<PathBuf>,
     /// Handed back, since it remembers what it read before.
     discovery: core::Discovery,
     /// Newest first.
     items: Vec<Curio>,
     /// The curios with feedback queued, as session and curio id.
     queued: BTreeSet<(String, String)>,
-    read: Read,
+    /// `None` outside a repository.
+    read: Option<Read>,
 }
 
-/// Lists the curios under `root` and runs `poll`: plain values, so the job
-/// owns them.
-fn read(root: PathBuf, mut discovery: core::Discovery, poll: Poll) -> Tick {
+/// Where the repository the session's curios live in is, as the loop knows
+/// it. Finding it runs git, so it is found by the first poll, never on the
+/// loop.
+#[derive(Clone, Debug, PartialEq)]
+enum Root {
+    /// Not looked for yet: the main checkout of this state root.
+    Unknown(PathBuf),
+    At(PathBuf),
+    /// The session is in no repository.
+    Outside,
+}
+
+/// Finds the repository when `root` does not say yet, lists the curios
+/// there and runs `poll`: plain values, so the job owns them.
+fn read(root: Root, mut discovery: core::Discovery, poll: Poll) -> Tick {
+    let root = match root {
+        Root::At(root) => Some(root),
+        Root::Unknown(state_root) => core::owner_root(&state_root).ok(),
+        Root::Outside => None,
+    };
+    let Some(root) = root else {
+        return Tick {
+            root: None,
+            discovery,
+            items: Vec::new(),
+            queued: BTreeSet::new(),
+            read: None,
+        };
+    };
     let mut items = discovery.refresh(&root).unwrap_or_default();
     items.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
     let queued = discovery.queued();
+    let read = poll.run(&root);
     Tick {
+        root: Some(root),
         discovery,
         items,
         queued,
-        read: poll.run(),
+        read: Some(read),
     }
 }
 
 pub(super) struct Curios {
-    root: Option<PathBuf>,
+    root: Root,
     /// From the last poll, as are `queued` and `skipped`.
     items: Vec<Curio>,
     queued: BTreeSet<(String, String)>,
@@ -101,7 +132,7 @@ pub(super) struct Curios {
 impl Curios {
     pub fn new(session: &Session) -> Self {
         Self {
-            root: core::owner_root(&session.state_root()).ok(),
+            root: Root::Unknown(session.state_root()),
             items: Vec::new(),
             queued: BTreeSet::new(),
             discovery: core::Discovery::default(),
@@ -227,11 +258,11 @@ impl App {
     /// Starts a poll, or while one runs, another once it is done: something
     /// changed since it started.
     fn request_curio_poll(&mut self) {
-        let Some(root) = self.curios.root.clone() else {
+        let root = self.curios.root.clone();
+        if matches!(root, Root::Outside) {
             return;
-        };
+        }
         let mut poll = self.curios.delivery.poll(
-            root.clone(),
             self.session_id.to_string(),
             self.curios.stores.clone(),
             Instant::now(),
@@ -260,11 +291,13 @@ impl App {
 
     fn apply_curio_tick(&mut self, tick: Tick) {
         let Tick {
+            root,
             discovery,
             items,
             queued,
             read,
         } = tick;
+        self.curios.root = root.map_or(Root::Outside, Root::At);
         let skipped = discovery.skipped.len();
         self.curios.discovery = discovery;
         self.curios.items = items;
@@ -288,6 +321,9 @@ impl App {
             .as_ref()
             .map(|s| s.curio_receipts.clone())
             .unwrap_or_default();
+        let Some(read) = read else {
+            return;
+        };
         let polled = self.curios.delivery.apply(read, &recorded, Instant::now());
         if polled.claim == (Claim::Owned { first: true }) {
             self.hint = Some("Curios delivery is owned by another process".into());
@@ -469,9 +505,16 @@ impl App {
     /// session is running elsewhere stays there.
     pub(super) fn open_curio(&mut self, owner: String, id: String, revision: Option<u64>) {
         let me = self.session_id.to_string();
-        let Some(root) = self.curios.root.clone() else {
-            self.hint = Some("Curios requires a Git repository".into());
-            return;
+        let root = match self.curios.root.clone() {
+            Root::At(root) => root,
+            Root::Unknown(_) => {
+                self.hint = Some("Curios is still looking for the repository".into());
+                return;
+            }
+            Root::Outside => {
+                self.hint = Some("Curios requires a Git repository".into());
+                return;
+            }
         };
         let reused = owner == me && self.curios.hosts.contains_key(&(owner.clone(), id.clone()));
         self.curios.opening_revision = revision;
@@ -654,6 +697,63 @@ mod tests {
             panic!("picker")
         };
         assert!(p.pending[0], "the next tick marks it");
+    }
+
+    fn repository() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        dir
+    }
+
+    #[tokio::test]
+    async fn the_poll_finds_the_repository_rather_than_a_cached_root() {
+        let dir = repository();
+        let stale = tempfile::tempdir().unwrap();
+        let mut session = Session::new("glm", dir.path().to_path_buf());
+        session.curio_root = Some(stale.path().to_path_buf());
+        let state_root = session.state_root();
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        // Finding it runs git, which the loop never waits on.
+        assert_eq!(app.curios.root, Root::Unknown(state_root));
+        app.poll_curios_through().await;
+        assert_eq!(
+            app.curios.root,
+            Root::At(dir.path().canonicalize().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_claim_replaces_a_stale_cached_root() {
+        let dir = repository();
+        let stale = tempfile::tempdir().unwrap();
+        let mut session = Session::new("glm", dir.path().to_path_buf());
+        session.prepare_curios().unwrap();
+        session.curio_root = Some(stale.path().to_path_buf());
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        app.poll_curios_through().await;
+        assert!(app.curios.delivery.store().is_some(), "claimed");
+        assert_eq!(
+            app.session.as_ref().unwrap().curio_root,
+            Some(dir.path().canonicalize().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_outside_a_repository_stops_polling() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new("glm", dir.path().to_path_buf());
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        app.poll_curios_through().await;
+        assert_eq!(app.curios.root, Root::Outside);
+        app.poll_curios();
+        assert!(!app.curios.polling.is_running());
     }
 
     async fn fixture() -> (tempfile::TempDir, App, core::Store, Curio) {
