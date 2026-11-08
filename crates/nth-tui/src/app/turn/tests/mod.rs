@@ -34,7 +34,7 @@ async fn busy_app() -> (App, Arc<AtomicBool>) {
     let hang = Arc::new(Scripted::hang());
     let dropped = hang.dropped.clone();
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::new(session, hang, Arc::new(Vec::new()));
+    let mut app = App::bare(session, hang, Arc::new(Vec::new()));
     app.prompt.insert_str("go");
     app.submit();
     tokio::task::yield_now().await;
@@ -108,7 +108,7 @@ async fn a_skill_command_sends_the_filled_in_skill() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", dir.path().to_path_buf())
         .with_context(crate::app::tests::with_fix_skill(dir.path()));
-    let mut app = App::new(session, hang.clone(), Arc::new(Vec::new()));
+    let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/fix the build");
     app.submit();
@@ -141,7 +141,7 @@ async fn a_skill_that_cannot_be_read_fails_the_turn() {
     let context = crate::app::tests::with_fix_skill(dir.path());
     std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
     let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-    let mut app = App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/fix it");
     app.submit();
@@ -162,7 +162,7 @@ async fn a_sent_prompt_is_saved_to_the_history_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("nth/prompt-history.jsonl");
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
+    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
         .with_history(crate::history::History::load(path.clone()).await);
 
     app.prompt.insert_str("two\nlines");
@@ -216,7 +216,7 @@ fn listed(id: &str, context: u64, output: u64) -> ModelInfo {
 /// An idle app in `dir` that runs commands with the real bash.
 fn shell_app(dir: &std::path::Path) -> App {
     let session = Session::new("glm", dir.to_path_buf());
-    App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()))
+    App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()))
         .with_shell(Arc::new(nth_tools::Bash::untimed(Default::default())))
 }
 

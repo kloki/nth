@@ -6,21 +6,10 @@ use nth_lsp::ServerStatus;
 use tokio::sync::watch;
 
 use super::App;
-use crate::Checkers;
 
 impl App {
-    /// Shows the servers' states on the status bar, and what applies to
-    /// the project in the diagnostics tab.
-    pub fn with_checkers(self, checkers: Checkers) -> Self {
-        let lsp = checkers.lsp.status();
-        Self {
-            checkers: Some(checkers),
-            ..self
-        }
-        .with_lsp(lsp)
-    }
-
     /// Shows the states `lsp` sends on the status bar.
+    #[cfg(test)]
     pub fn with_lsp(mut self, mut lsp: watch::Receiver<Vec<ServerStatus>>) -> Self {
         self.servers = lsp.borrow_and_update().clone();
         self.lsp = Some(lsp);

@@ -217,6 +217,15 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// None at all, settled, so nothing ever fetches one: every model
+    /// speaks chat completions, as after a failed fetch.
+    pub(crate) fn none(http: reqwest::Client) -> Self {
+        Self {
+            catalog: Arc::new(OnceCell::new_with(Some(None))),
+            ..Self::new(http)
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn of(catalog: Catalog) -> Self {
         Self {

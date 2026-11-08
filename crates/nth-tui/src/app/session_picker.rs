@@ -15,10 +15,11 @@ pub(super) enum Loaded {
 }
 
 impl App {
-    pub fn with_runtime_loader(mut self, loader: Option<Arc<dyn super::RuntimeLoader>>) -> Self {
-        self.runtime_loader = loader;
+    pub fn with_reload(mut self, reload: Option<super::Reload>) -> Self {
+        self.reload = reload;
         self
     }
+
     /// A key while the session picker is open.
     pub(super) fn key_session_picker(&mut self, action: Action) {
         let Input::SessionPicker(picker) = &mut self.input else {
@@ -82,12 +83,12 @@ impl App {
         }
         if let Some(store) = self.store.clone() {
             let paths = self.paths.clone();
-            let loader = self.runtime_loader.clone();
+            let reload = self.reload.clone();
             self.session_loading.start(|_| {
                 tokio::spawn(async move {
                     let mut session = store.load(id).await?;
-                    if let Some(loader) = loader {
-                        return Ok(Loaded::Runtime(Box::new(loader.prepare(session).await?)));
+                    if let Some(reload) = reload {
+                        return Ok(Loaded::Runtime(Box::new(reload(session).await?)));
                     }
                     // Read for the session's own directory, which may not be
                     // the one nth started in.
@@ -125,34 +126,24 @@ impl App {
             profiles,
             warnings,
         } = runtime;
-        self.paths = paths;
-        self.provider = provider;
-        self.llms = None;
-        self.llm_listing = Default::default();
-        self.tools = model_tools;
-        self.shell = Some(shell);
+        self.install(super::Installed {
+            paths,
+            provider,
+            model_tools,
+            shell,
+            checkers,
+            mode_llms,
+            profiles,
+        });
+        // `resume` hands these to every session from here on.
         self.max_steps = session.max_steps;
         self.tool_timeout = session.tool_timeout;
         self.compaction = session.compaction;
-        self.mode_llms = mode_llms;
-        self.profiles = profiles;
-        self.profile = (!self.profiles.is_empty()).then_some(0);
+        // What agents ran on belongs to the runtime being left; `resume`
+        // keeps the session's own.
         self.agent_llms.clear();
-        let mut lsp = checkers.lsp.status();
-        self.servers = lsp.borrow_and_update().clone();
-        self.lsp = Some(lsp);
-        self.lsp_usage = None;
-        // The servers of the runtime being left get to leave on their own.
-        if let Some(old) = self.checkers.replace(checkers) {
-            tokio::spawn(async move { old.lsp.shutdown().await });
-        }
-        self.servers_lookup = Default::default();
-        self.formatters_lookup = Default::default();
-        self.diagnostics = Default::default();
         self.resume(session);
-        for warning in warnings {
-            self.chat.transcript.push_error(warning);
-        }
+        self.chat.warn(&warnings);
         if self.content.active() == super::Tab::Diagnostics {
             self.diagnose();
         }
@@ -212,12 +203,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use futures::FutureExt;
     use nth_protocol::{AssistantMessage, Message};
     use nth_session::Store;
 
     use super::*;
     use crate::{
-        app::{keys::Action, tests::app},
+        app::{
+            keys::Action,
+            tests::{app, runtime},
+        },
         chat::Entry,
     };
 
@@ -297,23 +292,12 @@ mod tests {
         assert!(prompt.contains(&expected), "{prompt}");
     }
 
-    struct Loader {
-        fail: bool,
-    }
-
-    impl crate::RuntimeLoader for Loader {
-        fn prepare(
-            &self,
-            mut session: Session,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = anyhow::Result<crate::PreparedRuntime>>
-                    + Send
-                    + '_,
-            >,
-        > {
-            Box::pin(async move {
-                if self.fail {
+    /// What `/resume` prepares with: the session on settings of its own,
+    /// or the error a broken repository config gives.
+    fn reload(fail: bool) -> crate::Reload {
+        Arc::new(move |mut session: Session| {
+            async move {
+                if fail {
                     return Err(anyhow::anyhow!("invalid key").context("bad repository config"));
                 }
                 session.max_steps = 17;
@@ -321,25 +305,15 @@ mod tests {
                 session.compaction.auto = false;
                 session.set_extra_dirs(vec!["/configured".into()]);
                 Ok(crate::PreparedRuntime {
-                    session,
-                    paths: Default::default(),
-                    provider: Arc::new(crate::app::tests::Scripted::idle()),
-                    model_tools: Arc::new(Vec::new()),
-                    shell: Arc::new(nth_tools::Bash::new(Default::default())),
-                    checkers: crate::Checkers {
-                        lsp: nth_lsp::Lsp::new(&Default::default()),
-                        formatters: Arc::new(nth_format::Formatters::new(&Default::default())),
-                        rtk: false,
-                    },
                     mode_llms: super::super::ModeLlms::same(nth_protocol::Llm {
                         model: "new-default".into(),
                         effort: Default::default(),
                     }),
-                    profiles: Vec::new(),
-                    warnings: Vec::new(),
+                    ..runtime(session, Arc::new(crate::app::tests::Scripted::idle()))
                 })
-            })
-        }
+            }
+            .boxed()
+        })
     }
 
     #[tokio::test]
@@ -349,9 +323,7 @@ mod tests {
         let mut saved = Session::new("saved-model", dir.path().into());
         saved.messages.push(Message::User("hello".into()));
         store.save(&saved).await.unwrap();
-        let mut app = app()
-            .with_store(store)
-            .with_runtime_loader(Some(Arc::new(Loader { fail: false })));
+        let mut app = app().with_store(store).with_reload(Some(reload(false)));
         let old_provider = app.provider.clone();
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();
@@ -374,6 +346,23 @@ mod tests {
         assert_eq!(fresh.extra_dirs, [std::path::PathBuf::from("/configured")]);
     }
 
+    #[test]
+    fn the_chat_starts_with_its_runtimes_warnings() {
+        // As `/resume` shows the ones its runtime came with.
+        let session = Session::new("glm", "/repo".into());
+        let app = App::new(crate::PreparedRuntime {
+            warnings: vec!["no model set, picked zen/glm".into()],
+            ..runtime(session, Arc::new(crate::app::tests::Scripted::idle()))
+        });
+
+        assert!(
+            app.chat
+                .transcript
+                .entries()
+                .any(|entry| format!("{entry:?}").contains("picked zen/glm"))
+        );
+    }
+
     #[tokio::test]
     async fn loader_failure_keeps_the_old_runtime() {
         let dir = tempfile::tempdir().unwrap();
@@ -381,9 +370,7 @@ mod tests {
         let mut saved = Session::new("saved", dir.path().into());
         saved.messages.push(Message::User("hello".into()));
         store.save(&saved).await.unwrap();
-        let mut app = app()
-            .with_store(store)
-            .with_runtime_loader(Some(Arc::new(Loader { fail: true })));
+        let mut app = app().with_store(store).with_reload(Some(reload(true)));
         let original = app.session_id;
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();

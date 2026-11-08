@@ -121,7 +121,7 @@ mod tests {
 
     /// An idle app in `dir`, which exists.
     fn app_in(dir: &Path) -> App {
-        App::new(
+        App::bare(
             Session::new("glm", dir.to_path_buf()),
             Arc::new(Scripted::idle()),
             Arc::new(Vec::new()),
@@ -399,7 +399,7 @@ mod tests {
         // A session nothing was asked in yet is never saved.
         let mut session = Session::new("glm", dir(base.path(), "repo"));
         session.messages.push(Message::User("go".into()));
-        let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
+        let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
             .with_store(Store::at(&sessions));
 
         app.add_dir("../other");

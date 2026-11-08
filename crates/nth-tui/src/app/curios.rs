@@ -616,7 +616,7 @@ mod tests {
                 .success()
         );
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.poll_curios_through().await;
         app.poll_curios_through().await;
         assert!(!dir.path().join(".nth/curios").exists());
@@ -683,7 +683,7 @@ mod tests {
             })
             .unwrap()
             .curio;
-        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.opener = |_| Ok(());
         app.poll_curios_through().await;
         (dir, app, store, c)
@@ -806,7 +806,7 @@ mod tests {
         let mut session = Session::new("glm", dir.path().to_path_buf());
         session.prepare_curios().unwrap();
         let _other = session.curios().claim_delivery().unwrap();
-        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.poll_curios_through().await;
         assert!(app.curios.delivery.store().is_none());
         assert_eq!(

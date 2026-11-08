@@ -279,7 +279,7 @@ mod tests {
     async fn escape_in_search_leaves_a_running_turn_alone() {
         let hang = Arc::new(Scripted::hang());
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(session, hang.clone(), Arc::new(Vec::new()));
+        let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
         app.chat.transcript.push_user("needle".into());
         app.prompt.insert_str("go");
         app.apply(Action::Submit);

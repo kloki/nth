@@ -61,6 +61,20 @@ impl Providers {
         Ok(providers)
     }
 
+    /// As `new`, but without the catalogue, never fetched: what `nth
+    /// context` and tests run on, which must send nothing but what they
+    /// ask for. An endpoint with configured models lists them without a
+    /// request.
+    pub fn offline(
+        endpoints: Vec<EndpointConfig>,
+        unavailable: Vec<Unavailable>,
+        default_model: &str,
+    ) -> Result<Self, Error> {
+        let http = crate::http::client()?;
+        let catalog = Snapshot::none(http.clone());
+        Self::build(endpoints, unavailable, default_model, http, catalog)
+    }
+
     fn build(
         endpoints: Vec<EndpointConfig>,
         unavailable: Vec<Unavailable>,
@@ -209,6 +223,28 @@ mod tests {
             default_model,
         )
         .expect("two providers")
+    }
+
+    #[tokio::test]
+    async fn offline_providers_list_their_configured_models_without_a_request() {
+        // `.test` never resolves, so a request for /models would fail the
+        // listing rather than name the configured model.
+        let providers = Providers::offline(
+            vec![EndpointConfig {
+                models: vec!["a".into()],
+                ..endpoint("lyceum")
+            }],
+            Vec::new(),
+            "",
+        )
+        .expect("one provider");
+
+        let listing = providers.models().await.expect("lists");
+
+        assert!(providers.fetch.is_none(), "no catalogue fetch started");
+        let ids: Vec<_> = listing.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["lyceum/a"]);
+        assert!(listing.failed.is_empty(), "{:?}", listing.failed);
     }
 
     #[test]

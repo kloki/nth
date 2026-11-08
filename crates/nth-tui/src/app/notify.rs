@@ -147,7 +147,7 @@ mod tests {
     ) -> (App, mpsc::UnboundedReceiver<Notification>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let session = Session::new("glm", cwd);
-        let mut app = App::new(session, Arc::new(provider), Arc::new(Vec::new()))
+        let mut app = App::bare(session, Arc::new(provider), Arc::new(Vec::new()))
             .with_notifier(Notifier::new(Box::new(Recording(tx))));
         // Looking elsewhere, or nothing would be sent.
         app.on_terminal(TermEvent::FocusLost);

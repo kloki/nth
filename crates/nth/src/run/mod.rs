@@ -15,10 +15,14 @@ use nth_session::{
     CancellationToken, Price, Session, Spend, Store, Subagents, Total, store,
     usage::{self, short, steps},
 };
+use nth_tui::PreparedRuntime;
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
-use crate::{apply_context, config::Config, post_write, setup};
+use crate::{
+    config::Config,
+    runtime::{self, Start},
+};
 
 /// How long an interrupted run waits for its subagents' turns to end, so
 /// what they spent is counted.
@@ -32,8 +36,29 @@ pub async fn run(
     agent: Option<String>,
     mut config: Config,
 ) -> Result<()> {
-    let paths = config.paths();
-    let (mut session, provider) = setup(&mut config, &paths, mode).await?;
+    let cwd = std::env::current_dir().context("no working directory")?;
+    let providers = Arc::new(runtime::providers(&config)?);
+    // Without a front-end, a subagent's answer has nothing to wake the
+    // model, so the task tool waits for it.
+    let subagents = Subagents::default();
+    let prepared = runtime::prepare(
+        &mut config,
+        providers.clone(),
+        Start::Fresh { cwd, mode },
+        subagents.clone(),
+    )
+    .await?;
+    let PreparedRuntime {
+        mut session,
+        provider,
+        model_tools: tools,
+        checkers,
+        warnings,
+        ..
+    } = prepared;
+    for warning in session.context().warnings.iter().chain(&warnings) {
+        eprintln!("{} {warning}", icons().warn.yellow().bold());
+    }
     if let Some(name) = agent {
         let agents = &session.context().agents;
         let Some(agent) = agents.primary(&name) else {
@@ -44,28 +69,22 @@ pub async fn run(
             };
             return Err(anyhow!("no primary agent {name:?}; {there}"));
         };
-        // Its own model, else act's, which setup picked as the mode is act.
+        // Its own model, else act's, which prepare picked as the mode is act.
         if let Some(model) = agent.model.clone() {
-            session.set_model(provider.qualify(&model));
+            session.set_model(providers.qualify(&model));
         }
         session.set_agent(Some(name));
     }
-    // The model is final now: take the configured compaction policy and the
-    // limits its listing names, so a long turn compacts itself.
-    apply_context(&mut session, &config, &provider).await;
-    let provider: Arc<dyn Provider> = Arc::new(provider);
+    // The model is final now: the limits its listing names, so a long turn
+    // compacts itself.
+    size(&mut session, provider.as_ref()).await;
     // The read tool keeps images beside the save, as the chat's does.
     let store = Store::open();
     if let Ok(store) = &store {
         session.images = Some(store.images_dir(session.id));
     }
     let cwd = session.cwd.clone();
-    let post_write = post_write(&config);
-    let lsp = post_write.lsp().clone();
-    // Without a front-end, a subagent's answer has nothing to wake the
-    // model, so the task tool waits for it.
-    let subagents = Subagents::default();
-    let tools = crate::tools(&config, post_write, provider.clone(), subagents.clone());
+    let lsp = checkers.lsp;
     // `/name args` runs a skill, as in the chat.
     let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
         Some((skill, args)) => skill
@@ -248,6 +267,15 @@ async fn work(
     Ok((turn, printer))
 }
 
+/// Sizes the session to its model from the provider's listing. A listing
+/// that fails changes nothing, so a fresh session keeps both limits
+/// unknown and nothing compacts on its own.
+async fn size(session: &mut Session, provider: &dyn Provider) {
+    if let Ok(listing) = provider.models().await {
+        session.size_to(&listing);
+    }
+}
+
 /// What the run cost at the catalogue's prices; `None` when the listing
 /// is slow or knows none of the models.
 async fn price(provider: &dyn Provider, spends: &[Spend]) -> Option<Price> {
@@ -281,6 +309,36 @@ mod tests {
     };
 
     use super::*;
+
+    /// A provider whose listing fails, as an unreachable endpoint's does.
+    struct Unlistable;
+
+    impl Provider for Unlistable {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Err("no /models".into()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_listing_leaves_the_saved_limits_alone() {
+        // A session keeps what it was listed with, so its compaction still
+        // fires; a fresh one keeps both unknown.
+        let mut sized = Session::new("zen/a", "/repo".into());
+        sized.set_limits(Some(100_000), Some(8_000));
+
+        size(&mut sized, &Unlistable).await;
+
+        assert_eq!(sized.context_window, Some(100_000));
+        assert_eq!(sized.max_output, Some(8_000));
+    }
 
     /// Asks for one `stall` call in every reply.
     struct Stalling;
