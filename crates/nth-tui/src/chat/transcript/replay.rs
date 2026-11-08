@@ -22,13 +22,13 @@ impl Transcript {
                 Message::User(text) => {
                     // A command you ran shows as its bash row alone, as it
                     // did live; one after a failed turn joined that turn's
-                    // prompt, which shows as it did.
-                    let text = text
-                        .strip_suffix(SHELL_PROMPT)
-                        .map_or(text.as_str(), str::trim_end);
-                    if text.is_empty() {
-                        continue;
-                    }
+                    // prompt as its own paragraph, and the prompt shows as
+                    // it did.
+                    let text = match text.strip_suffix(SHELL_PROMPT) {
+                        Some("") => "",
+                        Some(prompt) => prompt.strip_suffix("\n\n").unwrap_or(text),
+                        None => text,
+                    };
                     // A skill run as `/name args` shows as typed, as it did live.
                     match text.split_once("\n\n<skill_content ") {
                         Some((command, _)) => t.push_user(command.to_string()),

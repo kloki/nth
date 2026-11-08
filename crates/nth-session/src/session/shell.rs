@@ -12,8 +12,9 @@ impl Session {
     /// Runs `command` on `shell` for the user, without the model. It lands
     /// in the history as a bash call the model made, after a user message
     /// saying the user ran it, so the model sees it on its next turn.
-    /// It runs in the context the model's tools get, so it sees the same
-    /// session (one browser for both), directories and state root.
+    /// It runs untimed in the session's tool context for what bash reads:
+    /// the working directory, the session id (one browser with the model's
+    /// commands), the extra directories and the state root.
     /// Cancelling kills the command and still leaves `messages` valid.
     pub async fn shell(
         &mut self,

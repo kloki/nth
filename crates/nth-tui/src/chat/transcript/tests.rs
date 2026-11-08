@@ -395,6 +395,12 @@ fn replays_a_command_after_a_failed_turn_after_its_prompt() {
         ),
         "{entries:?}"
     );
+
+    // Only the paragraph the shell adds is cut, never words you typed.
+    let typed = format!("say {SHELL_PROMPT}");
+    let t = Transcript::replay(PathBuf::from("/repo"), &[Message::User(typed.clone())]);
+    let entries: Vec<_> = t.entries().collect();
+    assert_eq!(entries, [&Entry::User(typed)]);
 }
 
 #[test]
