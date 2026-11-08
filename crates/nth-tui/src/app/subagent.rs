@@ -70,7 +70,11 @@ impl App {
                 }
             }
             // Its notice is in the inbox; waking the model for it is below.
-            SubagentEvent::Stalled { .. } => {}
+            SubagentEvent::Stalled { id, .. } => {
+                if let Some(view) = self.subagent_views.get_mut(&id) {
+                    view.stalled();
+                }
+            }
             SubagentEvent::TurnEnded {
                 id,
                 outcome,
@@ -157,6 +161,7 @@ impl App {
             cancel: CancellationToken::new(),
             done: Done::Nothing,
             timeout: None,
+            stall: None,
         };
         if !self.subagents.prompt(id, job) {
             self.hint = Some("this subagent is gone".into());
@@ -703,6 +708,7 @@ mod tests {
                 cancel: CancellationToken::new(),
                 done: Done::Notify(app.inbox.clone()),
                 timeout: None,
+                stall: None,
             },
         );
         for _ in 0..20 {

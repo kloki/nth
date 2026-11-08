@@ -2,7 +2,7 @@ Launch a new agent to handle complex, multistep tasks autonomously.
 
 When using the Task tool, you must specify a subagent_type parameter to select which agent type to use. The agents you can pick from are listed under available_agents in your system prompt.
 
-The agent runs in the background: this call returns at once with its task_id, and the agent's answer reaches you as a notice when it is done. Carry on with other work or answer the user meanwhile; do not sleep, poll or check on its progress. (In a headless run, where nothing can wake you, the call waits and returns the answer itself.)
+The agent runs in the background: this call returns at once with its task_id, and the agent's answer reaches you as a notice when it is done. Carry on with other work or answer the user meanwhile; do not sleep, poll or check on its progress. If it says nothing for a while, a `<task state="stalled" quiet=…>` notice wakes you; it still runs: wait, or stop it with task_stop. (In a headless run, where nothing can wake you, the call waits and returns the answer itself.)
 
 When NOT to use the Task tool:
 - If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly

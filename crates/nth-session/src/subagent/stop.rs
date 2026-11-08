@@ -92,6 +92,7 @@ mod tests {
     const LIMITS: Limits = Limits {
         max_steps: 10,
         timeout: None,
+        stall: None,
     };
 
     #[tokio::test]

@@ -170,6 +170,22 @@ impl Ledger {
 
     /// A spend made elsewhere, such as a subagent's turn. One that made no
     /// request is left out.
+    /// Starts a turn's spend, counted to as the turn goes, so a turn that
+    /// is dropped part way keeps what it spent; [`Ledger::close`] ends it.
+    pub(crate) fn open(&mut self, spend: Spend) -> &mut Spend {
+        self.0.push(spend);
+        let last = self.0.len() - 1;
+        &mut self.0[last]
+    }
+
+    /// Ends the spend [`Ledger::open`] started: one the provider reported
+    /// nothing for goes, as [`Ledger::record`] never keeps one.
+    pub(crate) fn close(&mut self) {
+        if self.0.last().is_some_and(|spend| spend.steps == 0) {
+            self.0.pop();
+        }
+    }
+
     pub fn record(&mut self, spend: Spend) {
         if spend.steps > 0 {
             self.0.push(spend);
@@ -410,6 +426,22 @@ pub fn short_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_spend_counts_as_it_goes_and_closes_only_when_empty() {
+        let mut ledger = Ledger::default();
+        ledger.open(Spend::new("glm", None));
+        ledger.close();
+        assert!(ledger.spends().is_empty(), "nothing was reported");
+
+        let spend = ledger.open(Spend::new("glm", None));
+        spend.steps += 1;
+        spend.tokens += usage(300, 7, None);
+        // A turn dropped here never closes, and keeps what it spent.
+        assert_eq!(ledger.spends()[0].tokens.input, 300);
+        ledger.close();
+        assert_eq!(ledger.spends().len(), 1, "a spend with steps stays");
+    }
 
     fn usage(input: u64, output: u64, cache_read: Option<u64>) -> Usage {
         Usage {

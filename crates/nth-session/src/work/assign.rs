@@ -23,17 +23,11 @@ const ASSIGNED: &str = include_str!("assigned.md");
 /// it however the job ends, so the item never stays running for nobody.
 pub struct Assigned {
     assignment: Assignment,
-    stall: Option<Duration>,
     /// The headless call waiting for the notice, as it has no inbox.
     reply: Option<oneshot::Sender<WorkNotice>>,
 }
 
 impl Assigned {
-    /// How long the subagent may say nothing before it counts as stalled.
-    pub(crate) fn stall(&self) -> Option<Duration> {
-        self.stall
-    }
-
     /// The same, telling no model: the session that assigned it was left.
     pub(crate) fn unheard(mut self) -> Self {
         self.assignment.inbox = nth_protocol::Inbox::default();
@@ -251,18 +245,15 @@ impl Tool for WorkAssign {
                 }
                 false => (None, None),
             };
-            let assigned = Assigned {
-                assignment,
-                // Headless nobody wakes for a stall.
-                stall: shared.stall.filter(|_| !headless),
-                reply,
-            };
+            let assigned = Assigned { assignment, reply };
             let cancel = CancellationToken::new();
             let job = Job {
                 text,
                 cancel: cancel.clone(),
                 done: Done::Work(assigned),
                 timeout,
+                // Headless nobody wakes for a stall.
+                stall: shared.spawner.limits().stall.filter(|_| !headless),
             };
             // The file says running before the job goes out, all under the
             // lock the job's settling takes: a write that fails starts no

@@ -262,7 +262,7 @@ async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
 }
 
 #[tokio::test]
-async fn a_quiet_subagent_is_reported_stalled_once_and_stopping_it_returns_the_item() {
+async fn a_quiet_subagent_is_reported_stalled_while_quiet_and_stopping_it_returns_the_item() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
@@ -285,34 +285,30 @@ async fn a_quiet_subagent_is_reported_stalled_once_and_stopping_it_returns_the_i
         .await
         .unwrap();
     until(&mut rx, |e| matches!(e, SubagentEvent::Stalled { .. })).await;
-    // Well past another quiet period: nothing new was said, so no second
-    // report.
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    subagents.cancel(1);
-    let mut stalls = 0;
-    while let Some(event) = rx.recv().await {
-        stalls += usize::from(matches!(event, SubagentEvent::Stalled { .. }));
-        if ended(&event) {
-            break;
-        }
-    }
-    assert_eq!(stalls, 0, "one stall per quiet period");
-
-    let text = inbox.take_notices().unwrap();
-    let (notices, _) = split_notices(&text);
-    let states: Vec<_> = notices
-        .iter()
-        .map(|n| match n {
-            NoticeSummary::Work { state, outcome, .. } => (state.clone(), outcome.clone()),
-            other => panic!("{other:?}"),
-        })
-        .collect();
+    // Still silent a quiet period later: told again.
+    until(&mut rx, |e| matches!(e, SubagentEvent::Stalled { .. })).await;
+    let states = |inbox: &Inbox| -> Vec<_> {
+        let text = inbox.take_notices().unwrap();
+        split_notices(&text)
+            .0
+            .iter()
+            .map(|n| match n {
+                NoticeSummary::Work { state, outcome, .. } => (state.clone(), outcome.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
     assert_eq!(
-        states,
-        [
-            ("stalled".to_string(), None),
-            ("returned".to_string(), Some("interrupted".to_string())),
-        ]
+        states(&inbox),
+        [("stalled".to_string(), None)],
+        "one notice"
+    );
+    subagents.cancel(1);
+    until(&mut rx, ended).await;
+
+    assert_eq!(
+        states(&inbox),
+        [("returned".to_string(), Some("interrupted".to_string()))]
     );
     let item = read(dir.path(), "01-c1", "a").await;
     assert_eq!(item.status, Status::Returned);

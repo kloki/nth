@@ -344,7 +344,8 @@ mod tests {
                 text: "go".into(),
                 cancel: CancellationToken::new(),
                 done: Done::Notify(app.inbox.clone()),
-                timeout: None
+                timeout: None,
+                stall: None,
             }
         ));
         tokio::time::timeout(Duration::from_secs(5), async {

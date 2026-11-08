@@ -123,6 +123,8 @@ pub struct TaskConfig {
     pub max_steps: usize,
     /// `0` leaves a task to its steps alone.
     pub timeout_secs: u64,
+    /// `0` never reports a stall.
+    pub stall_secs: u64,
 }
 
 impl Default for TaskConfig {
@@ -130,6 +132,7 @@ impl Default for TaskConfig {
         Self {
             max_steps: 50,
             timeout_secs: 600,
+            stall_secs: 120,
         }
     }
 }
@@ -138,7 +141,8 @@ impl TaskConfig {
     pub fn limits(&self) -> nth_session::subagent::Limits {
         nth_session::subagent::Limits {
             max_steps: self.max_steps,
-            timeout: (self.timeout_secs > 0).then(|| Duration::from_secs(self.timeout_secs)),
+            timeout: secs(self.timeout_secs),
+            stall: secs(self.stall_secs),
         }
     }
 }
@@ -167,16 +171,18 @@ impl Default for WorkConfig {
 }
 
 impl WorkConfig {
-    pub fn limits(&self) -> nth_session::work::Limits {
-        let secs = |secs: u64| (secs > 0).then(|| Duration::from_secs(secs));
-        nth_session::work::Limits {
-            subagent: nth_session::subagent::Limits {
-                max_steps: self.max_steps,
-                timeout: secs(self.timeout_secs),
-            },
+    pub fn limits(&self) -> nth_session::subagent::Limits {
+        nth_session::subagent::Limits {
+            max_steps: self.max_steps,
+            timeout: secs(self.timeout_secs),
             stall: secs(self.stall_secs),
         }
     }
+}
+
+/// A limit in seconds, where `0` means none.
+fn secs(secs: u64) -> Option<Duration> {
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// Which mode a new chat starts in. What each mode runs with comes from

@@ -54,8 +54,9 @@ pub enum SubagentEvent {
     Prompted { id: SubagentId, text: String },
     /// What its session reports while the turn runs.
     Session { id: SubagentId, event: Event },
-    /// Nothing heard from its turn for `quiet`, though it still runs; the
-    /// work item it is on was told, and a front-end wakes the model for it.
+    /// Nothing heard from its turn for `quiet`, though it still runs, and
+    /// again while it stays silent; the model waiting on its task or work
+    /// item was told, and a front-end wakes the model for it.
     Stalled { id: SubagentId, quiet: Duration },
     TurnEnded {
         id: SubagentId,
@@ -112,6 +113,11 @@ pub struct Job {
     /// [`Error::TimedOut`]: the task tool's budget. A prompt you type on
     /// the tab has none, since you are watching.
     pub timeout: Option<Duration>,
+    /// How long its turn may say nothing before whoever waits hears it
+    /// stalled, and again every such interval while it stays silent. A
+    /// prompt you type on the tab has none, since you are watching, and
+    /// neither has a headless one, since nothing would wake its parent.
+    pub stall: Option<Duration>,
 }
 
 /// Goes with every prompt from a planning parent: its child has no tool
@@ -471,7 +477,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::agent_loop::tests::Scripted;
 
-    fn explore() -> Agent {
+    pub(super) fn explore() -> Agent {
         Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
             .agents
             .get("explore")
@@ -479,7 +485,7 @@ pub(crate) mod tests {
             .clone()
     }
 
-    fn session() -> Session {
+    pub(super) fn session() -> Session {
         Session::new("glm-5.3", "/repo".into()).as_subagent(None)
     }
 
@@ -487,13 +493,14 @@ pub(crate) mod tests {
         vec![StreamEvent::TextDelta(text.into())]
     }
 
-    fn job(text: &str, done: Done) -> (Job, CancellationToken) {
+    pub(super) fn job(text: &str, done: Done) -> (Job, CancellationToken) {
         let cancel = CancellationToken::new();
         let job = Job {
             text: text.into(),
             cancel: cancel.clone(),
             done,
             timeout: None,
+            stall: None,
         };
         (job, cancel)
     }
@@ -949,6 +956,41 @@ pub(crate) mod tests {
             "{events:?}"
         );
         assert!(!inbox.has_notices());
+    }
+
+    #[tokio::test]
+    async fn abandoning_clears_what_waited() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let id = subagents.spawn(
+            &explore(),
+            "d",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
+        let replies: Vec<_> = (0..3)
+            .map(|i| {
+                let (reply, waiting) = oneshot::channel();
+                subagents.prompt(id, job(&format!("job {i}"), Done::Reply(reply)).0);
+                waiting
+            })
+            .collect();
+        while !matches!(rx.recv().await, Some(SubagentEvent::Prompted { .. })) {}
+        assert_eq!(subagents.queued(id), 2);
+
+        drop(rx);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for reply in replies {
+                assert!(matches!(reply.await.unwrap(), Err(Error::Interrupted)));
+            }
+        })
+        .await
+        .expect("every job settles once the front-end is gone");
+        assert_eq!(subagents.queued(id), 0, "nothing will run what waited");
+        assert!(!subagents.is_running(id));
+        assert!(!subagents.cancel(id), "nothing left to stop");
     }
 
     #[tokio::test]

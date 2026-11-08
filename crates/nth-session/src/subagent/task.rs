@@ -56,6 +56,9 @@ pub struct Limits {
     /// How long a turn the model started may run; `None` leaves it to its
     /// steps.
     pub timeout: Option<Duration>,
+    /// How long it may say nothing before the model hears it stalled;
+    /// `None` never.
+    pub stall: Option<Duration>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +173,7 @@ impl Tool for Task {
                     cancel,
                     done: Done::Notify(ctx.inbox.clone()),
                     timeout: limits.timeout,
+                    stall: limits.stall,
                 };
                 if !subagents.prompt(id, job) {
                     return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
@@ -192,6 +196,8 @@ impl Tool for Task {
                 cancel,
                 done: Done::Reply(reply),
                 timeout: limits.timeout,
+                // Nothing would wake the parent for a stall: it waits here.
+                stall: None,
             };
             if !subagents.prompt(id, job) {
                 return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
@@ -229,6 +235,7 @@ mod tests {
     const LIMITS: Limits = Limits {
         max_steps: 10,
         timeout: None,
+        stall: None,
     };
 
     /// A tool that is only a name.
@@ -406,8 +413,8 @@ mod tests {
             Vec::new(),
             Subagents::default(),
             Limits {
-                max_steps: 10,
                 timeout: Some(Duration::from_millis(20)),
+                ..LIMITS
             },
         );
         let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });

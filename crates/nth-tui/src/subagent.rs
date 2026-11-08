@@ -33,6 +33,8 @@ pub struct SubagentView {
     took: Option<Duration>,
     /// Tool calls of the running or last turn.
     tool_calls: usize,
+    /// Its running turn has said nothing since it was reported stalled.
+    stalled: bool,
     /// Prompts waiting in its inbox, as last heard.
     pub queued: usize,
     /// Its session was left: the tab closes once its turn has ended.
@@ -49,6 +51,7 @@ impl SubagentView {
             running_since: None,
             took: None,
             tool_calls: 0,
+            stalled: false,
             queued: 0,
             closing: false,
         }
@@ -62,17 +65,26 @@ impl SubagentView {
         self.running_since = Some(Instant::now());
         self.took = None;
         self.tool_calls = 0;
+        self.stalled = false;
     }
 
     pub fn apply(&mut self, event: &Event) {
         if matches!(event, Event::ToolStarted(_)) {
             self.tool_calls += 1;
         }
+        self.stalled = false;
         self.chat.apply(event);
+    }
+
+    /// Its running turn has said nothing for a while; the next thing it
+    /// says ends that.
+    pub fn stalled(&mut self) {
+        self.stalled = self.is_running();
     }
 
     pub fn ended(&mut self, outcome: &TaskOutcome, elapsed: Duration, model: &str) {
         self.running_since = None;
+        self.stalled = false;
         self.took = Some(elapsed);
         let transcript = &mut self.chat.transcript;
         self.state = Some(match outcome {
@@ -145,6 +157,7 @@ impl SubagentView {
     fn header(&self) -> Line<'static> {
         let dim = theme::dim();
         let (state, colour, elapsed) = match (self.state, self.running_since, self.took) {
+            (_, Some(since), _) if self.stalled => ("stalled", Color::Red, since.elapsed()),
             (_, Some(since), _) => ("running", Color::Yellow, since.elapsed()),
             (Some(State::Idle), _, Some(took)) => ("done", Color::Green, took),
             (Some(State::Interrupted), _, Some(took)) => ("interrupted", Color::Yellow, took),
@@ -241,5 +254,26 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(header, "@explore · find tabs · done · 3s · 1 tool call");
+    }
+
+    fn state(view: &SubagentView) -> String {
+        view.header().spans[2].content.to_string()
+    }
+
+    #[test]
+    fn a_stall_shows_until_it_says_something() {
+        let mut view = view();
+        view.stalled();
+        assert_eq!(state(&view), "starting", "no turn runs to stall");
+        view.prompted("go".into());
+        view.stalled();
+        assert_eq!(state(&view), "stalled");
+        view.apply(&Event::TextDelta("still here".into()));
+        assert_eq!(state(&view), "running");
+        view.stalled();
+        view.ended(&TaskOutcome::Interrupted, Duration::from_secs(1), "glm");
+        assert_eq!(state(&view), "interrupted");
+        view.prompted("again".into());
+        assert_eq!(state(&view), "running", "a new turn starts afresh");
     }
 }
