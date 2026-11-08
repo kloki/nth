@@ -82,6 +82,38 @@ pub(crate) async fn serve_status(
     serve(status, "application/json", body).await
 }
 
+/// A server on a free local port that answers one request after another
+/// with `replies` in turn, each a status and a JSON body, then 503 to any
+/// more. Hands back how many requests it has answered.
+pub(crate) async fn serve_many(
+    replies: Vec<(u16, &'static [u8])>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::Ordering;
+
+    use tokio::io::AsyncWriteExt;
+
+    let (listener, url) = listen().await;
+    let answered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = answered.clone();
+    tokio::spawn(async move {
+        let mut replies = replies.into_iter();
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("a request");
+            read_request(&mut stream).await;
+            let (status, body) = replies.next().unwrap_or((503, b"{}"));
+            let reply = format!(
+                "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                reason(status),
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).await.expect("writable");
+            stream.write_all(body).await.expect("writable");
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    (url, answered)
+}
+
 /// The reason phrase for the statuses the tests serve; HTTP parsers ignore
 /// it, so whatever it says will do.
 fn reason(status: u16) -> &'static str {

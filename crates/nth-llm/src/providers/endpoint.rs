@@ -130,7 +130,8 @@ impl Endpoint {
         match &self.kind {
             Kind::ChatGpt { listed, .. } => {
                 let (catalog, auth) = futures::join!(catalog.get(), self.auth());
-                let models = chatgpt::list(&self.http, &self.base_url, &auth?, catalog).await?;
+                let models =
+                    chatgpt::list(&self.http, &self.base_url, &auth?, catalog.as_deref()).await?;
                 *listed.lock().expect("listed lock poisoned") = models
                     .iter()
                     .map(|m| (m.id.clone(), m.efforts.clone()))
@@ -140,6 +141,7 @@ impl Endpoint {
             Kind::Configured { only, .. } => {
                 // At once: the catalogue's deadline must not delay the list.
                 let (catalog, ids) = futures::join!(catalog.get(), self.ids(only));
+                let catalog = catalog.as_deref();
                 Ok(listing::select(
                     ids?,
                     catalog,
@@ -224,6 +226,7 @@ impl Endpoint {
         // A ChatGPT login that cannot refresh fails here, for good.
         let auth = self.auth().await?;
         let catalog = catalog.get().await;
+        let catalog = catalog.as_deref();
         let (wire, known) = self.wire(catalog, request.model);
         // Whatever picked the effort (the config, a resumed session, a
         // model switch), a known model is sent only a level it takes: one
