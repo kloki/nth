@@ -10,7 +10,10 @@ use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent};
 
 use crate::{
-    http::{self, STREAM_IDLE_TIMEOUT, retry_after, retryable, transient},
+    http::{
+        self, ERROR_BODY_TIMEOUT, RESPONSE_TIMEOUT, STREAM_IDLE_TIMEOUT, retry_after, retryable,
+        transient,
+    },
     sse,
 };
 
@@ -70,6 +73,8 @@ pub(crate) enum Error<P: Payload> {
     Incomplete,
     #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
     Stalled,
+    #[error("no response within {}s", RESPONSE_TIMEOUT.as_secs())]
+    Unanswered,
     #[error("response hit the output token limit")]
     Truncated,
 }
@@ -103,16 +108,27 @@ pub(crate) async fn send<P: Protocol>(
     builder: reqwest::RequestBuilder,
     request: &Request<'_>,
 ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-    let response = http::session(builder, request)
-        .send()
-        .await
-        .map_err(Error::<P::Provider>::from)?;
+    let response = send_within::<P::Provider>(builder, request).await?;
     let response = success::<P::Provider>(response).await?;
     let bytes = response
         .bytes_stream()
         .map(|chunk| chunk.map_err(Error::from))
         .boxed();
     Ok(events::<P, _>(bytes).map(|e| e.map_err(boxed)).boxed())
+}
+
+/// Sends `builder` as `request`'s session, failing as `Unanswered` when
+/// the response's headers take longer than [`RESPONSE_TIMEOUT`]. Only the
+/// headers: the body streams under the idle deadline instead.
+async fn send_within<P: Payload>(
+    builder: reqwest::RequestBuilder,
+    request: &Request<'_>,
+) -> Result<reqwest::Response, Error<P>> {
+    let sent = http::session(builder, request).send();
+    match tokio::time::timeout(RESPONSE_TIMEOUT, sent).await {
+        Ok(response) => response.map_err(Error::from),
+        Err(_elapsed) => Err(Error::Unanswered),
+    }
 }
 
 /// Turns a non-2xx response into the stream's error: the shared
@@ -124,7 +140,11 @@ async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Res
         return Ok(response);
     }
     let retry_after = retry_after(response.headers());
-    let body = response.text().await.unwrap_or_default();
+    let body = tokio::time::timeout(ERROR_BODY_TIMEOUT, response.text())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
     Err(status_error::<P>(status, body, retry_after))
 }
 
@@ -178,8 +198,9 @@ pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
         }),
         Error::Provider(payload) if payload.retryable() => Some(Retry { after: None }),
         Error::Http(e) if retryable(e) => Some(Retry { after: None }),
-        // The stream ended, or went quiet, before the reply did.
-        Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
+        // The server never answered, or the stream ended or went quiet
+        // before the reply did.
+        Error::Unanswered | Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
         _ => None,
     }
 }
@@ -299,7 +320,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::serve_status;
+    use crate::testing::{serve_silent, serve_status, serve_unfinished};
 
     /// A protocol with no events of its own, for what every protocol
     /// shares: how a refused request and a failed stream are classified.
@@ -336,9 +357,8 @@ mod tests {
         super::retry::<Fault>(error)
     }
 
-    /// The error a request refused with `status` and `body` becomes.
-    async fn refused(status: u16, body: &'static [u8]) -> BoxError {
-        let (url, _) = serve_status(status, body).await;
+    /// The error a request to `url` fails with.
+    async fn failed(url: String) -> BoxError {
         let client = Client::<Null>::new(reqwest::Client::new(), url);
         let request = Request {
             model: "test-model",
@@ -351,7 +371,76 @@ mod tests {
         send::<Null>(client.post(), &request)
             .await
             .err()
-            .expect("refused")
+            .expect("failed")
+    }
+
+    /// The error a request refused with `status` and `body` becomes.
+    async fn refused(status: u16, body: &'static [u8]) -> BoxError {
+        let (url, _) = serve_status(status, body).await;
+        failed(url).await
+    }
+
+    // Paused, the clock jumps to the deadline whenever nothing is ready;
+    // whether that is before or after the connection opens, the server
+    // has not answered.
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_never_answers_the_headers_fails_as_unanswered_and_is_retried() {
+        let start = tokio::time::Instant::now();
+        // Free on the paused clock; fails a regression instead of hanging.
+        let error = tokio::time::timeout(RESPONSE_TIMEOUT * 2, async {
+            failed(serve_silent().await).await
+        })
+        .await
+        .expect("answered within the deadline");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<Error<Fault>>(),
+                Some(Error::Unanswered)
+            ),
+            "{error}"
+        );
+        assert_eq!(error.to_string(), "no response within 300s");
+        assert!(start.elapsed() >= RESPONSE_TIMEOUT);
+        assert_eq!(retry(&error), Some(Retry { after: None }));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_whose_body_never_arrives_still_classifies_by_status() {
+        let url = serve_unfinished(429, 7).await;
+        // The headers on real time, then the clock paused: it would jump
+        // past the response deadline too, were the headers still on their
+        // way.
+        let response = reqwest::Client::new()
+            .post(url)
+            .send()
+            .await
+            .expect("headers");
+        tokio::time::pause();
+        let start = tokio::time::Instant::now();
+        // Free on the paused clock; fails a regression instead of hanging.
+        let error = tokio::time::timeout(ERROR_BODY_TIMEOUT * 2, success::<Fault>(response))
+            .await
+            .expect("classified within the deadline")
+            .expect_err("refused");
+
+        assert!(start.elapsed() >= ERROR_BODY_TIMEOUT);
+        assert!(
+            matches!(
+                error.downcast_ref::<Error<Fault>>(),
+                Some(Error::Status { status, message, retry_after, .. })
+                    if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                        && message.is_empty()
+                        && *retry_after == Some(Duration::from_secs(7))
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            retry(&error),
+            Some(Retry {
+                after: Some(Duration::from_secs(7))
+            })
+        );
     }
 
     /// OpenAI's refusal, as its API sends it.
@@ -508,6 +597,10 @@ mod tests {
             Some(Retry { after: None })
         );
         assert_eq!(retry(&boxed(Error::Stalled)), Some(Retry { after: None }));
+        assert_eq!(
+            retry(&boxed(Error::Unanswered)),
+            Some(Retry { after: None })
+        );
         assert_eq!(retry(&boxed(Error::Truncated)), None);
 
         let bad_url = reqwest::Client::new()
