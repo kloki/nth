@@ -531,6 +531,18 @@ mod tests {
         assert_eq!(selection.next_profile(true), applied("zen"));
         selection.set_agent("explore".into(), None);
         assert_eq!(selection.current(), plain("go-act"), "left, it stays");
+
+        let mut selection = profiled(vec![profile("go"), profile("zen")]);
+        selection.set_agent("review".into(), None);
+        selection.set_agent("explore".into(), None);
+        assert_eq!(selection.next_profile(true), applied("zen"));
+        assert_eq!(selection.current(), plain("zen-act"), "explore follows");
+        selection.set_agent("review".into(), None);
+        assert_eq!(
+            selection.current(),
+            plain("go-act"),
+            "left for another agent, it stays"
+        );
     }
 
     #[test]
