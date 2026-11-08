@@ -1,5 +1,6 @@
 mod apply_patch;
 mod bash;
+mod blocking;
 mod bom;
 mod command_output;
 mod context_preview;
