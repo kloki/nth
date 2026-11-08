@@ -2,40 +2,28 @@
 
 use std::{
     io::{self, IsTerminal, Write},
-    path::PathBuf,
     sync::Arc,
 };
 
 use anyhow::Result;
+use nth_icons::icons;
 use nth_llm::{Credentials, EndpointConfig, Providers};
-use nth_protocol::{Entry, Inbox, Message, Preview};
+use nth_protocol::{Entry, Inbox, Message, Preview, Tool};
 use nth_session::{Session, Store, Subagents};
+use owo_colors::OwoColorize;
 use serde_json::json;
+
+use crate::runtime::{self, Runtime, Start};
 
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
-pub async fn run(
-    id: Option<String>,
-    json: bool,
-    config_path: Option<PathBuf>,
-    model: Option<String>,
-) -> Result<()> {
+pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()> {
     let store = Store::open()?;
-    let mut session = crate::session::pick(&store, id.as_deref()).await?;
-    let config = crate::load_for(config_path.as_deref(), model, &session.cwd)?;
-    // Agent definitions are needed for offered-tool filtering. set_context also
-    // rewrites the system prompt, so retain exactly the messages that were saved.
-    let messages = session.messages.clone();
-    session.set_context(crate::context(session.cwd.clone(), &config.paths()).await);
-    session.messages = messages;
-    session.compaction = config.context;
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let tools = crate::tools(
-        &config,
-        crate::post_write(&config),
-        offline_provider()?,
-        Subagents::new(tx),
-    );
+    let session = crate::session::pick(&store, id.as_deref()).await?;
+    let (session, tools, warnings) = reconstruct(session, runtime).await?;
+    for warning in session.context().warnings.iter().chain(&warnings) {
+        eprintln!("{} {warning}", icons().warn.yellow().bold());
+    }
     let preview = session.context_preview(&tools, &Inbox::default());
     let mut out = io::stdout().lock();
     let json = json || !out.is_terminal();
@@ -47,24 +35,41 @@ pub async fn run(
     Ok(())
 }
 
-/// Construct outside the runtime so Providers does not start its catalogue
-/// fetch. The handle only satisfies tool constructors; no tool is invoked.
-fn offline_provider() -> Result<Arc<dyn nth_protocol::Provider>> {
-    let provider = std::thread::spawn(|| {
-        Providers::new(
-            vec![EndpointConfig {
-                id: "offline".into(),
-                name: "offline".into(),
-                base_url: "http://127.0.0.1".into(),
-                credentials: Credentials::Key("unused".into()),
-                models: Vec::new(),
-            }],
-            Vec::new(),
-            "offline/unused",
-        )
-    })
-    .join()
-    .map_err(|_| anyhow::anyhow!("could not construct preview tools"))??;
+/// The saved session as the chat would resume it, on offline providers,
+/// with the tools its next request offers and the warnings preparing it
+/// gave. Preparing rewrites the system prompt, and the offline provider
+/// knows none of the config's endpoints, so it would qualify the model
+/// under its own: the model and messages are exactly the saved ones.
+async fn reconstruct(
+    session: Session,
+    runtime: &Runtime,
+) -> Result<(Session, Arc<Vec<Box<dyn Tool>>>, Vec<String>)> {
+    let (model, messages) = (session.model.clone(), session.messages.clone());
+    let start = Start::Saved(Box::new(session));
+    let mut config = runtime.config_for(&start)?;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let prepared =
+        runtime::prepare(&mut config, offline_provider()?, start, Subagents::new(tx)).await?;
+    let mut session = prepared.session;
+    session.model = model;
+    session.messages = messages;
+    Ok((session, prepared.model_tools, prepared.warnings))
+}
+
+/// Providers that never send a request: the handle only satisfies the tool
+/// constructors, and no tool is invoked.
+fn offline_provider() -> Result<Arc<Providers>> {
+    let provider = Providers::offline(
+        vec![EndpointConfig {
+            id: "offline".into(),
+            name: "offline".into(),
+            base_url: "http://127.0.0.1".into(),
+            credentials: Credentials::Key("unused".into()),
+            models: Vec::new(),
+        }],
+        Vec::new(),
+        "offline/unused",
+    )?;
     Ok(Arc::new(provider))
 }
 
@@ -323,12 +328,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_saved_model_and_messages_are_previewed_as_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "model = \"zen/b\"").expect("writes");
+        let mut saved = Session::new("zen/a", dir.path().into());
+        saved.messages[0] = Message::System("saved system".into());
+        saved.messages.push(Message::User("hello".into()));
+
+        let (session, tools, _) = reconstruct(saved.clone(), &Runtime::new(Some(path), None))
+            .await
+            .expect("reconstructs");
+
+        assert_eq!(session.model, "zen/a");
+        assert_eq!(session.messages, saved.messages);
+        assert!(tools.iter().any(|tool| tool.spec().name == "read"));
+    }
+
+    #[tokio::test]
     async fn normal_tools_are_included_in_text_and_json() {
         let config = Config::default();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let tools = crate::tools(
+        let tools = runtime::tools(
             &config,
-            crate::post_write(&config),
+            runtime::post_write(&config),
             offline_provider().unwrap(),
             Subagents::new(tx),
         );

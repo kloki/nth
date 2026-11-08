@@ -59,6 +59,7 @@ impl App {
 
     /// What each mode runs with; the current mode's model and effort come
     /// from it too.
+    #[cfg(test)]
     pub fn with_mode_llms(mut self, llms: ModeLlms) -> Self {
         self.set_mode_llms(llms);
         self

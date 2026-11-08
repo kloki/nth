@@ -30,7 +30,7 @@ async fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Stor
         })
         .unwrap()
         .curio;
-    let mut app = App::new(session, provider, Arc::new(Vec::new()));
+    let mut app = App::bare(session, provider, Arc::new(Vec::new()));
     app.poll_curios_through().await;
     (dir, app, store, curio)
 }
@@ -248,7 +248,7 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
     assert_eq!(review_text(&resumed.messages).len(), 1);
     assert!(store.batches(true).unwrap().is_empty());
     drop(app);
-    let mut restarted = App::new(resumed, provider.clone(), Arc::new(Vec::new()));
+    let mut restarted = App::bare(resumed, provider.clone(), Arc::new(Vec::new()));
     restarted.poll_curios_through().await;
     restarted.notices_due();
     assert!(!restarted.is_busy());

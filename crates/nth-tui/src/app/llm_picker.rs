@@ -694,7 +694,7 @@ mod tests {
     async fn dropping_the_app_aborts_the_listing() {
         let dropped = Arc::new(AtomicBool::new(false));
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(
+        let mut app = App::bare(
             session,
             Arc::new(SlowList(dropped.clone())),
             Arc::new(Vec::new()),

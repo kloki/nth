@@ -9,7 +9,7 @@ use nth_icons::icons;
 use nth_protocol::Provider;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, providers};
+use crate::{config::Config, runtime::providers};
 
 pub async fn run(json: bool, config: Config) -> Result<()> {
     let providers = providers(&config)?;

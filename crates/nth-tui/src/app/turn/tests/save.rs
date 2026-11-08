@@ -32,7 +32,7 @@ fn queued_row(app: &mut App) -> String {
 
 fn hang_app() -> App {
     let session = Session::new("glm", "/repo".into());
-    App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
+    App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
 }
 
 #[tokio::test]

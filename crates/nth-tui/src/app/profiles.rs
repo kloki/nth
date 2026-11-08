@@ -33,6 +33,7 @@ fn llm(profile: &Profile, mode: Mode) -> &Llm {
 impl App {
     /// The profiles ctrl+p cycles, in config order; the first is the one
     /// the chat started on. Empty when the config lists none.
+    #[cfg(test)]
     pub fn with_profiles(mut self, profiles: Vec<Profile>) -> Self {
         self.profile = (!profiles.is_empty()).then_some(0);
         self.profiles = profiles;

@@ -37,15 +37,14 @@ mod usage;
 mod work;
 
 use std::{
-    future::Future,
     io::{IsTerminal, stdin, stdout},
-    pin::Pin,
     sync::Arc,
 };
 
 use anyhow::{Result, bail};
 pub use app::{Llm, ModeLlms, Profile};
 use crossterm::style::Stylize;
+use futures::future::BoxFuture;
 use nth_context::Paths;
 use nth_format::Formatters;
 use nth_icons::icons;
@@ -68,17 +67,11 @@ pub struct Checkers {
     pub rtk: bool,
 }
 
-/// What the chat runs commands with: the model's tools, the shell for the
-/// commands you type after `!`, and the subagents the task tool among the
-/// tools starts, with where they report.
-pub struct Tools {
-    pub model: Arc<Vec<Box<dyn Tool>>>,
-    pub shell: Arc<dyn Tool>,
-    pub subagents: Subagents,
-    pub subagent_rx: mpsc::Receiver<SubagentEvent>,
-}
-
-/// A complete repository-specific runtime, prepared before switching sessions.
+/// Everything a session runs with in its repository: the session, where
+/// nth looks for project files, its provider, the model's tools and the
+/// shell for `!` commands, what checks the writes, the llms each mode runs
+/// on, the profiles ctrl+p cycles, and what is worth telling you about how
+/// it was prepared. The chat starts on one and `/resume` swaps in another.
 pub struct PreparedRuntime {
     pub session: Session,
     pub paths: Paths,
@@ -91,24 +84,14 @@ pub struct PreparedRuntime {
     pub warnings: Vec<String>,
 }
 
-/// Prepare a saved session and its repository runtime using the shared subagent registry.
-pub trait RuntimeLoader: Send + Sync {
-    fn prepare(
-        &self,
-        session: Session,
-    ) -> Pin<Box<dyn Future<Output = Result<PreparedRuntime>> + Send + '_>>;
-}
+/// What `/resume` prepares a saved session's runtime with, for its own
+/// repository: what the chat started on came through the same steps.
+pub type Reload = Arc<dyn Fn(Session) -> BoxFuture<'static, Result<PreparedRuntime>> + Send + Sync>;
 
-/// What the config decided: where nth looks for project files, the model
-/// and effort each mode runs on, the profiles ctrl+p cycles, where
-/// notifications go, how the chat shows what the model did, and the
-/// accounts `/connect` signs in to.
+/// What the config decided beyond the runtime: where notifications go, how
+/// the chat shows what the model did, and the accounts `/connect` signs in
+/// to.
 pub struct Settings {
-    pub paths: Paths,
-    pub mode_llms: ModeLlms,
-    /// The `[[profiles]]` in config order; the chat starts on the first,
-    /// and empty means there are none to cycle.
-    pub profiles: Vec<Profile>,
     pub notifier: Notifier,
     pub chat: ChatSettings,
     /// The terminal width from which the chat and another tab show side by
@@ -118,23 +101,21 @@ pub struct Settings {
     pub chatgpt: nth_auth::ChatGpt,
     /// What `/resume` prepares another session's repository runtime with;
     /// without one, a resumed session keeps the current runtime.
-    pub loader: Option<Arc<dyn RuntimeLoader>>,
+    pub loader: Option<Reload>,
 }
 
-/// Runs the chat until the user quits, saving `session` and any other it
-/// moves on to in `store` after every turn. Each mode runs on its model in
-/// `mode_llms`. The terminal is restored on every exit path, including a
-/// panic, and the language servers of the runtime it ends on are shut down.
+/// Runs the chat on `runtime` until the user quits, saving its session and
+/// any other it moves on to in `store` after every turn. The subagents the
+/// task tool starts are the process's, whichever runtime is in, and report
+/// over `subagent_rx`. The terminal is restored on every exit path,
+/// including a panic, and the language servers of the runtime it ends on
+/// are shut down.
 pub async fn run(
-    session: Session,
-    provider: Arc<dyn Provider>,
-    tools: Tools,
-    checkers: Checkers,
+    runtime: PreparedRuntime,
+    subagents: Subagents,
+    subagent_rx: mpsc::Receiver<SubagentEvent>,
     store: Store,
     Settings {
-        paths,
-        mode_llms,
-        profiles,
         notifier,
         chat,
         split_width,
@@ -157,17 +138,12 @@ pub async fn run(
         Err(_) => llm_picker::usage::LlmUsage::default(),
     };
     let mut terminal = terminal::enter()?;
-    let mut app = app::App::new(session, provider, tools.model)
-        .with_shell(tools.shell)
-        .with_subagents(tools.subagents, tools.subagent_rx)
+    let mut app = app::App::new(runtime)
+        .with_subagents(subagents, subagent_rx)
         .with_store(store)
-        .with_paths(paths)
-        .with_runtime_loader(loader)
+        .with_reload(loader)
         .with_history(history)
         .with_llm_usage(llm_usage)
-        .with_checkers(checkers)
-        .with_mode_llms(mode_llms)
-        .with_profiles(profiles)
         .with_notifier(notifier)
         .with_chat_settings(chat)
         .with_split_width(split_width)

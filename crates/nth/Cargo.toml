@@ -19,6 +19,7 @@ nth-tui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 fastrand.workspace = true
+futures.workspace = true
 owo-colors.workspace = true
 serde.workspace = true
 jiff.workspace = true
@@ -27,5 +28,4 @@ tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
 tempfile.workspace = true

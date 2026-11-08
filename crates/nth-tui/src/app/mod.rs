@@ -92,7 +92,7 @@ use turn::{Ended, Queued};
 use usage::Spent;
 
 use crate::{
-    Checkers, PreparedRuntime, RuntimeLoader,
+    Checkers, PreparedRuntime, Reload,
     chat::Chat,
     command::Command,
     diagnostics::Diagnostics,
@@ -275,7 +275,8 @@ pub struct App {
     /// Where instruction files are looked for when a resumed session moves
     /// to another directory.
     paths: Paths,
-    runtime_loader: Option<Arc<dyn RuntimeLoader>>,
+    /// What `/resume` prepares another session's runtime with.
+    reload: Option<Reload>,
     /// The session's instruction files and skills; kept here too, since
     /// the session is in the turn task while one runs and `/` still has to
     /// list the skills.
@@ -434,8 +435,38 @@ enum Step {
 }
 
 impl App {
-    pub fn new(
+    /// The chat on `runtime`, installed as `/resume` installs one, so the
+    /// two cannot set up a runtime differently.
+    pub fn new(runtime: PreparedRuntime) -> Self {
+        let mut app = Self::around(
+            &runtime.session,
+            runtime.provider.clone(),
+            runtime.model_tools.clone(),
+        );
+        let (session, warnings) = app.install(runtime);
+        app.session = Some(session);
+        app.chat.warn(&warnings);
+        app
+    }
+
+    /// The chat on `session` alone: no shell, checkers, paths or profiles,
+    /// and each mode on the session's llm. What tests that need none of a
+    /// runtime start from.
+    #[cfg(test)]
+    pub(crate) fn bare(
         session: Session,
+        provider: Arc<dyn Provider>,
+        tools: Arc<Vec<Box<dyn Tool>>>,
+    ) -> Self {
+        let mut app = Self::around(&session, provider, tools);
+        app.session = Some(session);
+        app
+    }
+
+    /// `bare` before the session is placed: what `new` installs a runtime
+    /// over, so the session moves in once, from the runtime.
+    fn around(
+        session: &Session,
         provider: Arc<dyn Provider>,
         tools: Arc<Vec<Box<dyn Tool>>>,
     ) -> Self {
@@ -520,7 +551,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
-            curios: curios::Curios::new(&session),
+            curios: curios::Curios::new(session),
             hero_since: Instant::now(),
             flash: None,
             pointer: None,
@@ -543,7 +574,7 @@ impl App {
             connect_url: None,
             store: None,
             paths: Paths::default(),
-            runtime_loader: None,
+            reload: None,
             context: session.context().clone(),
             max_steps: session.max_steps,
             tool_timeout: session.tool_timeout,
@@ -551,7 +582,7 @@ impl App {
             session_listing: Job::default(),
             session_loading: Job::default(),
             session_saving: Job::default(),
-            session: Some(session),
+            session: None,
             provider,
             tools,
             shell: None,
@@ -593,7 +624,49 @@ impl App {
         }
     }
 
+    /// Takes on `runtime`, all but its session and warnings, which it
+    /// hands back for the caller to place: `new` builds the app around the
+    /// session, `/resume` switches to it. The llms are installed as they
+    /// are: the session they came with runs on its mode's, or its agent's,
+    /// already.
+    fn install(&mut self, runtime: PreparedRuntime) -> (Session, Vec<String>) {
+        let PreparedRuntime {
+            session,
+            paths,
+            provider,
+            model_tools,
+            shell,
+            checkers,
+            mode_llms,
+            profiles,
+            warnings,
+        } = runtime;
+        self.paths = paths;
+        self.provider = provider;
+        // Whatever the old provider listed is no guide to the new one's.
+        self.llms = None;
+        self.llm_listing = Default::default();
+        self.tools = model_tools;
+        self.shell = Some(shell);
+        self.mode_llms = mode_llms;
+        self.profiles = profiles;
+        self.profile = (!self.profiles.is_empty()).then_some(0);
+        let mut lsp = checkers.lsp.status();
+        self.servers = lsp.borrow_and_update().clone();
+        self.lsp = Some(lsp);
+        self.lsp_usage = None;
+        // The servers of the runtime being left get to leave on their own.
+        if let Some(old) = self.checkers.replace(checkers) {
+            tokio::spawn(async move { old.lsp.shutdown().await });
+        }
+        self.servers_lookup = Default::default();
+        self.formatters_lookup = Default::default();
+        self.diagnostics = Default::default();
+        (session, warnings)
+    }
+
     /// Runs the commands typed after `!` on `shell`.
+    #[cfg(test)]
     pub fn with_shell(mut self, shell: Arc<dyn Tool>) -> Self {
         self.shell = Some(shell);
         self
@@ -618,11 +691,6 @@ impl App {
             self.monitor_root = data;
             self.log_monitors_for_session();
         }
-        self
-    }
-
-    pub fn with_paths(mut self, paths: Paths) -> Self {
-        self.paths = paths;
         self
     }
 

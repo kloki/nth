@@ -171,7 +171,7 @@ mod tests {
     /// An app whose turn waits on a model that never answers.
     fn busy_app() -> App {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+        let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
         app.prompt.insert_str("go");
         app.submit();
         assert!(app.is_busy());
@@ -260,7 +260,7 @@ mod tests {
             let called = Arc::new(Notify::new());
             let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stuck(name, called.clone()))];
             let mut app =
-                App::new(session, Arc::new(provider), Arc::new(tools)).with_store(store.clone());
+                App::bare(session, Arc::new(provider), Arc::new(tools)).with_store(store.clone());
             app.prompt.insert_str("go");
             app.submit();
             called.notified().await;
@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn quitting_starts_nothing_queued_behind_the_turn() {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.prompt.insert_str("go");
         app.submit();
         app.queue.push_back(Queued::Prompt("then".into()));
@@ -312,7 +312,7 @@ mod tests {
     ) -> App {
         let mut session = Session::new("glm", "/repo".into());
         session.messages.push(Message::User("hi".into()));
-        let mut app = App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
+        let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
             .with_store(store.clone());
         // An older clone's save, still writing as you quit; it writes
         // nothing, so the file holds only what the exit saves.

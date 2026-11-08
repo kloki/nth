@@ -168,7 +168,7 @@ mod tests {
     fn app_with_plan_dir() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let session = Session::new("glm", dir.path().to_path_buf());
-        let app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+        let app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
         (app, dir)
     }
 

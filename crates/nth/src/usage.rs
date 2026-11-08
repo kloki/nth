@@ -20,7 +20,7 @@ use nth_session::{
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
-use crate::{config::Config, providers};
+use crate::{config::Config, runtime::providers};
 
 /// How long a price waits for the model listing.
 const LISTING_WAIT: Duration = Duration::from_secs(3);

@@ -11,18 +11,45 @@ mod provider;
 
 use crossterm::event::Event as TermEvent;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_protocol::{Effort, Event, Message, Panel, Phase, Preview, Screen, ToolCall, Usage};
+use nth_protocol::{
+    Effort, Event, Message, Panel, Phase, Preview, Provider, Screen, ToolCall, Usage,
+};
 use nth_session::Session;
 pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
-use super::{App, Panes, Queued, Tab, input::Input, keys::Action};
-use crate::llm_picker::tests::model;
+use super::{App, ModeLlms, Panes, Queued, Tab, input::Input, keys::Action};
+use crate::{PreparedRuntime, llm_picker::tests::model};
 
 /// An idle app whose provider must never be asked for anything.
 pub(crate) fn app() -> App {
     let session = Session::new("glm", "/repo".into());
-    App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
+    App::new(runtime(session, Arc::new(Scripted::idle())))
+}
+
+/// `session` on `provider` with no tools, a shell, idle checkers and each
+/// mode on the session's llm, as a repository with an empty config would
+/// prepare it.
+pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> PreparedRuntime {
+    let llm = nth_protocol::Llm {
+        model: session.model.clone(),
+        effort: session.effort,
+    };
+    PreparedRuntime {
+        session,
+        paths: Paths::default(),
+        provider,
+        model_tools: Arc::new(Vec::new()),
+        shell: Arc::new(nth_tools::Bash::new(Default::default())),
+        checkers: crate::Checkers {
+            lsp: nth_lsp::Lsp::new(&Default::default()),
+            formatters: Arc::new(nth_format::Formatters::new(&Default::default())),
+            rtk: false,
+        },
+        mode_llms: ModeLlms::same(llm),
+        profiles: Vec::new(),
+        warnings: Vec::new(),
+    }
 }
 
 /// The context of a project in `dir` with one skill, `fix`, whose body
@@ -736,7 +763,7 @@ async fn a_fresh_session_takes_the_configured_compaction() {
     };
     let mut session = Session::new("glm", "/repo".into());
     session.compaction = configured;
-    let mut app = App::new(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+    let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/clear");
     app.submit();

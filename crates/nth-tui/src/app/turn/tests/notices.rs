@@ -37,7 +37,7 @@ const NOTICE: &str =
     "<monitor id=\"1\" description=\"ci\" log=\"/tmp/logs/1.log\">\nbuild failed\n</monitor>";
 
 fn app_logging_to_tmp(provider: Arc<dyn Provider>) -> App {
-    let app = App::new(
+    let app = App::bare(
         Session::new("glm", "/repo".into()),
         provider,
         Arc::new(Vec::new()),
@@ -141,7 +141,7 @@ async fn a_skill_that_cannot_be_read_keeps_the_notices() {
     let context = crate::app::tests::with_fix_skill(dir.path());
     std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
     let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-    let mut app = App::new(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
     app.monitors.set_log_dir("/tmp/logs".into());
     monitor_says(&mut app, "build failed").await;
 
