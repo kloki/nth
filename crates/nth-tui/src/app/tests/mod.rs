@@ -636,6 +636,65 @@ async fn tool_output_stays_in_the_transcript() {
     );
 }
 
+#[tokio::test]
+async fn a_panicking_job_is_a_hint_not_an_exit() {
+    let mut app = app();
+    let before = crate::git::GitStatus {
+        branch: Some("main".into()),
+        ..Default::default()
+    };
+    app.git = Some(before.clone());
+    app.git_loading
+        .start(|_| tokio::spawn(async { panic!("git exploded") }));
+
+    let status = app.git_loading.join().await;
+    app.job_finished(super::Finished::GitLoaded(status));
+
+    assert_eq!(app.git, Some(before), "left as it was");
+    let shown = rows_of(&mut app, 120).join("\n");
+    assert!(
+        shown.contains("reading git status failed: task")
+            && shown.contains("panicked with message \"git exploded\""),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_session_listing_shows_in_the_picker() {
+    let mut app = app();
+    app.input = Input::SessionPicker(crate::session_picker::SessionPicker::new(app.session_id));
+    app.session_listing
+        .start(|_| tokio::spawn(async { panic!("listing exploded") }));
+
+    let sessions = app.session_listing.join().await;
+    app.job_finished(super::Finished::SessionsListed(sessions));
+
+    let shown = rows_of(&mut app, 120).join("\n");
+    assert!(!shown.contains("loading sessions"), "{shown}");
+    assert_eq!(
+        shown.matches("listing sessions failed: task").count(),
+        2,
+        "in the chat and in the picker: {shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_save_still_runs_the_one_asked_for_meanwhile() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = app();
+    app.store = Some(Arc::new(nth_session::Store::at(dir.path())));
+    app.session_saving
+        .start(|_| tokio::spawn(async { panic!("save exploded") }));
+    app.save_session();
+
+    let saved = app.session_saving.join().await;
+    app.job_finished(super::Finished::SessionSaved(saved));
+
+    assert!(app.session_saving.is_running(), "the queued save runs");
+    let saved = app.session_saving.join().await.expect("saves");
+    saved.expect("written");
+}
+
 #[test]
 fn exit_command_quits() {
     let mut app = app();

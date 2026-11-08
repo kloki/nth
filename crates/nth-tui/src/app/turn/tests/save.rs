@@ -199,3 +199,17 @@ async fn a_turn_waits_for_a_save_asked_for_during_the_one_it_waited_for() {
     app.session_saved(saved);
     assert!(app.is_busy(), "the turn starts once both landed");
 }
+
+#[tokio::test]
+async fn a_panicking_save_still_starts_the_held_turn() {
+    let mut app = hang_app();
+    app.session_saving
+        .start(|_| tokio::spawn(async { panic!("save exploded") }));
+    app.start_turn("go".into());
+    assert!(!app.is_busy(), "the turn waits for the save");
+
+    let saved = app.session_saving.join().await;
+    app.job_finished(crate::app::finished::Finished::SessionSaved(saved));
+    assert!(app.is_busy(), "the turn starts all the same");
+    assert_eq!(last_user(&app), Some("go"));
+}

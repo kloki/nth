@@ -79,16 +79,22 @@ impl App {
             .start_or_queue(|_| tokio::spawn(async move { store.save(&session).await }));
     }
 
-    /// A save asked for mid-save runs now, with the session as it is, and
-    /// a turn held for the save starts, or waits for that one too.
     pub(super) fn session_saved(&mut self, saved: Result<(), store::Error>) {
-        if self.session_saving.take_again() {
-            self.save_session();
-        }
         if let Err(e) = saved {
             self.chat
                 .transcript
                 .push_error(format!("session not saved: {e}"));
+        }
+        self.save_ended();
+    }
+
+    /// Whether the save landed, failed or panicked: a save asked for
+    /// mid-save runs now, with the session as it is, and a turn held for
+    /// the save starts, or waits for that one too.
+    pub(super) fn save_ended(&mut self) {
+        // The new save first, so `start` holds the turn behind it.
+        if self.session_saving.take_again() {
+            self.save_session();
         }
         if let Some(next) = self.turn_after_save.take() {
             self.start(next);
