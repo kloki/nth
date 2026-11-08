@@ -114,7 +114,15 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
 /// worktrees are left alone, since they may hold work not merged yet.
 /// Returns what went besides the save.
 async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
-    let curio_dir = curio_dir(session)?;
+    // Asks git and walks the folder's ancestors, so off the runtime.
+    let (state_root, cached, id) = (
+        session.state_root(),
+        session.curio_root.clone(),
+        session.id.to_string(),
+    );
+    let curio_dir =
+        tokio::task::spawn_blocking(move || curio_dir(&state_root, cached.as_deref(), &id))
+            .await??;
     store.delete(session.id).await?;
     let mut removed = Vec::new();
     // Also clean plans written by older versions at the original or current cwd.
@@ -160,17 +168,17 @@ async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-/// The session's Curios folder in the main checkout of its state root, where
-/// the tools made it; the cached root only once that is no longer a Git
-/// repository. Never follow a replaced ancestor into another directory.
-fn curio_dir(session: &Session) -> Result<Option<PathBuf>> {
-    let root = match nth_curios::owner_root(&session.state_root()) {
+/// Session `id`'s Curios folder in the main checkout of `state_root`, where
+/// the tools made it; the `cached` root when git cannot say, because that
+/// is no longer a repository or git itself is missing, so the save can go
+/// all the same. Never follow a replaced ancestor into another directory.
+fn curio_dir(state_root: &Path, cached: Option<&Path>, id: &str) -> Result<Option<PathBuf>> {
+    let root = match nth_curios::owner_root(state_root) {
         Ok(root) => root,
-        Err(nth_curios::Error::RepoRequired) => match &session.curio_root {
-            Some(root) => root.clone(),
+        Err(_) => match cached {
+            Some(root) => root.to_path_buf(),
             None => return Ok(None),
         },
-        Err(error) => return Err(error.into()),
     };
     if !root.is_absolute() {
         bail!("saved Curios root must be absolute");
@@ -184,7 +192,7 @@ fn curio_dir(session: &Session) -> Result<Option<PathBuf>> {
     // The root and what Curios made below it; its ancestors are the
     // system's (macOS keeps temporary folders under `/var`, a symlink).
     let curios = root.join(".nth/curios");
-    let dir = curios.join(session.id.to_string());
+    let dir = curios.join(id);
     for current in [root.clone(), root.join(".nth"), curios, dir.clone()] {
         match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => bail!(
@@ -480,7 +488,14 @@ mod tests {
         std::os::unix::fs::symlink(target.path(), dir.path().join(".nth")).unwrap();
         let mut session = Session::new("glm", dir.path().into());
         session.curio_root = Some(dir.path().into());
-        assert!(curio_dir(&session).is_err());
+        assert!(
+            curio_dir(
+                &session.state_root(),
+                session.curio_root.as_deref(),
+                &session.id.to_string()
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

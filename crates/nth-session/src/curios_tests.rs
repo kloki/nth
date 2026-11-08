@@ -35,10 +35,12 @@ async fn plan_mode_names_no_source_folder_its_store_cannot_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = Session::new("fake", dir.path().to_path_buf());
     session.mode = nth_protocol::Mode::Plan;
-    session.curio_root = Some(dir.path().join("stale"));
+    let stale = dir.path().join("stale");
+    session.curio_root = Some(stale.clone());
     crate::session::tests::send(&mut session, "plan it").await;
-    assert!(session.curio_root.is_none());
-    assert!(session.curio_source_dir().is_none());
+    // The cache stays for deletion; it backs no source folder.
+    assert_eq!(session.curio_root, Some(stale));
+    assert!(session.plan_source_dir().is_none());
     let said = session
         .messages
         .iter()
@@ -52,6 +54,34 @@ async fn plan_mode_names_no_source_folder_its_store_cannot_back() {
             .iter()
             .any(|t| t.contains("author review documents only in")),
         "{said:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_store_that_cannot_be_readied_asks_git_again_at_the_turn_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Act;
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(session.curio_root.is_none(), "outside a repository");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    // A repository now, but one whose store cannot be made.
+    std::fs::create_dir_all(dir.path().join(".nth")).unwrap();
+    std::fs::write(dir.path().join(".nth/curios"), "not a folder").unwrap();
+    session.mode = nth_protocol::Mode::Plan;
+    crate::session::tests::send(&mut session, "plan it").await;
+    assert!(session.plan_source_dir().is_none());
+    assert_eq!(
+        session.curio_root,
+        Some(dir.path().canonicalize().unwrap()),
+        "the failed store sent the turn end back to git"
     );
 }
 

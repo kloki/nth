@@ -79,10 +79,17 @@ impl Session {
         })
     }
 
+    /// The source folder plan mode names and lets the model write, once
+    /// the store behind it was readied.
+    pub(crate) fn plan_source_dir(&self) -> Option<PathBuf> {
+        self.curio_source_dir().filter(|_| self.curio_source_ready)
+    }
+
     /// Explicit preparation stores ownership for save/resume.
     pub fn prepare_curios(&mut self) -> nth_curios::Result<Store> {
         let store = self.curio_store()?;
         self.curio_root = Some(store.repo_root().to_path_buf());
+        self.curio_source_ready = true;
         Ok(store)
     }
 
@@ -167,9 +174,10 @@ impl Session {
     }
 
     /// Readies this session's Curios store and keeps its root. One that
-    /// cannot be readied forgets the root, so plan mode neither names nor
-    /// lets the model write a source folder no store backs; the next turn
-    /// end looks for it again.
+    /// cannot be readied leaves plan mode no source folder to name or
+    /// write, and keeps the cached root, which deleting the session may
+    /// need; the next turn end asks git again, since what failed may have
+    /// been the store rather than the repository.
     pub(crate) async fn ready_curios(&mut self) {
         let (subagent, state_root, id) = (self.subagent, self.state_root(), self.id.to_string());
         match nth_curios::offload(move || {
@@ -177,9 +185,12 @@ impl Session {
         })
         .await
         {
-            Ok(root) => self.curio_root = Some(root),
+            Ok(root) => {
+                self.curio_root = Some(root);
+                self.curio_source_ready = true;
+            }
             Err(_) => {
-                self.curio_root = None;
+                self.curio_source_ready = false;
                 self.curio_root_found = false;
             }
         }

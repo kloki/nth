@@ -47,6 +47,11 @@ pub struct Session {
     /// Whether this run already looked for `curio_root`.
     #[serde(skip)]
     pub(crate) curio_root_found: bool,
+    /// Whether the store was readied for this turn, which alone lets plan
+    /// mode name and write the source folder: `curio_root` may be a cache
+    /// kept for a repository that is gone.
+    #[serde(skip)]
+    pub(crate) curio_source_ready: bool,
     /// Receipts persisted alongside the history which contains their notices.
     #[serde(default)]
     pub curio_receipts: BTreeSet<String>,
@@ -188,6 +193,7 @@ impl Session {
             id,
             curio_root: None,
             curio_root_found: false,
+            curio_source_ready: false,
             curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
@@ -603,7 +609,7 @@ impl Session {
     fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
         let mut writable = plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir());
         if let nth_protocol::Writable::Plan { source, .. } = &mut writable {
-            *source = self.curio_source_dir();
+            *source = self.plan_source_dir();
         }
         ToolContext {
             is_subagent: self.subagent,
@@ -664,7 +670,7 @@ impl Session {
             reminders.push(reminder);
         }
         if self.tools_mode() == Mode::Plan
-            && let Some(source) = self.curio_source_dir()
+            && let Some(source) = self.plan_source_dir()
         {
             reminders.push(format!(
                 "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
