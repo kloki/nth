@@ -35,6 +35,10 @@ repository should not choose the commands nth runs.
   resolution; an empty list contributes nothing. Global relative paths use the
   session's initial working directory, and project paths use the project root.
   `~` names the home directory.
+- A project `.nth/config` may only name `skills.paths` and `directories.paths`
+  under the project root, after `..` and symlinks are resolved; anything else
+  stops nth with an error, so a cloned repository cannot hand the session a
+  folder such as `~/.ssh`. Paths elsewhere go in the global file.
 - Unknown keys are an error, so a typo stops nth with a message naming the key.
 - Flags and environment variables win over the file: `--model` / `NTH_MODEL`
   over `model`, `--config` / `NTH_CONFIG` over the path.
@@ -68,7 +72,9 @@ repository should not choose the commands nth runs.
 paths = ["../docs", "../shared-library"]
 ```
 
-These are persistent defaults equivalent to `/add-dir`.
+These are persistent defaults equivalent to `/add-dir`. Paths outside the
+project, like these, belong in the global file; a project `.nth/config` may
+only name folders under its root.
 
 ### Add a provider
 
@@ -191,7 +197,8 @@ paths = ["~/my-skills", "./team-skills"]   # ~ is home; relative is from cwd
 ```
 
 Searched after the standard places; a skill there replaces an internal one of
-the same name.
+the same name. In a project `.nth/config` relative paths resolve against the
+project root, and only folders under it are allowed.
 
 ### Formatters
 
