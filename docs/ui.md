@@ -424,6 +424,8 @@ The mode label is replaced by a braille spinner in the same mode colour; the mod
 
 The bar keeps the mode colour. Enter still sends, and a plain prompt does not wait for the turn to end: the turn picks it up at its next step, skipping the tool calls it was about to run — they show as interrupted, like an Esc'd one — and the model hears your message at its next step. A reply without tool calls finishes first, and the prompt then runs as its own turn, ahead of anything that queued after it. A `!` command, `/approve`, plan edits and a `/skill` still wait for the turn to end well, as does a prompt sent while one of those already waits, while a command runs, or after Tab or the model picker changed what the next turn runs with. After Esc or a failed turn, what the turn had not picked up is not sent; it goes back into the prompt, ahead of what is typed, separated by blank lines. A dim "esc to cancel" sits against the right edge of the label row. When the turn ends, the mode label comes back and the hint goes.
 
+**Quitting mid-turn.** ctrl+c on an empty prompt (or `/exit`) while a turn runs only warns on the status bar: `turn running · ctrl+c again to quit`, counted with the monitors and subagents. The second ctrl+c stops the turn as Esc does, with `stopping the turn…` as the hint, and waits up to five seconds for it to end and save, every call it was running answered as interrupted, so `nth -c` continues from there. A turn that will not stop in time is dropped, and once the terminal is back nth says the session was last saved after its previous turn.
+
 The spinner runs for the whole turn: thinking, writing and tool calls. What exactly the turn is doing shows in the chat.
 
 ## Question
