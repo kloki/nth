@@ -2,21 +2,18 @@
 //! returns at once and the item's changes come back as notices; headless
 //! it waits for the subagent's answer, as the task tool does.
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::time::Duration;
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_work::{Item, ItemRef, Status};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Assignment, ItemRef, Status, Work, WorkNotice, WorkState, open_items, outcome, returned,
-    todo::WorkTodo,
+    Assignment, Work, WorkNotice, WorkState, open_items, outcome, returned, todo::WorkTodo,
 };
 use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent};
 
@@ -156,8 +153,9 @@ impl Tool for WorkAssign {
                 ));
             }
             let path = at.path(store.dir());
-            // A fresh subagent's work_todo, which learns its item below.
-            let (id, todo) = match continued {
+            // A fresh subagent's number, taken first so its work_todo is
+            // bound to the item from the start.
+            let (id, closed, fresh) = match continued {
                 Some(id) => {
                     if live.worked.get(&path) != Some(&id) {
                         return Err(format!(
@@ -182,15 +180,11 @@ impl Tool for WorkAssign {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
                     shared.spawner.read_only(id, planning)?;
-                    (id, None)
+                    (id, subagents.closed(id).unwrap_or_default(), None)
                 }
                 None => {
-                    let cell = Arc::new(OnceLock::new());
-                    let todo: Box<dyn Tool> = Box::new(WorkTodo::new(cell.clone()));
-                    let id = shared
-                        .spawner
-                        .spawn(agent, &format!("work {at}"), ctx, vec![todo]);
-                    (id, Some(cell))
+                    let reserved = subagents.reserve();
+                    (reserved.id(), reserved.closed(), Some(reserved))
                 }
             };
             let assignment = Assignment {
@@ -200,12 +194,13 @@ impl Tool for WorkAssign {
                 task: id,
                 agent: agent.name.clone(),
                 inbox: shared.inbox.clone(),
-                closed: subagents.closed(id).unwrap_or_default(),
+                closed,
             };
-            // Set before the subagent's first prompt is sent, so its tool
-            // never finds it empty.
-            if let Some(todo) = todo {
-                let _ = todo.set(assignment.clone());
+            if let Some(reserved) = fresh {
+                let todo: Box<dyn Tool> = Box::new(WorkTodo::new(assignment.clone()));
+                shared
+                    .spawner
+                    .spawn(reserved, agent, &format!("work {at}"), ctx, vec![todo]);
             }
             let before = item.clone();
             // `0` is no limit, as in the config.
@@ -228,7 +223,7 @@ impl Tool for WorkAssign {
             if planning {
                 text = format!("{text}\n\n{PLANNING}");
             }
-            let running = super::Item {
+            let running = Item {
                 status: Status::Running,
                 agent: Some(agent.name.clone()),
                 task: Some(id),

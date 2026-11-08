@@ -9,10 +9,12 @@ use std::{path::Path, time::Duration};
 
 use nth_context::instructions::{Change, ChangeKind};
 use nth_protocol::{MonitorEnd, MonitorId};
+use nth_work::{WorkOutcome, todo_counts, todo_lines};
 
 use crate::{
-    subagent::{TaskId, TaskNotice, TaskOutcome, TaskStall},
-    work::{WorkNotice, WorkOutcome, WorkState, todo_counts, todo_lines},
+    SubagentId,
+    subagent::{TaskNotice, TaskOutcome, TaskStall},
+    work::{WorkNotice, WorkState},
 };
 
 /// At most this many lines of one monitor go into a notice; the rest are
@@ -234,7 +236,7 @@ pub enum NoticeSummary {
     },
     /// Which subagent, and how its task ended.
     Task {
-        id: TaskId,
+        id: SubagentId,
         agent: String,
         description: String,
         state: String,
@@ -243,7 +245,7 @@ pub enum NoticeSummary {
     Work {
         cycle: String,
         item: String,
-        task: TaskId,
+        task: SubagentId,
         agent: String,
         state: String,
         outcome: Option<String>,
@@ -356,8 +358,9 @@ fn value(attrs: &str, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use nth_work::Todo;
+
     use super::*;
-    use crate::work::Todo;
 
     fn monitor(
         id: MonitorId,

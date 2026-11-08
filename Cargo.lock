@@ -1830,6 +1830,7 @@ dependencies = [
  "nth-session",
  "nth-tools",
  "nth-tui",
+ "nth-work",
  "owo-colors",
  "serde",
  "serde_json",
@@ -2000,6 +2001,7 @@ dependencies = [
  "nth-curios",
  "nth-directories",
  "nth-protocol",
+ "nth-work",
  "serde",
  "serde_json",
  "sha2",
@@ -2058,6 +2060,7 @@ dependencies = [
  "nth-protocol",
  "nth-session",
  "nth-tools",
+ "nth-work",
  "nucleo-matcher",
  "ratatui",
  "serde_json",
@@ -2067,6 +2070,17 @@ dependencies = [
  "tokio",
  "unicode-width",
  "uuid",
+]
+
+[[package]]
+name = "nth-work"
+version = "1.6.2"
+dependencies = [
+ "jiff",
+ "nth-context",
+ "nth-directories",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

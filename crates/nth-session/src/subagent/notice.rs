@@ -4,13 +4,14 @@
 
 use std::{fmt, time::Duration};
 
-/// Numbers a subagent for as long as the front-end runs, like a monitor.
-pub(crate) type TaskId = u32;
+/// Numbered from 1 for as long as the front-end runs, like a monitor; it is
+/// the `task_id` the model continues a subagent with.
+pub type SubagentId = u32;
 
 /// A subagent's answer to a task, posted by whoever ran it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskNotice {
-    pub id: TaskId,
+    pub id: SubagentId,
     pub agent: String,
     pub description: String,
     pub outcome: TaskOutcome,
@@ -21,7 +22,7 @@ pub struct TaskNotice {
 /// model can decide to stop it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStall {
-    pub id: TaskId,
+    pub id: SubagentId,
     pub agent: String,
     pub description: String,
     pub quiet: Duration,

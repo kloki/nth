@@ -359,6 +359,7 @@ mod tests {
         )
         .agents;
         let id = app.subagents.spawn(
+            app.subagents.reserve(),
             agents.get("explore").expect("agent"),
             "investigate",
             Session::new("glm", "/repo".into()).as_subagent(None),

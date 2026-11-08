@@ -1,0 +1,13 @@
+[package]
+name = "nth-work"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nth-context.workspace = true
+nth-directories.workspace = true
+jiff.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

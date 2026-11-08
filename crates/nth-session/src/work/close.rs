@@ -2,10 +2,11 @@
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_work::{ItemRef, Plan, Status, one_line};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ItemRef, Plan, Status, Work, one_line, open_items};
+use super::{Work, open_items};
 
 pub(super) struct WorkClose {
     work: Work,
@@ -136,8 +137,10 @@ fn next(plan: &Plan) -> String {
 
 #[cfg(test)]
 mod tests {
+    use nth_work::{Item, Store, work_dir};
+
     use super::*;
-    use crate::work::{Item, Store, item::WorkItem, tests::ctx, work_dir};
+    use crate::work::{item::WorkItem, tests::ctx};
 
     #[tokio::test]
     async fn closing_says_what_the_plan_waits_for() {
