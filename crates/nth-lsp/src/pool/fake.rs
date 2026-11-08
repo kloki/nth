@@ -29,7 +29,9 @@ pub fn config_with(id: &str, command: &[&str], extensions: &[&str]) -> LspConfig
 /// on every `didOpen` publishes one error for that file, versioned.
 /// With `die` as its argument it exits right after publishing; with
 /// `deaf` it reads nothing more once it has answered `initialize`; with
-/// `huge` it answers `didOpen` with a header past the message cap. What
+/// `huge` it answers `didOpen` with a header past the message cap; with
+/// `last-words` it exits after publishing and a process it leaves behind
+/// writes "last words" to stderr once its stdout has closed. What
 /// it writes to stderr on start shows up in the broken-state text.
 const SCRIPTED_SERVER: &str = r##"#!/bin/sh
 echo "scripted server here" >&2
@@ -67,6 +69,10 @@ while message; do
             params="{\"uri\":\"$uri\",\"version\":0,\"diagnostics\":[$item]}"
             send "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":$params}"
             [ "$1" = die ] && exit 0
+            if [ "$1" = last-words ]; then
+                (exec 1>&-; sleep 0.2; echo "last words" >&2) &
+                exit 0
+            fi
             ;;
     esac
 done

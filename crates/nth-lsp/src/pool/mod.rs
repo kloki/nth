@@ -390,7 +390,9 @@ impl Lsp {
                 *count
             };
             let reason = match restarts > MAX_RESTARTS {
-                true => format!("{reason} (gave up after {MAX_RESTARTS} restarts)"),
+                true => format!(
+                    "{reason} (gave up after {MAX_RESTARTS} restarts; restart nth to try again)"
+                ),
                 false => {
                     format!("{reason} (restart {restarts} of {MAX_RESTARTS} on the next touch)")
                 }
@@ -608,6 +610,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_server_that_dies_is_given_its_last_words() {
+        let (_tmp, file, lsp) = scripted(&["last-words"]);
+
+        assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
+        closed(&lsp).await;
+        assert!(lsp.touch(&file, true).await.is_empty());
+        assert_eq!(
+            broken_reason(&lsp),
+            "exited: scripted server here | last words (restart 1 of 3 on the next touch)"
+        );
+    }
+
+    #[tokio::test]
     async fn a_server_that_keeps_dying_stays_broken_after_the_limit() {
         let (_tmp, file, lsp) = scripted(&["die"]);
 
@@ -621,7 +636,7 @@ mod tests {
             match death > MAX_RESTARTS {
                 true => assert_eq!(
                     reason,
-                    "exited: scripted server here (gave up after 3 restarts)"
+                    "exited: scripted server here (gave up after 3 restarts; restart nth to try again)"
                 ),
                 false => {
                     assert!(reason.ends_with(&format!("(restart {death} of 3 on the next touch)")))
