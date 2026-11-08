@@ -426,7 +426,7 @@ impl Config {
         };
         let global = path
             .map(Path::to_path_buf)
-            .or_else(|| Some(paths.config_dir()?.join("config.toml")));
+            .or_else(|| paths.config_dir().map(|dir| dir.join("config.toml")));
         let mut sources = Vec::new();
         let mut value = toml::Value::Table(Default::default());
         if let Some(global) = global.as_deref().filter(|p| path.is_some() || p.exists()) {
