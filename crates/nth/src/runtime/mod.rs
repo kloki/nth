@@ -9,7 +9,7 @@ mod tools;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::Result;
@@ -18,16 +18,19 @@ use nth_llm::Providers;
 use nth_protocol::{Effort, Llm, Mode, Provider, SubagentLlm};
 use nth_session::{Session, Subagents};
 use nth_tui::PreparedRuntime;
-pub(crate) use providers::{chatgpt, providers};
 pub(crate) use tools::{post_write, tools};
 
 use crate::config::Config;
 
-/// What the command line decided once: the config file and the model that
-/// overrides the config's.
+/// What the command line decided once: the config file, the model that
+/// overrides the config's, and the one ChatGPT login of this process,
+/// which every provider, `/connect` and `nth connect` share.
 pub struct Runtime {
     config_path: Option<PathBuf>,
     model: Option<String>,
+    /// Built on first use, so a command that never signs in (`nth init`,
+    /// `nth curio`) runs without a data directory.
+    chatgpt: OnceLock<nth_auth::ChatGpt>,
 }
 
 /// A session to start: a fresh one in `mode` in `cwd`, or a saved one,
@@ -49,7 +52,27 @@ impl Start {
 
 impl Runtime {
     pub fn new(config_path: Option<PathBuf>, model: Option<String>) -> Self {
-        Self { config_path, model }
+        Self {
+            config_path,
+            model,
+            chatgpt: OnceLock::new(),
+        }
+    }
+
+    /// The process's ChatGPT login: every call a clone of one handle, so
+    /// its clones refresh the token once between them.
+    pub fn chatgpt(&self) -> Result<nth_auth::ChatGpt> {
+        if let Some(chatgpt) = self.chatgpt.get() {
+            return Ok(chatgpt.clone());
+        }
+        let built = providers::chatgpt(&nth_context::Paths::from_env())?;
+        // Should two threads build one at once, both get the one kept.
+        Ok(self.chatgpt.get_or_init(|| built).clone())
+    }
+
+    /// The providers `config` names, ChatGPT's on the process's login.
+    pub fn providers(&self, config: &Config) -> Result<Providers> {
+        providers::providers(config, &self.chatgpt()?)
     }
 
     /// The config for `cwd`, with the model override applied over it.
@@ -72,28 +95,32 @@ impl Runtime {
         Ok(config)
     }
 
-    /// What `/resume` prepares a saved session with: the config of the
-    /// session's directory, providers built from it, and `prepare`, so the
-    /// session comes back as `nth -c` would bring it.
+    /// What `/resume` prepares a saved session with: `resume`, then
+    /// `prepare`, so the session comes back as `nth -c` would bring it.
     pub fn reload(self, subagents: Subagents) -> nth_tui::Reload {
         let runtime = Arc::new(self);
         Arc::new(move |session| {
             let (runtime, subagents) = (runtime.clone(), subagents.clone());
             async move {
-                let start = Start::Saved(Box::new(session));
                 // Loading the config asks git about the repository and
                 // building the providers reads the ChatGPT login: off the
                 // runtime's workers, which the chat's loop shares.
-                let (start, mut config, providers) = tokio::task::spawn_blocking(move || {
-                    let config = runtime.config_for(&start)?;
-                    let providers = Arc::new(providers(&config)?);
-                    anyhow::Ok((start, config, providers))
-                })
-                .await??;
-                prepare(&mut config, providers, start, subagents).await
+                let (start, mut config, providers) =
+                    tokio::task::spawn_blocking(move || runtime.resume(session)).await??;
+                prepare(&mut config, Arc::new(providers), start, subagents).await
             }
             .boxed()
         })
+    }
+
+    /// The saved `session` to start, the config of its directory and the
+    /// providers built from it: what `/resume` needs before `prepare`.
+    /// Blocks, on git and the login file.
+    fn resume(&self, session: Session) -> Result<(Start, Config, Providers)> {
+        let start = Start::Saved(Box::new(session));
+        let config = self.config_for(&start)?;
+        let providers = self.providers(&config)?;
+        Ok((start, config, providers))
     }
 }
 
@@ -469,6 +496,44 @@ pub(crate) mod tests {
             .config_for(&start)
             .expect("loads");
         assert_eq!(config.model, "go/b");
+    }
+
+    #[test]
+    fn one_login_is_shared_by_providers_connect_and_reload() {
+        // Off a Tokio runtime, so building providers fetches no catalogue.
+        // The key comes from a variable cargo always sets, so the providers
+        // never ask whether ChatGPT is connected.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+            model = "zen/a"
+
+            [provider.zen]
+            base_url = "http://127.0.0.1"
+            api_key_env = "CARGO_PKG_NAME"
+
+            [notify]
+            enabled = false
+            "#,
+        )
+        .expect("writes");
+        let runtime = Runtime::new(Some(path), None);
+        let login = runtime.chatgpt().expect("a login");
+        let config = runtime.load(dir.path()).expect("loads");
+
+        let providers = runtime.providers(&config).expect("providers");
+        let endpoint = providers.chatgpt().expect("the built-in endpoint");
+        assert!(endpoint.same_store(&login));
+
+        let saved = Session::new("zen/a", dir.path().into());
+        let (_, _, resumed) = runtime.resume(saved).expect("resumes");
+        let endpoint = resumed.chatgpt().expect("the built-in endpoint");
+        assert!(endpoint.same_store(&login));
+
+        let settings = crate::chat::settings(&config, runtime, subagents()).expect("settings");
+        assert!(settings.chatgpt.same_store(&login));
     }
 
     #[test]

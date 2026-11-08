@@ -204,10 +204,10 @@ async fn dispatch(
             mode,
             agent,
         } => match mode.parse() {
-            Ok(mode) => run::run(prompt, mode, agent, config()?).await,
+            Ok(mode) => run::run(prompt, mode, agent, config()?, &runtime).await,
             Err(e) => Err(anyhow::anyhow!(e)),
         },
-        Command::Models { json } => models::run(json, config()?).await,
+        Command::Models { json } => models::run(json, config()?, &runtime).await,
         Command::Skills { json } => skills::run(json, &config()?).await,
         Command::Agents { json } => agents::run(json, &config()?).await,
         Command::Formatters { json } => formatters::run(json, &config()?).await,
@@ -215,7 +215,9 @@ async fn dispatch(
         Command::Config => config::show(config_path.clone(), &config()?),
         Command::Init { force } => config::init(config_path.clone(), force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
-        Command::Usage { session, all, json } => usage::run(session, all, json, config()?).await,
+        Command::Usage { session, all, json } => {
+            usage::run(session, all, json, config()?, &runtime).await
+        }
         Command::Context { session, json } => context::run(session, json, &runtime).await,
         Command::Work { session, json } => work::run(session, json).await,
         Command::Memory { json } => memory::run(json, &config()?),
@@ -224,7 +226,7 @@ async fn dispatch(
             status,
             logout,
             json,
-        } => connect::run(status, logout, json).await,
+        } => connect::run(status, logout, json, runtime.chatgpt()?).await,
     }
 }
 

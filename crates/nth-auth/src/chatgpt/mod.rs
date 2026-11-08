@@ -99,6 +99,14 @@ impl ChatGpt {
         })
     }
 
+    /// Whether `other` is a clone of this handle, sharing its store and its
+    /// refresh lock. Public for other crates' tests, which check that a
+    /// process keeps one login.
+    #[doc(hidden)]
+    pub fn same_store(&self, other: &ChatGpt) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Whether `auth.json` holds a current login. Reads the file each time,
     /// so a login in another nth counts at once.
     pub fn connected(&self) -> bool {

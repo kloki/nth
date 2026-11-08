@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::Config,
-    runtime::{self, Start},
+    runtime::{self, Runtime, Start},
 };
 
 /// How long an interrupted run waits for its subagents' turns to end, so
@@ -35,9 +35,10 @@ pub async fn run(
     mode: Mode,
     agent: Option<String>,
     mut config: Config,
+    runtime: &Runtime,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;
-    let providers = Arc::new(runtime::providers(&config)?);
+    let providers = Arc::new(runtime.providers(&config)?);
     // Without a front-end, a subagent's answer has nothing to wake the
     // model, so the task tool waits for it.
     let subagents = Subagents::default();
