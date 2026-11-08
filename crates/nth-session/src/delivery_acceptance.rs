@@ -29,9 +29,12 @@ impl nth_protocol::Tool for ScopedWrite {
 
 #[tokio::test]
 async fn planning_turn_passes_only_owner_source_to_file_writer() {
-    use nth_protocol::{FrontEnd, Mode, StreamEvent};
+    use nth_protocol::{Mode, StreamEvent};
 
-    use crate::agent_loop::tests::{Scripted, call};
+    use crate::{
+        FrontEnd,
+        agent_loop::tests::{Scripted, call},
+    };
     let repo = repository();
     let mut session = Session::new("fake", repo.path().to_path_buf());
     session.mode = Mode::Plan;
@@ -76,9 +79,12 @@ async fn planning_turn_passes_only_owner_source_to_file_writer() {
 
 #[tokio::test]
 async fn subagent_and_restricted_primary_cannot_call_unoffered_curios_tools() {
-    use nth_protocol::{FrontEnd, StreamEvent};
+    use nth_protocol::StreamEvent;
 
-    use crate::agent_loop::tests::{Named, Scripted, call};
+    use crate::{
+        FrontEnd,
+        agent_loop::tests::{Named, Scripted, call},
+    };
     let repo = repository();
     let agents = repo.path().join(".nth/agents");
     std::fs::create_dir_all(&agents).unwrap();

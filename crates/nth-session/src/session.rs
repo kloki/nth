@@ -7,8 +7,8 @@ use std::{
 
 use nth_context::{Agent, Context, instructions::Watch};
 use nth_protocol::{
-    AssistantMessage, Cost, Effort, Event, FrontEnd, Listing, Llm, Message, Mode, Phase, Provider,
-    SubagentLlm, Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
+    AssistantMessage, Cost, Effort, Event, Listing, Llm, Message, Mode, Phase, Provider,
+    SubagentLlm, Tool, ToolCall, ToolContext, Usage, Workdir,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -16,8 +16,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error, Ledger, Route, Spend, Turn,
+    Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error, FrontEnd, Inbox, Ledger, Route,
+    Spend, Turn,
     agent_loop::{emit, run_call},
+    inbox::instructions_notice,
     memory,
     plan::{self, Approver},
     primary, subagent, system_prompt, work,
@@ -676,6 +678,7 @@ impl Session {
         Held {
             spend: self.usage.open(spend),
             ctx: self.tool_context(front_end),
+            inbox: front_end.inbox.clone(),
             session_id: self.id.to_string(),
             parent_session_id: self.parent.map(|p| p.to_string()),
         }
@@ -706,6 +709,7 @@ impl Session {
             },
             tools,
             ctx: &held.ctx,
+            inbox: &held.inbox,
             messages: &mut self.messages,
             spend: self.usage.spend_mut(held.spend),
             last_usage: &mut self.last_usage,
@@ -730,7 +734,6 @@ impl Session {
             asker: front_end.asker.clone(),
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
-            inbox: front_end.inbox.clone(),
             context_preview: front_end.context_preview.clone(),
             writable,
             agent: self.primary().cloned(),
@@ -857,6 +860,7 @@ fn append(text: &mut String, part: &str) {
 /// What a turn borrows that the session does not hold.
 struct Held {
     ctx: ToolContext,
+    inbox: Inbox,
     /// Where the turn's spend is in the ledger.
     spend: usize,
     session_id: String,
@@ -1328,7 +1332,7 @@ pub(crate) mod tests {
         use crate::agent_loop::tests::{Echo, Named, Scripted};
 
         let front_end = FrontEnd {
-            inbox: nth_protocol::Inbox::new(),
+            inbox: crate::Inbox::new(),
             ..FrontEnd::default()
         };
         assert!(front_end.inbox.post_curio(nth_protocol::CurioNotice {

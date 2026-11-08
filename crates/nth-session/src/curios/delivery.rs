@@ -256,13 +256,13 @@ mod tests {
     use std::{collections::BTreeSet, time::Instant};
 
     use nth_curios::{Batch, Discovery, Store};
-    use nth_protocol::{FrontEnd, Inbox, StreamEvent};
+    use nth_protocol::StreamEvent;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
-        Session,
+        FrontEnd, Inbox, Session,
         curios::{
             How,
             fixture::{publish, published, send},

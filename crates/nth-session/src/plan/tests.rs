@@ -1,9 +1,9 @@
-use nth_protocol::{FrontEnd, Message, StreamEvent, Tool, ToolContext};
+use nth_protocol::{Message, StreamEvent, Tool, ToolContext};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::{Session, session::tests::send};
+use crate::{FrontEnd, Session, session::tests::send};
 
 fn linked_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");

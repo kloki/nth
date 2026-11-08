@@ -309,8 +309,8 @@ fn note(text: impl Into<String>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, Inbox, ToolCall, ToolDefinition};
-    use nth_session::Session;
+    use nth_protocol::{AssistantMessage, ToolCall, ToolDefinition};
+    use nth_session::{Inbox, Session};
 
     use super::*;
 

@@ -303,6 +303,7 @@ async fn runs_tools_until_the_model_answers() {
         route: ROUTE,
         tools: &tools,
         ctx: &ctx,
+        inbox: &crate::Inbox::default(),
         messages: &mut messages,
         spend: &mut spend(),
         last_usage: &mut last_usage,
@@ -372,6 +373,7 @@ async fn zero_steps_fails_without_a_provider_request() {
         },
         tools: &[],
         ctx: &ctx,
+        inbox: &crate::Inbox::default(),
         messages: &mut messages,
         spend: &mut spend(),
         last_usage: &mut last_usage,
@@ -402,6 +404,7 @@ async fn the_last_step_tells_the_model_to_stop() {
         },
         tools: &[],
         ctx: &ctx,
+        inbox: &crate::Inbox::default(),
         messages: &mut messages,
         spend: &mut spend(),
         last_usage: &mut last_usage,
@@ -452,6 +455,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         },
         tools: &tools,
         ctx: &ctx,
+        inbox: &crate::Inbox::default(),
         messages: &mut messages,
         spend: &mut spend(),
         last_usage: &mut last_usage,
@@ -524,11 +528,13 @@ async fn a_turn_blocked_on_a_full_event_channel_still_answers_its_cancel() {
     let (tx, _rx) = mpsc::channel(1);
     let cancel = CancellationToken::new();
     let (mut spend, mut last_usage) = (spend(), None);
+    let inbox = crate::Inbox::default();
     let run = Turn {
         provider: &provider,
         route: ROUTE,
         tools: &[],
         ctx: &ctx,
+        inbox: &inbox,
         messages: &mut messages,
         spend: &mut spend,
         last_usage: &mut last_usage,
@@ -556,11 +562,23 @@ async fn a_turn_blocked_on_a_full_event_channel_still_answers_its_cancel() {
     assert!(matches!(result, Err(Error::Interrupted)), "{result:?}");
 }
 
-/// Runs a turn on [`ROUTE`] with a fresh token, and every event it sent.
+/// Runs a turn on [`ROUTE`] with a fresh token and no inbox, and every
+/// event it sent.
 pub(crate) async fn turn(
     provider: &dyn Provider,
     tools: &[Box<dyn Tool>],
     ctx: &ToolContext,
+    messages: &mut Vec<Message>,
+) -> (Result<(), Error>, Vec<Event>) {
+    turn_with(provider, tools, ctx, &crate::Inbox::default(), messages).await
+}
+
+/// [`turn`] handing the model what waits in `inbox`.
+pub(crate) async fn turn_with(
+    provider: &dyn Provider,
+    tools: &[Box<dyn Tool>],
+    ctx: &ToolContext,
+    inbox: &crate::Inbox,
     messages: &mut Vec<Message>,
 ) -> (Result<(), Error>, Vec<Event>) {
     let (tx, mut rx) = mpsc::channel(16);
@@ -572,6 +590,7 @@ pub(crate) async fn turn(
             route: ROUTE,
             tools,
             ctx,
+            inbox,
             messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,

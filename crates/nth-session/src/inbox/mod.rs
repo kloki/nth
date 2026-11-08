@@ -12,13 +12,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub use notice::{
-    NOTICE_LINE_CHARS, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, TaskStall,
-    Todo, WorkNotice, WorkOutcome, WorkState, instructions_notice, one_line, quiet_text,
-    split_notices, todo_counts, todo_lines,
-};
+#[cfg(test)]
+pub(crate) use notice::quiet_text;
+use notice::{NOTICE_LINE_CHARS, NOTICE_LINES};
+pub use notice::{NoticeSummary, instructions_notice, split_notices};
+use nth_protocol::{CurioNotice, MonitorEnd, MonitorId};
 
-use crate::{MonitorEnd, MonitorId};
+use crate::{
+    subagent::{TaskNotice, TaskStall},
+    work::{WorkNotice, WorkState},
+};
 
 /// The inbox, shared by whoever posts to it and the front-end and agent
 /// loop that empty it. The default is none, as in a headless run: nothing
@@ -30,7 +33,7 @@ pub struct Inbox(Option<Arc<Mutex<Vec<Pending>>>>);
 /// One thing waiting for the model.
 #[derive(Debug)]
 enum Pending {
-    Curio(crate::CurioNotice),
+    Curio(CurioNotice),
     Monitor(MonitorNotice),
     Task(TaskNotice),
     TaskStall(TaskStall),
@@ -51,7 +54,7 @@ struct MonitorNotice {
 }
 
 impl Inbox {
-    pub fn post_curio(&self, notice: crate::CurioNotice) -> bool {
+    pub fn post_curio(&self, notice: CurioNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         let mut pending = lock(pending);
         if pending.iter().any(|p| matches!(p, Pending::Curio(n) if n.batch.session_id == notice.batch.session_id && n.batch.id == notice.batch.id)) {
@@ -62,7 +65,7 @@ impl Inbox {
     }
 
     /// Typed delivery bypasses prompt/command/mention parsing and is never preemptive.
-    pub fn take_curios(&self, owner: &str) -> Vec<crate::CurioNotice> {
+    pub fn take_curios(&self, owner: &str) -> Vec<CurioNotice> {
         let Some(pending) = &self.0 else {
             return Vec::new();
         };
@@ -370,6 +373,10 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        subagent::{TaskId, TaskOutcome},
+        work::{Todo, WorkOutcome},
+    };
 
     fn task() -> TaskNotice {
         TaskNotice {

@@ -5,17 +5,17 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Provider, TaskNotice, TaskOutcome, Tool, ToolContext, ToolResult, ToolSpec};
+use nth_protocol::{Provider, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Done, Job, PLANNING, SubagentId, Subagents,
+    Done, Job, PLANNING, SubagentId, Subagents, TaskNotice, TaskOutcome,
     spawn::{Spawner, find_agent},
 };
-use crate::{Error, work::ORCHESTRATOR_TOOLS};
+use crate::{Error, Inbox, work::ORCHESTRATOR_TOOLS};
 
 /// Tools a subagent never gets: another task would nest without end, the
 /// work plan is its parent's to run, and the rest need the front-end,
@@ -45,6 +45,9 @@ pub(super) const OPT_IN: [&str; 2] = ["enter_worktree", "exit_worktree"];
 
 pub struct Task {
     spawner: Spawner,
+    /// Where an answer waits for the model: the front-end's, or none
+    /// headless, when the call waits for the answer itself.
+    inbox: Inbox,
 }
 
 /// What one task may spend before it fails: a child works on one
@@ -90,14 +93,18 @@ impl TaskIdArg {
 }
 
 impl Task {
+    /// `inbox` must be the one the front-end empties, or answers go to
+    /// no model.
     pub fn new(
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
         subagents: Subagents,
+        inbox: Inbox,
         limits: Limits,
     ) -> Self {
         Self {
             spawner: Spawner::new(provider, tools, subagents, limits),
+            inbox,
         }
     }
 }
@@ -167,11 +174,11 @@ impl Tool for Task {
             let cancel = CancellationToken::new();
             // With an inbox the answer wakes the model as a notice. Headless
             // there is none, so the call waits for it.
-            if ctx.inbox.reaches_model() {
+            if self.inbox.reaches_model() {
                 let job = Job {
                     text,
                     cancel,
-                    done: Done::Notify(ctx.inbox.clone()),
+                    done: Done::Notify(self.inbox.clone()),
                     timeout: limits.timeout,
                     stall: limits.stall,
                 };
@@ -222,7 +229,7 @@ impl Tool for Task {
 #[cfg(test)]
 mod tests {
     use nth_context::{Context, Paths};
-    use nth_protocol::{Inbox, Llm, StreamEvent, ToolSpec, Writable};
+    use nth_protocol::{Llm, StreamEvent, ToolSpec, Writable};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -284,11 +291,13 @@ mod tests {
         }
     }
 
-    fn task(replies: Vec<Vec<StreamEvent>>, subagents: Subagents) -> Task {
+    /// A task tool whose answers wait in `inbox`.
+    fn task(replies: Vec<Vec<StreamEvent>>, subagents: Subagents, inbox: Inbox) -> Task {
         Task::new(
             Arc::new(Scripted::new(replies)),
             named(&["read", "write"]),
             subagents,
+            inbox,
             LIMITS,
         )
     }
@@ -322,6 +331,7 @@ mod tests {
             Arc::new(Scripted::new(vec![])),
             named(&all),
             Subagents::default(),
+            Inbox::default(),
             LIMITS,
         );
         let agents = context();
@@ -369,6 +379,7 @@ mod tests {
                 says("And close there too."),
             ],
             subagents.clone(),
+            Inbox::default(),
         );
         let args =
             json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore" });
@@ -393,7 +404,13 @@ mod tests {
     #[tokio::test]
     async fn a_subagent_works_in_the_directories_added_to_its_parent() {
         let provider = Arc::new(Scripted::new(vec![says("done")]));
-        let task = Task::new(provider.clone(), Vec::new(), Subagents::default(), LIMITS);
+        let task = Task::new(
+            provider.clone(),
+            Vec::new(),
+            Subagents::default(),
+            Inbox::default(),
+            LIMITS,
+        );
         let ctx = ToolContext {
             extra_dirs: vec!["/elsewhere".into()],
             ..ctx()
@@ -412,6 +429,7 @@ mod tests {
             Arc::new(Scripted::stalled()),
             Vec::new(),
             Subagents::default(),
+            Inbox::default(),
             Limits {
                 timeout: Some(Duration::from_millis(20)),
                 ..LIMITS
@@ -427,7 +445,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_agents_ids_and_a_missing_model_are_errors() {
-        let task = task(vec![], Subagents::default());
+        let task = task(vec![], Subagents::default(), Inbox::default());
 
         let unknown = json!({ "description": "d", "prompt": "p", "subagent_type": "nobody" });
         assert_eq!(
@@ -454,11 +472,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
-        let task = task(vec![says("found")], subagents);
-        let ctx = ToolContext {
-            inbox: inbox.clone(),
-            ..ctx()
-        };
+        let task = task(vec![says("found")], subagents, inbox.clone());
+        let ctx = ctx();
         let args =
             json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore" });
 
@@ -489,6 +504,7 @@ mod tests {
         let task = task(
             vec![says("one"), says("two"), says("three")],
             subagents.clone(),
+            Inbox::default(),
         );
         let start =
             |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent });

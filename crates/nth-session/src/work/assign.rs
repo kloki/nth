@@ -8,13 +8,16 @@ use std::{
 };
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Assignment, ItemRef, Status, Work, open_items, outcome, returned, todo::WorkTodo};
+use super::{
+    Assignment, ItemRef, Status, Work, WorkNotice, WorkState, open_items, outcome, returned,
+    todo::WorkTodo,
+};
 use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent};
 
 const ASSIGNED: &str = include_str!("assigned.md");
@@ -30,7 +33,7 @@ pub struct Assigned {
 impl Assigned {
     /// The same, telling no model: the session that assigned it was left.
     pub(crate) fn unheard(mut self) -> Self {
-        self.assignment.inbox = nth_protocol::Inbox::default();
+        self.assignment.inbox = crate::Inbox::default();
         self
     }
 
@@ -196,7 +199,7 @@ impl Tool for WorkAssign {
                 at: at.clone(),
                 task: id,
                 agent: agent.name.clone(),
-                inbox: ctx.inbox.clone(),
+                inbox: shared.inbox.clone(),
                 closed: subagents.closed(id).unwrap_or_default(),
             };
             // Set before the subagent's first prompt is sent, so its tool
@@ -237,7 +240,7 @@ impl Tool for WorkAssign {
             };
             // With an inbox every change to the item wakes the model.
             // Headless there is none, so the call waits for the notice.
-            let headless = !ctx.inbox.reaches_model();
+            let headless = !shared.inbox.reaches_model();
             let (reply, waiting) = match headless {
                 true => {
                     let (reply, waiting) = oneshot::channel();

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use nth_session::{Store, Subagents};
+use nth_session::{Inbox, Store, Subagents};
 
 use crate::runtime::{Runtime, Start};
 
@@ -36,19 +36,26 @@ pub async fn start(
     // whichever runtime `/resume` swaps in.
     let (subagent_tx, subagent_rx) = tokio::sync::mpsc::channel(256);
     let subagents = Subagents::new(subagent_tx);
+    // One for the process, like the subagents: the chat empties it whichever
+    // runtime `/resume` swaps in, and every runtime's tools post to it.
+    let inbox = Inbox::new();
     let prepared = runtime
-        .prepare(config, providers, start, subagents.clone())
+        .prepare(config, providers, start, subagents.clone(), inbox.clone())
         .await?;
-    let settings = settings(runtime, subagents.clone())?;
+    let settings = settings(runtime, subagents.clone(), inbox)?;
     nth_tui::run(prepared, subagents, subagent_rx, store, settings).await
 }
 
 /// The chat's `/connect` and `/resume` on `runtime`'s ChatGPT login, the
 /// one its providers sign with. What the config says about the chat
 /// itself travels with each prepared runtime.
-pub(crate) fn settings(runtime: Runtime, subagents: Subagents) -> Result<nth_tui::Settings> {
+pub(crate) fn settings(
+    runtime: Runtime,
+    subagents: Subagents,
+    inbox: Inbox,
+) -> Result<nth_tui::Settings> {
     Ok(nth_tui::Settings {
         chatgpt: runtime.chatgpt()?,
-        loader: Some(runtime.reload(subagents)),
+        loader: Some(runtime.reload(subagents, inbox)),
     })
 }

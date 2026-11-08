@@ -18,7 +18,7 @@ use nth_config::Config;
 use nth_context::Paths;
 use nth_llm::Providers;
 use nth_protocol::{Llm, Mode, Provider, SubagentLlm};
-use nth_session::{Session, Subagents};
+use nth_session::{Inbox, Session, Subagents};
 use nth_tui::PreparedRuntime;
 pub(crate) use tools::{post_write, tools};
 
@@ -131,10 +131,10 @@ impl Runtime {
 
     /// What `/resume` prepares a saved session with: `resume`, then
     /// `prepare`, so the session comes back as `nth -c` would bring it.
-    pub fn reload(self, subagents: Subagents) -> nth_tui::Reload {
+    pub fn reload(self, subagents: Subagents, inbox: Inbox) -> nth_tui::Reload {
         let runtime = Arc::new(self);
         Arc::new(move |session| {
-            let (runtime, subagents) = (runtime.clone(), subagents.clone());
+            let (runtime, subagents, inbox) = (runtime.clone(), subagents.clone(), inbox.clone());
             async move {
                 // Loading the config asks git about the repository and
                 // building the providers reads the ChatGPT login: off the
@@ -143,7 +143,7 @@ impl Runtime {
                 let (start, config, providers) =
                     tokio::task::spawn_blocking(move || blocking.resume(session)).await??;
                 runtime
-                    .prepare(config, Arc::new(providers), start, subagents)
+                    .prepare(config, Arc::new(providers), start, subagents, inbox)
                     .await
             }
             .boxed()
@@ -157,12 +157,15 @@ impl Runtime {
     /// written into the config the runtime carries on. What is worth telling
     /// you, the pick and directories that cannot be added, comes back in
     /// `warnings`; the instruction files' own warnings stay on the context.
+    /// The task and work tools post to `inbox`, which the prepared runtime
+    /// carries so the chat empties the same one.
     pub async fn prepare(
         &self,
         mut config: Config,
         providers: Arc<Providers>,
         start: Start,
         subagents: Subagents,
+        inbox: Inbox,
     ) -> Result<PreparedRuntime> {
         let mut warnings = Vec::new();
         match &start {
@@ -230,9 +233,16 @@ impl Runtime {
         let post_write = post_write(&config);
         let checkers = tools::checkers(&post_write, &config);
         let provider: Arc<dyn Provider> = providers;
-        let model_tools = Arc::new(tools(&config, post_write, provider.clone(), subagents));
+        let model_tools = Arc::new(tools(
+            &config,
+            post_write,
+            provider.clone(),
+            subagents,
+            inbox.clone(),
+        ));
         Ok(PreparedRuntime {
             session,
+            inbox,
             paths,
             provider,
             model_tools,
@@ -337,6 +347,50 @@ pub(crate) mod tests {
         Subagents::new(tx)
     }
 
+    #[tokio::test]
+    async fn the_task_tool_posts_to_the_inbox_the_runtime_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Start::Fresh {
+            cwd: dir.path().into(),
+            mode: Mode::Act,
+        };
+        let inbox = Inbox::new();
+        let prepared = runtime(dir.path(), None)
+            .prepare(
+                config("model = \"zen/a\""),
+                zen(&["a"]),
+                start,
+                subagents(),
+                inbox.clone(),
+            )
+            .await
+            .expect("prepares");
+
+        assert!(inbox.post_prompt("hello".into()));
+        assert_eq!(
+            prepared.inbox.prompts_waiting(),
+            Some((1, "hello".to_string())),
+            "the chat empties the inbox it was prepared with"
+        );
+        let task = prepared
+            .model_tools
+            .iter()
+            .find(|tool| tool.spec().name == "task")
+            .expect("a task tool");
+        let ctx = nth_protocol::ToolContext {
+            context: prepared.session.context().clone(),
+            llm: llm("zen/a", Effort::default()),
+            ..nth_protocol::ToolContext::new(dir.path().into())
+        };
+        let args =
+            serde_json::json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let started = task.call(args, &ctx).await.expect("starts");
+        assert!(
+            started.starts_with("Started subagent 1"),
+            "returns at once, its answer to come through that inbox: {started}"
+        );
+    }
+
     fn llm(model: &str, effort: Effort) -> Llm {
         Llm {
             model: model.into(),
@@ -351,7 +405,13 @@ pub(crate) mod tests {
         let config = config("model = \"zen/b\"");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
+            .prepare(
+                config,
+                zen(&[]),
+                Start::Saved(Box::new(saved)),
+                subagents(),
+                Inbox::default(),
+            )
             .await
             .expect("prepares");
 
@@ -397,7 +457,7 @@ pub(crate) mod tests {
         };
 
         let prepared = runtime(dir.path(), None)
-            .prepare(config, zen(&[]), start, subagents())
+            .prepare(config, zen(&[]), start, subagents(), Inbox::default())
             .await
             .expect("prepares");
 
@@ -437,7 +497,13 @@ pub(crate) mod tests {
         let config = config("model = \"zen/b\"");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
+            .prepare(
+                config,
+                zen(&[]),
+                Start::Saved(Box::new(saved)),
+                subagents(),
+                Inbox::default(),
+            )
             .await
             .expect("prepares");
 
@@ -458,7 +524,7 @@ pub(crate) mod tests {
         };
 
         let prepared = runtime(dir.path(), None)
-            .prepare(config, zen(&["a"]), start, subagents())
+            .prepare(config, zen(&["a"]), start, subagents(), Inbox::default())
             .await
             .expect("prepares");
 
@@ -480,7 +546,13 @@ pub(crate) mod tests {
         let config = config("model = \"zen/a\"\n[context]\nauto = false\nreserved = 30000");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
+            .prepare(
+                config,
+                zen(&[]),
+                Start::Saved(Box::new(saved)),
+                subagents(),
+                Inbox::default(),
+            )
             .await
             .expect("prepares");
 
@@ -550,7 +622,8 @@ pub(crate) mod tests {
         let endpoint = resumed.chatgpt().expect("the built-in endpoint");
         assert!(endpoint.same_store(&login));
 
-        let settings = crate::chat::settings(runtime, subagents()).expect("settings");
+        let settings =
+            crate::chat::settings(runtime, subagents(), Inbox::default()).expect("settings");
         assert!(settings.chatgpt.same_store(&login));
     }
 

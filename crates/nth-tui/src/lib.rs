@@ -49,7 +49,7 @@ use nth_format::Formatters;
 use nth_icons::icons;
 use nth_lsp::Lsp;
 use nth_protocol::{Provider, Tool};
-use nth_session::{Session, Store, Subagents, subagent::SubagentEvent};
+use nth_session::{Inbox, Session, Store, Subagents, subagent::SubagentEvent};
 use tokio::sync::mpsc;
 
 /// What the tools reach for besides themselves: the same language servers
@@ -72,6 +72,9 @@ pub struct Checkers {
 /// one and `/resume` swaps in another.
 pub struct PreparedRuntime {
     pub session: Session,
+    /// What the model's task and work tools post to, which the chat
+    /// empties: the process's one, so `/resume` swapping runtimes keeps it.
+    pub inbox: Inbox,
     pub paths: Paths,
     pub provider: Arc<dyn Provider>,
     pub model_tools: Arc<Vec<Box<dyn Tool>>>,

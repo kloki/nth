@@ -4,17 +4,19 @@ use std::sync::Arc;
 
 use nth_config::Config;
 use nth_protocol::{Provider, Tool};
-use nth_session::Subagents;
+use nth_session::{Inbox, Subagents};
 use nth_tools::PostWrite;
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands
 /// each subagent its share of the same list, task_stop, and the work
-/// plan's tools.
+/// plan's tools. The task and work tools post to `inbox`, which must be
+/// the one the front-end empties.
 pub(crate) fn tools(
     config: &Config,
     post_write: PostWrite,
     provider: Arc<dyn Provider>,
     subagents: Subagents,
+    inbox: Inbox,
 ) -> Vec<Box<dyn Tool>> {
     let shared: Vec<Arc<dyn Tool>> = nth_tools::all(&config.tools, post_write)
         .into_iter()
@@ -25,9 +27,16 @@ pub(crate) fn tools(
         provider.clone(),
         shared.clone(),
         subagents.clone(),
+        inbox.clone(),
         config.work.limits(),
     );
-    let task = nth_session::Task::new(provider, shared.clone(), subagents, config.task.limits());
+    let task = nth_session::Task::new(
+        provider,
+        shared.clone(),
+        subagents,
+        inbox,
+        config.task.limits(),
+    );
     let mut tools: Vec<Box<dyn Tool>> = shared
         .into_iter()
         .map(|tool| Box::new(tool) as Box<dyn Tool>)

@@ -6,7 +6,6 @@ mod context_preview;
 mod curios;
 mod event;
 mod image;
-mod inbox;
 mod message;
 mod mode;
 mod monitor;
@@ -27,11 +26,6 @@ pub use image::{
     Attachments, Image, MAX_IMAGE_BYTES, REMOVED as IMAGE_REMOVED, too_large as image_too_large,
     unsupported as image_unsupported,
 };
-pub use inbox::{
-    Inbox, NOTICE_LINE_CHARS, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome,
-    TaskStall, Todo, WorkNotice, WorkOutcome, WorkState, instructions_notice, one_line, quiet_text,
-    split_notices, todo_counts, todo_lines,
-};
 pub use message::{AssistantMessage, Message, ToolCall};
 pub use mode::Mode;
 pub use monitor::{MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream};
@@ -43,8 +37,8 @@ pub use provider::{
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
 pub use tool::{
-    FrontEnd, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
-    failed, failure_reason, parse_args, reject_old_timeout, timed_out,
+    INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec, failed,
+    failure_reason, parse_args, reject_old_timeout, timed_out,
 };
 pub use workdir::Workdir;
 pub use writable::Writable;

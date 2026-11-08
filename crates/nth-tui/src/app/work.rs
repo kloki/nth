@@ -135,9 +135,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Event, Panel, Screen, TaskOutcome, ToolCall};
+    use nth_protocol::{Event, Panel, Screen, ToolCall};
     use nth_session::{
         SubagentEvent,
+        subagent::TaskOutcome,
         work::{Item, ItemRef, Status},
     };
     use ratatui::style::Color;
@@ -165,11 +166,11 @@ mod tests {
             item: slug.into(),
         };
         let todos = vec![
-            nth_protocol::Todo {
+            nth_session::work::Todo {
                 text: "one".into(),
                 done: true,
             },
-            nth_protocol::Todo {
+            nth_session::work::Todo {
                 text: "two".into(),
                 done: false,
             },
@@ -304,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn todo_ticks_wait_for_a_wake_and_a_return_is_one() {
         let mut app = app();
-        let notice = |state| nth_protocol::WorkNotice {
+        let notice = |state| nth_session::work::WorkNotice {
             cycle: "01-a".into(),
             item: "store".into(),
             task: 1,
@@ -312,7 +313,7 @@ mod tests {
             state,
         };
         app.inbox
-            .post_work(notice(nth_protocol::WorkState::Todo(Vec::new())));
+            .post_work(notice(nth_session::work::WorkState::Todo(Vec::new())));
         app.on_subagent(SubagentEvent::Session {
             id: 1,
             event: tool_finished("work_todo"),
@@ -320,8 +321,8 @@ mod tests {
         assert_eq!(app.notices_due, None, "a tick alone wakes nobody");
 
         app.inbox
-            .post_work(notice(nth_protocol::WorkState::Returned {
-                outcome: nth_protocol::WorkOutcome::Completed("ok".into()),
+            .post_work(notice(nth_session::work::WorkState::Returned {
+                outcome: nth_session::work::WorkOutcome::Completed("ok".into()),
                 done: 0,
                 total: 0,
             }));

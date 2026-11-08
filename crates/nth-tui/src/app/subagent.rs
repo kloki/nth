@@ -226,8 +226,8 @@ impl App {
 mod tests {
     use std::sync::Arc;
 
-    use nth_protocol::{Event, Message, TaskOutcome};
-    use nth_session::{Session, Subagents};
+    use nth_protocol::{Event, Message};
+    use nth_session::{Session, Subagents, subagent::TaskOutcome};
     use ratatui::style::Color;
     use tokio::sync::mpsc;
 
@@ -416,7 +416,7 @@ mod tests {
         prompted(&mut app, 1, "go");
         assert!(app.notices_due.is_none());
 
-        app.inbox.post_task(nth_protocol::TaskNotice {
+        app.inbox.post_task(nth_session::subagent::TaskNotice {
             id: 1,
             agent: "explore".into(),
             description: "find tabs".into(),

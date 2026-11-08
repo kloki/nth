@@ -11,9 +11,9 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use nth_config::Config;
 use nth_icons::icons;
-use nth_protocol::{FrontEnd, Mode, Provider, Tool};
+use nth_protocol::{Mode, Provider, Tool};
 use nth_session::{
-    CancellationToken, Price, Session, Spend, Store, Subagents, Total, store,
+    CancellationToken, FrontEnd, Inbox, Price, Session, Spend, Store, Subagents, Total, store,
     usage::{self, short, steps},
 };
 use nth_tui::PreparedRuntime;
@@ -38,7 +38,7 @@ pub async fn run(
     let cwd = std::env::current_dir().context("no working directory")?;
     let providers = Arc::new(runtime.providers(&config)?);
     // Without a front-end, a subagent's answer has nothing to wake the
-    // model, so the task tool waits for it.
+    // model: with no inbox the task tool waits for it.
     let subagents = Subagents::default();
     let prepared = runtime
         .prepare(
@@ -46,6 +46,7 @@ pub async fn run(
             providers,
             Start::Fresh { cwd, mode },
             subagents.clone(),
+            Inbox::default(),
         )
         .await?;
     let PreparedRuntime {

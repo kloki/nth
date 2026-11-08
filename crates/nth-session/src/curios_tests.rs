@@ -1,5 +1,5 @@
 use nth_curios::{Comment, Publish, Send, Target, TargetKind};
-use nth_protocol::{FrontEnd, Inbox, Message, StreamEvent};
+use nth_protocol::{Message, StreamEvent};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -27,7 +27,7 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
     assert_eq!(inbox.take_curios("other-owner").len(), 1);
 }
 
-use crate::{Session, Store};
+use crate::{FrontEnd, Inbox, Session, Store};
 
 /// Posts the batches a poll read that `inbox` does not hold yet: a child
 /// another test forks shares the store's lock until it execs, and a poll
@@ -146,7 +146,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         })
         .unwrap();
     assert!(!text.contains("call the task tool"));
-    assert_eq!(nth_protocol::split_notices(text).0.len(), 1);
+    assert_eq!(crate::inbox::split_notices(text).0.len(), 1);
     let saves = tempfile::tempdir().unwrap();
     let saved = Store::at(saves.path());
     saved.save(&session).await.unwrap();
@@ -329,7 +329,7 @@ async fn feedback_waiting_at_a_prompt_leads_the_prompt_in_one_message() {
 
     let said = said(&session);
     assert_eq!(said.len(), 1, "{said:#?}");
-    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    let (notices, rest) = crate::inbox::split_notices(said[0]);
     assert_eq!(notices.len(), 1);
     assert!(rest.starts_with("hello"), "{rest}");
 }
@@ -353,7 +353,7 @@ async fn batches_delivered_together_read_back_as_notices() {
 
     let said = said(&session);
     assert_eq!(said.len(), 1);
-    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    let (notices, rest) = crate::inbox::split_notices(said[0]);
     assert_eq!(notices.len(), 2);
     assert!(!rest.contains("<curio"), "{rest}");
 }
@@ -388,7 +388,7 @@ async fn feedback_after_an_unanswered_prompt_joins_it() {
 
     let said = said(&session);
     assert_eq!(said.len(), 1, "{said:#?}");
-    let (notices, rest) = nth_protocol::split_notices(said[0]);
+    let (notices, rest) = crate::inbox::split_notices(said[0]);
     assert_eq!(notices.len(), 1);
     assert!(rest.starts_with("hello"), "{rest}");
 }

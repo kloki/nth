@@ -5,14 +5,11 @@
 use std::sync::{Arc, OnceLock};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{
-    Todo, Tool, ToolContext, ToolResult, ToolSpec, WorkNotice, WorkState, one_line, todo_counts,
-    tool_names,
-};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, tool_names};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Assignment, Status};
+use super::{Assignment, Status, Todo, WorkNotice, WorkState, one_line, todo_counts};
 
 /// Empty until `work_assign` knows which subagent it went to.
 pub(super) struct WorkTodo(Arc<OnceLock<Assignment>>);

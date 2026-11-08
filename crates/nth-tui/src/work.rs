@@ -377,8 +377,7 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{Todo, WorkOutcome};
-    use nth_session::work::{Cycle, ItemRef};
+    use nth_session::work::{Cycle, ItemRef, Todo, WorkOutcome};
     use ratatui::style::Modifier;
 
     use super::*;

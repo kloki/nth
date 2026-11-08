@@ -3,7 +3,8 @@
 
 use hoodrich::Change;
 use nth_icons::icons;
-use nth_protocol::{NoticeSummary, ToolCall};
+use nth_protocol::ToolCall;
+use nth_session::inbox::NoticeSummary;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},

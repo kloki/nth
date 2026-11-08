@@ -8,8 +8,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nth_protocol::{Event, NoticeSummary, ToolCall, split_notices, tool_names::writes_files};
-use nth_session::plan::edits::{self, PlanEdits};
+use nth_protocol::{Event, ToolCall, tool_names::writes_files};
+use nth_session::{
+    inbox::{NoticeSummary, split_notices},
+    plan::edits::{self, PlanEdits},
+};
 use ratatui::text::Line;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

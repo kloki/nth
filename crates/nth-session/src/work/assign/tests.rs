@@ -1,26 +1,25 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use nth_context::{Context, Paths};
-use nth_protocol::{
-    Inbox, Llm, NoticeSummary, StreamEvent, Tool, ToolContext, WorkOutcome, Writable, split_notices,
-};
+use nth_protocol::{Llm, StreamEvent, Tool, ToolContext, Writable};
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use super::*;
 use crate::{
-    SubagentEvent, Subagents,
+    Inbox, SubagentEvent, Subagents,
     agent_loop::tests::{Scripted, call},
+    inbox::{NoticeSummary, split_notices},
     subagent::tests::says,
     work::{
-        Item, Limits, Store,
+        Item, Limits, Store, WorkOutcome,
         item::WorkItem,
         tests::{LIMITS, chmod, work_with},
         work_dir,
     },
 };
 
-fn ctx(dir: &Path, inbox: Inbox) -> ToolContext {
+fn ctx(dir: &Path) -> ToolContext {
     ToolContext {
         session: "s1".into(),
         context: Arc::new(Context::discover(Path::new("/nowhere"), &Paths::default())),
@@ -28,7 +27,6 @@ fn ctx(dir: &Path, inbox: Inbox) -> ToolContext {
             model: "glm-5.3".into(),
             ..Llm::default()
         },
-        inbox,
         ..ToolContext::new(dir.to_path_buf())
     }
 }
@@ -90,8 +88,14 @@ fn ended(event: &SubagentEvent) -> bool {
 #[tokio::test]
 async fn rejects_obsolete_timeout_arguments() {
     let dir = tempfile::tempdir().unwrap();
-    let work = work_with(Vec::new(), Vec::new(), Subagents::default(), LIMITS);
-    let ctx = ctx(dir.path(), Inbox::default());
+    let work = work_with(
+        Vec::new(),
+        Vec::new(),
+        Subagents::default(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
     for old in ["timeout", "timeout_secs"] {
         let mut args = assign(1, "a");
         args[old] = json!(1);
@@ -111,9 +115,10 @@ async fn headless_it_waits_while_the_child_ticks_its_todo() {
         ticks_then_answers(),
         Vec::new(),
         Subagents::default(),
+        Inbox::default(),
         LIMITS,
     );
-    let ctx = ctx(dir.path(), Inbox::default());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "store").await;
 
     let result = WorkAssign::new(work)
@@ -139,9 +144,15 @@ async fn headless_it_waits_while_the_child_ticks_its_todo() {
 async fn with_an_inbox_it_returns_at_once_and_every_change_is_a_notice() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
-    let work = work_with(ticks_then_answers(), Vec::new(), Subagents::new(tx), LIMITS);
     let inbox = Inbox::new();
-    let ctx = ctx(dir.path(), inbox.clone());
+    let work = work_with(
+        ticks_then_answers(),
+        Vec::new(),
+        Subagents::new(tx),
+        inbox.clone(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "store").await;
 
     let result = WorkAssign::new(work.clone())
@@ -194,9 +205,10 @@ async fn cycles_run_one_after_another_and_closed_items_stay_closed() {
         vec![says("one"), says("two")],
         Vec::new(),
         Subagents::default(),
+        Inbox::default(),
         LIMITS,
     );
-    let ctx = ctx(dir.path(), Inbox::default());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     write(&work, &ctx, 2, "b").await;
     let tool = WorkAssign::new(work.clone());
@@ -243,9 +255,10 @@ async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
         vec![says("first try"), says("second try")],
         Vec::new(),
         Subagents::default(),
+        Inbox::default(),
         LIMITS,
     );
-    let ctx = ctx(dir.path(), Inbox::default());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     write(&work, &ctx, 1, "b").await;
     let tool = WorkAssign::new(work);
@@ -270,14 +283,15 @@ async fn a_quiet_subagent_is_reported_stalled_while_quiet_and_stopping_it_return
         stall: Some(Duration::from_millis(20)),
         ..LIMITS
     };
+    let inbox = Inbox::new();
     let work = Work::new(
         Arc::new(Scripted::stalled()),
         Vec::new(),
         subagents.clone(),
+        inbox.clone(),
         limits,
     );
-    let inbox = Inbox::new();
-    let ctx = ctx(dir.path(), inbox.clone());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
 
     WorkAssign::new(work)
@@ -321,14 +335,15 @@ async fn a_left_session_still_returns_its_items_but_tells_no_model() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
+    let inbox = Inbox::new();
     let work = Work::new(
         Arc::new(Scripted::stalled()),
         Vec::new(),
         subagents.clone(),
+        inbox.clone(),
         LIMITS,
     );
-    let inbox = Inbox::new();
-    let ctx = ctx(dir.path(), inbox.clone());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     let tool = WorkAssign::new(work.clone());
     tool.call(assign(1, "a"), &ctx).await.unwrap();
@@ -352,8 +367,14 @@ async fn a_left_session_still_returns_its_items_but_tells_no_model() {
 async fn dropping_the_handles_ends_a_work_subagent() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
-    let work = work_with(vec![says("done")], Vec::new(), Subagents::new(tx), LIMITS);
-    let ctx = ctx(dir.path(), Inbox::new());
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        Subagents::new(tx),
+        Inbox::new(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     let tool = WorkAssign::new(work.clone());
     tool.call(assign(1, "a"), &ctx).await.unwrap();
@@ -400,10 +421,10 @@ async fn a_planning_orchestrators_subagent_gets_no_writers() {
         .map(|name| Arc::new(Named(name)) as Arc<dyn Tool>)
         .collect();
     let provider = Arc::new(Scripted::new(vec![says("planned")]));
-    let work = Work::new(provider, tools, subagents.clone(), LIMITS);
+    let work = Work::new(provider, tools, subagents.clone(), Inbox::new(), LIMITS);
     let ctx = ToolContext {
         writable: Writable::plan(dir.path().join(".nth/plans/x.md")),
-        ..ctx(dir.path(), Inbox::new())
+        ..ctx(dir.path())
     };
     write(&work, &ctx, 1, "a").await;
 
@@ -446,10 +467,11 @@ async fn a_headless_call_dropped_while_it_waits_still_returns_the_item() {
         Arc::new(Scripted::stalled()),
         Vec::new(),
         Subagents::new(tx),
+        Inbox::default(),
         LIMITS,
     );
     // No inbox, so the call waits as `nth run`'s does.
-    let ctx = ctx(dir.path(), Inbox::default());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     let tool = WorkAssign::new(work.clone());
 
@@ -479,9 +501,10 @@ async fn a_front_end_gone_still_returns_the_items_queued_for_it() {
         Arc::new(Scripted::stalled()),
         Vec::new(),
         Subagents::new(tx),
+        Inbox::new(),
         LIMITS,
     );
-    let ctx = ctx(dir.path(), Inbox::new());
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     WorkAssign::new(work.clone())
         .call(assign(1, "a"), &ctx)
@@ -498,8 +521,14 @@ async fn a_front_end_gone_still_returns_the_items_queued_for_it() {
 #[tokio::test]
 async fn the_plan_stays_in_the_main_checkout_when_the_session_enters_a_worktree() {
     let dir = tempfile::tempdir().unwrap();
-    let work = work_with(vec![says("done")], Vec::new(), Subagents::default(), LIMITS);
-    let main = ctx(dir.path(), Inbox::default());
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        Subagents::default(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let main = ctx(dir.path());
     write(&work, &main, 1, "a").await;
     let workdir = nth_protocol::Workdir::default();
     let tree = dir.path().join(".nth/worktrees/feat");
@@ -507,7 +536,7 @@ async fn the_plan_stays_in_the_main_checkout_when_the_session_enters_a_worktree(
     let moved = ToolContext {
         cwd: tree,
         workdir,
-        ..ctx(dir.path(), Inbox::default())
+        ..ctx(dir.path())
     };
 
     let result = WorkAssign::new(work).call(assign(1, "a"), &moved).await;
@@ -522,8 +551,14 @@ async fn the_plan_stays_in_the_main_checkout_when_the_session_enters_a_worktree(
 #[tokio::test]
 async fn a_timeout_of_zero_is_no_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let work = work_with(vec![says("done")], Vec::new(), Subagents::default(), LIMITS);
-    let ctx = ctx(dir.path(), Inbox::default());
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        Subagents::default(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "timeout_ms": 0 });
 
@@ -537,9 +572,15 @@ async fn a_failed_assign_write_reports_once() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
-    let work = work_with(vec![says("done")], Vec::new(), subagents.clone(), LIMITS);
     let inbox = Inbox::new();
-    let ctx = ctx(dir.path(), inbox.clone());
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        subagents.clone(),
+        inbox.clone(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
     let cycle = work_dir(dir.path(), "s1").join("01-c1");
     chmod(&cycle, 0o500);

@@ -8,6 +8,7 @@
 
 mod actor;
 mod mention;
+mod notice;
 mod spawn;
 mod stop;
 mod task;
@@ -19,10 +20,10 @@ use std::{
 };
 
 pub use mention::resolve;
+pub(crate) use notice::TaskId;
+pub use notice::{TaskNotice, TaskOutcome, TaskStall};
 use nth_context::Agent;
-use nth_protocol::{
-    Event, Inbox, Mode, Provider, TaskId, TaskOutcome, Tool, ToolContext, Writable, tool_names,
-};
+use nth_protocol::{Event, Mode, Provider, Tool, ToolContext, Writable, tool_names};
 pub(crate) use spawn::{Spawner, find_agent};
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
@@ -33,7 +34,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{Error, Session, Spend};
+use crate::{Error, Inbox, Session, Spend};
 
 /// Numbered from 1 for as long as the front-end runs, like a monitor; it is
 /// the `task_id` the model continues a subagent with.

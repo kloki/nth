@@ -3,11 +3,10 @@
 //! calls, and what monitors said and you sent while the tools ran
 //! follows their results, after any instruction file that changed.
 
-use nth_protocol::{
-    Event, INTERRUPTED, Message, ToolCall, ToolContext, failed, instructions_notice,
-};
+use nth_protocol::{Event, INTERRUPTED, Message, ToolCall, ToolContext, failed};
 
 use super::{Turn, emit};
+use crate::inbox::instructions_notice;
 
 /// Appended to a prompt that pre-empted a reply's tool calls, so the model
 /// knows why they did not run and may run them itself. Appended, never
@@ -22,7 +21,7 @@ impl Turn<'_> {
         if self.cancel.is_cancelled() {
             return false;
         }
-        let Some(prompts) = self.ctx.inbox.take_prompts() else {
+        let Some(prompts) = self.inbox.take_prompts() else {
             return false;
         };
         for call in calls {
@@ -63,11 +62,11 @@ impl Turn<'_> {
             .expect("loaded instructions lock poisoned")
             .clone();
         let changed = instructions_notice(&self.ctx.watch.changes(loaded).await);
-        let notices = [changed, curios, self.ctx.inbox.take_notices()]
+        let notices = [changed, curios, self.inbox.take_notices()]
             .into_iter()
             .flatten();
         let notices = Some(notices.collect::<Vec<_>>().join("\n")).filter(|n| !n.is_empty());
-        let prompts = self.ctx.inbox.take_prompts();
+        let prompts = self.inbox.take_prompts();
         let shown = [notices.clone(), prompts.clone()].into_iter().flatten();
         let shown = shown.collect::<Vec<_>>().join("\n");
         let sent = [notices, prompts.map(|prompts| steered(&prompts, self.ctx))];
@@ -84,7 +83,7 @@ impl Turn<'_> {
         if self.cancel.is_cancelled() {
             return None;
         }
-        let notices = self.ctx.inbox.take_curios(&self.ctx.session);
+        let notices = self.inbox.take_curios(&self.ctx.session);
         let notices = notices
             .into_iter()
             .filter(|notice| self.ctx.curios.record(notice))
@@ -106,18 +105,20 @@ mod tests {
 
     use futures::{FutureExt, future::BoxFuture};
     use nth_protocol::{
-        AssistantMessage, Event, Inbox, Message, StreamEvent, Tool, ToolContext, ToolResult,
-        ToolSpec,
+        AssistantMessage, Event, Message, StreamEvent, Tool, ToolContext, ToolResult, ToolSpec,
     };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::agent_loop::{Turn, tests::*};
+    use crate::{
+        Inbox,
+        agent_loop::{Turn, tests::*},
+    };
 
     /// Starts a monitor that says one line straight away, which the
     /// front-end puts in the inbox while the tools still run.
-    struct Watch;
+    struct Watch(Inbox);
 
     impl Tool for Watch {
         fn spec(&self) -> ToolSpec {
@@ -131,11 +132,11 @@ mod tests {
         fn call<'a>(
             &'a self,
             _: serde_json::Value,
-            ctx: &'a ToolContext,
+            _: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
                 let log = std::path::Path::new("/logs/1.log");
-                ctx.inbox.monitor_line(1, "ci", log, "build failed".into());
+                self.0.monitor_line(1, "ci", log, "build failed".into());
                 Ok("started".into())
             }
             .boxed()
@@ -148,11 +149,9 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "watch", ""))],
             vec![StreamEvent::TextDelta("on it".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch)];
-        let ctx = ToolContext {
-            inbox: Inbox::new(),
-            ..ToolContext::new(".".into())
-        };
+        let inbox = Inbox::new();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch(inbox.clone()))];
+        let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
 
@@ -162,6 +161,7 @@ mod tests {
             route: ROUTE,
             tools: &tools,
             ctx: &ctx,
+            inbox: &inbox,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -189,7 +189,7 @@ mod tests {
     }
 
     /// Sends a review and a prompt while it runs, as the front-end would.
-    struct Review;
+    struct Review(Inbox);
 
     impl Tool for Review {
         fn spec(&self) -> ToolSpec {
@@ -206,7 +206,7 @@ mod tests {
             ctx: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
-                ctx.inbox.post_curio(nth_protocol::CurioNotice {
+                self.0.post_curio(nth_protocol::CurioNotice {
                     batch: nth_curios::Batch {
                         id: "batch".into(),
                         session_id: ctx.session.clone(),
@@ -216,7 +216,7 @@ mod tests {
                         recorded: false,
                     },
                 });
-                ctx.inbox.post_prompt("and the title".into());
+                self.0.post_prompt("and the title".into());
                 Ok("reviewed".into())
             }
             .boxed()
@@ -229,11 +229,11 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "review", ""))],
             vec![StreamEvent::TextDelta("on it".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Review)];
+        let inbox = Inbox::new();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Review(inbox.clone()))];
         let ctx = ToolContext {
             curios: nth_protocol::Curios::new(".".into(), "s1".into(), None, Default::default()),
             session: "s1".into(),
-            inbox: Inbox::new(),
             ..ToolContext::new(".".into())
         };
         let (tx, _rx) = mpsc::channel(16);
@@ -245,6 +245,7 @@ mod tests {
             route: ROUTE,
             tools: &tools,
             ctx: &ctx,
+            inbox: &inbox,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -258,7 +259,7 @@ mod tests {
         let Message::User(text) = &messages[3] else {
             panic!("{:#?}", messages[3]);
         };
-        let (notices, rest) = nth_protocol::split_notices(text);
+        let (notices, rest) = crate::inbox::split_notices(text);
         assert_eq!(notices.len(), 1);
         assert_eq!(rest, "and the title");
         assert!(matches!(messages[4], Message::Assistant(_)));
@@ -272,10 +273,7 @@ mod tests {
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let inbox = Inbox::new();
-        let ctx = ToolContext {
-            inbox: inbox.clone(),
-            ..ToolContext::new(".".into())
-        };
+        let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
         assert!(inbox.post_prompt("never mind, just wave".into()));
@@ -286,6 +284,7 @@ mod tests {
             route: ROUTE,
             tools: &tools,
             ctx: &ctx,
+            inbox: &inbox,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -346,7 +345,7 @@ mod tests {
     }
 
     /// Posts a prompt from inside the tool, as you would while it runs.
-    struct Shout(&'static str);
+    struct Shout(&'static str, Inbox);
 
     impl Tool for Shout {
         fn spec(&self) -> ToolSpec {
@@ -360,10 +359,10 @@ mod tests {
         fn call<'a>(
             &'a self,
             _: serde_json::Value,
-            ctx: &'a ToolContext,
+            _: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
-                ctx.inbox.post_prompt(self.0.into());
+                self.1.post_prompt(self.0.into());
                 Ok("done".into())
             }
             .boxed()
@@ -376,14 +375,12 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "shout", ""))],
             vec![StreamEvent::TextDelta("ok".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("meanwhile"))];
-        let ctx = ToolContext {
-            inbox: Inbox::new(),
-            ..ToolContext::new(".".into())
-        };
+        let inbox = Inbox::new();
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("meanwhile", inbox.clone()))];
+        let ctx = ToolContext::new(".".into());
         let mut messages = vec![Message::User("go".into())];
 
-        turn(&provider, &tools, &ctx, &mut messages)
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
             .await
             .0
             .expect("turn completes");
@@ -403,10 +400,11 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "shout", ""))],
             vec![StreamEvent::TextDelta("ok".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("@explore find the tabs"))];
+        let inbox = Inbox::new();
+        let tools: Vec<Box<dyn Tool>> =
+            vec![Box::new(Shout("@explore find the tabs", inbox.clone()))];
         let ctx = ToolContext {
             context: std::sync::Arc::new(context),
-            inbox: Inbox::new(),
             ..ToolContext::new(dir.path().to_path_buf())
         };
         let (tx, mut rx) = mpsc::channel(16);
@@ -418,6 +416,7 @@ mod tests {
             route: ROUTE,
             tools: &tools,
             ctx: &ctx,
+            inbox: &inbox,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -463,12 +462,11 @@ mod tests {
         assert!(inbox.post_prompt("@explore find the tabs".into()));
         let ctx = ToolContext {
             context: std::sync::Arc::new(context),
-            inbox,
             ..ToolContext::new(dir.path().to_path_buf())
         };
         let mut messages = vec![Message::User("go".into())];
 
-        turn(&provider, &tools, &ctx, &mut messages)
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
             .await
             .0
             .expect("turn completes");
