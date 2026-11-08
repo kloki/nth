@@ -16,7 +16,8 @@ use std::{
 };
 
 pub use config::{FormatConfig, FormatterConfig};
-use nth_context::{extension_keys, project_root};
+use nth_context::extension_keys;
+use nth_directories::project_root;
 use registry::Builtin;
 
 /// How long one formatter may run on one file.

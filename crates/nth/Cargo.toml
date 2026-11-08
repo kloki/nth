@@ -8,6 +8,7 @@ repository.workspace = true
 nth-auth.workspace = true
 nth-config.workspace = true
 nth-context.workspace = true
+nth-directories.workspace = true
 nth-curios.workspace = true
 nth-format.workspace = true
 nth-icons.workspace = true

@@ -15,9 +15,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nth_directories::project_root;
 use serde_norway::Value;
 
-use crate::{Paths, frontmatter, project_root};
+use crate::{Paths, frontmatter};
 
 /// opencode's explore prompt, `PROMPT_EXPLORE` in `plugin/agent.ts`.
 const EXPLORE: &str = include_str!("explore.md");

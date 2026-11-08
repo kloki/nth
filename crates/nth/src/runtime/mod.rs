@@ -286,13 +286,12 @@ fn resumed_config(config: &mut Config, session: &Session) {
 /// Add configured directories to a session without losing manually added ones.
 fn apply_directories(session: &mut Session, config: &Config) -> Vec<String> {
     let configured: Vec<_> = config.directories.paths.iter().map(PathBuf::from).collect();
-    let resolved =
-        nth_session::directories::resolve(&session.cwd, &session.extra_dirs, &configured);
+    let resolved = nth_directories::added::resolve(&session.cwd, &session.extra_dirs, &configured);
     let warnings = resolved
         .warnings
         .into_iter()
         .filter_map(|warning| {
-            use nth_session::directories::Refusal;
+            use nth_directories::added::Refusal;
             let message = match warning {
                 Refusal::Inaccessible { path, error } => format!("{}: {error}", path.display()),
                 Refusal::NotDirectory(path) => format!("{} is not a directory", path.display()),

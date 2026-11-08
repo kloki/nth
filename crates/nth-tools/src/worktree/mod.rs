@@ -44,7 +44,8 @@ impl Tool for EnterWorktree {
             refuse_in_plan_mode(ctx)?;
             let origin = ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone());
             let source = nth_worktree::toplevel(&ctx.cwd).await?;
-            let root = nth_context::main_project_root(&source).unwrap_or_else(|| source.clone());
+            let root =
+                nth_directories::main_project_root(&source).unwrap_or_else(|| source.clone());
             let worktree = nth_worktree::open(&source, &name).await?;
             let created = match worktree.created {
                 None => "",
@@ -310,7 +311,7 @@ mod tests {
 
     fn setup_script(root: &Path, script: &str) {
         std::fs::create_dir_all(root.join(".nth")).expect("mkdir");
-        std::fs::write(root.join(setup::SCRIPT), script).expect("write");
+        std::fs::write(setup::script(root), script).expect("write");
     }
 
     #[tokio::test]

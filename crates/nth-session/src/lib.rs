@@ -6,7 +6,6 @@ pub mod curios;
 mod curios_tests;
 #[cfg(test)]
 mod delivery_acceptance;
-pub mod directories;
 mod front_end;
 pub mod inbox;
 mod memory;

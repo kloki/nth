@@ -70,18 +70,6 @@ impl Paths {
     }
 }
 
-/// `path` in `home` when it is exactly `~` or starts with `~/`, as a shell
-/// reads it; `None` for any other path, which the caller resolves as it
-/// resolves paths. `~user` and a `~` further in are names like any other,
-/// and with no home `~` stays one too.
-pub fn expand_home(path: &str, home: Option<&Path>) -> Option<PathBuf> {
-    let home = home?;
-    if path == "~" {
-        return Some(home.to_path_buf());
-    }
-    path.strip_prefix("~/").map(|rest| home.join(rest))
-}
-
 /// Everything found for one working directory.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Context {
@@ -135,17 +123,11 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     }
 }
 
-/// The nearest directory at or above `cwd` that holds `.git`, a directory in
-/// a clone and a file in a worktree.
-pub fn project_root(cwd: &Path) -> Option<PathBuf> {
-    nth_directories::project_root(cwd)
-}
-
 /// The directories from `cwd` up that project files are looked for in,
 /// nearest first: up to and including the home directory when `cwd` is under
 /// it, else up to the project root, else `cwd` alone.
 pub fn search_dirs<'a>(cwd: &'a Path, home: Option<&Path>) -> Vec<&'a Path> {
-    let root = project_root(cwd);
+    let root = nth_directories::project_root(cwd);
     let stop = match home {
         Some(home) if cwd.starts_with(home) => Some(home),
         _ => root.as_deref(),
@@ -157,17 +139,6 @@ pub fn search_dirs<'a>(cwd: &'a Path, home: Option<&Path>) -> Vec<&'a Path> {
             .collect(),
         None => vec![cwd],
     }
-}
-
-/// The main checkout for the nearest repository, including from a worktree.
-pub fn main_project_root(cwd: &Path) -> Option<PathBuf> {
-    nth_directories::main_project_root(cwd)
-}
-
-/// The main checkout of the linked worktree at `root`, whose `.git` is a
-/// file naming `<main>/.git/worktrees/<name>`.
-pub(crate) fn main_checkout(root: &Path) -> Option<PathBuf> {
-    nth_directories::main_checkout(root)
 }
 
 /// A program by name on `PATH`, or as given when it is a path already.
@@ -223,31 +194,6 @@ pub fn extension_keys(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_a_leading_tilde_alone_or_before_a_slash_is_home() {
-        let home = Some(Path::new("/home/me"));
-        assert_eq!(expand_home("~", home), Some(PathBuf::from("/home/me")));
-        assert_eq!(
-            expand_home("~/a/b", home),
-            Some(PathBuf::from("/home/me/a/b"))
-        );
-        assert_eq!(expand_home("~user/x", home), None);
-        assert_eq!(expand_home("a/~", home), None);
-        assert_eq!(expand_home("/abs", home), None);
-        assert_eq!(expand_home("~", None), None);
-    }
-
-    #[test]
-    fn project_root_is_the_nearest_git_directory() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        std::fs::create_dir_all(root.join(".git")).expect("git dir");
-        std::fs::create_dir_all(root.join("a/b")).expect("subdirs");
-
-        assert_eq!(project_root(&root.join("a/b")), Some(root.to_path_buf()));
-        assert_eq!(project_root(root), Some(root.to_path_buf()));
-    }
 
     #[test]
     fn search_dirs_stop_at_home_else_the_project_root() {

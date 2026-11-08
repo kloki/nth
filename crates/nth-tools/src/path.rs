@@ -13,7 +13,7 @@ pub(crate) fn resolve(cwd: &Path, raw: &str) -> PathBuf {
 /// `home`. `~user` and a `~` further in are names like any other, and with
 /// no home `~` stays one too.
 pub(crate) fn resolve_in(cwd: &Path, raw: &str, home: Option<&Path>) -> PathBuf {
-    nth_context::expand_home(raw, home).unwrap_or_else(|| cwd.join(raw))
+    nth_directories::expand_home(raw, home).unwrap_or_else(|| cwd.join(raw))
 }
 
 #[cfg(test)]
