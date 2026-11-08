@@ -199,7 +199,7 @@ impl Tool for Bash {
                     return Err(out);
                 }
                 Outcome::Failed(e) => {
-                    out.push_str(&format!("\n\ncommand killed: reading its output failed: {e}"));
+                    out.push_str(&format!("\n\ncommand killed: {e}"));
                     return Err(out);
                 }
             };
@@ -263,8 +263,8 @@ impl<'a> Streamed<'a> {
     async fn push(&mut self, bytes: &[u8]) {
         self.pending.extend(self.cleaner.push(bytes));
         let end = match self.pending.iter().rposition(|&b| b == b'\n') {
-            _ if self.pending.len() >= STREAM_FLUSH => self.pending.len(),
             Some(newline) => newline + 1,
+            None if self.pending.len() >= STREAM_FLUSH => self.pending.len(),
             None => return,
         };
         let lines: Vec<u8> = self.pending.drain(..end).collect();
@@ -380,6 +380,17 @@ mod tests {
         assert!(streamed.pending.is_empty());
     }
 
+    #[tokio::test]
+    async fn a_long_read_is_sent_up_to_its_last_line_end() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sink = OutputSink::new(tx, "1".into());
+        let mut streamed = Streamed::new(&sink);
+        let lines = "line\n".repeat(2_000);
+        streamed.push(format!("{lines}par").as_bytes()).await;
+        assert_eq!(next_text(&mut rx).await, lines);
+        assert_eq!(streamed.pending, b"par");
+    }
+
     /// A ring that remembers the most it ever held.
     struct Peak {
         ring: Tail,
@@ -396,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn a_chatty_command_keeps_only_its_tail_in_memory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut child = process::shell("yes | head -c 50M", dir.path(), "")
+        let mut child = process::shell("yes | head -c 52428800", dir.path(), "")
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn");
@@ -416,8 +427,7 @@ mod tests {
         assert_eq!(
             ring.text(),
             format!(
-                "...output truncated, showing the last 1000 characters of {} bytes...\n{}",
-                50 * 1024 * 1024,
+                "...output truncated, showing the last 1000 characters...\n{}",
                 "y\n".repeat(500)
             )
         );
@@ -431,15 +441,14 @@ mod tests {
         });
         let out = bash
             .call(
-                json!({ "command": "yes | head -c 1M", "description": "t" }),
+                json!({ "command": "yes | head -c 1048576", "description": "t" }),
                 &ctx,
             )
             .await;
         assert_eq!(
             out,
             Ok(format!(
-                "...output truncated, showing the last 1000 characters of {} bytes...\n{}",
-                1024 * 1024,
+                "...output truncated, showing the last 1000 characters...\n{}",
                 "y\n".repeat(500)
             ))
         );
@@ -515,7 +524,7 @@ mod tests {
             .await;
         assert_eq!(
             out,
-            Ok("...output truncated, showing the last 3 of 6 characters...\ndef".to_string())
+            Ok("...output truncated, showing the last 3 characters...\ndef".to_string())
         );
         let out = bash
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)

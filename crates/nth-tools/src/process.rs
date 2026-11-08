@@ -17,7 +17,7 @@ use tokio::{
     process::{Child, Command},
 };
 
-use crate::{command_output, output};
+use crate::command_output;
 
 /// The shortest timeout bash and monitor accept from the model. A `0` is
 /// a mistake, not a wish to kill the command before it starts.
@@ -149,20 +149,25 @@ impl Tail {
     /// What the model is shown: the kept output without its escapes, cut
     /// to `max_chars`, with a note when anything was left out.
     pub(crate) fn text(&mut self) -> String {
-        let total = self.dropped + self.buf.len() as u64;
-        let clean = command_output::clean(self.buf.make_contiguous());
-        if self.dropped == 0 {
-            return output::tail(&clean, self.max_chars);
+        let mut kept: &[u8] = self.buf.make_contiguous();
+        let cut = self.dropped > 0;
+        // A cut leaves half a line at the front, maybe half an escape that
+        // would show as text: start at the next whole line, if any follows.
+        if cut
+            && let Some(newline) = kept.iter().position(|&b| b == b'\n')
+            && newline + 1 < kept.len()
+        {
+            kept = &kept[newline + 1..];
         }
+        let clean = command_output::clean(kept);
         let count = clean.chars().count();
-        let kept: String = clean
-            .chars()
-            .skip(count.saturating_sub(self.max_chars))
-            .collect();
-        let shown = count.min(self.max_chars);
-        format!(
-            "...output truncated, showing the last {shown} characters of {total} bytes...\n{kept}"
-        )
+        if !cut && count <= self.max_chars {
+            return clean;
+        }
+        let skip = count.saturating_sub(self.max_chars);
+        let shown: String = clean.chars().skip(skip).collect();
+        let shown_count = count - skip;
+        format!("...output truncated, showing the last {shown_count} characters...\n{shown}")
     }
 }
 
@@ -231,7 +236,8 @@ pub(crate) async fn run_to_exit(
     }
     abandoned.0 = None;
     // Processes the command put in the background may hold the pipe open
-    // indefinitely; take what they already wrote and move on.
+    // indefinitely; take what they already wrote and move on. After a kill
+    // this takes up to DRAIN too, collecting what the group wrote before it.
     let _ = tokio::time::timeout(DRAIN, async {
         while let Ok(n @ 1..) = stdout.read(&mut chunk).await {
             receiver.receive(&chunk[..n]).await;
@@ -251,6 +257,7 @@ pub(crate) mod tests {
     use tokio::io::ReadBuf;
 
     use super::*;
+    use crate::output;
 
     const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -307,20 +314,20 @@ pub(crate) mod tests {
         tail.push(b"abcdef");
         assert_eq!(
             tail.text(),
-            "...output truncated, showing the last 2 of 6 characters...\nef"
+            "...output truncated, showing the last 2 characters...\nef"
         );
         tail.push(b"ghij");
         assert_eq!(tail.len(), 8);
         assert_eq!(
             tail.text(),
-            "...output truncated, showing the last 2 characters of 10 bytes...\nij"
+            "...output truncated, showing the last 2 characters...\nij"
         );
         // A chunk larger than the ring replaces it.
         tail.push(b"0123456789xy");
         assert_eq!(tail.len(), 8);
         assert_eq!(
             tail.text(),
-            "...output truncated, showing the last 2 characters of 22 bytes...\nxy"
+            "...output truncated, showing the last 2 characters...\nxy"
         );
     }
 
@@ -332,17 +339,42 @@ pub(crate) mod tests {
         assert_eq!(tail.len(), 3);
         assert_eq!(
             tail.text(),
-            "...output truncated, showing the last 1 characters of 6 bytes...\n€"
+            "...output truncated, showing the last 1 characters...\n€"
         );
     }
 
     #[test]
-    fn a_tail_cut_inside_an_escape_shows_no_control_bytes() {
+    fn a_cut_tail_starts_at_a_whole_line() {
+        // Output that is mostly escapes, so the front of the ring is within
+        // the characters shown, and a cut that lands inside `\x1b[31m`.
+        let mut tail = Tail::new(output::MAX_CHARS);
+        let cap = output::MAX_CHARS * 4;
+        let line = "\x1b[32m€\x1b[0m\n";
+        let body = format!("{}abcdefghijk\n", line.repeat(9_229));
+        assert_eq!(body.len(), cap - "31mred\x1b[0m\n".len());
+        tail.push(&b"z\n".repeat(10));
+        tail.push(b"\x1b[31mred\x1b[0m\n");
+        tail.push(body.as_bytes());
+        assert_eq!(tail.len(), cap);
+
+        let shown = format!("{}abcdefghijk\n", "€\n".repeat(9_229));
+        assert_eq!(
+            tail.text(),
+            format!(
+                "...output truncated, showing the last {} characters...\n{shown}",
+                shown.chars().count()
+            )
+        );
+    }
+
+    #[test]
+    fn a_cut_tail_without_a_later_line_keeps_its_last_line() {
         let mut tail = Tail::new(2);
-        tail.push(b"\x1b[31mred\n");
-        let text = tail.text();
-        assert!(text.ends_with("\nd\n"), "{text:?}");
-        assert!(!text.contains('\x1b'), "{text:?}");
+        tail.push(b"0123456789abc\n");
+        assert_eq!(
+            tail.text(),
+            "...output truncated, showing the last 2 characters...\nc\n"
+        );
     }
 
     /// Passes the command's output on until some has arrived, then fails as
