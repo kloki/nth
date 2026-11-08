@@ -428,6 +428,8 @@ enum Step {
     LspUsageChanged(bool),
     /// The notification backend failed for the first time.
     NotifyFailed,
+    /// The one-second tick: the curio poll and a stale context tab.
+    Second,
     Tick,
 }
 
@@ -723,7 +725,7 @@ impl App {
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
-                _ = curio_tick.tick() => { self.every_second(); Step::Tick },
+                _ = curio_tick.tick() => Step::Second,
             };
             match step {
                 Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
@@ -769,6 +771,7 @@ impl App {
                         self.lsp_usage = None;
                     }
                 }
+                Step::Second => self.every_second(),
                 // Nothing changed but time: the redraw advances the timers.
                 Step::Tick => {}
             }
@@ -783,11 +786,12 @@ impl App {
         Ok(())
     }
 
-    /// The work of the loop's one-second tick. The context tab is not
-    /// rebuilt here: it is on the events that change it, since each
-    /// rebuild projects the whole history.
+    /// The work of the loop's one-second tick. The context tab is rebuilt
+    /// only when something marked it stale or it came into view, since
+    /// each rebuild projects the whole history.
     fn every_second(&mut self) {
         self.poll_curios();
+        self.refresh_stale_context();
     }
 
     /// Draws the screen once. The terminal holds the frame until it is all
@@ -1128,7 +1132,11 @@ impl App {
         match event {
             TermEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
-            TermEvent::FocusGained => self.focused = true,
+            TermEvent::FocusGained => {
+                self.focused = true;
+                // Instruction files may have been edited while away.
+                self.context_stale();
+            }
             TermEvent::FocusLost => self.focused = false,
             TermEvent::Paste(text) if matches!(self.input, Input::Prompt) => {
                 self.prompt.paste(&text);
@@ -1306,7 +1314,7 @@ impl App {
         }
         if tab == Tab::Context {
             if self.is_busy() {
-                self.watch_context();
+                self.follow_running_turn();
             }
             self.refresh_context();
         }

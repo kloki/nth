@@ -21,8 +21,8 @@ use std::{
 pub(crate) use call::run_call;
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
-    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Request, Tool,
-    ToolContext, ToolSpec, Usage, context_preview::Phase, failed,
+    AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Phase, Provider, Request,
+    Tool, ToolContext, ToolSpec, Usage, failed,
 };
 pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
@@ -151,6 +151,9 @@ impl Turn<'_> {
     /// whatever the outcome, so even a failed or interrupted turn leaves
     /// the session knowing how full its window was.
     pub async fn run(mut self) -> Result<(), Error> {
+        // What the slot holds from here on is this turn's, never the last
+        // one's read as current.
+        self.ctx.context_preview.reset();
         let mut last_usage = *self.last_usage;
         let result = self.step_loop(&mut last_usage).await;
         *self.last_usage = last_usage;

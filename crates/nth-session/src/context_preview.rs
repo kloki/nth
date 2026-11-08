@@ -4,8 +4,8 @@
 //! plus 2,500 per image), not a tokenizer or provider accounting.
 
 use nth_protocol::{
-    Compaction, Effort, Inbox, Message, Mode, Tool, ToolSpec, Usage,
-    context_preview::{Budget, Entry, Phase, Preview, ToolDefinition},
+    Budget, Compaction, Effort, Entry, Inbox, Message, Mode, Phase, Preview, Tool, ToolDefinition,
+    ToolSpec, Usage,
 };
 
 use crate::{Session, agent_loop::offered_tools, compaction};
@@ -247,6 +247,10 @@ mod tests {
         let mut session = Session::new("model", ".".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
         let front_end = FrontEnd::default();
+        // The last turn's, which this one must not leave readable.
+        front_end.context_preview.publish(std::sync::Arc::new(
+            session.context_preview(&tools, &Inbox::new()),
+        ));
         let (tx, _rx) = mpsc::channel(64);
         session
             .prompt(
@@ -404,10 +408,7 @@ mod tests {
             !front_end.context_preview.builds(),
             "the ask lasts its turn"
         );
-        assert!(
-            front_end.context_preview.get().is_none(),
-            "a later turn's first call would read this turn's end as its own"
-        );
+        assert!(front_end.context_preview.get().is_some());
     }
 
     #[tokio::test]

@@ -134,14 +134,17 @@ impl ContextPreview {
 
     /// Ends what [`ContextPreview::want`] asked for. A front-end shares one
     /// slot across turns, so a `want` that outlived its turn would keep
-    /// every later turn building for nobody. With no subscriber the
-    /// snapshot goes too: nothing updates it until something asks again,
-    /// and a later turn's first look would take it for its own.
+    /// every later turn building for nobody.
     pub fn turn_ended(&self) {
         self.wanted.store(false, Ordering::Relaxed);
-        if self.slot.receiver_count() == 0 {
-            self.slot.send_replace(None);
-        }
+    }
+
+    /// Forgets the last turn: its snapshot and what it asked for. Called as
+    /// a turn starts, so whatever the slot holds during a turn is that
+    /// turn's, and by a front-end whose turn ended without the loop's say.
+    pub fn reset(&self) {
+        self.turn_ended();
+        self.slot.send_replace(None);
     }
 
     /// Whether a snapshot would reach anyone; the loop builds none otherwise.
@@ -197,14 +200,11 @@ mod tests {
         slot.publish(Arc::new(preview(Phase::Idle)));
         slot.clone().turn_ended();
         assert!(!slot.builds(), "a want lasts one turn");
-        assert!(
-            slot.get().is_none(),
-            "unwatched, a later turn would read it"
-        );
-        let _rx = slot.subscribe();
-        slot.publish(Arc::new(preview(Phase::Idle)));
-        slot.turn_ended();
-        assert!(slot.get().is_some(), "a subscriber still shows it");
+        assert!(slot.get().is_some(), "the turn's end stays readable");
+        slot.want();
+        slot.clone().reset();
+        assert!(!slot.builds());
+        assert!(slot.get().is_none(), "a new turn reads nothing of the last");
     }
 
     #[test]

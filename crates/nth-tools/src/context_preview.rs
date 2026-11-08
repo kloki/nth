@@ -1,6 +1,6 @@
 //! Read-only inspection of the latest main-session request projection.
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Message, Tool, ToolContext, ToolResult, ToolSpec, context_preview::Preview};
+use nth_protocol::{Message, Preview, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -115,7 +115,7 @@ fn role(message: &Message) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::context_preview::{Budget, Entry, Phase, ToolDefinition};
+    use nth_protocol::{Budget, Entry, Phase, ToolDefinition};
 
     use super::*;
 

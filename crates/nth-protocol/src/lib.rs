@@ -2,7 +2,7 @@
 //! provider or tool be swapped without touching the session loop.
 
 mod compaction;
-pub mod context_preview;
+mod context_preview;
 mod curios;
 mod event;
 mod image;
@@ -18,7 +18,9 @@ mod workdir;
 mod writable;
 
 pub use compaction::Compaction;
-pub use context_preview::{ContextPreview, Snapshot as ContextSnapshot};
+pub use context_preview::{
+    Budget, ContextPreview, Entry, Phase, Preview, Snapshot as ContextSnapshot, ToolDefinition,
+};
 pub use curios::{CurioDelivery, CurioNotice, Curios, nth_curios};
 pub use event::{Event, retry_label};
 pub use image::{

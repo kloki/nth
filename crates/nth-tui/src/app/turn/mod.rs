@@ -286,7 +286,7 @@ impl App {
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let front_end = self.front_end();
-        self.watch_context();
+        self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let result = session
@@ -367,7 +367,7 @@ impl App {
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let front_end = self.front_end();
-        self.watch_context();
+        self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let text = match skill {
@@ -500,7 +500,7 @@ impl App {
     ) {
         self.drain_events();
         self.drop_asks();
-        self.unwatch_context();
+        self.context_turn_ended();
         let elapsed = self
             .busy_since
             .take()
@@ -632,7 +632,7 @@ impl App {
     pub(super) fn turn_task_failed(&mut self, error: JoinError) {
         self.drain_events();
         self.drop_asks();
-        self.unwatch_context();
+        self.context_turn_ended();
         let elapsed = self
             .busy_since
             .take()

@@ -4,10 +4,7 @@
 
 use std::sync::Arc;
 
-use nth_protocol::{
-    Message,
-    context_preview::{Budget, Phase, Preview},
-};
+use nth_protocol::{Budget, Message, Phase, Preview};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -77,7 +74,10 @@ fn document(preview: &Preview, width: usize) -> Vec<Line<'static>> {
 
 fn waiting(width: usize) -> Vec<Line<'static>> {
     barred(
-        vec![vec![title("context"), note("waiting for context preview")]],
+        vec![vec![
+            title("context"),
+            note("waiting for the turn's next step"),
+        ]],
         width,
     )
 }
@@ -312,7 +312,7 @@ fn note(text: impl Into<String>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, Inbox, ToolCall, context_preview::ToolDefinition};
+    use nth_protocol::{AssistantMessage, Inbox, ToolCall, ToolDefinition};
     use nth_session::Session;
 
     use super::*;

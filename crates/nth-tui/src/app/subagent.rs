@@ -69,8 +69,10 @@ impl App {
                     view.apply(&event);
                 }
             }
-            // Its notice is in the inbox; waking the model for it is below.
+            // Its notice is in the inbox, which the idle preview lists as
+            // pending; waking the model for it is below.
             SubagentEvent::Stalled { id, .. } => {
+                self.context_stale();
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.stalled();
                 }
@@ -81,6 +83,8 @@ impl App {
                 elapsed,
                 model,
             } => {
+                // Its answer is in the inbox too.
+                self.context_stale();
                 self.spent.subagent_ended(id);
                 // A work item's subagent returned it.
                 if self.work.view.exists() {
@@ -96,9 +100,7 @@ impl App {
                 self.take_subagent_spend();
             }
         }
-        // A task's answer waits in the inbox with the monitors' notices,
-        // which the idle preview lists as pending.
-        self.refresh_context();
+        // A task's answer waits in the inbox with the monitors' notices.
         self.arm_notices();
     }
 

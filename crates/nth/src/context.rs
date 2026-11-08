@@ -8,10 +8,7 @@ use std::{
 
 use anyhow::Result;
 use nth_llm::{Credentials, EndpointConfig, Providers};
-use nth_protocol::{
-    Inbox, Message,
-    context_preview::{Entry, Preview},
-};
+use nth_protocol::{Entry, Inbox, Message, Preview};
 use nth_session::{Session, Store, Subagents};
 use serde_json::json;
 

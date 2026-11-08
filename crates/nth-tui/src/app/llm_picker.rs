@@ -118,7 +118,7 @@ impl App {
         if let Ok(llms) = &llms {
             self.llms = Some(llms.clone());
             // The listing sizes the window the idle preview budgets against.
-            self.refresh_context();
+            self.context_stale();
         }
         if let Input::LlmPicker(picker) = &mut self.input
             && (llms.is_ok() || !shown)

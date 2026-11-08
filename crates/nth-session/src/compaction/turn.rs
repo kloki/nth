@@ -190,9 +190,7 @@ impl Turn<'_> {
 mod tests {
     use std::time::Duration;
 
-    use nth_protocol::{
-        AssistantMessage, StreamEvent, Tool, ToolContext, Usage, context_preview::Phase,
-    };
+    use nth_protocol::{AssistantMessage, Phase, StreamEvent, Tool, ToolContext, Usage};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 

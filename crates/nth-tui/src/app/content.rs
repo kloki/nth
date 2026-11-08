@@ -344,7 +344,7 @@ impl App {
         self.content.close();
         self.forget_closed_files();
         if !self.content.tabs().contains(&Tab::Context) {
-            self.unwatch_context();
+            self.context_closed();
         }
     }
 

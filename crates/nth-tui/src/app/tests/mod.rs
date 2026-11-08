@@ -11,10 +11,7 @@ mod provider;
 
 use crossterm::event::Event as TermEvent;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_protocol::{
-    Effort, Event, Message, Panel, Screen, ToolCall, Usage,
-    context_preview::{Phase, Preview},
-};
+use nth_protocol::{Effort, Event, Message, Panel, Phase, Preview, Screen, ToolCall, Usage};
 use nth_session::Session;
 pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
@@ -178,14 +175,14 @@ async fn context_projects_idle_session_and_live_snapshots() {
         .unwrap()
         .context_preview(&app.tools, &app.inbox);
     preview.phase = Phase::PendingResults;
-    preview.entries.push(nth_protocol::context_preview::Entry {
+    preview.entries.push(nth_protocol::Entry {
         message: Message::User("live revision".into()),
         estimated_tokens: 3,
         checkpoint: false,
         images_available: vec![],
     });
     // As a turn starting with the tab open does.
-    app.watch_context();
+    app.context_turn_starting();
     app.context_tab.slot.publish(Arc::new(preview));
     let snapshot = app.context_tab.next().await;
     app.context_tab.show(snapshot);
