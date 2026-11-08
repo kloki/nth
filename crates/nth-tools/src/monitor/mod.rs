@@ -91,7 +91,7 @@ impl Tool for Monitor {
                 .ok_or("the front-end is gone")?;
             let id = registered.id;
             let (log, log_note) = match open_log(&registered.log).await {
-                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}; read it if you need output before a notice arrives.", registered.log.display())),
+                Ok(file) => (Some(file), format!("The full output, stderr included, is in {}, each line once it ends (a progress bar's once it ends its line or the monitor ends); read it if you need output before a notice arrives.", registered.log.display())),
                 Err(e) => (None, format!("Its output is not logged: {e}.")),
             };
             tokio::spawn(watch(
@@ -193,6 +193,15 @@ async fn watch(
         kill_group(&child);
         abandoned.0 = None;
     }
+    // A line that never ended, such as the latest redraw of a bar, is the
+    // last thing the command said: it goes out as the close of a pipe
+    // would send it, past the flood guard, since the watch is over anyway.
+    if let Some(line) = unfinished(&mut out) {
+        watch.last_line(line, Stream::Stdout).await;
+    }
+    if let Some(line) = unfinished(&mut err) {
+        watch.last_line(line, Stream::Stderr).await;
+    }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
     watch.flush_log().await;
@@ -203,7 +212,9 @@ async fn watch(
 
 /// A line longer than this is cut where it reaches it and marked, and what
 /// follows starts the next line: a command that never ends a line must not
-/// grow one without bound.
+/// grow one without bound. A redraw is cut the same way, so of a redraw
+/// longer than this the first `MAX_LINE_BYTES` go out as a line and the
+/// rest is replaced by the next redraw.
 const MAX_LINE_BYTES: usize = 4096;
 
 /// One of the command's pipes with the start of a line that has not ended
@@ -283,7 +294,6 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
             // Marked after cleaning, so a cut inside an escape sequence
             // cannot swallow the mark; the cleaner keeps that sequence's
             // state, and a split character's, for the next line.
-            *redrawn = false;
             let line = finish_line(partial, cleaner, redrawn).unwrap_or_default();
             return Some(line + "…");
         }
@@ -321,6 +331,21 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
             return Some(line);
         }
     }
+}
+
+/// What a pipe holds of a line that has not ended, for a watch that ends
+/// before the line does.
+fn unfinished<R>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
+    let Pipe {
+        partial,
+        cleaner,
+        redrawn,
+        ..
+    } = pipe.as_mut()?;
+    if partial.is_empty() {
+        return None;
+    }
+    finish_line(partial, cleaner, redrawn)
 }
 
 /// A `\r` replaced the line so far. Its bytes still go through the cleaner,
@@ -375,6 +400,19 @@ impl Watch<'_> {
         if self.recent.len() > FLOOD_LINES {
             return Some(MonitorEnd::Flooded);
         }
+        self.send(line, stream).await
+    }
+
+    /// Logs and reports a line left when the watch ended, which no flood
+    /// can stop any more.
+    async fn last_line(&mut self, line: String, stream: Stream) {
+        if stream == Stream::Stdout {
+            self.events += 1;
+        }
+        self.send(line, stream).await;
+    }
+
+    async fn send(&mut self, line: String, stream: Stream) -> Option<MonitorEnd> {
         let prefix = match stream {
             Stream::Stdout => "",
             Stream::Stderr => "stderr: ",
@@ -592,6 +630,38 @@ mod tests {
         let cut = format!("{}…", "x".repeat(MAX_LINE_BYTES));
         let rest = "x".repeat(10240 - 2 * MAX_LINE_BYTES);
         assert_eq!(stdout(&seen), [&cut, &cut, &rest, "after"]);
+    }
+
+    #[tokio::test]
+    async fn a_redraw_reaches_the_cleaner_even_when_replaced() {
+        let mut f = fixture();
+        // The cut leaves the cleaner inside the colour sequence, which the
+        // replaced redraw finishes; without it, `o` would end the sequence.
+        let command = r"head -c 4095 /dev/zero | tr '\0' x; printf '\033[31m\rok\n'";
+        start(&f.ctx, command, 10_000).await.expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        let cut = format!("{}…", "x".repeat(4095));
+        assert_eq!(stdout(&seen), [cut.as_str(), "ok"]);
+    }
+
+    #[tokio::test]
+    async fn the_latest_redraw_arrives_when_the_watch_ends_first() {
+        let mut f = fixture();
+        start(
+            &f.ctx,
+            r"printf '\rone\rtwo'; printf 'oops\r' >&2; sleep 30",
+            1_000,
+        )
+        .await
+        .expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["two"]);
+        assert_eq!(end(&seen), (MonitorEnd::TimedOut { after_ms: 1_000 }, 1));
+        let log = std::fs::read_to_string(f.dir.path().join("logs/1.log")).expect("log");
+        assert!(log.contains("] two\n"), "{log}");
+        assert!(log.contains("] stderr: oops\n"), "{log}");
+        let notices = f.ctx.inbox.take_notices().expect("notices");
+        assert!(notices.contains("\ntwo\n</monitor>"), "{notices}");
     }
 
     /// Through `kill -0`, as macOS has no `/proc`.
