@@ -207,8 +207,8 @@ async fn work_todo_knows_its_item_from_the_first_call() {
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
     // Numbers taken and never spent, so the assigned one is not simply 1.
-    subagents.reserve();
-    subagents.reserve();
+    let _ = subagents.reserve();
+    let _ = subagents.reserve();
     let work = work_with(
         ticks_then_answers(),
         Vec::new(),
@@ -640,6 +640,7 @@ async fn a_failed_assign_write_reports_once() {
 
     let err = result.unwrap_err();
     assert!(err.starts_with("writing 01-c1/a failed"), "{err}");
+    assert!(subagents.ids().is_empty(), "no subagent was started");
     assert_eq!(subagents.queued(1), 0, "no job was queued");
     assert!(!subagents.is_running(1));
     // Long enough for a job that went out to start and end.

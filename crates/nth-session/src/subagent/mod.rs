@@ -161,6 +161,7 @@ pub(crate) struct ChildState {
 /// keeps. `Subagents::spawn` spends it; one never spent is a skipped
 /// number, which nothing counts on.
 #[derive(Debug)]
+#[must_use = "a reserved number is spent by Subagents::spawn"]
 pub struct Reserved {
     id: SubagentId,
     /// The child's own once it starts, so a tool built before then hears

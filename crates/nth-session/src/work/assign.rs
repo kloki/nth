@@ -196,12 +196,12 @@ impl Tool for WorkAssign {
                 inbox: shared.inbox.clone(),
                 closed,
             };
-            if let Some(reserved) = fresh {
+            // Started only once the file says running, so a write that
+            // fails leaves no idle subagent behind.
+            let fresh = fresh.map(|reserved| {
                 let todo: Box<dyn Tool> = Box::new(WorkTodo::new(assignment.clone()));
-                shared
-                    .spawner
-                    .spawn(reserved, agent, &format!("work {at}"), ctx, vec![todo]);
-            }
+                (reserved, todo)
+            });
             let before = item.clone();
             // `0` is no limit, as in the config.
             let timeout = match args.timeout_ms {
@@ -263,6 +263,11 @@ impl Tool for WorkAssign {
                 .write(&running)
                 .await
                 .map_err(|e| format!("writing {at} failed: {e}"))?;
+            if let Some((reserved, todo)) = fresh {
+                shared
+                    .spawner
+                    .spawn(reserved, agent, &format!("work {at}"), ctx, vec![todo]);
+            }
             if !subagents.prompt(id, job) {
                 let restored = match store.write(&before).await {
                     Ok(()) => String::new(),
