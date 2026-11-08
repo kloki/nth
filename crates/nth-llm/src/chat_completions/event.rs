@@ -4,8 +4,11 @@
 
 use serde::Deserialize;
 
-use super::{Error, Provider};
-use crate::sse::{data, excerpt};
+use super::provider_error;
+use crate::{
+    sse::{data, excerpt},
+    stream::Error,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -171,7 +174,7 @@ pub struct FunctionDelta {
 
 /// Turns raw response bytes into events, as the stream does.
 #[cfg(test)]
-pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Vec<Event>, Error>>;
+pub(super) type Parser = crate::sse::Parser<Event>;
 
 #[cfg(test)]
 pub(super) fn parser() -> Parser {
@@ -212,10 +215,7 @@ pub(super) fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
             Some(message) => message.to_string(),
             None => error.to_string(),
         };
-        return Err(Error::Provider(Provider {
-            message,
-            status: error_status(&error),
-        }));
+        return Err(provider_error(message, error_status(&error)));
     }
     events.extend(chunk.usage.map(Event::Usage));
     let Some(choice) = chunk.choices.into_iter().flatten().next() else {
@@ -340,25 +340,37 @@ mod tests {
         assert!(err.to_string().contains("rate limited"), "{err}");
     }
 
+    /// The status names the error and decides whether it is retried.
     #[test]
     fn in_stream_error_carries_its_status() {
-        let status = |chunk: &[u8]| match parser().push(chunk) {
-            Err(Error::Provider(Provider { status, .. })) => status,
+        let error = |chunk: &[u8]| match parser().push(chunk) {
+            Err(Error::Provider {
+                message, retryable, ..
+            }) => (message, retryable),
             other => panic!("expected a provider error, got {other:?}"),
         };
         assert_eq!(
-            status(b"data: {\"error\":{\"message\":\"slow down\",\"code\":429}}\n"),
-            Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
+            error(b"data: {\"error\":{\"message\":\"slow down\",\"code\":429}}\n"),
+            (
+                "provider error 429 Too Many Requests: slow down".into(),
+                true
+            )
         );
         assert_eq!(
-            status(b"data: {\"error\":{\"message\":\"overloaded\",\"status\":\"503\"}}\n"),
-            Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+            error(b"data: {\"error\":{\"message\":\"overloaded\",\"status\":\"503\"}}\n"),
+            (
+                "provider error 503 Service Unavailable: overloaded".into(),
+                true
+            )
         );
         assert_eq!(
-            status(b"data: {\"error\":{\"message\":\"nope\",\"code\":\"invalid_request\"}}\n"),
-            None
+            error(b"data: {\"error\":{\"message\":\"nope\",\"code\":\"invalid_request\"}}\n"),
+            ("provider error: nope".into(), false)
         );
-        assert_eq!(status(b"data: {\"error\":\"plain string\"}\n"), None);
+        assert_eq!(
+            error(b"data: {\"error\":\"plain string\"}\n"),
+            ("provider error: \"plain string\"".into(), false)
+        );
     }
 
     #[test]

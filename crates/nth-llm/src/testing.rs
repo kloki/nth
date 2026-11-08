@@ -1,7 +1,13 @@
 //! What the three protocols' stream tests share: a recorded fixture fed in
 //! chunks of any size, cut at a marker, and checked for tool calls.
 
-use nth_protocol::StreamEvent;
+use nth_protocol::{BoxError, Retry, StreamEvent};
+
+/// Whether a boxed error, as the session holds it, is retried: what
+/// `Providers::retry` answers for it.
+pub(crate) fn retry(error: &BoxError) -> Option<Retry> {
+    crate::stream::retry(error.downcast_ref::<crate::stream::Error>()?)
+}
 
 /// `input` as the chunks a connection might deliver it in.
 pub(crate) fn chunks<E>(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, E>> {

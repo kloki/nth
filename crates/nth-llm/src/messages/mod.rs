@@ -12,7 +12,7 @@ use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 use crate::{
     auth::Auth,
     catalog,
-    stream::{self, Flow, Out, Payload, Protocol},
+    stream::{self, Error, Flow, Out, Protocol, Refusal},
 };
 
 /// The API version the request and the stream are shaped for.
@@ -44,36 +44,41 @@ fn max_tokens(known: Option<&catalog::Model>) -> u64 {
     output.map_or(MAX_TOKENS, |output| output.min(MAX_TOKENS))
 }
 
-pub(crate) type Error = stream::Error<Provider>;
-
-/// An `error` event, sent after the 200 status.
-#[derive(Debug, thiserror::Error)]
-#[error("provider error {kind}: {message}")]
-pub(crate) struct Provider {
-    pub(crate) kind: String,
-    pub(crate) message: String,
+/// An `error` event, sent after the 200 status. Retried for a rate
+/// limit, an overload or a server failure; the kinds stand for 429, 529
+/// and 500.
+pub(crate) fn provider_error(kind: String, message: String) -> Error {
+    let retryable = matches!(
+        kind.as_str(),
+        "rate_limit_error" | "overloaded_error" | "api_error"
+    );
+    Error::Provider {
+        message: format!("provider error {kind}: {message}"),
+        retryable,
+        overflow: false,
+    }
 }
 
-impl Payload for Provider {
-    fn status_message(body: &str) -> Option<String> {
+/// A refused request's body is an error response whose message says it.
+pub(crate) const REFUSAL: Refusal = Refusal {
+    message: |body| {
         serde_json::from_str::<event::ErrorResponse>(body)
             .ok()
             .map(|error| error.error.message)
-    }
+    },
+    is_final: |_| false,
+};
 
-    /// A rate limit, an overload or a server failure; the kinds stand
-    /// for 429, 529 and 500.
-    fn retryable(&self) -> bool {
-        matches!(
-            self.kind.as_str(),
-            "rate_limit_error" | "overloaded_error" | "api_error"
-        )
-    }
-}
+/// Where requests go, under the endpoint's base URL.
+const ROUTE: &str = "/messages";
 
-pub(crate) type Client = stream::Client<State>;
+pub(crate) struct Client(stream::Client);
 
 impl Client {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+        Self(stream::Client::new(http, base_url, ROUTE))
+    }
+
     /// `known` is the catalogue's entry for the model, if it has one: its
     /// output limit bounds `max_tokens`, which is required here, unlike in
     /// chat completions, and its reasoning options say how it thinks.
@@ -84,7 +89,7 @@ impl Client {
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
         let builder = auth
-            .api_key(self.post())
+            .api_key(self.0.post())
             .header("anthropic-version", VERSION)
             .json(&wire::body(
                 request.model,
@@ -94,7 +99,7 @@ impl Client {
                 request.messages,
                 request.tools,
             ));
-        stream::send::<State>(builder, &request).await
+        stream::send::<State>(builder, &request, REFUSAL).await
     }
 }
 
@@ -111,15 +116,13 @@ pub(crate) struct State {
 }
 
 impl Protocol for State {
-    type Provider = Provider;
     type Event = event::Event;
-    const ROUTE: &'static str = "/messages";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
-        Ok(event::parse_line(line)?.into_iter().collect())
+        event::parse_line(line)
     }
 
-    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+    fn apply(&mut self, event: event::Event, out: &mut Out) -> Flow {
         match event {
             event::Event::MessageStart { message } => {
                 self.usage.update(message.usage.unwrap_or_default());
@@ -181,7 +184,7 @@ impl Protocol for State {
         self.stop_reason.is_some()
     }
 
-    fn finish(&mut self, out: &mut Out<Provider>) {
+    fn finish(&mut self, out: &mut Out) {
         let calls = std::mem::take(&mut self.calls);
         if self.stop_reason.as_deref() == Some("max_tokens") {
             stream::cut(self.text, !calls.is_empty(), out);
@@ -204,12 +207,8 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        chunks, reports_output, runs_no_tools, serve_status, text, until, without_text,
+        chunks, reports_output, retry, runs_no_tools, serve_status, text, until, without_text,
     };
-
-    fn retry(error: &BoxError) -> Option<Retry> {
-        stream::retry::<Provider>(error)
-    }
 
     fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
     where
@@ -397,7 +396,12 @@ mod tests {
             panic!("expected an error, got {events:?}");
         };
         assert!(
-            matches!(error, Error::Provider(Provider { kind, .. }) if kind == "overloaded_error")
+            matches!(
+                error,
+                Error::Provider { message, retryable: true, .. }
+                    if message == "provider error overloaded_error: Overloaded"
+            ),
+            "{error:?}"
         );
     }
 
@@ -509,15 +513,11 @@ mod tests {
         assert_eq!(retry(&error), None);
     }
 
-    /// The payload's part of the policy; the rest is `stream`'s.
+    /// The protocol's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
-        let in_stream = |kind: &str| -> BoxError {
-            Box::new(Error::Provider(Provider {
-                kind: kind.into(),
-                message: String::new(),
-            }))
-        };
+        let in_stream =
+            |kind: &str| -> BoxError { Box::new(provider_error(kind.into(), String::new())) };
         for kind in ["overloaded_error", "rate_limit_error", "api_error"] {
             assert_eq!(
                 retry(&in_stream(kind)),
@@ -526,8 +526,5 @@ mod tests {
             );
         }
         assert_eq!(retry(&in_stream("invalid_request_error")), None);
-
-        let other: BoxError = Box::new(crate::chat_completions::Error::Incomplete);
-        assert_eq!(retry(&other), None, "another protocol's error");
     }
 }

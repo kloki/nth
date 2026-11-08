@@ -5,8 +5,11 @@
 
 use serde::Deserialize;
 
-use super::{Error, Provider};
-use crate::sse::{data, excerpt};
+use super::provider_error;
+use crate::{
+    sse::{data, excerpt},
+    stream::Error,
+};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
@@ -117,10 +120,7 @@ pub struct ErrorBody {
 
 impl ErrorBody {
     fn into_error(self) -> Error {
-        Error::Provider(Provider {
-            kind: self.code.or(self.kind).unwrap_or_default(),
-            message: self.message,
-        })
+        provider_error(self.code.or(self.kind).unwrap_or_default(), self.message)
     }
 }
 
@@ -141,33 +141,30 @@ pub struct ErrorResponse {
 
 /// Turns raw response bytes into events, as the stream does.
 #[cfg(test)]
-pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
+pub(super) type Parser = crate::sse::Parser<Event>;
 
 #[cfg(test)]
 pub(super) fn parser() -> Parser {
     crate::sse::Parser::new(parse_line)
 }
 
-pub(super) fn parse_line(line: &str) -> Result<Option<Event>, Error> {
+pub(super) fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
     let Some(data) = data(line) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     match serde_json::from_str(data) {
         Ok(Event::Error(ErrorEvent {
             error: Some(error), ..
         })) => Err(error.into_error()),
-        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(Error::Provider(Provider {
-            kind: code.unwrap_or_default(),
-            message: message.unwrap_or_default(),
-        })),
+        Ok(Event::Error(ErrorEvent { code, message, .. })) => Err(provider_error(
+            code.unwrap_or_default(),
+            message.unwrap_or_default(),
+        )),
         Ok(Event::Failed { response }) => Err(match response.error {
             Some(error) => error.into_error(),
-            None => Error::Provider(Provider {
-                kind: String::new(),
-                message: "response failed".into(),
-            }),
+            None => provider_error(String::new(), "response failed".into()),
         }),
-        Ok(event) => Ok(Some(event)),
+        Ok(event) => Ok(vec![event]),
         Err(source) => Err(Error::Parse {
             source,
             line: excerpt(data),

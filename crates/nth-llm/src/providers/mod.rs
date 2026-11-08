@@ -17,7 +17,7 @@ use nth_protocol::{BoxError, Listing, Provider, Request, Retry, StreamEvent};
 use tokio::task::JoinHandle;
 
 use self::endpoint::Endpoint;
-use crate::{catalog::Snapshot, chat_completions, messages, responses, stream};
+use crate::{catalog::Snapshot, stream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -191,10 +191,7 @@ impl Provider for Providers {
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
-        // Each protocol recognises only its own errors.
-        stream::retry::<chat_completions::Provider>(error)
-            .or_else(|| stream::retry::<messages::Provider>(error))
-            .or_else(|| stream::retry::<responses::Provider>(error))
+        stream::retry(error.downcast_ref::<stream::Error>()?)
     }
 
     fn qualify(&self, model: &str) -> String {

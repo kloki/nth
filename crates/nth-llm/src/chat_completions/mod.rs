@@ -13,37 +13,36 @@ use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 use crate::{
     auth::Auth,
     http::{self, transient},
-    stream::{self, Flow, Out, Payload, Protocol},
+    stream::{self, Error, Flow, Out, Protocol, Refusal},
 };
 
-pub(crate) type Error = stream::Error<Provider>;
-
 /// An error chunk, which gateways such as OpenRouter send after the 200
-/// status for a rate limit, an overload or a refusal.
-#[derive(Debug, thiserror::Error)]
-#[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
-pub(crate) struct Provider {
-    pub(crate) message: String,
-    /// The HTTP status the error stands for, when the chunk gave one.
-    pub(crate) status: Option<reqwest::StatusCode>,
-}
-
-impl Payload for Provider {
-    /// Only by its status: a symbolic code such as `rate_limit_exceeded`
-    /// says nothing every gateway agrees on.
-    fn retryable(&self) -> bool {
-        self.status.is_some_and(transient)
-    }
-
-    fn context_overflow(&self) -> bool {
-        self.status
-            .is_some_and(|status| http::context_overflow(status, &self.message))
+/// status for a rate limit, an overload or a refusal, with the HTTP status
+/// it stands for when the chunk gave one. Retried only by that status: a
+/// symbolic code such as `rate_limit_exceeded` says nothing every gateway
+/// agrees on.
+pub(crate) fn provider_error(message: String, status: Option<reqwest::StatusCode>) -> Error {
+    let overflow = status.is_some_and(|status| http::context_overflow(status, &message));
+    Error::Provider {
+        message: match status {
+            Some(status) => format!("provider error {status}: {message}"),
+            None => format!("provider error: {message}"),
+        },
+        retryable: status.is_some_and(transient),
+        overflow,
     }
 }
 
-pub(crate) type Client = stream::Client<State>;
+/// Where requests go, under the endpoint's base URL.
+const ROUTE: &str = "/chat/completions";
+
+pub(crate) struct Client(stream::Client);
 
 impl Client {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+        Self(stream::Client::new(http, base_url, ROUTE))
+    }
+
     /// `cache_key` goes out as `prompt_cache_key`: only to a provider known
     /// to take it ([`takes_cache_key`]), since strict ones refuse a field
     /// they do not know.
@@ -53,14 +52,14 @@ impl Client {
         cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let builder = auth.bearer(self.post()).json(&wire::body(
+        let builder = auth.bearer(self.0.post()).json(&wire::body(
             request.model,
             request.effort,
             cache_key,
             request.messages,
             request.tools,
         ));
-        stream::send::<State>(builder, &request).await
+        stream::send::<State>(builder, &request, Refusal::PLAIN).await
     }
 }
 
@@ -108,15 +107,13 @@ pub(crate) struct State {
 }
 
 impl Protocol for State {
-    type Provider = Provider;
     type Event = event::Event;
-    const ROUTE: &'static str = "/chat/completions";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
         event::parse_line(line)
     }
 
-    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+    fn apply(&mut self, event: event::Event, out: &mut Out) -> Flow {
         match event {
             event::Event::Delta(delta) => self.delta(delta, out),
             event::Event::Finish(reason) => self.finish_reason = Some(reason),
@@ -142,7 +139,7 @@ impl Protocol for State {
         self.finish_reason.is_some()
     }
 
-    fn finish(&mut self, out: &mut Out<Provider>) {
+    fn finish(&mut self, out: &mut Out) {
         let calls = std::mem::take(&mut self.calls);
         if self.finish_reason.as_deref() == Some("length") {
             stream::cut(self.text, !calls.is_empty(), out);
@@ -153,7 +150,7 @@ impl Protocol for State {
 }
 
 impl State {
-    fn delta(&mut self, delta: event::Delta, out: &mut Out<Provider>) {
+    fn delta(&mut self, delta: event::Delta, out: &mut Out) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
             out.push_back(Ok(StreamEvent::ReasoningDelta(text)));
         }
@@ -189,12 +186,9 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        chunks, reports_output, runs_no_tools, serve_once, serve_status, text, until, without_text,
+        chunks, reports_output, retry, runs_no_tools, serve_once, serve_status, text, until,
+        without_text,
     };
-
-    fn retry(error: &BoxError) -> Option<Retry> {
-        stream::retry::<Provider>(error)
-    }
 
     fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
     where
@@ -486,14 +480,11 @@ mod tests {
         assert_eq!(retry(&error), None);
     }
 
-    /// The payload's part of the policy; the rest is `stream`'s.
+    /// The protocol's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
         let in_stream = |status: Option<reqwest::StatusCode>| -> BoxError {
-            Box::new(Error::Provider(Provider {
-                message: "from the gateway".into(),
-                status,
-            }))
+            Box::new(provider_error("from the gateway".into(), status))
         };
         assert_eq!(
             retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),
