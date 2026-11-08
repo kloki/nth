@@ -32,11 +32,6 @@ const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
 /// bash's tail or sed, not a numbered window.
 const MAX_TEXT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How far past its window a read keeps counting lines, so a file of
-/// ordinary size still says how long it is while a huge one is not read
-/// to its end for it.
-const COUNT_AHEAD: u64 = 256 * 1024;
-
 /// The first bytes of a file, which tell an image by its magic and a
 /// binary file by a NUL.
 const HEAD: u64 = 8192;
@@ -378,9 +373,9 @@ impl<R: BufRead> Lines<R> {
     }
 }
 
-/// Numbers the lines from `offset` on, reading no further than the
-/// window needs, then up to `COUNT_AHEAD` more to tell how long the file
-/// is.
+/// Numbers the lines from `offset` on, keeping only the window's, and
+/// counts the rest to tell how long the file is, never reading past
+/// `MAX_TEXT_BYTES`.
 fn read_text(
     path: &Path,
     reader: impl BufRead,
@@ -424,6 +419,7 @@ fn read_text(
     let mut out = String::new();
     let mut last = offset - 1;
     let mut stopped = false;
+    let mut cut_at_cap = false;
     let end = (offset - 1).saturating_add(limit);
     while total.is_none() && seen < end {
         let cut = match lines.next(&mut line, keep).map_err(failed)? {
@@ -434,6 +430,7 @@ fn read_text(
             }
             Next::Stopped(cut) => {
                 stopped = true;
+                cut_at_cap = cut;
                 if !cut {
                     break;
                 }
@@ -474,6 +471,20 @@ fn read_text(
         }
     }
 
+    // Past the window lines are only counted, never kept, so the hint can
+    // name the file's length, and its last line, at no cost in memory.
+    if total.is_none() && !stopped {
+        loop {
+            match lines.next(&mut line, 0).map_err(failed)? {
+                Next::Line => seen += 1,
+                Next::End => {
+                    total = Some(seen);
+                    break;
+                }
+                Next::Stopped(_) => break,
+            }
+        }
+    }
     if let Some(total) = total {
         if offset > total.max(1) {
             return Err(format!(
@@ -488,36 +499,24 @@ fn read_text(
         }
         return Ok(out);
     }
-    if stopped {
-        if last < offset {
-            return Err(too_deep());
-        }
+    // The cap came before the end.
+    if last < offset {
+        return Err(too_deep());
+    }
+    if last < seen {
+        // A line the window cut at the cap may be the file's last.
+        let whole = seen - usize::from(cut_at_cap);
+        out.push_str(&format!(
+            "\n(Showing lines {offset}-{last} of more than {whole}. Use offset={} to continue.)",
+            last + 1
+        ));
+    } else {
+        // The next line starts at the cap, where no read reaches.
         out.push_str(&format!(
             "\n(Showing lines {offset}-{last}. The read tool stops {} MiB into a file; use bash (tail, sed) for what follows.)",
             MAX_TEXT_BYTES / (1024 * 1024)
         ));
-        return Ok(out);
     }
-    lines.stop = lines.read.saturating_add(COUNT_AHEAD).min(MAX_TEXT_BYTES);
-    loop {
-        match lines.next(&mut line, 0).map_err(failed)? {
-            Next::Line => seen += 1,
-            Next::End => {
-                total = Some(seen);
-                break;
-            }
-            Next::Stopped(_) => break,
-        }
-    }
-    let of = match total {
-        Some(total) if last >= total => return Ok(out),
-        Some(total) => total.to_string(),
-        None => format!("more than {seen}"),
-    };
-    out.push_str(&format!(
-        "\n(Showing lines {offset}-{last} of {of}. Use offset={} to continue.)",
-        last + 1
-    ));
     Ok(out)
 }
 
@@ -666,29 +665,37 @@ mod tests {
         );
     }
 
+    fn mkfifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in the path");
+        // SAFETY: `c` is a NUL-terminated path that outlives the call.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+    }
+
+    /// A writer coming and going lets a reader still blocked on the FIFO
+    /// see its end, so a failing test never leaves a thread stuck.
+    fn release(fifo: &Path) {
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(fifo),
+        );
+    }
+
     #[tokio::test]
     async fn read_refuses_a_fifo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fifo = dir.path().join("pipe");
-        let made = std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .expect("runs mkfifo");
-        assert!(made.success());
+        mkfifo(&fifo);
 
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             read(dir.path(), json!({ "filePath": "pipe" })),
         )
         .await;
-        // A reader still blocked on the FIFO would keep the runtime from
-        // shutting down: a writer coming and going lets it see the end.
-        drop(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(&fifo),
-        );
+        release(&fifo);
 
         assert_eq!(
             out.expect("refused without waiting for a writer"),
@@ -699,18 +706,29 @@ mod tests {
         );
     }
 
-    /// Counts the bytes read through it.
-    struct Counting<R> {
-        inner: R,
-        read: u64,
-    }
+    #[test]
+    fn opening_a_fifo_never_waits_for_a_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("pipe");
+        mkfifo(&fifo);
 
-    impl<R: std::io::Read> std::io::Read for Counting<R> {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            let n = self.inner.read(buf)?;
-            self.read += n as u64;
-            Ok(n)
-        }
+        // The path checked as a regular file and swapped for a FIFO before
+        // the open: the open itself must not wait.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let opener = {
+            let fifo = fifo.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(open_regular(&fifo).map(|_| ()));
+            })
+        };
+        let opened = rx.recv_timeout(std::time::Duration::from_secs(5));
+        release(&fifo);
+        opener.join().expect("the opener ends");
+
+        assert_eq!(
+            opened.expect("returned without waiting for a writer"),
+            Err(not_regular(&fifo))
+        );
     }
 
     #[test]
@@ -720,45 +738,38 @@ mod tests {
         let text: String = (1..=1_000_000).map(|i| format!("line {i}\n")).collect();
         std::fs::write(&path, &text).expect("write");
         let (file, len) = open_regular(&path).expect("opens");
-        let mut counted = Counting {
-            inner: file,
-            read: 0,
-        };
 
-        let loaded = load(&path, &mut counted, len, 5, 3, &ReadConfig::default());
+        let loaded = load(&path, file, len, 5, 3, &ReadConfig::default());
 
         let Ok(Loaded::Text(out)) = loaded else {
             panic!("not read as text");
         };
-        let ahead = out
-            .split("of more than ")
-            .nth(1)
-            .and_then(|rest| rest.split('.').next())
-            .and_then(|n| n.parse::<usize>().ok())
-            .expect("a lower bound on the lines");
-        assert!(ahead > 7, "{out}");
         assert_eq!(
             out,
-            format!(
-                "5: line 5\n6: line 6\n7: line 7\n\n(Showing lines 5-7 of more than {ahead}. Use offset=8 to continue.)"
-            )
+            "5: line 5\n6: line 6\n7: line 7\n\n(Showing lines 5-7 of 1000000. Use offset=8 to continue.)"
         );
-        assert!(counted.read < 1024 * 1024, "{} bytes read", counted.read);
     }
 
-    #[tokio::test]
-    async fn a_file_past_the_count_ahead_says_so_in_its_hint() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let text: String = (1..=100_000).map(|i| format!("{i}\n")).collect();
-        std::fs::write(dir.path().join("a.txt"), &text).expect("write");
-        let out = read(dir.path(), json!({ "filePath": "a.txt", "limit": 2 }))
-            .await
-            .expect("read");
+    #[test]
+    fn a_line_is_kept_only_up_to_its_cut() {
+        // Ten MiB with no ending, as a minified bundle or a log of one line.
+        let long = vec![b'a'; 10 * 1024 * 1024];
+        let mut lines = Lines {
+            reader: BufReader::new(Cursor::new(long)),
+            read: 0,
+            stop: MAX_TEXT_BYTES,
+        };
+        let mut line = Vec::new();
+
+        assert!(matches!(lines.next(&mut line, 100), Ok(Next::Line)));
+        assert_eq!(line.len(), 100);
         assert!(
-            out.starts_with("1: 1\n2: 2\n\n(Showing lines 1-2 of more than "),
-            "{out}"
+            line.capacity() < 64 * 1024,
+            "{} bytes held",
+            line.capacity()
         );
-        assert!(out.ends_with(". Use offset=3 to continue.)"), "{out}");
+        assert_eq!(lines.read, 10 * 1024 * 1024);
+        assert!(matches!(lines.next(&mut line, 100), Ok(Next::End)));
     }
 
     #[tokio::test]
@@ -796,17 +807,22 @@ mod tests {
         );
     }
 
+    /// A file whose first line fills the head, so it reads as text, and
+    /// whose second runs past the input cap.
+    fn past_the_cap(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("a.txt");
+        let file = std::fs::File::create(&path).expect("creates");
+        let first = "a".repeat(HEAD as usize);
+        std::io::Write::write_all(&mut &file, format!("{first}\ntwo").as_bytes()).expect("writes");
+        // Sparse: NULs past the cap, a few blocks on disk.
+        file.set_len(MAX_TEXT_BYTES + 1024).expect("grows");
+        path
+    }
+
     #[tokio::test]
     async fn a_read_stops_at_the_input_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("a.txt");
-        let file = std::fs::File::create(&path).expect("creates");
-        // Past the head, so the NULs below do not make it binary.
-        let first = "a".repeat(HEAD as usize);
-        std::io::Write::write_all(&mut &file, format!("{first}\ntwo").as_bytes()).expect("writes");
-        // Sparse: a second line of NULs running past the cap, a few blocks
-        // on disk.
-        file.set_len(MAX_TEXT_BYTES + 1024).expect("grows");
+        let path = past_the_cap(dir.path());
 
         let out = read(dir.path(), json!({ "filePath": "a.txt" }))
             .await
@@ -827,6 +843,35 @@ mod tests {
                 "cannot read {} from line 3: it starts past the first 64 MiB, all the read tool reads; use bash (tail, sed) for that part",
                 path.display()
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_the_budget_hid_before_the_cap_can_still_be_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        past_the_cap(dir.path());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        // Room for the first line, cut to its 2000 characters, not the
+        // second.
+        let read = Read::new(
+            ReadConfig {
+                max_bytes: 3000,
+                ..ReadConfig::default()
+            },
+            crate::post_write::lsp_off(),
+        );
+
+        let out = read
+            .call(json!({ "filePath": "a.txt" }), &ctx)
+            .await
+            .expect("read");
+
+        assert!(out.starts_with("1: aaa"), "{}", &out[..out.len().min(40)]);
+        assert!(
+            out.ends_with(
+                "chars)\n\n(Showing lines 1-1 of more than 1. Use offset=2 to continue.)"
+            ),
+            "{out}"
         );
     }
 
