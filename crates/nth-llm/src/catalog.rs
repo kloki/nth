@@ -252,6 +252,10 @@ impl Snapshot {
 
     /// The catalogue: at once when loaded; else a fetch when one is due,
     /// waiting for one already under way; else none, without waiting.
+    /// So the request or listing that first asks once the backoff has run
+    /// out waits on the retry, at most `TIMEOUT`, as does any caller that
+    /// asks while it runs: without the catalogue a model may go over the
+    /// wrong protocol, which is worse than a short wait.
     pub(crate) async fn get(&self) -> Option<Arc<Catalog>> {
         let url = self.url.as_deref()?;
         if let Some(found) = self.settled() {
@@ -263,6 +267,8 @@ impl Snapshot {
         if let Some(found) = self.settled() {
             return found;
         }
+        // A caller dropped mid-fetch records no failure, deliberately: the
+        // next caller simply fetches again.
         let fetched = fetch(&self.http, url).await;
         let mut state = self.state();
         match fetched {
