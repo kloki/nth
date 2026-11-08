@@ -175,11 +175,19 @@ async fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{} {:#}", icons().fail.red().bold(), e.red());
-            ExitCode::FAILURE
-        }
+        Err(e) => failure(&e),
     }
+}
+
+/// How a command that failed exits: an interrupted run has printed its
+/// summary as the one report and exits as a shell reports a process ctrl+c
+/// killed (128 + SIGINT); anything else says why and exits 1.
+fn failure(e: &anyhow::Error) -> ExitCode {
+    if let Some(nth_session::Error::Interrupted) = e.downcast_ref() {
+        return ExitCode::from(130);
+    }
+    eprintln!("{} {:#}", icons().fail.red().bold(), e.red());
+    ExitCode::FAILURE
 }
 
 /// The config, with `--model` applied over it.
@@ -508,6 +516,13 @@ mod tests {
     use nth_protocol::{BoxError, Failed, ModelInfo, Origin, Request, StreamEvent};
 
     use super::*;
+
+    #[test]
+    fn an_interrupted_run_exits_130_and_other_failures_1() {
+        let interrupted = anyhow::Error::from(nth_session::Error::Interrupted);
+        assert_eq!(failure(&interrupted), ExitCode::from(130));
+        assert_eq!(failure(&anyhow::anyhow!("boom")), ExitCode::FAILURE);
+    }
 
     #[test]
     fn context_accepts_a_session_prefix_and_json() {
