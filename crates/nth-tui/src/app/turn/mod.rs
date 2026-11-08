@@ -85,7 +85,7 @@ pub enum Queued {
     /// A command to run, typed after `!`.
     Shell(String),
     /// `/approve`: the plan's approval.
-    Approve,
+    Approve(String),
     /// `/compact`: one compaction of the session.
     Compact,
     /// The plan as ctrl+g found it and as you left it.
@@ -102,7 +102,8 @@ impl Queued {
         match self {
             Queued::Prompt(text) => text.clone(),
             Queued::Shell(command) => format!("!{command}"),
-            Queued::Approve => "/approve".into(),
+            Queued::Approve(instructions) if instructions.is_empty() => "/approve".into(),
+            Queued::Approve(instructions) => format!("/approve {instructions}"),
             Queued::Compact => "/compact".into(),
             Queued::PlanEdits { .. } => "plan edits".into(),
         }
@@ -122,9 +123,8 @@ impl App {
         {
             self.prompt.clear();
             match (command, arg.is_empty()) {
-                // `/add-dir <dir>` is the one command with an argument,
-                // and it runs without a turn.
                 (Command::AddDir, false) => self.add_dir(&arg),
+                (Command::Approve, _) => self.approve(arg),
                 (command, _) => self.run_command(command),
             }
             return;
@@ -193,7 +193,7 @@ impl App {
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
-            Queued::Approve => self.start_turn(self.plan.approval()),
+            Queued::Approve(instructions) => self.start_turn(self.plan.approval(&instructions)),
             Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
                 self.start_turn(plan::edits::render(self.plan.path(), &original, &edited))
@@ -588,8 +588,8 @@ impl App {
     /// After an interrupted or failed turn, the queued prompts go back into
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again. An
-    /// approval, a compaction or plan edits have no text of yours to give
-    /// back, so they are dropped, and the status bar says so.
+    /// approval, a compaction or plan edits are dropped, and the status bar
+    /// says so. An approval's instructions also return to the prompt.
     fn unqueue(&mut self) {
         let mut parts = Vec::new();
         let mut dropped = Vec::new();
@@ -600,7 +600,11 @@ impl App {
         for next in self.queue.drain(..) {
             match next {
                 Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
-                Queued::Approve => dropped.push("plan approval discarded"),
+                Queued::Approve(ref instructions) if !instructions.is_empty() => {
+                    parts.push(instructions.clone());
+                    dropped.push("plan approval discarded");
+                }
+                Queued::Approve(_) => dropped.push("plan approval discarded"),
                 Queued::Compact => dropped.push("compaction discarded"),
                 Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
             }

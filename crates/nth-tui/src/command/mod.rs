@@ -94,7 +94,7 @@ impl Command {
         match self {
             Command::AddDir => "add a working directory",
             Command::Agents => "run as a mode or primary agent",
-            Command::Approve => "act on the plan",
+            Command::Approve => "act on the plan with optional instructions",
             Command::Clear => "start a fresh session",
             Command::Close => "close the content tab",
             Command::Compact => "summarize the session",
@@ -116,15 +116,14 @@ impl Command {
         }
     }
 
-    /// `/add-dir` is the one command that takes an argument: the directory
-    /// to add.
+    /// Commands that accept text after their name.
     fn takes_arg(self) -> bool {
-        matches!(self, Command::AddDir)
+        matches!(self, Command::AddDir | Command::Approve)
     }
 
     /// A command to run and the argument it was given: the first command is
-    /// `/<name>` alone, and only `/add-dir` takes anything after it, the
-    /// directory to add. `/clear now` is a prompt for the model, as ever.
+    /// `/<name>` alone, with arguments for `/add-dir` and `/approve`.
+    /// `/clear now` is a prompt for the model, as ever.
     pub fn invocation(text: &str) -> Option<(Command, &str)> {
         let text = text.trim();
         let name = text.strip_prefix('/')?;
@@ -250,10 +249,23 @@ mod tests {
         );
         assert_eq!(add("/clear"), Some((Command::Clear, String::new())));
         assert_eq!(add("/compact"), Some((Command::Compact, String::new())));
-        // Only `/add-dir` takes an argument; anything else is for the model.
+        assert_eq!(add("/approve"), Some((Command::Approve, String::new())));
+        assert_eq!(
+            add("/approve  \n "),
+            Some((Command::Approve, String::new()))
+        );
+        assert_eq!(
+            add(" /approve  don't use a worktree\nfor this plan "),
+            Some((
+                Command::Approve,
+                "don't use a worktree\nfor this plan".into()
+            ))
+        );
+        // Commands without arguments still leave extra text for the model.
         assert_eq!(add("/clear now"), None);
         assert_eq!(add("/compact now"), None);
         assert_eq!(add("/add-dirx"), None);
+        assert_eq!(add("/approvex extra"), None);
         assert_eq!(add("/nope"), None);
         assert_eq!(add("clear"), None);
     }

@@ -167,7 +167,7 @@ fn plan_mode_lets_the_memory_be_written() {
 fn approval_names_the_plan() {
     assert_eq!(
         approved(Path::new("/p.md")),
-        "The plan at /p.md has been approved, you can now edit files. Execute the plan"
+        "The plan at /p.md has been approved, you can now edit files. Execute the plan. Any final instructions supplied with /approve override conflicting details in the plan."
     );
 }
 

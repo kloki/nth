@@ -216,12 +216,29 @@ async fn esc_drops_queued_plan_edits_and_approval_with_a_hint() {
     assert_eq!(app.hint.as_deref(), Some("plan edits discarded"));
 
     let (mut app, _) = busy_app().await;
-    app.queue.push_back(Queued::Approve);
+    app.queue.push_back(Queued::Approve(String::new()));
     app.queue.push_back(Queued::Prompt("then this".into()));
     app.on_key(KeyEvent::from(KeyCode::Esc));
     end(&mut app).await;
 
     assert_eq!(app.prompt.text(), "then this");
+    assert_eq!(app.hint.as_deref(), Some("plan approval discarded"));
+}
+
+#[tokio::test]
+async fn esc_returns_queued_approval_instructions_to_the_prompt() {
+    let (mut app, _) = busy_app().await;
+    app.queue.push_back(Queued::Prompt("earlier".into()));
+    app.queue
+        .push_back(Queued::Approve("Use SQLite\nand skip migration".into()));
+    app.queue.push_back(Queued::Prompt("later".into()));
+    app.prompt.insert_str("typing");
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    end(&mut app).await;
+    assert_eq!(
+        app.prompt.text(),
+        "earlier\n\nUse SQLite\nand skip migration\n\nlater\n\ntyping"
+    );
     assert_eq!(app.hint.as_deref(), Some("plan approval discarded"));
 }
 

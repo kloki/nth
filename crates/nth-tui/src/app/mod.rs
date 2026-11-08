@@ -1238,7 +1238,7 @@ impl App {
             Command::Usage => self.open_content(Tab::Usage),
             Command::Plan => self.open_content(Tab::Plan),
             Command::Work => self.open_content(Tab::Work),
-            Command::Approve => self.approve(),
+            Command::Approve => self.approve(String::new()),
             Command::Compact => self.compact(),
             Command::Close => self.close_content(),
             Command::Copy => self.copy_answer(),
