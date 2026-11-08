@@ -149,24 +149,30 @@ impl Tail {
     /// What the model is shown: the kept output without its escapes, cut
     /// to `max_chars`, with a note when anything was left out.
     pub(crate) fn text(&mut self) -> String {
-        let mut kept: &[u8] = self.buf.make_contiguous();
-        let cut = self.dropped > 0;
-        // A cut leaves half a line at the front, maybe half an escape that
-        // would show as text: start at the next whole line, if any follows.
-        if cut
-            && let Some(newline) = kept.iter().position(|&b| b == b'\n')
-            && newline + 1 < kept.len()
-        {
-            kept = &kept[newline + 1..];
-        }
-        let clean = command_output::clean(kept);
+        let clean = command_output::clean(self.buf.make_contiguous());
         let count = clean.chars().count();
-        if !cut && count <= self.max_chars {
+        if self.dropped == 0 && count <= self.max_chars {
             return clean;
         }
         let skip = count.saturating_sub(self.max_chars);
-        let shown: String = clean.chars().skip(skip).collect();
-        let shown_count = count - skip;
+        let start = clean
+            .char_indices()
+            .nth(skip)
+            .map_or(clean.len(), |(i, _)| i);
+        let mut shown = &clean[start..];
+        // A cut, by the ring or by characters, leaves half a line at the
+        // front (after a ring cut maybe the rest of an escape, showing as
+        // text): start at the next whole line, unless the cut already fell
+        // on one or nothing visible follows, so the model is never left
+        // with nothing.
+        let on_a_line = start > 0 && clean.as_bytes()[start - 1] == b'\n';
+        if !on_a_line
+            && let Some(newline) = shown.find('\n')
+            && !shown[newline + 1..].trim().is_empty()
+        {
+            shown = &shown[newline + 1..];
+        }
+        let shown_count = shown.chars().count();
         format!("...output truncated, showing the last {shown_count} characters...\n{shown}")
     }
 }
@@ -364,6 +370,30 @@ pub(crate) mod tests {
                 "...output truncated, showing the last {} characters...\n{shown}",
                 shown.chars().count()
             )
+        );
+    }
+
+    #[test]
+    fn a_long_plain_output_starts_at_a_whole_line() {
+        // The ring holds 48 bytes, so the character cut to 12 lands inside
+        // `line 098`.
+        let mut tail = Tail::new(12);
+        for n in 0..100 {
+            tail.push(format!("line {n:03}\n").as_bytes());
+        }
+        assert_eq!(
+            tail.text(),
+            "...output truncated, showing the last 9 characters...\nline 099\n"
+        );
+    }
+
+    #[test]
+    fn a_tail_that_ends_in_escapes_still_shows_its_last_line() {
+        let mut tail = Tail::new(2);
+        tail.push(b"abcdefgh\n\x1b[0m");
+        assert_eq!(
+            tail.text(),
+            "...output truncated, showing the last 2 characters...\nh\n"
         );
     }
 
