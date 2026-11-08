@@ -241,10 +241,11 @@ impl App {
         let events = self.events_tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
+        let front_end = self.front_end();
         self.turn.start(|token| {
             tokio::spawn(async move {
                 let result = session
-                    .shell(command, shell.as_ref(), &events, &token)
+                    .shell(command, shell.as_ref(), &front_end, &events, &token)
                     .await;
                 ended(session, result, subagents, store, Ran::Shell).await
             })
