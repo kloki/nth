@@ -84,12 +84,7 @@ impl Curios {
 
     /// Hold the returned lease for the active session's polling lifetime.
     pub fn claim_delivery(&self) -> nth_curios::Result<CurioDelivery> {
-        let store = self.store()?;
-        let lease = store.claim_delivery()?;
-        Ok(CurioDelivery {
-            store,
-            _lease: lease,
-        })
+        CurioDelivery::claim(self.store()?)
     }
 }
 
@@ -113,6 +108,20 @@ pub struct Polled {
 }
 
 impl CurioDelivery {
+    /// Takes `store`'s delivery lease; refused while another holds it.
+    pub fn claim(store: nth_curios::Store) -> nth_curios::Result<Self> {
+        let lease = store.claim_delivery()?;
+        Ok(Self {
+            store,
+            _lease: lease,
+        })
+    }
+
+    /// The store the lease is on, for a poll that reads it elsewhere.
+    pub fn store(&self) -> &nth_curios::Store {
+        &self.store
+    }
+
     /// Polling/enqueueing never acknowledges a batch. Repeated polls dedup in
     /// Inbox, and a batch in `recorded` is never posted again.
     pub fn poll(
@@ -120,11 +129,24 @@ impl CurioDelivery {
         inbox: &crate::Inbox,
         recorded: &BTreeSet<String>,
     ) -> nth_curios::Result<Polled> {
-        let mut polled = Polled::default();
-        let Some(batches) = self.store.try_batches(true)? else {
-            polled.busy = true;
-            return Ok(polled);
-        };
+        Ok(match self.store.try_batches(true)? {
+            Some(batches) => Polled::deliver(batches, inbox, recorded),
+            None => Polled {
+                busy: true,
+                ..Polled::default()
+            },
+        })
+    }
+}
+
+impl Polled {
+    /// Posts the pending `batches` the session has not recorded yet.
+    pub fn deliver(
+        batches: Vec<nth_curios::Batch>,
+        inbox: &crate::Inbox,
+        recorded: &BTreeSet<String>,
+    ) -> Self {
+        let mut polled = Self::default();
         for batch in batches {
             if recorded.contains(&batch.id) {
                 polled.unacknowledged = true;
@@ -132,7 +154,7 @@ impl CurioDelivery {
                 polled.posted += 1;
             }
         }
-        Ok(polled)
+        polled
     }
 }
 

@@ -48,7 +48,8 @@ pub struct Host {
 
 impl Host {
     pub async fn start(store: Store, curio_id: &str) -> Result<Self> {
-        store.snapshot(curio_id, None)?;
+        let (checked, id) = (store.clone(), curio_id.to_owned());
+        offload(move || checked.snapshot(&id, None)).await?;
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let address = listener.local_addr()?;
         let mut random = [0; 32];
@@ -282,23 +283,31 @@ async fn snapshot(
                 .map_err(|_| Error::Invalid("Invalid revision".into()))
         })
         .transpose()?;
-    Ok(Json(s.store.snapshot(&s.cid, revision)?))
+    Ok(Json(
+        on_store(s, move |s| s.store.snapshot(&s.cid, revision)).await?,
+    ))
 }
 async fn content(State(s): State<Arc<Service>>, Path(revision): Path<u64>) -> Result<Html<String>> {
-    Ok(Html(s.store.content(&s.cid, revision)?))
+    Ok(Html(
+        on_store(s, move |s| s.store.content(&s.cid, revision)).await?,
+    ))
 }
 async fn comment(
     State(s): State<Arc<Service>>,
     Json(input): Json<Comment>,
 ) -> Result<Json<Thread>> {
-    Ok(Json(s.store.comment(&s.cid, input)?))
+    Ok(Json(
+        on_store(s, move |s| s.store.comment(&s.cid, input)).await?,
+    ))
 }
 async fn reply(
     State(s): State<Arc<Service>>,
     Path(id): Path<String>,
     Json(input): Json<Reply>,
 ) -> Result<Json<Thread>> {
-    Ok(Json(s.store.reply(&s.cid, &id, input, Author::Human)?))
+    Ok(Json(
+        on_store(s, move |s| s.store.reply(&s.cid, &id, input, Author::Human)).await?,
+    ))
 }
 #[derive(Deserialize)]
 struct ChangeStatus {
@@ -310,26 +319,38 @@ async fn status(
     Path(id): Path<String>,
     Json(input): Json<ChangeStatus>,
 ) -> Result<Json<Thread>> {
-    Ok(Json(s.store.set_status(
-        &s.cid,
-        &id,
-        input.expected_version,
-        input.status,
-    )?))
+    Ok(Json(
+        on_store(s, move |s| {
+            s.store
+                .set_status(&s.cid, &id, input.expected_version, input.status)
+        })
+        .await?,
+    ))
 }
 async fn send(State(s): State<Arc<Service>>, Json(input): Json<Send>) -> Result<Json<Batch>> {
-    Ok(Json(s.store.send(&s.cid, input)?))
+    Ok(Json(
+        on_store(s, move |s| s.store.send(&s.cid, input)).await?,
+    ))
+}
+/// Every store call waits on its lock, which another process's write or a
+/// viewer in another tab may hold, so it runs off the runtime.
+async fn on_store<T: std::marker::Send + 'static>(
+    s: Arc<Service>,
+    f: impl FnOnce(&Service) -> Result<T> + std::marker::Send + 'static,
+) -> Result<T> {
+    offload(move || f(&s)).await
 }
 async fn events(
     State(s): State<Arc<Service>>,
 ) -> Sse<impl futures::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
-    // The state is read only when its file changed, not every tick.
+    // The state is read only when its file changed, not every tick; the
+    // stamp is one stat, the read takes the lock.
     let stream = stream::unfold((s, None, None), |(s, mut stamp, mut last)| async move {
         loop {
             let now = s.store.stamp();
             if stamp.is_none() || now != stamp {
                 stamp = now;
-                if let Ok(version) = s.store.state_version()
+                if let Ok(version) = on_store(s.clone(), |s| s.store.state_version()).await
                     && last != Some(version)
                 {
                     last = Some(version);
@@ -343,4 +364,84 @@ async fn events(
         }
     });
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// With one runtime thread, a handler that waited on the lock in place
+    /// would stop every other request, and this test's own client, until
+    /// the lock was let go.
+    #[tokio::test(flavor = "current_thread")]
+    async fn handlers_answer_while_the_store_is_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let store = Store::new(dir.path(), "session-one").unwrap();
+        let cid = store
+            .publish(Publish {
+                request_id: "publish".into(),
+                curio_id: None,
+                expected_revision: None,
+                title: Some("Review".into()),
+                html: "<h1 id=title>Review</h1>".into(),
+            })
+            .unwrap()
+            .curio
+            .id;
+        let host = Host::start(store.clone(), &cid).await.unwrap();
+        let url = host.url();
+        let (base, token) = url.split_once('#').unwrap();
+        let (base, token) = (base.to_owned(), token.to_owned());
+        let held = store.lock().unwrap();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            // Let go by itself, so a handler stuck on the lock fails the
+            // test on time rather than hang it.
+            let _ = released.recv_timeout(Duration::from_secs(3));
+            drop(held);
+        });
+        let client = reqwest::Client::new();
+        let started = Instant::now();
+        let state = tokio::spawn({
+            let (client, base, token) = (client.clone(), base.clone(), token.clone());
+            async move {
+                client
+                    .get(format!("{base}api/state"))
+                    .header("X-Curios-Token", token)
+                    .send()
+                    .await
+            }
+        });
+        // Give the snapshot time to reach the lock.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let styles = client
+            .get(format!("{base}viewer.css"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(styles.status(), 200);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a request waited on the lock"
+        );
+        assert!(!state.is_finished(), "the snapshot waits for the lock");
+        release.send(()).unwrap();
+        let state = tokio::time::timeout(Duration::from_secs(2), state)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status(), 200);
+        holder.join().unwrap();
+    }
 }

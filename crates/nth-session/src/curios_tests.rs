@@ -149,7 +149,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     saved.save(&session).await.unwrap();
     // Saving leaves the Curios store alone; acknowledging after it records.
     assert_eq!(store.batches(true).unwrap().len(), 1);
-    session.acknowledge_curios().unwrap();
+    session.acknowledge_curios().await.unwrap();
     assert!(store.batches(true).unwrap().is_empty());
     let back = saved.load(session.id).await.unwrap();
     assert_eq!(back.curio_receipts, session.curio_receipts);
@@ -168,6 +168,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         .await
         .unwrap()
         .acknowledge_curios()
+        .await
         .unwrap();
     assert!(store.batches(true).unwrap().is_empty());
     // A store that cannot be acknowledged leaves saving and loading alone;
@@ -177,7 +178,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     std::fs::remove_file(&state).unwrap();
     std::fs::create_dir(&state).unwrap();
     saved.save(&session).await.unwrap();
-    assert!(session.acknowledge_curios().is_err());
+    assert!(session.acknowledge_curios().await.is_err());
     saved.load(session.id).await.unwrap();
     let persisted: Session = serde_json::from_slice(
         &std::fs::read(saves.path().join(format!("{}.json", session.id))).unwrap(),
@@ -186,7 +187,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     assert!(persisted.curio_receipts.contains(&batch.id));
     std::fs::remove_dir(&state).unwrap();
     std::fs::write(&state, bytes).unwrap();
-    session.acknowledge_curios().unwrap();
+    session.acknowledge_curios().await.unwrap();
     // Repository availability is independent of history availability. Keep
     // receipts through offline loads/saves so a later resume can reconcile.
     let git = repo.path().join(".git");
@@ -196,7 +197,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     assert_eq!(offline.curio_receipts, session.curio_receipts);
     assert_eq!(offline.messages, session.messages);
     saved.save(&offline).await.unwrap();
-    offline.acknowledge_curios().unwrap();
+    offline.acknowledge_curios().await.unwrap();
     std::fs::rename(&offline_git, &git).unwrap();
     raw["batches"][0]["recorded"] = false.into();
     std::fs::write(&state, serde_json::to_vec(&raw).unwrap()).unwrap();
@@ -205,6 +206,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         .await
         .unwrap()
         .acknowledge_curios()
+        .await
         .unwrap();
     assert!(store.batches(true).unwrap().is_empty());
 
@@ -214,7 +216,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     let offline = saved.load(session.id).await.unwrap();
     assert_eq!(offline.curio_receipts, session.curio_receipts);
     assert_eq!(offline.messages, session.messages);
-    offline.acknowledge_curios().unwrap();
+    offline.acknowledge_curios().await.unwrap();
     saved.delete(session.id).await.unwrap();
     let mut json = serde_json::to_value(&session).unwrap();
     json.as_object_mut().unwrap().remove("curio_root");

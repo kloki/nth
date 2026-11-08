@@ -8,7 +8,7 @@ use nth_protocol::{
 
 use super::{App, Message, Reply, Scripted, Session, rows_of};
 
-fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Store, core::Curio) {
+async fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Store, core::Curio) {
     let dir = tempfile::tempdir().unwrap();
     assert!(
         std::process::Command::new("git")
@@ -31,7 +31,7 @@ fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Store, cor
         .unwrap()
         .curio;
     let mut app = App::new(session, provider, Arc::new(Vec::new()));
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     (dir, app, store, curio)
 }
 
@@ -80,10 +80,10 @@ fn review_text(messages: &[Message]) -> Vec<&str> {
 #[tokio::test]
 async fn saved_comment_is_inert_then_external_send_wakes_owner_with_original_snapshot() {
     let provider = Arc::new(Scripted::default());
-    let (_dir, mut app, store, c) = fixture(provider.clone());
+    let (_dir, mut app, store, c) = fixture(provider.clone()).await;
     let before = app.session.as_ref().unwrap().messages.clone();
     let thread = comment(&store, &c);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     assert!(!app.is_busy());
     assert!(provider.sent().is_empty());
@@ -99,7 +99,7 @@ async fn saved_comment_is_inert_then_external_send_wakes_owner_with_original_sna
             html: "<h1 id=new>Replacement</h1>".into(),
         })
         .unwrap();
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     let ended = app.turn.join().await.unwrap();
     app.end_turn(ended);
@@ -129,12 +129,12 @@ async fn busy_send_waits_for_tool_result_instead_of_interrupting_tool_calls() {
         gate.clone(),
         vec![StreamEvent::ToolCall(call)],
     )]));
-    let (_dir, mut app, store, c) = fixture(provider.clone());
+    let (_dir, mut app, store, c) = fixture(provider.clone()).await;
     app.start_turn("Continue existing work".into());
     provider.asked.notified().await;
     let thread = comment(&store, &c);
     submit(&store, &c, &thread);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     assert!(app.inbox.prompts_waiting().is_none());
     gate.notify_one();
     let ended = app.turn.join().await.unwrap();
@@ -158,7 +158,7 @@ async fn busy_send_waits_for_tool_result_instead_of_interrupting_tool_calls() {
 #[tokio::test]
 async fn cancellation_holds_later_send_until_deliberate_resumption() {
     let provider = Arc::new(Scripted::replying([Reply::Hang]));
-    let (_dir, mut app, store, c) = fixture(provider.clone());
+    let (_dir, mut app, store, c) = fixture(provider.clone()).await;
     app.start_turn("Work".into());
     provider.asked.notified().await;
     app.interrupt();
@@ -166,7 +166,7 @@ async fn cancellation_holds_later_send_until_deliberate_resumption() {
     app.end_turn(ended);
     let thread = comment(&store, &c);
     let batch = submit(&store, &c, &thread);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     assert!(!app.is_busy());
     assert!(app.hold_notices);
@@ -184,12 +184,12 @@ async fn cancellation_holds_later_send_until_deliberate_resumption() {
 #[tokio::test]
 async fn repository_icon_survives_switch_but_feedback_only_runs_after_owner_resume() {
     let provider = Arc::new(Scripted::default());
-    let (_dir, mut app, store, c) = fixture(provider.clone());
+    let (_dir, mut app, store, c) = fixture(provider.clone()).await;
     let owner = app.session.as_ref().unwrap().clone();
     app.resume(Session::new("fake", app.cwd.clone()));
     let thread = comment(&store, &c);
     submit(&store, &c, &thread);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     assert!(!app.is_busy());
     app.place = "repo".into();
@@ -200,7 +200,7 @@ async fn repository_icon_survives_switch_but_feedback_only_runs_after_owner_resu
     assert!(app.areas.find(&crate::app::mouse::Target::Curio).is_some());
     assert!(provider.sent().is_empty());
     app.resume(owner);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     let ended = app.turn.join().await.unwrap();
     app.end_turn(ended);
@@ -214,14 +214,14 @@ async fn repository_icon_survives_switch_but_feedback_only_runs_after_owner_resu
 #[tokio::test]
 async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_saved_history() {
     let provider = Arc::new(Scripted::default());
-    let (dir, mut app, store, c) = fixture(provider.clone());
+    let (dir, mut app, store, c) = fixture(provider.clone()).await;
     let blocked = dir.path().join("blocked-sessions");
     std::fs::write(&blocked, "not a directory").unwrap();
     let saves = nth_session::Store::at(&blocked);
     app = app.with_store(saves.clone());
     let thread = comment(&store, &c);
     let batch = submit(&store, &c, &thread);
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     let ended = app.turn.join().await.unwrap();
     app.end_turn(ended);
@@ -231,20 +231,25 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
     );
     assert!(!store.batches(true).unwrap()[0].recorded);
     assert!(!blocked.join(format!("{}.json", app.session_id)).exists());
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.notices_due();
     assert!(!app.is_busy());
     assert_eq!(provider.sent().len(), 1);
     std::fs::remove_file(&blocked).unwrap();
     saves.save(app.session.as_ref().unwrap()).await.unwrap();
-    app.session.as_ref().unwrap().acknowledge_curios().unwrap();
+    app.session
+        .as_ref()
+        .unwrap()
+        .acknowledge_curios()
+        .await
+        .unwrap();
     let resumed = saves.load(app.session_id).await.unwrap();
     assert!(resumed.curio_receipts.contains(&batch.id));
     assert_eq!(review_text(&resumed.messages).len(), 1);
     assert!(store.batches(true).unwrap().is_empty());
     drop(app);
     let mut restarted = App::new(resumed, provider.clone(), Arc::new(Vec::new()));
-    restarted.poll_curios_through();
+    restarted.poll_curios_through().await;
     restarted.notices_due();
     assert!(!restarted.is_busy());
     assert_eq!(provider.sent().len(), 1);
@@ -257,7 +262,7 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
 #[tokio::test]
 async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let provider = Arc::new(Scripted::default());
-    let (dir, mut app, _first_store, first) = fixture(provider);
+    let (dir, mut app, _first_store, first) = fixture(provider).await;
     app.opener = |_| Ok(());
     let publish = |owner: &str, title: &str| {
         let store = core::Store::new(dir.path(), owner).unwrap();
@@ -274,7 +279,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
         (store, curio)
     };
     let (second_store, second) = publish("second-owner", "Second document");
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.open_curio(second.session_id.clone(), second.id.clone(), None);
     let opened = app.curios.opening.join().await.unwrap();
     let adopted = opened.as_ref().unwrap();
@@ -288,15 +293,17 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     assert!(app.hint.as_deref().unwrap().starts_with("adopted Curio"));
     assert!(second_store.list().unwrap().is_empty());
     app.open_latest_curio();
+    let opened = app.curios.opening.join().await.unwrap();
     assert!(
-        !app.curios.opening.is_running(),
+        opened.as_ref().unwrap().host.is_none(),
         "last-opened host is reused"
     );
+    app.curio_opened(opened);
     assert!(app.hint.as_deref().unwrap().starts_with("opened Curio"));
     // A session still running keeps its curio.
     let (third_store, third) = publish("third-owner", "Third document");
     let running = third_store.claim_delivery().unwrap();
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.open_curio(third.session_id.clone(), third.id.clone(), None);
     let opened = app.curios.opening.join().await.unwrap();
     let kept = opened.as_ref().unwrap();
@@ -306,7 +313,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     assert!(app.hint.as_deref().unwrap().contains("runs elsewhere"));
     drop(running);
     std::fs::remove_dir_all(third_store.path()).unwrap();
-    app.poll_curios_through();
+    app.poll_curios_through().await;
     app.open_latest_curio();
     // The latest left is this session's own, whose host is reused or made.
     if app.curios.opening.is_running() {
