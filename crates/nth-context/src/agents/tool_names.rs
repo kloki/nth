@@ -1,6 +1,7 @@
 //! Names of nth's tools that more than one crate decides something on: agent
 //! permissions, plan mode, the session loop and the TUI all have to agree on
-//! which tools change files and which touch the work plan.
+//! which tools change files, which touch the work plan and which may wait
+//! without end.
 
 /// Tools that change files: kept from a subagent while its parent plans,
 /// covered by opencode's `edit` permission, and followed by format notes and
@@ -12,6 +13,10 @@ pub const WRITERS: [&str; 5] = [
     "curio_publish",
     "curio_reply",
 ];
+
+/// Tools the session loop never times out: they wait for a person, or for
+/// a subagent that has a budget of its own.
+pub const UNTIMED: [&str; 3] = ["question", "task", "work_assign"];
 
 pub const CURIOS: [&str; 3] = ["curio_publish", "curio_read", "curio_reply"];
 

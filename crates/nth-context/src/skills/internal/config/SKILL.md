@@ -257,16 +257,17 @@ enabled = true        # sent only while the terminal is unfocused
 
 ```toml
 [session]
-max_steps = 100        # model requests in a turn without a final answer
+max_steps = 100         # model requests in a turn without a final answer
+tool_timeout_secs = 900 # seconds a tool call may run; 0 for no limit
 
-[task]                 # subagents started with the task tool
+[task]                  # subagents started with the task tool
 max_steps = 50
-timeout_secs = 600     # 0 for no time limit
+timeout_secs = 600      # 0 for no time limit
 
-[work]                 # subagents on a work item
+[work]                  # subagents on a work item
 max_steps = 100
 timeout_secs = 600
-stall_secs = 120       # report silence this long; 0 never
+stall_secs = 120        # report silence this long; 0 never
 ```
 
 ### Memory
@@ -295,9 +296,10 @@ Every key with its default, in the order of `nth init`'s template.
 
 **`[session]`**
 
-| Key         | Default | Meaning                                          |
-| ----------- | ------- | ------------------------------------------------ |
-| `max_steps` | `100`   | Model requests in a turn without a final answer. |
+| Key                 | Default | Meaning                                                          |
+| ------------------- | ------- | ---------------------------------------------------------------- |
+| `max_steps`         | `100`   | Model requests in a turn without a final answer.                 |
+| `tool_timeout_secs` | `900`   | Seconds a tool call may run, bash's timeout too; 0 for no limit. |
 
 **`[context]`**
 

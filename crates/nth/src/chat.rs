@@ -55,6 +55,7 @@ async fn run(
             eprintln!("{warning}");
         }
         session.max_steps = config.session.max_steps;
+        session.tool_timeout = config.session.tool_timeout();
         // Saved before there were several providers, perhaps: shown and
         // compared as provider/model like the listed ones.
         let model = provider.qualify(&session.model);
@@ -169,6 +170,7 @@ impl nth_tui::RuntimeLoader for Loader {
             session.set_context(context(session.cwd.clone(), &paths).await);
             let warnings = crate::apply_directories(&mut session, &config);
             session.max_steps = config.session.max_steps;
+            session.tool_timeout = config.session.tool_timeout();
             session.compaction = config.context;
             let (mode_llms, profiles) = model_settings(&config, &provider);
             let post_write = post_write(&config);

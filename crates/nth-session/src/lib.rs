@@ -16,7 +16,7 @@ mod system_prompt;
 pub mod usage;
 pub mod work;
 
-pub use agent_loop::{DEFAULT_MAX_STEPS, Error};
+pub use agent_loop::{DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error};
 pub(crate) use agent_loop::{Route, Turn};
 pub(crate) use nth_protocol::Compaction;
 pub use session::{SHELL_PROMPT, Session};

@@ -33,6 +33,10 @@ use crate::{Compaction, Spend};
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
 
+/// Guards against a tool call that never returns, which headless nobody
+/// could stop.
+pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(900);
+
 /// Why calls the model made on the last allowed step anyway failed.
 const MAX_STEPS_REACHED: &str = "maximum steps reached; tool not run";
 

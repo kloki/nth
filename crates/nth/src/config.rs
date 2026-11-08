@@ -95,13 +95,22 @@ impl ProviderConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
     pub max_steps: usize,
+    /// `0` lets a tool call run as long as it likes.
+    pub tool_timeout_secs: u64,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_steps: nth_session::DEFAULT_MAX_STEPS,
+            tool_timeout_secs: nth_session::DEFAULT_TOOL_TIMEOUT.as_secs(),
         }
+    }
+}
+
+impl SessionConfig {
+    pub fn tool_timeout(&self) -> Option<Duration> {
+        (self.tool_timeout_secs > 0).then(|| Duration::from_secs(self.tool_timeout_secs))
     }
 }
 

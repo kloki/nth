@@ -173,6 +173,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     }
     session.mode = Mode::Act;
     session.max_steps = max_steps;
+    session.tool_timeout = ctx.tool_timeout;
     session.set_limits(context_window, max_output);
     session.compaction = ctx.compaction;
     session.parent = ctx.session.parse().ok();
@@ -516,6 +517,7 @@ pub(crate) mod tests {
             session: parent.to_string(),
             context_window: Some(200_000),
             max_output: Some(64_000),
+            tool_timeout: Some(std::time::Duration::from_secs(60)),
             ..ToolContext::new("/repo".into())
         };
         let child = child_session(&explore(), &ctx, 5);
@@ -523,6 +525,7 @@ pub(crate) mod tests {
         assert_eq!(child.parent, Some(parent));
         assert_eq!(child.context_window, Some(200_000));
         assert_eq!(child.max_output, Some(64_000));
+        assert_eq!(child.tool_timeout, ctx.tool_timeout);
     }
 
     #[test]
