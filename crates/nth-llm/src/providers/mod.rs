@@ -11,6 +11,8 @@ mod endpoint;
 mod images;
 mod listing;
 
+use std::path::PathBuf;
+
 pub use endpoint::{EndpointConfig, Unavailable};
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use nth_protocol::{BoxError, Listing, Provider, Request, Retry, StreamEvent};
@@ -49,22 +51,25 @@ pub struct Providers {
 impl Providers {
     /// `default_model` picks the default provider; a model of an
     /// unavailable provider is an error here rather than at the first turn.
+    /// `cache` is where the catalogue is kept between runs, so one that
+    /// starts offline still routes each model over its protocol.
     pub fn new(
         endpoints: Vec<EndpointConfig>,
         unavailable: Vec<Unavailable>,
         default_model: &str,
+        cache: Option<PathBuf>,
     ) -> Result<Self, Error> {
         let http = crate::http::client()?;
-        let catalog = Snapshot::new(http.clone());
+        let catalog = Snapshot::new(http.clone(), cache);
         let mut providers = Self::build(endpoints, unavailable, default_model, http, catalog)?;
         providers.start_fetch();
         Ok(providers)
     }
 
-    /// As `new`, but without the catalogue, never fetched: what `nth
-    /// context` and tests run on, which must send nothing but what they
-    /// ask for. An endpoint with configured models lists them without a
-    /// request.
+    /// As `new`, but without the catalogue, never fetched nor read from a
+    /// cache: what `nth context` and tests run on, which must send nothing
+    /// but what they ask for. An endpoint with configured models lists
+    /// them without a request.
     pub fn offline(
         endpoints: Vec<EndpointConfig>,
         unavailable: Vec<Unavailable>,
@@ -102,14 +107,13 @@ impl Providers {
         Ok(providers)
     }
 
-    /// Fetches the catalogue in the background. Without a runtime, as in a
-    /// test, the first request fetches it instead.
+    /// Fetches the catalogue in the background, and keeps trying while it
+    /// fails. Without a runtime, as in a test, the first request fetches it
+    /// instead, and a cached catalogue then serves for the rest of the run.
     fn start_fetch(&mut self) {
         self.fetch = tokio::runtime::Handle::try_current().ok().map(|runtime| {
             let catalog = self.catalog.clone();
-            runtime.spawn(async move {
-                catalog.get().await;
-            })
+            runtime.spawn(async move { catalog.refresh().await })
         });
     }
 
@@ -229,6 +233,7 @@ mod tests {
             vec![endpoint("lyceum"), endpoint("opencode")],
             unavailable(),
             default_model,
+            None,
         )
         .expect("two providers")
     }
@@ -315,12 +320,13 @@ mod tests {
         );
         assert_eq!(providers.qualify("muted/glm"), "muted/glm");
 
-        let error = Providers::new(vec![endpoint("lyceum")], Vec::new(), "x").err();
+        let error = Providers::new(vec![endpoint("lyceum")], Vec::new(), "x", None).err();
         assert!(error.is_none(), "a bare default is fine");
-        let error = Providers::new(vec![endpoint("lyceum")], unavailable(), "muted/glm").err();
+        let error =
+            Providers::new(vec![endpoint("lyceum")], unavailable(), "muted/glm", None).err();
         assert!(matches!(error, Some(Error::Unavailable { .. })));
         assert!(matches!(
-            Providers::new(Vec::new(), Vec::new(), "x").err(),
+            Providers::new(Vec::new(), Vec::new(), "x", None).err(),
             Some(Error::NoProviders)
         ));
     }
@@ -1009,7 +1015,7 @@ mod tests {
             Vec::new(),
             "glm",
             reqwest::Client::new(),
-            Snapshot::at(url),
+            Snapshot::at(url, None),
         )
         .expect("one provider");
         providers.start_fetch();
