@@ -380,6 +380,67 @@ mod tests {
         );
     }
 
+    /// Runs a turn on `route(40)` that a front-end watches, starting from
+    /// `last_usage`, and the phases of every snapshot it built.
+    async fn watched_turn(
+        provider: &Scripted,
+        messages: &mut Vec<Message>,
+        mut last_usage: Option<Usage>,
+    ) -> Vec<String> {
+        let ctx = ToolContext::new(".".into());
+        let _watching = ctx.context_preview.subscribe();
+        let (tx, _rx) = mpsc::channel(64);
+        Turn {
+            provider,
+            route: route(40),
+            tools: &[],
+            ctx: &ctx,
+            messages,
+            spend: &mut spend(),
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
+        .await
+        .expect("the turn recovers");
+        crate::context_preview::published::take()
+            .into_iter()
+            .map(|preview| preview.phase)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_compaction_in_a_turn_goes_on_to_the_request_without_ready() {
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::TextDelta("# Objective\nship it".into())],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("first question".into()),
+            assistant(&"x".repeat(400)),
+            Message::User("second question".into()),
+        ];
+        // Over the usable 8k, so the step compacts before its request.
+        let phases = watched_turn(&provider, &mut messages, Some(usage(9_000, 0))).await;
+        assert_eq!(phases, ["compaction_required", "pending_reply", "idle"]);
+        assert_eq!(last_summary(&messages), Some("# Objective\nship it"));
+    }
+
+    #[tokio::test]
+    async fn an_overflow_replay_goes_on_to_the_request_without_ready() {
+        let provider = Scripted::script(vec![
+            Reply::Refused(Failure::Overflow),
+            Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
+            Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
+        ]);
+        let mut messages = overflowing_conversation();
+        let phases = watched_turn(&provider, &mut messages, None).await;
+        assert_eq!(phases, ["pending_reply", "pending_reply", "idle"]);
+        assert_eq!(last_summary(&messages), Some("the summary"));
+    }
+
     fn overflowing_conversation() -> Vec<Message> {
         vec![
             Message::System("sys".into()),

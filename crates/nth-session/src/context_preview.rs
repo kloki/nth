@@ -489,6 +489,91 @@ mod tests {
         );
     }
 
+    /// The phases of what was built since the last call.
+    fn phases() -> Vec<String> {
+        published::take().into_iter().map(|p| p.phase).collect()
+    }
+
+    #[tokio::test]
+    async fn a_pre_empted_step_goes_on_to_the_next_request_without_ready() {
+        use nth_protocol::ToolContext;
+
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let ctx = ToolContext {
+            inbox: Inbox::new(),
+            ..ToolContext::new(".".into())
+        };
+        let _watching = ctx.context_preview.subscribe();
+        // Sent while the first reply streamed: its call never runs.
+        ctx.inbox.post_prompt("stop that".into());
+        let mut messages = vec![Message::User("go".into())];
+        let (result, _) =
+            crate::agent_loop::tests::turn(&tool_step(), &tools, &ctx, &mut messages).await;
+        result.expect("the turn goes on with the prompt");
+        assert_eq!(
+            phases(),
+            ["pending_reply", "pending_results", "pending_reply", "idle"]
+        );
+    }
+
+    #[tokio::test]
+    async fn asking_for_a_snapshot_opens_the_gate_headless() {
+        use futures::FutureExt;
+        use nth_protocol::{FrontEnd, StreamEvent, ToolContext, ToolResult, ToolSpec};
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        use crate::agent_loop::tests::{Scripted, call};
+
+        /// Asks for snapshots as the `context` tool does.
+        struct Want;
+        impl Tool for Want {
+            fn spec(&self) -> ToolSpec {
+                ToolSpec {
+                    name: "want",
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                }
+            }
+            fn call<'a>(
+                &'a self,
+                _: serde_json::Value,
+                ctx: &'a ToolContext,
+            ) -> futures::future::BoxFuture<'a, ToolResult> {
+                async move {
+                    ctx.context_preview.want();
+                    Ok("asked".into())
+                }
+                .boxed()
+            }
+        }
+        let mut session = Session::new("model", ".".into());
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "want", "{}"))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Want)];
+        let front_end = FrontEnd::default();
+        let (tx, _rx) = mpsc::channel(64);
+        session
+            .prompt(
+                "go",
+                &provider,
+                &tools,
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            phases(),
+            ["ready", "pending_reply", "idle"],
+            "nothing before the call asked"
+        );
+        assert!(front_end.context_preview.get().is_some());
+    }
+
     #[tokio::test]
     async fn live_request_snapshots_match_provider_and_tool_sees_pending_results() {
         use futures::FutureExt;
@@ -642,7 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_live_instruction_change_is_delivered_never_pending() {
+    async fn a_live_instruction_change_is_in_the_ready_history_once() {
         use std::sync::Arc;
 
         use futures::FutureExt;
@@ -704,12 +789,6 @@ mod tests {
             .await
             .unwrap();
         let snapshots = published::take();
-        assert!(
-            snapshots
-                .iter()
-                .all(|p| !p.pending.iter().any(|(kind, _)| kind == "instructions")),
-            "the hand-over delivers the edit before any boundary"
-        );
         let ready = snapshots
             .iter()
             .find(|p| p.phase == "ready")

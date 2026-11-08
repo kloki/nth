@@ -118,8 +118,14 @@ async fn a_turn_watches_the_context_preview_only_while_it_runs() {
     assert_eq!(snapshot["phase"], "pending_reply");
 
     app.on_key(KeyEvent::from(KeyCode::Esc));
+    // The turn's end comes in before its last snapshot was shown.
     let ended = app.turn.join().await.expect("ends");
     app.end_turn(ended);
+    assert_eq!(
+        app.context_view.preview().map(|p| p.phase.as_str()),
+        Some("idle"),
+        "the snapshot published as the turn ended is shown"
+    );
     assert!(app.context_live.is_none());
     assert!(
         !app.context_preview.builds(),

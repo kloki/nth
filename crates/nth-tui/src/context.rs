@@ -33,6 +33,11 @@ impl ContextView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn preview(&self) -> Option<&Preview> {
+        self.preview.as_ref()
+    }
+
     pub(crate) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = usize::from(area.width).max(1);
         let lines = self

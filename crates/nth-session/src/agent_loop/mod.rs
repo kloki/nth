@@ -161,8 +161,8 @@ impl Turn<'_> {
     /// Publishes the request as it stands at a committed boundary, never a
     /// streaming fragment. Building one is O(history), so nothing is built
     /// unless a front-end subscribed or a tool asked. Instruction files are
-    /// not looked at: `hand_over` delivers their changes before every
-    /// request, so none is pending at a boundary.
+    /// not looked at: `hand_over` delivers their changes before the next
+    /// step's request, and only the idle preview shows one still pending.
     pub(crate) fn publish_preview(&self, phase: &str, last: bool, usage: Option<Usage>) {
         if self.ctx.is_subagent || !self.ctx.context_preview.builds() {
             return;

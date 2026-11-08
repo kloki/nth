@@ -500,7 +500,7 @@ impl App {
     ) {
         self.drain_events();
         self.drop_asks();
-        self.context_live = None;
+        self.stop_watching_context();
         let elapsed = self
             .busy_since
             .take()
@@ -632,7 +632,7 @@ impl App {
     pub(super) fn turn_task_failed(&mut self, error: JoinError) {
         self.drain_events();
         self.drop_asks();
-        self.context_live = None;
+        self.stop_watching_context();
         let elapsed = self
             .busy_since
             .take()

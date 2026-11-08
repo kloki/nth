@@ -27,6 +27,20 @@ impl App {
         self.context_view.update(Some(preview));
     }
 
+    /// Drops the running turn's subscription, keeping what it published
+    /// last: the turn's end may win the loop's `select!` over its final
+    /// snapshot, which would otherwise wait for the next refresh.
+    pub(super) fn stop_watching_context(&mut self) {
+        let Some(mut live) = self.context_live.take() else {
+            return;
+        };
+        if live.has_changed().unwrap_or(false)
+            && let Some(snapshot) = live.borrow_and_update().clone()
+        {
+            self.context_updated(&snapshot);
+        }
+    }
+
     /// Live snapshots describe committed history, never streaming fragments.
     pub(super) fn context_updated(&mut self, value: &ContextSnapshot) {
         if let Ok(preview) = serde_json::from_value::<Preview>((**value).clone()) {
