@@ -35,24 +35,16 @@ impl<'a> Receipts<'a> {
     }
 }
 
-/// The store of session `id`: at `root` when it kept one, else in the main
-/// checkout of `state_root`. A subagent has none, since its feedback would
-/// go to a session nobody reviews.
-fn open(
-    subagent: bool,
-    root: Option<PathBuf>,
-    state_root: &Path,
-    id: &str,
-) -> nth_curios::Result<Store> {
+/// The store of session `id`, in the main checkout of `state_root` as the
+/// tools open it. A subagent has none, since its feedback would go to a
+/// session nobody reviews.
+fn open(subagent: bool, state_root: &Path, id: &str) -> nth_curios::Result<Store> {
     if subagent {
         return Err(nth_curios::Error::Invalid(
             "Curios is unavailable to this session".into(),
         ));
     }
-    match root {
-        Some(root) => Store::new(&root, id),
-        None => Store::open(state_root, id),
-    }
+    Store::open(state_root, id)
 }
 
 /// [`Session::acknowledge_curios`]'s work, on a blocking thread.
@@ -78,12 +70,7 @@ impl Session {
     /// feedback or a command that publishes for it. Builds the store, so an
     /// async caller runs it under [`nth_curios::offload`].
     pub fn curio_store(&self) -> nth_curios::Result<Store> {
-        open(
-            self.subagent,
-            self.curio_root.clone(),
-            &self.state_root(),
-            &self.id.to_string(),
-        )
+        open(self.subagent, &self.state_root(), &self.id.to_string())
     }
 
     pub fn curio_source_dir(&self) -> Option<PathBuf> {
@@ -158,28 +145,32 @@ impl Session {
     /// that acknowledging feedback and deleting the session find what the
     /// turn's tools made. Only the root is found, not the store built: its
     /// folder waits for the tools, and the delivery poll for the folder.
+    /// Asked once per run, so a session outside a repository does not spawn
+    /// git after every turn; a root saved by an earlier run is replaced.
     pub(crate) async fn find_curio_root(&mut self) {
-        if self.curio_root.is_some() {
+        if self.curio_root_found {
             return;
         }
         let state_root = self.state_root();
-        if let Ok(root) = nth_curios::offload(move || nth_curios::owner_root(&state_root)).await {
-            self.curio_root = Some(root);
+        match nth_curios::offload(move || nth_curios::owner_root(&state_root)).await {
+            Ok(root) => {
+                self.curio_root = Some(root);
+                self.curio_root_found = true;
+            }
+            // A saved root stays: deleting the session still finds what its
+            // tools made before the repository went away.
+            Err(nth_curios::Error::RepoRequired) => self.curio_root_found = true,
+            // Another failure, such as git missing for a moment, is asked
+            // again after the next turn.
+            Err(_) => {}
         }
     }
 
     /// Readies this session's Curios store and keeps its root.
     pub(crate) async fn ready_curios(&mut self) {
-        let (subagent, root, state_root, id) = (
-            self.subagent,
-            self.curio_root.clone(),
-            self.state_root(),
-            self.id.to_string(),
-        );
+        let (subagent, state_root, id) = (self.subagent, self.state_root(), self.id.to_string());
         if let Ok(root) = nth_curios::offload(move || {
-            Ok(open(subagent, root, &state_root, &id)?
-                .repo_root()
-                .to_path_buf())
+            Ok(open(subagent, &state_root, &id)?.repo_root().to_path_buf())
         })
         .await
         {

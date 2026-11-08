@@ -59,6 +59,8 @@ async fn curios_is_made_only_when_plan_mode_or_its_tools_need_it() {
     );
     let mut session = Session::new("fake", repo.path().to_path_buf());
     session.mode = nth_protocol::Mode::Act;
+    // A root saved elsewhere is replaced: the state root alone decides.
+    session.curio_root = Some(std::path::PathBuf::from("/elsewhere"));
     crate::session::tests::send(&mut session, "hello").await;
     assert!(!repo.path().join(".nth/curios").exists());
     // The root is found once the turn ended all the same, so a curio the

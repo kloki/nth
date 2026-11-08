@@ -1322,7 +1322,6 @@ impl App {
     fn start_fresh_session(&mut self) {
         let Llm { model, effort } = self.selection.current();
         let mut session = Session::new(model, self.cwd.clone()).with_context(self.context.clone());
-        session.curio_root = self.session.as_ref().and_then(|s| s.curio_root.clone());
         session.effort = effort;
         session.mode = self.selection.mode;
         session.set_agent(self.selection.agent.clone());

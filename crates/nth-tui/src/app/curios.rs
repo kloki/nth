@@ -101,10 +101,7 @@ pub(super) struct Curios {
 impl Curios {
     pub fn new(session: &Session) -> Self {
         Self {
-            root: session
-                .curio_root
-                .clone()
-                .or_else(|| core::owner_root(&session.state_root()).ok()),
+            root: core::owner_root(&session.state_root()).ok(),
             items: Vec::new(),
             queued: BTreeSet::new(),
             discovery: core::Discovery::default(),
@@ -300,9 +297,7 @@ impl App {
                 (Some(root), _) => session.curio_root = Some(root.clone()),
                 // Acknowledging reads the root from the session, which a
                 // turn that started after the claim had away.
-                (None, Some(store)) if session.curio_root.is_none() => {
-                    session.curio_root = Some(store.repo_root().to_path_buf())
-                }
+                (None, Some(store)) => session.curio_root = Some(store.repo_root().to_path_buf()),
                 _ => {}
             }
         }

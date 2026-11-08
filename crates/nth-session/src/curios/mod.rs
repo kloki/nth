@@ -1,10 +1,12 @@
 //! The rules a front-end delivers Curios review feedback and opens curios
 //! by: who delivers a session's feedback, which batches wake the model, and
 //! whose store serves a curio opened from another session; and the
-//! session's own side, the receipts it keeps of the feedback it recorded. Store calls spawn
-//! git or wait on another process's lock, so what here touches a store is
-//! sync and meant for a blocking thread; the decisions are plain values a
-//! front-end applies on its own loop.
+//! session's own side, the receipts it keeps of the feedback it recorded.
+//! The store is always in the main checkout of the session's state root.
+//! Store calls spawn git or wait on another process's lock: the sync ones
+//! here are meant for a blocking thread, the session's async ones offload
+//! theirs, and the decisions are plain values a front-end applies on its
+//! own loop.
 mod delivery;
 #[cfg(test)]
 mod fixture;

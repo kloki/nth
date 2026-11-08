@@ -38,11 +38,15 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
-    /// Original repository owning generated review state: found by the
-    /// first main-session turn in a repository, so deleting the session
-    /// finds the curios its tools made there.
+    /// The main checkout of `state_root`, where the session's Curios store
+    /// is, as last found: kept so deleting the session and acknowledging its
+    /// feedback find the store without asking git, even once the repository
+    /// has gone. Never decides where the store is; `state_root` does.
     #[serde(default)]
     pub curio_root: Option<PathBuf>,
+    /// Whether this run already looked for `curio_root`.
+    #[serde(skip)]
+    pub(crate) curio_root_found: bool,
     /// Receipts persisted alongside the history which contains their notices.
     #[serde(default)]
     pub curio_receipts: BTreeSet<String>,
@@ -183,6 +187,7 @@ impl Session {
         Self {
             id,
             curio_root: None,
+            curio_root_found: false,
             curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
