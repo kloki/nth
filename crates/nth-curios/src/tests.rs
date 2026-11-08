@@ -993,3 +993,212 @@ fn discovery_reads_a_session_again_only_once_it_changed() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].session_id, "session-two");
 }
+
+fn root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().canonicalize().unwrap()
+}
+
+/// The five paths of the owner folder each construction asks about.
+const OWNER_PROBES: usize = 5;
+
+/// How many paths one construction for `session` asks about when it walks
+/// `below`: every path there and the owner probes, each once.
+fn asked(root: &std::path::Path, below: &std::path::Path, session: &str) -> usize {
+    fn walk(path: &std::path::Path, into: &mut std::collections::BTreeSet<std::path::PathBuf>) {
+        let Ok(items) = std::fs::read_dir(path) else {
+            return;
+        };
+        for item in items {
+            let item = item.unwrap();
+            if item.file_type().unwrap().is_dir() {
+                walk(&item.path(), into);
+            }
+            into.insert(item.path());
+        }
+    }
+    let owner = root.join(".nth/curios").join(session);
+    let mut paths: std::collections::BTreeSet<_> = [
+        owner.clone(),
+        owner.join("source"),
+        owner.join("state.json"),
+        owner.join("lock"),
+        owner.join("delivery.lock"),
+    ]
+    .into();
+    walk(below, &mut paths);
+    paths.len()
+}
+
+/// [`asked`] for a construction that walks the whole tree.
+fn asked_by_walk(root: &std::path::Path, session: &str) -> usize {
+    asked(root, &root.join(".nth/curios"), session)
+}
+
+/// [`asked`] for a construction that trusts the tree.
+fn asked_by_owner(root: &std::path::Path, session: &str) -> usize {
+    asked(root, &root.join(".nth/curios").join(session), session)
+}
+
+#[test]
+fn one_check_ignore_verifies_every_path() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("first")).unwrap().curio.id;
+    let mut update = publication("second");
+    update.curio_id = Some(cid);
+    update.expected_revision = Some(1);
+    store.publish(update).unwrap();
+    for session in ["session-two", "session-three"] {
+        Store::new(dir.path(), session)
+            .unwrap()
+            .publish(publication("first"))
+            .unwrap();
+    }
+    let root = root(&dir);
+    store::forget_verified(&root);
+    store::take_checks(&root);
+    let paths = asked_by_walk(&root, "session-one");
+    Store::new(dir.path(), "session-one").unwrap();
+    assert_eq!(store::take_checks(&root), vec![paths]);
+}
+
+#[test]
+fn a_negated_pattern_in_a_batch_is_refused() {
+    let (dir, _) = setup();
+    Store::new(dir.path(), "session-two")
+        .unwrap()
+        .publish(publication("publish"))
+        .unwrap();
+    // Another session's file, so only the walk can find it.
+    std::fs::write(
+        dir.path().join(".nth/curios/.gitignore"),
+        "*\n!session-two/\n!session-two/state.json\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        Store::new(dir.path(), "session-one"),
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[test]
+fn a_second_store_skips_the_tree_walk() {
+    let (dir, store) = setup();
+    store.publish(publication("publish")).unwrap();
+    let root = root(&dir);
+    store::take_checks(&root);
+    let own = asked_by_owner(&root, "session-one");
+    assert!(own > OWNER_PROBES, "the publish left files to walk");
+    Store::new(dir.path(), "session-one").unwrap();
+    Store::new(dir.path(), "session-two").unwrap();
+    assert_eq!(store::take_checks(&root), vec![own, OWNER_PROBES]);
+    // Its own source workspace is still looked through.
+    std::fs::write(store.source_dir().join(".gitignore"), "!a.html\n").unwrap();
+    assert!(matches!(
+        Store::new(dir.path(), "session-one"),
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[test]
+fn a_trusted_tree_still_walks_the_own_folder() {
+    let (dir, store) = setup();
+    let cid = store.publish(publication("publish")).unwrap().curio.id;
+    let root = root(&dir);
+    Store::new(dir.path(), "session-one").unwrap();
+    std::fs::write(store.path().join(".gitignore"), format!("!{cid}/\n")).unwrap();
+    assert!(matches!(
+        Store::new(dir.path(), "session-one"),
+        Err(Error::Conflict(_))
+    ));
+    // Another session's folder is left to the next full walk.
+    assert!(Store::new(dir.path(), "session-two").is_ok());
+    store::forget_verified(&root);
+    assert!(matches!(
+        Store::new(dir.path(), "session-two"),
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[test]
+fn a_changed_base_gitignore_walks_again() {
+    let (dir, store) = setup();
+    store.publish(publication("publish")).unwrap();
+    let root = root(&dir);
+    Store::new(dir.path(), "session-one").unwrap();
+    store::take_checks(&root);
+    std::fs::write(root.join(".nth/curios/.gitignore"), "*\n# changed\n").unwrap();
+    let paths = asked_by_walk(&root, "session-one");
+    let own = asked_by_owner(&root, "session-one");
+    Store::new(dir.path(), "session-one").unwrap();
+    Store::new(dir.path(), "session-one").unwrap();
+    assert_eq!(store::take_checks(&root), vec![paths, own]);
+}
+
+#[test]
+fn list_fills_updated_at_from_the_current_revision() {
+    let (_dir, store) = setup();
+    let cid = store.publish(publication("first")).unwrap().curio.id;
+    let first = store.path().join(&cid).join("revisions/1/index.html");
+    let long_ago = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&first)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
+    assert_eq!(store.list().unwrap()[0].updated_at, Some(1_000_000));
+    let mut update = publication("second");
+    update.curio_id = Some(cid.clone());
+    update.expected_revision = Some(1);
+    store.publish(update).unwrap();
+    let second = std::fs::metadata(store.path().join(&cid).join("revisions/2/index.html"))
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert_eq!(store.list().unwrap()[0].updated_at, Some(second));
+    assert!(second > 1_000_000);
+}
+
+#[test]
+fn a_bad_folder_is_skipped_not_fatal() {
+    let (dir, store) = setup();
+    store.publish(publication("publish")).unwrap();
+    let base = dir.path().join(".nth/curios");
+    std::fs::create_dir(base.join("bad name!")).unwrap();
+    std::fs::create_dir(base.join("broken")).unwrap();
+    std::fs::write(base.join("broken/state.json"), "not json").unwrap();
+    let mut discovery = Discovery::default();
+    let found = discovery.refresh(dir.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].session_id, "session-one");
+    let mut skipped: Vec<_> = discovery
+        .skipped
+        .iter()
+        .map(|(name, error)| (name.as_str(), error.code()))
+        .collect();
+    skipped.sort();
+    assert_eq!(
+        skipped,
+        vec![("bad name!", "invalid"), ("broken", "unavailable")]
+    );
+}
+
+#[test]
+fn try_batches_returns_none_while_another_holds_the_lock() {
+    let (_dir, store) = setup();
+    let (_, batch) = reviewed(&store);
+    let held = store.lock().unwrap();
+    assert!(matches!(store.try_batches(true), Ok(None)));
+    drop(held);
+    let batches = released(|| {
+        store
+            .try_batches(true)?
+            .ok_or_else(|| Error::Conflict("still held".into()))
+    })
+    .unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].id, batch.id);
+}

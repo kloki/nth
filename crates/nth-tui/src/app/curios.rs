@@ -50,6 +50,12 @@ pub(super) struct Curios {
     root: Option<PathBuf>,
     items: Vec<Curio>,
     discovery: core::Discovery,
+    /// How many folders the last refresh skipped, so the hint shows once
+    /// per change rather than every tick.
+    skipped: usize,
+    /// Whether the last poll found the store locked and read nothing; the
+    /// next tick reads it.
+    busy: bool,
     delivery: Option<CurioDelivery>,
     /// When to try for the delivery lease again: another process that holds
     /// it may exit.
@@ -74,6 +80,8 @@ impl Curios {
                 .or_else(|| nth_protocol::Curios::repository_root(&session.state_root()).ok()),
             items: Vec::new(),
             discovery: core::Discovery::default(),
+            skipped: 0,
+            busy: false,
             delivery: None,
             next_claim: Instant::now(),
             told_owned: false,
@@ -173,20 +181,16 @@ impl App {
             return;
         };
         self.curios.items = self.curios.discovery.refresh(root).unwrap_or_default();
-        // The store has no update timestamp API; use its durable state mtime.
-        self.curios.items.sort_by_key(|c| {
-            std::fs::metadata(
-                root.join(".nth/curios")
-                    .join(&c.session_id)
-                    .join(&c.id)
-                    .join("revisions")
-                    .join(c.current_revision.to_string())
-                    .join("index.html"),
-            )
-            .and_then(|m| m.modified())
-            .ok()
-        });
-        self.curios.items.reverse();
+        self.curios
+            .items
+            .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+        let skipped = self.curios.discovery.skipped.len();
+        if skipped != self.curios.skipped {
+            self.curios.skipped = skipped;
+            if skipped > 0 {
+                self.hint = Some(format!("curios: skipped {skipped} unreadable folders").into());
+            }
+        }
         if self.curios.items.is_empty() {
             self.areas.forget(&crate::app::mouse::Target::Curio);
         }
@@ -212,6 +216,7 @@ impl App {
                 }
             }
         }
+        self.curios.busy = false;
         let Some(delivery) = &self.curios.delivery else {
             return;
         };
@@ -224,6 +229,7 @@ impl App {
             .unwrap_or_default();
         match delivery.poll(&self.inbox, &recorded) {
             Ok(polled) => {
+                self.curios.busy = polled.busy;
                 // A batch posted while a turn ran that the turn recorded
                 // anyway would otherwise wake the model with nothing.
                 if self.session.is_some() {
@@ -248,6 +254,20 @@ impl App {
             }
             Err(_) => self.hint = Some("could not read queued Curios feedback".into()),
         }
+    }
+
+    /// [`Self::poll_curios`] until it reads the store: a child another test
+    /// forks shares the store's lock until it execs.
+    #[cfg(test)]
+    pub(super) fn poll_curios_through(&mut self) {
+        for _ in 0..50 {
+            self.poll_curios();
+            if !self.curios.busy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the Curios store stayed locked");
     }
 
     pub(super) fn open_curios_picker(&mut self) {
@@ -509,7 +529,7 @@ mod tests {
             .curio;
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.opener = |_| Ok(());
-        app.poll_curios();
+        app.poll_curios_through();
         (dir, app, store, c)
     }
 
@@ -547,7 +567,7 @@ mod tests {
         let (_dir, mut app, store, c) = fixture();
         assert!(!app.inbox.wakes());
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.notices_due.is_some());
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
@@ -560,7 +580,7 @@ mod tests {
             1,
             "no save means no acknowledgment"
         );
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(!app.inbox.wakes());
     }
 
@@ -568,7 +588,7 @@ mod tests {
     async fn an_unacknowledged_receipt_is_caught_up_without_waking() {
         let (dir, mut app, store, c) = fixture();
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
         // Without a store nothing is saved, so nothing is acknowledged.
@@ -577,7 +597,7 @@ mod tests {
         app.store = Some(Arc::new(nth_session::Store::at(
             dir.path().join("sessions"),
         )));
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.notices_due.is_none());
         assert!(!app.inbox.wakes());
         assert!(store.batches(true).unwrap().is_empty());
@@ -598,16 +618,16 @@ mod tests {
         session.prepare_curios().unwrap();
         let other = session.curios().claim_delivery().unwrap();
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.curios.delivery.is_none());
         assert!(app.hint.as_deref().unwrap().contains("another process"));
         drop(other);
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.curios.delivery.is_none(), "retries wait a while");
         // A child another test forks shares the lock until it execs.
         for _ in 0..50 {
             app.curios.next_claim = Instant::now();
-            app.poll_curios();
+            app.poll_curios_through();
             if app.curios.delivery.is_some() {
                 break;
             }
@@ -635,7 +655,7 @@ mod tests {
         app.curio_opened(opened);
         // The viewer now writes to this session's store.
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.notices_due.is_some());
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
@@ -649,7 +669,7 @@ mod tests {
         let (_dir, mut app, store, c) = fixture();
         app.hold_notices = true;
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         app.notices_due();
         assert!(!app.is_busy());
         assert!(app.inbox.wakes());
@@ -658,7 +678,7 @@ mod tests {
         app.provider = provider.clone();
         app.start_turn("work".into());
         provider.asked.notified().await;
-        app.poll_curios();
+        app.poll_curios_through();
         app.notices_due();
         assert!(app.inbox.prompts_waiting().is_none());
         assert!(app.is_busy());
@@ -756,7 +776,7 @@ mod tests {
         let (_dir, mut app, store, c) = fixture();
         app.resume(Session::new("glm", app.cwd.clone()));
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         assert!(app.has_curios());
         assert!(!app.inbox.wakes());
         app.open_curios_picker();
@@ -824,7 +844,7 @@ mod tests {
         let saved = nth_session::Store::at(dir.path().join("sessions"));
         app = app.with_store(saved);
         send(&store, &c);
-        app.poll_curios();
+        app.poll_curios_through();
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
         app.end_turn(ended);

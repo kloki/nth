@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{Request, StatusCode, header},
+    http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
@@ -16,8 +16,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::*;
 
-const FRAME_CSP: &str = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-same-origin";
-const SHELL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; img-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'";
+// `from_static` in a const checks each value when compiling.
+const FRAME_CSP: HeaderValue = HeaderValue::from_static(
+    "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-same-origin",
+);
+const SHELL_CSP: HeaderValue = HeaderValue::from_static(
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; img-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'",
+);
+const NO_STORE: HeaderValue = HeaderValue::from_static("no-store");
+const NOSNIFF: HeaderValue = HeaderValue::from_static("nosniff");
+const NO_REFERRER: HeaderValue = HeaderValue::from_static("no-referrer");
 
 #[derive(Clone)]
 struct Service {
@@ -226,12 +234,12 @@ async fn protect(
     let frame = request.uri().path().starts_with("/content/");
     let mut response = next.run(request).await;
     let h = response.headers_mut();
-    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    h.insert("x-content-type-options", "nosniff".parse().unwrap());
-    h.insert("referrer-policy", "no-referrer".parse().unwrap());
+    h.insert(header::CACHE_CONTROL, NO_STORE);
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, NOSNIFF);
+    h.insert(header::REFERRER_POLICY, NO_REFERRER);
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        if frame { FRAME_CSP } else { SHELL_CSP }.parse().unwrap(),
+        if frame { FRAME_CSP } else { SHELL_CSP },
     );
     response
 }

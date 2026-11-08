@@ -4,6 +4,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -223,33 +224,87 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn verify_ignored(repo: &Path, path: &Path) -> Result<()> {
+fn exposed() -> Error {
+    Error::Conflict("Existing ignore rules expose Curios content".into())
+}
+
+/// Asks one `git check-ignore` about every path: a process per path made
+/// building a store cost as much as the whole tree had ever published.
+fn verify_ignored(repo: &Path, paths: &[PathBuf]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    #[cfg(test)]
+    checked(repo, paths.len());
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["check-ignore", "--verbose", "-z", "--no-index", "--stdin"])
+        .args([
+            "check-ignore",
+            "--verbose",
+            "--non-matching",
+            "-z",
+            "--no-index",
+            "--stdin",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        // Left inherited, git's complaints would draw over the TUI.
+        .stderr(Stdio::piped())
         .spawn()?;
-    {
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        stdin.write_all(path.as_os_str().as_encoded_bytes())?;
-        stdin.write_all(&[0])?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    // git answers as it reads, so a long list written before reading would
+    // fill both pipes and wait forever.
+    let (written, output) = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || -> std::io::Result<()> {
+            for path in paths {
+                stdin.write_all(path.as_os_str().as_encoded_bytes())?;
+                stdin.write_all(&[0])?;
+            }
+            Ok(())
+        });
+        let output = child.wait_with_output();
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("check-ignore input failed")));
+        (written, output)
+    });
+    let output = output?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            return Err(exposed());
+        }
+        return Err(Error::Io(std::io::Error::other(format!(
+            "git check-ignore failed: {stderr}"
+        ))));
     }
-    let output = child.wait_with_output()?;
-    // check-ignore can report a matching negation with a successful status.
-    let pattern = output.stdout.split(|b| *b == 0).nth(2);
-    if !output.status.success()
-        || pattern.is_none_or(|pattern| pattern.is_empty() || pattern.starts_with(b"!"))
-    {
-        return Err(Error::Conflict(
-            "Existing ignore rules expose Curios content".into(),
-        ));
+    written?;
+    // A record is source, line, pattern and path; a path no rule matches has
+    // the first three empty. Pairing each record with the path sent fails
+    // the batch on one out of place instead of crediting it another's rule.
+    let mut fields = output.stdout.split(|b| *b == 0);
+    for path in paths {
+        let (Some(_), Some(_), Some(pattern), Some(echoed)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(exposed());
+        };
+        // check-ignore reports a matching negation as a match.
+        if echoed != path.as_os_str().as_encoded_bytes()
+            || pattern.is_empty()
+            || pattern.starts_with(b"!")
+        {
+            return Err(exposed());
+        }
     }
     Ok(())
 }
 
-fn verify_nested_ignores(repo: &Path, path: &Path, root: bool) -> Result<()> {
+/// Gathers every path below `path` for one [`verify_ignored`], refusing
+/// what would let a file slip past the base rules.
+fn collect_nested(path: &Path, root: bool, into: &mut Vec<PathBuf>) -> Result<()> {
     for item in fs::read_dir(path)? {
         let item = item?;
         let kind = item.file_type()?;
@@ -257,15 +312,53 @@ fn verify_nested_ignores(repo: &Path, path: &Path, root: bool) -> Result<()> {
             return Err(Error::Conflict("Symlink inside Curios storage".into()));
         }
         if kind.is_dir() {
-            verify_nested_ignores(repo, &item.path(), false)?;
+            collect_nested(&item.path(), false, into)?;
         } else if !root && item.file_name() == ".gitignore" {
             return Err(Error::Conflict(
                 "Nested ignore rules inside Curios storage require removal".into(),
             ));
         }
-        verify_ignored(repo, &item.path())?;
+        into.push(item.path());
     }
     Ok(())
+}
+
+/// The roots whose whole `.nth/curios` tree passed the walk in this process,
+/// with what their base `.gitignore` looked like then. The tree holds every
+/// session's every revision, so walking it on each [`Store::new`] made the
+/// cost grow with use; only a changed base rule walks it again.
+static VERIFIED: Mutex<BTreeMap<PathBuf, Stamp>> = Mutex::new(BTreeMap::new());
+
+#[cfg(test)]
+pub(crate) fn forget_verified(root: &Path) {
+    VERIFIED
+        .lock()
+        .expect("verified lock poisoned")
+        .remove(root);
+}
+
+/// How many paths each `check-ignore` under a root asked about. Keyed by
+/// root, so tests running in parallel each see only their own.
+#[cfg(test)]
+static CHECKS: Mutex<BTreeMap<PathBuf, Vec<usize>>> = Mutex::new(BTreeMap::new());
+
+#[cfg(test)]
+fn checked(root: &Path, paths: usize) {
+    CHECKS
+        .lock()
+        .expect("checks lock poisoned")
+        .entry(root.to_owned())
+        .or_default()
+        .push(paths);
+}
+
+#[cfg(test)]
+pub(crate) fn take_checks(root: &Path) -> Vec<usize> {
+    CHECKS
+        .lock()
+        .expect("checks lock poisoned")
+        .remove(root)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -289,21 +382,40 @@ impl Store {
         if !ignore.exists() {
             atomic(&ignore, b"*\n")?;
         }
-        verify_nested_ignores(&root, &base, true)?;
+        let stamp = Stamp::of(&ignore);
+        let walked = stamp.is_some()
+            && VERIFIED.lock().expect("verified lock poisoned").get(&root) == stamp.as_ref();
+        let mut paths = Vec::new();
+        if !walked {
+            collect_nested(&base, true, &mut paths)?;
+        }
         // Require the actual owner directory to be ignored too, protecting future
         // curio/revisions directories and arbitrary source filenames.
         let owner = base.join(session_id);
         no_symlinks(&owner)?;
         no_symlinks(&owner.join("source"))?;
         fs::create_dir_all(owner.join("source"))?;
-        for probe in [
+        if walked {
+            // This session's own folder is walked every time, even when the
+            // tree is trusted: the model writes its source workspace, and its
+            // cost grows with this session alone.
+            collect_nested(&owner, false, &mut paths)?;
+        }
+        paths.extend([
             owner.clone(),
             owner.join("source"),
             owner.join("state.json"),
             owner.join("lock"),
             owner.join("delivery.lock"),
-        ] {
-            verify_ignored(&root, &probe)?;
+        ]);
+        paths.sort();
+        paths.dedup();
+        verify_ignored(&root, &paths)?;
+        if !walked && let Some(stamp) = stamp {
+            VERIFIED
+                .lock()
+                .expect("verified lock poisoned")
+                .insert(root.clone(), stamp);
         }
         let store = Self {
             root,
@@ -354,17 +466,32 @@ impl Store {
         }
         Ok(path)
     }
-    fn lock(&self) -> Result<File> {
+    fn lock_file(&self) -> Result<File> {
         no_symlinks(&self.path())?;
         no_symlinks(&self.path().join("lock"))?;
-        let file = OpenOptions::new()
+        Ok(OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(self.path().join("lock"))?;
+            .open(self.path().join("lock"))?)
+    }
+    pub(crate) fn lock(&self) -> Result<File> {
+        let file = self.lock_file()?;
         file.lock_exclusive()?;
         Ok(file)
+    }
+    /// [`Self::lock`] for one who would rather come back later: `None` while
+    /// another holds it.
+    fn try_lock(&self) -> Result<Option<File>> {
+        let file = self.lock_file()?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(file)),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
     fn load(&self) -> Result<State> {
         let path = self.path().join("state.json");
@@ -470,8 +597,26 @@ impl Store {
             .curios
             .into_values()
             .filter(|e| !state.moved.contains_key(&e.curio.id))
-            .map(|e| e.curio)
+            .map(|e| {
+                let mut curio = e.curio;
+                curio.updated_at = self.updated_at(&curio);
+                curio
+            })
             .collect())
+    }
+    /// When the current revision was written: publishing never rewrites a
+    /// revision, so its file's time is the publish time, except for an
+    /// adopted curio, whose `index.html` adoption rewrites, so it is the time
+    /// it was adopted.
+    fn updated_at(&self, curio: &Curio) -> Option<u64> {
+        let path = self
+            .path()
+            .join(&curio.id)
+            .join("revisions")
+            .join(curio.current_revision.to_string())
+            .join("index.html");
+        let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+        Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs())
     }
     pub fn state_version(&self) -> Result<u64> {
         let _lock = self.lock()?;
@@ -578,6 +723,7 @@ impl Store {
                     session_id: self.session.clone(),
                     current_revision: 0,
                     adopted_from: None,
+                    updated_at: None,
                 },
                 revisions: vec![],
                 threads: vec![],
@@ -825,6 +971,17 @@ impl Store {
     }
     pub fn batches(&self, pending_only: bool) -> Result<Vec<Batch>> {
         let _lock = self.lock()?;
+        self.load_batches(pending_only)
+    }
+    /// [`Self::batches`] for a poll: `None` at once while another holds the
+    /// lock, rather than waiting out its write.
+    pub fn try_batches(&self, pending_only: bool) -> Result<Option<Vec<Batch>>> {
+        let Some(_lock) = self.try_lock()? else {
+            return Ok(None);
+        };
+        self.load_batches(pending_only).map(Some)
+    }
+    fn load_batches(&self, pending_only: bool) -> Result<Vec<Batch>> {
         Ok(self
             .load()?
             .batches
@@ -1056,10 +1213,14 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Curio>> {
 #[derive(Debug, Default)]
 pub struct Discovery {
     seen: BTreeMap<String, (Option<Stamp>, Vec<Curio>)>,
+    /// The folders the last refresh could not read, by name: one stray
+    /// folder leaves the others listed.
+    pub skipped: Vec<(String, Error)>,
 }
 
 impl Discovery {
     pub fn refresh(&mut self, repo_root: &Path) -> Result<Vec<Curio>> {
+        self.skipped.clear();
         let base = repo_root.join(".nth/curios");
         if !base.exists() {
             self.seen.clear();
@@ -1069,20 +1230,35 @@ impl Discovery {
         let mut seen = BTreeMap::new();
         for item in fs::read_dir(base)?.take(1000) {
             let item = item?;
-            if item.file_type()?.is_dir() {
-                let session = item.file_name().to_string_lossy().into_owned();
-                component(&session)?;
-                let store = Store {
-                    root: repo_root.to_owned(),
-                    session,
-                };
-                let stamp = store.stamp();
-                let curios = match self.seen.remove(&store.session) {
-                    Some((before, curios)) if before == stamp => curios,
-                    _ => store.list()?,
-                };
-                seen.insert(store.session, (stamp, curios));
+            let session = item.file_name().to_string_lossy().into_owned();
+            match item.file_type() {
+                Ok(kind) if !kind.is_dir() => continue,
+                Ok(_) => {}
+                Err(error) => {
+                    self.skipped.push((session, error.into()));
+                    continue;
+                }
             }
+            if let Err(error) = component(&session) {
+                self.skipped.push((session, error));
+                continue;
+            }
+            let store = Store {
+                root: repo_root.to_owned(),
+                session,
+            };
+            let stamp = store.stamp();
+            let curios = match self.seen.remove(&store.session) {
+                Some((before, curios)) if before == stamp => curios,
+                _ => match store.list() {
+                    Ok(curios) => curios,
+                    Err(error) => {
+                        self.skipped.push((store.session, error));
+                        continue;
+                    }
+                },
+            };
+            seen.insert(store.session, (stamp, curios));
         }
         self.seen = seen;
         Ok(self.seen.values().flat_map(|(_, c)| c.clone()).collect())

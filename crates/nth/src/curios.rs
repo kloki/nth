@@ -6,9 +6,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
+use nth_icons::icons;
 use nth_protocol::nth_curios::{
     self as core, Author, Comment, Publish, Reply, Send, Status, Target, TargetKind,
 };
+use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
 #[derive(ClapArgs)]
@@ -233,6 +235,20 @@ fn thread_receipt(thread: core::Thread, include_message: bool) -> Value {
 }
 
 /// Core discovery is bounded and never consults a global curio store.
+/// Every readable curio, warning about each folder left out: the one
+/// wanted may be in it.
+fn discover(root: &Path) -> Result<Vec<core::Curio>> {
+    let mut discovery = core::Discovery::default();
+    let found = discovery.refresh(root)?;
+    for (folder, error) in &discovery.skipped {
+        eprintln!(
+            "{} skipped unreadable curios folder {folder}: {error}",
+            icons().warn.yellow().bold()
+        );
+    }
+    Ok(found)
+}
+
 async fn owner(root: &Path, prefix: Option<&str>, id: Option<&str>) -> Result<core::Store> {
     if prefix == Some("") {
         bail!("no session id given");
@@ -240,7 +256,7 @@ async fn owner(root: &Path, prefix: Option<&str>, id: Option<&str>) -> Result<co
     if id.is_none() && prefix.is_none() {
         bail!("new publication requires --session <owning-session-id>");
     }
-    let found = core::discover(root)?;
+    let found = discover(root)?;
     let owners: std::collections::BTreeSet<_> = found
         .iter()
         .filter(|c| id.is_none_or(|id| c.id == id))
@@ -271,7 +287,7 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
     let prefix = args.session.as_deref();
     let value = match args.command {
         Command::List { offset, limit } => {
-            let items = core::discover(root)?
+            let items = discover(root)?
                 .into_iter()
                 .filter(|c| prefix.is_none_or(|p| c.session_id.starts_with(p)))
                 .map(serde_json::to_value)
