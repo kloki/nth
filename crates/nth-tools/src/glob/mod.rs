@@ -9,7 +9,12 @@ use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::blocking::{self, Stop};
+
 const LIMIT: usize = 100;
+/// Matches collected before the walk stops, so a pattern such as `**` from
+/// `/` ends in bounded time and memory.
+const MAX_FILES: usize = 50_000;
 
 pub struct Glob;
 
@@ -51,7 +56,9 @@ impl Tool for Glob {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
             let limit = args.limit.unwrap_or(LIMIT);
-            if limit == 0 { return Err("limit must be positive".into()); }
+            if limit == 0 {
+                return Err("limit must be positive".into());
+            }
             let mut dir = match &args.path {
                 Some(path) => crate::path::resolve(&ctx.cwd, path),
                 None => ctx.cwd.clone(),
@@ -72,60 +79,92 @@ impl Tool for Glob {
                 Err(e) => return Err(format!("cannot search {}: {e}", dir.display())),
             }
 
-            let files = tokio::task::spawn_blocking(move || find(&dir, &pattern, args.hidden))
-                .await
-                .map_err(|e| format!("glob failed: {e}"))??;
-
-            if files.is_empty() {
-                return Ok("No files found".into());
-            }
-            let truncated = files.len() > limit;
-            let mut output: Vec<String> = files
-                .iter()
-                .take(limit)
-                .map(|path| path.display().to_string())
-                .collect();
-            if truncated {
-                output.push(String::new());
-                output.push(format!(
-                    "(Results are truncated: showing first {limit} results. Consider using a more specific path or pattern.)"
-                ));
-            }
-            Ok(output.join("\n"))
+            let found =
+                blocking::run(move |stop| find(&dir, &pattern, args.hidden, MAX_FILES, stop))
+                    .await
+                    .map_err(|e| format!("glob failed: {e}"))??;
+            Ok(listing(&found, limit))
         }
         .boxed()
     }
 }
 
-/// Every file under `dir` that `pattern` matches, newest first. Like
-/// ripgrep's `--glob`, a pattern without a `/` matches a file name at any
-/// depth. Hidden files and what `.gitignore` excludes are skipped.
-fn find(dir: &Path, pattern: &str, hidden: bool) -> Result<Vec<PathBuf>, String> {
+/// The files a walk matched, newest first.
+struct Found {
+    files: Vec<PathBuf>,
+    /// The walk stopped at its cap with matches left, so the newest files
+    /// may be among those it never reached.
+    partial: Option<usize>,
+}
+
+/// Every file under `dir` that `pattern` matches, newest first, up to `max`
+/// of them. Like ripgrep's `--glob`, a pattern without a `/` matches a file
+/// name at any depth. Hidden files and what `.gitignore` excludes are
+/// skipped.
+fn find(dir: &Path, pattern: &str, hidden: bool, max: usize, stop: &Stop) -> Result<Found, String> {
     let overrides = OverrideBuilder::new(dir)
         .add(pattern)
         .and_then(|builder| builder.build())
         .map_err(|e| format!("invalid glob pattern: {e}"))?;
-    let mut files: Vec<(SystemTime, PathBuf)> = WalkBuilder::new(dir)
+    let walk = WalkBuilder::new(dir)
         .overrides(overrides)
         .hidden(!hidden)
         .filter_entry(|entry| entry.file_name() != ".git")
-        .build()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
-        .map(|entry| {
-            // A file we cannot stat still matched; it sorts last.
-            let modified = entry
-                .metadata()
-                .ok()
-                .and_then(|meta| meta.modified().ok())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            (modified, entry.into_path())
-        })
-        .collect();
+        .build();
+    let mut files: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let mut partial = None;
+    for entry in walk.filter_map(Result::ok) {
+        if stop.is_set() {
+            return Err("interrupted".into());
+        }
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if files.len() == max {
+            partial = Some(max);
+            break;
+        }
+        // A file we cannot stat still matched; it sorts last.
+        let modified = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        files.push((modified, entry.into_path()));
+    }
     files.sort_by(|(a_time, a_path), (b_time, b_path)| {
         b_time.cmp(a_time).then_with(|| a_path.cmp(b_path))
     });
-    Ok(files.into_iter().map(|(_, path)| path).collect())
+    Ok(Found {
+        files: files.into_iter().map(|(_, path)| path).collect(),
+        partial,
+    })
+}
+
+/// What the model reads: the first `limit` files and why any were left out.
+fn listing(found: &Found, limit: usize) -> String {
+    let files = &found.files;
+    if files.is_empty() {
+        return "No files found".into();
+    }
+    let mut output: Vec<String> = files
+        .iter()
+        .take(limit)
+        .map(|path| path.display().to_string())
+        .collect();
+    if files.len() > limit {
+        output.push(String::new());
+        output.push(format!(
+            "(Results are truncated: showing first {limit} results. Consider using a more specific path or pattern.)"
+        ));
+    }
+    if let Some(max) = found.partial {
+        output.push(String::new());
+        output.push(format!(
+            "(The listing is partial: the search stopped after {max} matches, so newer files may be missing. Use a more specific path or pattern.)"
+        ));
+    }
+    output.join("\n")
 }
 
 #[cfg(test)]
@@ -269,6 +308,48 @@ mod tests {
         assert_eq!(lines[0], "0.txt");
         assert_eq!(lines[LIMIT - 1], format!("{}.txt", LIMIT - 1));
         assert!(lines[LIMIT + 1].starts_with("(Results are truncated"));
+    }
+
+    #[test]
+    fn glob_says_when_the_listing_is_partial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        for i in 0..5 {
+            touch(&root.join(format!("{i}.txt")), i as u64);
+        }
+        let found = find(root, "*.txt", false, 3, &Stop::default()).expect("glob");
+        assert_eq!(found.files.len(), 3);
+        let out = listing(&found, LIMIT);
+        assert!(
+            out.ends_with(
+                "\n\n(The listing is partial: the search stopped after 3 matches, so newer files may be missing. Use a more specific path or pattern.)"
+            ),
+            "{out}"
+        );
+        // Exactly at the cap nothing was left out.
+        let found = find(root, "*.txt", false, 5, &Stop::default()).expect("glob");
+        assert!(!listing(&found, LIMIT).contains("partial"));
+    }
+
+    #[tokio::test]
+    async fn glob_stops_when_the_call_is_cancelled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        touch(&root.join("a/b/c.txt"), 0);
+        let (ended, end) = std::sync::mpsc::channel();
+        // The walk starts only once the call is gone, so it sees the stop
+        // on its first entry whatever the machine's speed.
+        let call = Box::pin(blocking::run(move |stop| {
+            blocking::wait_for(stop);
+            let _ = ended.send(find(&root, "*.txt", false, MAX_FILES, stop).map(|f| f.files));
+        }));
+        let call = tokio::time::timeout(Duration::from_millis(10), call).await;
+        assert!(call.is_err(), "the call ended before it was cancelled");
+        let result = tokio::task::spawn_blocking(move || end.recv_timeout(Duration::from_secs(5)))
+            .await
+            .expect("join")
+            .expect("the walk never ended");
+        assert_eq!(result, Err("interrupted".to_string()));
     }
 
     #[tokio::test]

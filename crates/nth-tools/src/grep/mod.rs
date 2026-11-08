@@ -1,4 +1,6 @@
 use std::{
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -10,11 +12,32 @@ use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::blocking::{self, Stop};
+
 /// Matches shown before the output is cut.
 const MAX_MATCHES: usize = 100;
 const MAX_LINE_CHARS: usize = 2000;
 /// Bytes looked at for a NUL to tell a binary file, as git does.
 const BINARY_SNIFF: usize = 8192;
+/// A file larger than this is skipped rather than read: it is a log or a
+/// dump, not source, and reading it would hold the whole of it in memory.
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_FILE_MIB: u64 = MAX_FILE_BYTES / (1024 * 1024);
+
+/// How far one search goes before it stops, so a search from `/` or a
+/// pattern that matches every line ends in bounded time and memory.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// Files searched.
+    files: usize,
+    /// Matches counted, of which only `MAX_MATCHES` are shown.
+    matches: usize,
+}
+
+const LIMITS: Limits = Limits {
+    files: 50_000,
+    matches: 10_000,
+};
 
 pub struct Grep;
 
@@ -75,7 +98,8 @@ impl Tool for Grep {
             if !root.exists() {
                 return Err(format!("no such file or directory: {}", root.display()));
             }
-            tokio::task::spawn_blocking(move || search(&root, &regex, args.include.as_deref()))
+            let include = args.include;
+            blocking::run(move |stop| search(&root, &regex, include.as_deref(), LIMITS, stop))
                 .await
                 .map_err(|e| format!("grep failed: {e}"))?
         }
@@ -90,7 +114,32 @@ struct FileMatches {
     lines: Vec<(usize, String)>,
 }
 
-fn search(root: &Path, regex: &Regex, include: Option<&str>) -> ToolResult {
+/// What a walk found, and why it ended early when it did.
+struct Searched {
+    files: Vec<FileMatches>,
+    total: usize,
+    /// Files passed over for being larger than `MAX_FILE_BYTES`.
+    oversized: usize,
+    /// The file the search was pointed at, when it was a file: skipped for
+    /// its size, it gets a note on how to search it after all.
+    named: Option<PathBuf>,
+    stopped: Option<Limit>,
+}
+
+/// The limit a walk reached, leaving its results partial.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Limit {
+    Files,
+    Matches,
+}
+
+fn search(
+    root: &Path,
+    regex: &Regex,
+    include: Option<&str>,
+    limits: Limits,
+    stop: &Stop,
+) -> ToolResult {
     let mut walker = WalkBuilder::new(root);
     // Dotfiles hold config worth finding; `.git` holds nothing worth reading.
     walker
@@ -104,17 +153,51 @@ fn search(root: &Path, regex: &Regex, include: Option<&str>) -> ToolResult {
         walker.overrides(overrides);
     }
 
-    let mut files = Vec::new();
-    let mut total = 0;
+    let mut found = Searched {
+        files: Vec::new(),
+        total: 0,
+        oversized: 0,
+        named: root.is_file().then(|| root.to_path_buf()),
+        stopped: None,
+    };
+    let mut searched = 0;
+    // One buffer for every file, so a walk allocates for its largest file
+    // once rather than for each.
+    let mut bytes = Vec::new();
     for entry in walker.build().filter_map(Result::ok) {
+        if stop.is_set() {
+            return Err("interrupted".into());
+        }
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
+        if searched == limits.files {
+            found.stopped = Some(Limit::Files);
+            break;
+        }
+        searched += 1;
         // Unreadable files are skipped, as ripgrep does, rather than failing
         // the whole search.
-        let Ok(bytes) = std::fs::read(entry.path()) else {
+        let Ok(meta) = entry.metadata() else {
             continue;
         };
+        if meta.len() > MAX_FILE_BYTES {
+            found.oversized += 1;
+            continue;
+        }
+        bytes.clear();
+        // The stat above can be stale: a log being written grows between it
+        // and the read. Reading one byte past the cap tells such a file is
+        // over without reading the rest of it, so memory stays bounded.
+        let read = File::open(entry.path())
+            .and_then(|file| file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes));
+        if read.is_err() {
+            continue;
+        }
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            found.oversized += 1;
+            continue;
+        }
         if bytes.iter().take(BINARY_SNIFF).any(|&b| b == 0) {
             continue;
         }
@@ -122,39 +205,73 @@ fn search(root: &Path, regex: &Regex, include: Option<&str>) -> ToolResult {
         let mut lines = Vec::new();
         for (i, line) in text.lines().enumerate() {
             if regex.is_match(line) {
-                total += 1;
+                if found.total == limits.matches {
+                    found.stopped = Some(Limit::Matches);
+                    break;
+                }
+                found.total += 1;
                 if lines.len() < MAX_MATCHES {
                     lines.push((i + 1, cut(line)));
                 }
             }
         }
-        if lines.is_empty() {
-            continue;
+        if !lines.is_empty() {
+            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            found.files.push(FileMatches {
+                path: entry.into_path(),
+                modified,
+                lines,
+            });
         }
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        files.push(FileMatches {
-            path: entry.into_path(),
-            modified,
-            lines,
-        });
+        if found.stopped.is_some() {
+            break;
+        }
     }
 
-    if files.is_empty() {
-        return Ok("No files found".into());
-    }
-    files.sort_by(|a, b| {
+    found.files.sort_by(|a, b| {
         b.modified
             .cmp(&a.modified)
             .then_with(|| a.path.cmp(&b.path))
     });
-    Ok(render(&files, total))
+    Ok(render(&found, limits))
 }
 
-fn render(files: &[FileMatches], total: usize) -> String {
+fn render(found: &Searched, limits: Limits) -> String {
+    let mut out = matches(&found.files, found.total);
+    let mut notes = Vec::new();
+    match (found.oversized, &found.named) {
+        (0, _) => {}
+        (_, Some(file)) => notes.push(format!(
+            "(Skipped {}: it is larger than {MAX_FILE_MIB} MiB. Search it with `rg` through bash.)",
+            file.display()
+        )),
+        (1, None) => notes.push(format!("(Skipped 1 file larger than {MAX_FILE_MIB} MiB.)")),
+        (n, None) => notes.push(format!(
+            "(Skipped {n} files larger than {MAX_FILE_MIB} MiB.)"
+        )),
+    }
+    match found.stopped {
+        None => {}
+        Some(Limit::Files) => notes.push(format!(
+            "(Stopped after searching {} files, so these results are partial. Use a more specific path or include.)",
+            limits.files
+        )),
+        Some(Limit::Matches) => notes.push(format!(
+            "(Stopped after {} matches, so the count is partial. Use a more specific pattern.)",
+            limits.matches
+        )),
+    }
+    if !notes.is_empty() {
+        out.push(String::new());
+        out.append(&mut notes);
+    }
+    out.join("\n")
+}
+
+fn matches(files: &[FileMatches], total: usize) -> Vec<String> {
+    if files.is_empty() {
+        return vec!["No files found".into()];
+    }
     let truncated = total > MAX_MATCHES;
     let mut out = vec![if truncated {
         format!("Found {total} matches (showing first {MAX_MATCHES})")
@@ -179,7 +296,7 @@ fn render(files: &[FileMatches], total: usize) -> String {
         out.push(String::new());
         out.push("(Results truncated. Consider using a more specific path or pattern.)".into());
     }
-    out.join("\n")
+    out
 }
 
 fn cut(line: &str) -> String {
@@ -338,6 +455,120 @@ mod tests {
         write(dir.path(), "a.bin", b"needle\0\x01\x02");
         let out = grep(dir.path(), json!({ "pattern": "needle" })).await;
         assert_eq!(out, Ok("No files found".to_string()));
+    }
+
+    #[tokio::test]
+    async fn grep_skips_files_over_the_size_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut big = "needle\n".repeat(1024).into_bytes();
+        big.resize(11 * 1024 * 1024, b'x');
+        write(dir.path(), "big.log", big);
+        let small = write(dir.path(), "small.txt", "needle\n");
+        let out = grep(dir.path(), json!({ "pattern": "needle" }))
+            .await
+            .expect("grep");
+        assert_eq!(
+            out,
+            format!(
+                "Found 1 matches\n{}:\n  Line 1: needle\n\n(Skipped 1 file larger than 10 MiB.)",
+                small.display()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_named_file_over_the_cap_points_to_rg() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut big = b"needle\n".to_vec();
+        big.resize(11 * 1024 * 1024, b'x');
+        let path = write(dir.path(), "big.log", big);
+        let out = grep(
+            dir.path(),
+            json!({ "pattern": "needle", "path": "big.log" }),
+        )
+        .await
+        .expect("grep");
+        assert_eq!(
+            out,
+            format!(
+                "No files found\n\n(Skipped {}: it is larger than 10 MiB. Search it with `rg` through bash.)",
+                path.display()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_stops_when_the_call_is_cancelled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..20 {
+            write(dir.path(), &format!("d{i}/e/f/g.txt"), "needle\n");
+        }
+        let root = dir.path().to_path_buf();
+        let regex = Regex::new("needle").expect("regex");
+        let (ended, end) = std::sync::mpsc::channel();
+        // The walk starts only once the call is gone, so it sees the stop
+        // on its first entry whatever the machine's speed.
+        let call = Box::pin(blocking::run(move |stop| {
+            blocking::wait_for(stop);
+            let _ = ended.send(search(&root, &regex, None, LIMITS, stop));
+        }));
+        let call = tokio::time::timeout(std::time::Duration::from_millis(10), call).await;
+        assert!(call.is_err(), "the call ended before it was cancelled");
+        let result = tokio::task::spawn_blocking(move || {
+            end.recv_timeout(std::time::Duration::from_secs(5))
+        })
+        .await
+        .expect("join")
+        .expect("the walk never ended");
+        assert_eq!(result, Err("interrupted".to_string()));
+    }
+
+    #[test]
+    fn stops_at_the_file_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..5 {
+            write(dir.path(), &format!("{i}.txt"), "needle\n");
+        }
+        let regex = Regex::new("needle").expect("regex");
+        let limits = Limits { files: 3, ..LIMITS };
+        let out = search(dir.path(), &regex, None, limits, &Stop::default()).expect("grep");
+        assert!(out.starts_with("Found 3 matches"), "{out}");
+        assert!(
+            out.ends_with(
+                "\n\n(Stopped after searching 3 files, so these results are partial. Use a more specific path or include.)"
+            ),
+            "{out}"
+        );
+        // Exactly at the cap nothing was left out.
+        let limits = Limits { files: 5, ..LIMITS };
+        let out = search(dir.path(), &regex, None, limits, &Stop::default()).expect("grep");
+        assert!(!out.contains("Stopped"), "{out}");
+    }
+
+    #[test]
+    fn stops_at_the_match_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "a.txt", "hit\n".repeat(10));
+        let regex = Regex::new("hit").expect("regex");
+        let limits = Limits {
+            matches: 4,
+            ..LIMITS
+        };
+        let out = search(dir.path(), &regex, None, limits, &Stop::default()).expect("grep");
+        assert!(out.starts_with("Found 4 matches\n"), "{out}");
+        assert_eq!(out.matches("  Line ").count(), 4);
+        assert!(
+            out.ends_with(
+                "\n\n(Stopped after 4 matches, so the count is partial. Use a more specific pattern.)"
+            ),
+            "{out}"
+        );
+        let limits = Limits {
+            matches: 10,
+            ..LIMITS
+        };
+        let out = search(dir.path(), &regex, None, limits, &Stop::default()).expect("grep");
+        assert!(!out.contains("Stopped"), "{out}");
     }
 
     #[tokio::test]
