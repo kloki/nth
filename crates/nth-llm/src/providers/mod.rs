@@ -191,7 +191,7 @@ impl Provider for Providers {
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
-        stream::retry(error.downcast_ref::<stream::Error>()?)
+        stream::retry_boxed(error)
     }
 
     fn qualify(&self, model: &str) -> String {
@@ -296,6 +296,13 @@ mod tests {
             None,
             "compacting, not retrying, is the fix"
         );
+    }
+
+    #[test]
+    fn a_stream_error_is_retried_as_the_stream_says() {
+        let providers = providers("opencode/deepseek");
+        let cut: BoxError = Box::new(stream::Error::Incomplete);
+        assert_eq!(providers.retry(&cut), Some(Retry { after: None }));
     }
 
     #[test]

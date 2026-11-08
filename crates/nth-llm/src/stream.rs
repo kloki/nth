@@ -40,10 +40,9 @@ pub(crate) enum Error {
         /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
         line: String,
     },
-    /// What a protocol reported inside its stream, classified where it was
-    /// read, since each names its retryable failures differently: a chat
-    /// completions error without a numeric status is not retried, though
-    /// the same words from another protocol would be.
+    /// An error the provider reported inside its stream, after the 200
+    /// status, classified by the protocol that read it, since each names
+    /// its retryable failures differently.
     #[error("{message}")]
     Provider {
         /// In the wording of the protocol that reported it.
@@ -189,9 +188,15 @@ pub(crate) fn boxed(error: Error) -> BoxError {
     }
 }
 
-/// Whether `error` may be retried. Reads only the error, so whatever
-/// fronts the clients answers the same way for every protocol.
-pub(crate) fn retry(error: &Error) -> Option<Retry> {
+/// Whether `error`, as the session holds it, may be retried: only the
+/// stream's own error ever is, a [`ContextOverflow`] being compacted for
+/// instead. Reads only the error, so whatever fronts the clients answers
+/// the same way for every protocol.
+pub(crate) fn retry_boxed(error: &BoxError) -> Option<Retry> {
+    retry(error.downcast_ref::<Error>()?)
+}
+
+fn retry(error: &Error) -> Option<Retry> {
     match error {
         // A rate limit or a transient server failure; the server may have
         // said how long to wait.
@@ -554,11 +559,12 @@ mod tests {
         assert_eq!(retry(&limited), Some(Retry { after: None }));
     }
 
-    /// The retry table, over the one error every protocol's failures
-    /// become: what was a payload of each protocol's own is classified as
-    /// it is read, so nothing here needs to know which protocol spoke.
+    /// Which errors a retry fixes: a transient status, an in-stream error
+    /// its protocol marked retryable, and a stream that never answered,
+    /// stalled or was cut. Each protocol's tests pin how it marks its own
+    /// in-stream errors.
     #[test]
-    fn every_protocol_error_classifies_through_one_type() {
+    fn only_transient_errors_are_retryable() {
         let boxed = |error: Error| -> BoxError { Box::new(error) };
         let status = |status, retry_after| {
             boxed(Error::Status {
@@ -607,55 +613,22 @@ mod tests {
         );
         assert_eq!(retry(&in_stream(false)), None);
 
-        // Each protocol's own rules, read into the one type.
-        let too_many = Some(reqwest::StatusCode::TOO_MANY_REQUESTS);
-        let rate_limit = || "rate_limit_error".to_string();
-        for (protocol, busy, refused) in [
-            (
-                "chat completions",
-                crate::chat_completions::provider_error("slow down".into(), too_many),
-                crate::chat_completions::provider_error("slow down".into(), None),
-            ),
-            (
-                "messages",
-                crate::messages::provider_error(rate_limit(), String::new()),
-                crate::messages::provider_error("invalid_request_error".into(), String::new()),
-            ),
-            (
-                "responses",
-                crate::responses::provider_error("server_error".into(), String::new()),
-                crate::responses::provider_error("content_filter".into(), String::new()),
-            ),
-        ] {
-            assert_eq!(
-                retry(&boxed(busy)),
-                Some(Retry { after: None }),
-                "{protocol}"
-            );
-            assert_eq!(retry(&boxed(refused)), None, "{protocol}");
-        }
-        let plan_limit = status_error(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"no"}}"#
-                .into(),
-            None,
-            crate::responses::REFUSAL,
-        );
-        assert_eq!(retry(&plan_limit), None, "a final refusal is final");
-
         let overflow: BoxError = Box::new(ContextOverflow);
         assert_eq!(
             retry(&overflow),
             None,
             "compacting, not retrying, is the fix"
         );
-        let gateway_overflow = super::boxed(crate::chat_completions::provider_error(
-            "This model's maximum context length is 8192 tokens".into(),
-            Some(reqwest::StatusCode::BAD_REQUEST),
-        ));
+        let in_stream_overflow = super::boxed(Error::Provider {
+            message: "too long".into(),
+            retryable: false,
+            overflow: true,
+        });
         assert!(
-            gateway_overflow.downcast_ref::<ContextOverflow>().is_some(),
-            "{gateway_overflow}"
+            in_stream_overflow
+                .downcast_ref::<ContextOverflow>()
+                .is_some(),
+            "{in_stream_overflow}"
         );
 
         assert_eq!(
