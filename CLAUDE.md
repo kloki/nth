@@ -43,7 +43,7 @@ Crates in `crates/`, from the bottom up:
 - **nth-tui**: the interactive chat (ratatui + crossterm).
 - **nth**: the clap CLI; with no subcommand it opens the TUI, `run` prints events with `render.rs`. `tools()` in `main.rs` builds the one tool list both front-ends use, the task tool included.
 
-Front-ends only consume `Event`s; they never reach into the loop. The TUI moves the `Session` into a task for each turn and takes it back when the turn ends (`app/turn/`), so Esc cancels cooperatively rather than aborting the task.
+Front-ends only consume `Event`s; they never reach into the loop. The TUI moves the `Session` into a task for each turn and takes it back when the turn ends (`app/turn/`), so Esc cancels cooperatively rather than aborting the task; quitting mid-turn does the same and waits for the turn to save (`app/quit.rs`).
 
 ### TUI
 

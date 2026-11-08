@@ -71,7 +71,7 @@ fn sections() -> Vec<Line<'static>> {
                 ),
                 (
                     "Ctrl+C",
-                    "clear nonempty prompt; on empty prompt, quit (twice if agents/monitors run)",
+                    "clear nonempty prompt; on empty prompt, quit (twice if a turn, agents or monitors run)",
                 ),
                 (
                     "! at cursor 0",

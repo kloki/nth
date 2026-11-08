@@ -41,6 +41,16 @@ enum Cell {
 }
 
 impl Hint {
+    /// A hint already typed in, for a screen drawn once more and then not
+    /// again, which would never see the wave come in.
+    pub fn at_once(text: &str) -> Self {
+        let now = Instant::now();
+        Self {
+            text: text.to_string(),
+            since: now.checked_sub(WAVE).unwrap_or(now),
+        }
+    }
+
     /// Whether a wave is running, which needs a redraw every tick.
     pub fn moving(&self) -> bool {
         let elapsed = self.since.elapsed();
@@ -161,6 +171,18 @@ mod tests {
                 (cell.fg, cell.bg, cell.symbol().to_string())
             })
             .collect()
+    }
+
+    #[test]
+    fn a_hint_said_at_once_shows_whole_on_its_first_frame() {
+        let hint = Hint::at_once("stopping the turn…");
+        assert_eq!(
+            hint.spans(),
+            vec![Span::styled(
+                "stopping the turn…",
+                Style::new().fg(Color::Yellow)
+            )]
+        );
     }
 
     #[tokio::test]

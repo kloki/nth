@@ -45,8 +45,10 @@ use std::{
 
 use anyhow::{Result, bail};
 pub use app::{Llm, ModeLlms, Profile};
+use crossterm::style::Stylize;
 use nth_context::Paths;
 use nth_format::Formatters;
+use nth_icons::icons;
 use nth_lsp::Lsp;
 use nth_notify::Notifier;
 use nth_protocol::{Provider, Tool};
@@ -172,6 +174,9 @@ pub async fn run(
         .with_chatgpt(chatgpt);
     let result = app.run(&mut terminal).await;
     terminal::restore();
+    for note in &app.exit_notes {
+        eprintln!("{} {note}", icons().warn.yellow().bold());
+    }
     // After the terminal is back: the servers get a moment to leave on
     // their own before the process ends and kills them. `/resume` may have
     // replaced the pool the chat started with, so this is the one it ends on.

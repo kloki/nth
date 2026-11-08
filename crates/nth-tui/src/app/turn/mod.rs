@@ -26,6 +26,13 @@ pub(super) struct Ended {
     ran: Ran,
 }
 
+impl Ended {
+    /// Why saving the session after the turn failed, if it did.
+    pub(super) fn save_error(&self) -> Option<&store::Error> {
+        self.saved.as_ref().err()
+    }
+}
+
 /// What a turn task ran.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Ran {
@@ -536,6 +543,12 @@ impl App {
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
         self.session = Some(session);
+        // Quitting took the session back only to save it: a read, a
+        // notification or the next turn started now would be cut off by
+        // the exit, or outlive it.
+        if self.quitting {
+            return;
+        }
         self.refresh_context();
         self.index_files();
         self.load_git();

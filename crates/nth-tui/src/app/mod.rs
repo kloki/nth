@@ -357,9 +357,16 @@ pub struct App {
     /// focused because you just started it. Notifications go out only
     /// without it.
     focused: bool,
-    /// ctrl+c was pressed once with monitors running; again quits.
+    /// ctrl+c was pressed once with a turn, monitors or subagents
+    /// running; again quits.
     quit_armed: bool,
     quit: bool,
+    /// nth is on its way out: a turn that ends now only hands the session
+    /// back to be saved, and starts nothing that would outlive the exit.
+    quitting: bool,
+    /// What the exit could not do, said on stderr once the terminal is
+    /// back, as the chat is no longer drawn by then.
+    pub(crate) exit_notes: Vec<String>,
 }
 
 /// A grey thumb in the right margin of `content`, so the view keeps its
@@ -576,6 +583,8 @@ impl App {
             focused: true,
             quit_armed: false,
             quit: false,
+            quitting: false,
+            exit_notes: Vec::new(),
         }
     }
 
@@ -661,12 +670,7 @@ impl App {
                 self.open_editor(&mut input).await;
             }
             if !self.is_editing() {
-                // The terminal holds the frame until it is all written, so
-                // a screen that changes everywhere at once (the empty chat's
-                // field) never shows half old, half new.
-                queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
-                terminal.draw(|frame| self.draw(frame))?;
-                execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+                self.draw_frame(terminal)?;
             }
             let ticking = self.is_busy()
                 || self.running_monitors() > 0
@@ -760,7 +764,23 @@ impl App {
                 Step::Tick => {}
             }
         }
+        // Stopping the turn may take seconds, which the last frame, still
+        // asking for another ctrl+c, would sit through frozen.
+        if self.is_busy() && !self.is_editing() {
+            self.hint = Some(hint::Hint::at_once("stopping the turn…"));
+            self.draw_frame(terminal)?;
+        }
         self.stop_background_for_exit().await;
+        Ok(())
+    }
+
+    /// Draws the screen once. The terminal holds the frame until it is all
+    /// written, so a screen that changes everywhere at once (the empty
+    /// chat's field) never shows half old, half new.
+    fn draw_frame(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        terminal.draw(|frame| self.draw(frame))?;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         Ok(())
     }
 
@@ -1119,8 +1139,11 @@ impl App {
     }
 
     fn on_session(&mut self, event: Event) {
-        // A write or a command may have changed the tree.
         match &event {
+            // Quitting: the tree and the place are not shown again, and a
+            // read started now would be cut off by the exit.
+            Event::ToolFinished { .. } | Event::Moved(_) if self.quitting => {}
+            // A write or a command may have changed the tree.
             Event::ToolFinished { call, .. }
                 if tool_names::writes_files(&call.name) || call.name == "bash" =>
             {
@@ -1145,7 +1168,8 @@ impl App {
 
     fn run_command(&mut self, command: Command) {
         match command {
-            // Dropping the app aborts a running turn.
+            // As ctrl+c: asked twice while a turn runs, which quitting
+            // stops and saves.
             Command::Exit => self.ask_quit(),
             Command::Keymaps => self.open_content(Tab::Keymaps),
             // `/add-dir` without a directory to add only says how it is used.
