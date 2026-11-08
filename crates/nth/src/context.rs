@@ -8,7 +8,7 @@ use std::{
 use anyhow::Result;
 use nth_icons::icons;
 use nth_llm::{Credentials, EndpointConfig, Providers};
-use nth_protocol::{Entry, Inbox, Message, Preview};
+use nth_protocol::{Entry, Inbox, Message, Preview, Tool};
 use nth_session::{Session, Store, Subagents};
 use owo_colors::OwoColorize;
 use serde_json::json;
@@ -20,9 +20,30 @@ const SOURCE: &str = "Reconstructed from saved state; another process's unsaved 
 pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()> {
     let store = Store::open()?;
     let session = crate::session::pick(&store, id.as_deref()).await?;
-    // Preparing rewrites the system prompt, and the offline provider knows
-    // none of the config's endpoints, so it would qualify the model under
-    // its own: keep exactly the model and messages that were saved.
+    let (session, tools, warnings) = reconstruct(session, runtime).await?;
+    for warning in session.context().warnings.iter().chain(&warnings) {
+        eprintln!("{} {warning}", icons().warn.yellow().bold());
+    }
+    let preview = session.context_preview(&tools, &Inbox::default());
+    let mut out = io::stdout().lock();
+    let json = json || !out.is_terminal();
+    if json {
+        write_json(&mut out, &session, &preview)?;
+    } else {
+        write_text(&mut out, &session, &preview)?;
+    }
+    Ok(())
+}
+
+/// The saved session as the chat would resume it, on offline providers,
+/// with the tools its next request offers and the warnings preparing it
+/// gave. Preparing rewrites the system prompt, and the offline provider
+/// knows none of the config's endpoints, so it would qualify the model
+/// under its own: the model and messages are exactly the saved ones.
+async fn reconstruct(
+    session: Session,
+    runtime: &Runtime,
+) -> Result<(Session, Arc<Vec<Box<dyn Tool>>>, Vec<String>)> {
     let (model, messages) = (session.model.clone(), session.messages.clone());
     let start = Start::Saved(Box::new(session));
     let mut config = runtime.config_for(&start)?;
@@ -32,18 +53,7 @@ pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()
     let mut session = prepared.session;
     session.model = model;
     session.messages = messages;
-    for warning in session.context().warnings.iter().chain(&prepared.warnings) {
-        eprintln!("{} {warning}", icons().warn.yellow().bold());
-    }
-    let preview = session.context_preview(&prepared.model_tools, &Inbox::default());
-    let mut out = io::stdout().lock();
-    let json = json || !out.is_terminal();
-    if json {
-        write_json(&mut out, &session, &preview)?;
-    } else {
-        write_text(&mut out, &session, &preview)?;
-    }
-    Ok(())
+    Ok((session, prepared.model_tools, prepared.warnings))
 }
 
 /// Providers that never send a request: the handle only satisfies the tool
@@ -315,6 +325,24 @@ mod tests {
             session.id
         );
         assert!(crate::session::pick(&store, Some("missing")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_saved_model_and_messages_are_previewed_as_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "model = \"zen/b\"").expect("writes");
+        let mut saved = Session::new("zen/a", dir.path().into());
+        saved.messages[0] = Message::System("saved system".into());
+        saved.messages.push(Message::User("hello".into()));
+
+        let (session, tools, _) = reconstruct(saved.clone(), &Runtime::new(Some(path), None))
+            .await
+            .expect("reconstructs");
+
+        assert_eq!(session.model, "zen/a");
+        assert_eq!(session.messages, saved.messages);
+        assert!(tools.iter().any(|tool| tool.spec().name == "read"));
     }
 
     #[tokio::test]

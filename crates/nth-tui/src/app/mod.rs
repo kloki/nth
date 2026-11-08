@@ -405,19 +405,6 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
     }
 }
 
-/// A `PreparedRuntime` but for its session and warnings, which the caller
-/// of `App::install` places: `new` builds the app around the session,
-/// `/resume` switches to it.
-struct Installed {
-    paths: Paths,
-    provider: Arc<dyn Provider>,
-    model_tools: Arc<Vec<Box<dyn Tool>>>,
-    shell: Arc<dyn Tool>,
-    checkers: Checkers,
-    mode_llms: ModeLlms,
-    profiles: Vec<Profile>,
-}
-
 enum Step {
     CurioOpened(Result<nth_protocol::nth_curios::Result<curios::Opened>, JoinError>),
     CurioPolled(Result<curios::Tick, JoinError>),
@@ -451,36 +438,35 @@ impl App {
     /// The chat on `runtime`, installed as `/resume` installs one, so the
     /// two cannot set up a runtime differently.
     pub fn new(runtime: PreparedRuntime) -> Self {
-        let PreparedRuntime {
-            session,
-            paths,
-            provider,
-            model_tools,
-            shell,
-            checkers,
-            mode_llms,
-            profiles,
-            warnings,
-        } = runtime;
-        let mut app = Self::bare(session, provider.clone(), model_tools.clone());
-        app.install(Installed {
-            paths,
-            provider,
-            model_tools,
-            shell,
-            checkers,
-            mode_llms,
-            profiles,
-        });
+        let mut app = Self::around(
+            &runtime.session,
+            runtime.provider.clone(),
+            runtime.model_tools.clone(),
+        );
+        let (session, warnings) = app.install(runtime);
+        app.session = Some(session);
         app.chat.warn(&warnings);
         app
     }
 
     /// The chat on `session` alone: no shell, checkers, paths or profiles,
-    /// and each mode on the session's llm. What `new` installs a runtime
-    /// over, and what tests that need none of it start from.
+    /// and each mode on the session's llm. What tests that need none of a
+    /// runtime start from.
+    #[cfg(test)]
     pub(crate) fn bare(
         session: Session,
+        provider: Arc<dyn Provider>,
+        tools: Arc<Vec<Box<dyn Tool>>>,
+    ) -> Self {
+        let mut app = Self::around(&session, provider, tools);
+        app.session = Some(session);
+        app
+    }
+
+    /// `bare` before the session is placed: what `new` installs a runtime
+    /// over, so the session moves in once, from the runtime.
+    fn around(
+        session: &Session,
         provider: Arc<dyn Provider>,
         tools: Arc<Vec<Box<dyn Tool>>>,
     ) -> Self {
@@ -565,7 +551,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
-            curios: curios::Curios::new(&session),
+            curios: curios::Curios::new(session),
             hero_since: Instant::now(),
             flash: None,
             pointer: None,
@@ -596,7 +582,7 @@ impl App {
             session_listing: Job::default(),
             session_loading: Job::default(),
             session_saving: Job::default(),
-            session: Some(session),
+            session: None,
             provider,
             tools,
             shell: None,
@@ -638,10 +624,14 @@ impl App {
         }
     }
 
-    /// Takes on `runtime`. The llms are installed as they are: the session
-    /// they came with runs on its mode's, or its agent's, already.
-    fn install(&mut self, runtime: Installed) {
-        let Installed {
+    /// Takes on `runtime`, all but its session and warnings, which it
+    /// hands back for the caller to place: `new` builds the app around the
+    /// session, `/resume` switches to it. The llms are installed as they
+    /// are: the session they came with runs on its mode's, or its agent's,
+    /// already.
+    fn install(&mut self, runtime: PreparedRuntime) -> (Session, Vec<String>) {
+        let PreparedRuntime {
+            session,
             paths,
             provider,
             model_tools,
@@ -649,6 +639,7 @@ impl App {
             checkers,
             mode_llms,
             profiles,
+            warnings,
         } = runtime;
         self.paths = paths;
         self.provider = provider;
@@ -671,6 +662,7 @@ impl App {
         self.servers_lookup = Default::default();
         self.formatters_lookup = Default::default();
         self.diagnostics = Default::default();
+        (session, warnings)
     }
 
     /// Runs the commands typed after `!` on `shell`.

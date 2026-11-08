@@ -81,8 +81,15 @@ impl Runtime {
             let (runtime, subagents) = (runtime.clone(), subagents.clone());
             async move {
                 let start = Start::Saved(Box::new(session));
-                let mut config = runtime.config_for(&start)?;
-                let providers = Arc::new(providers(&config)?);
+                // Loading the config asks git about the repository and
+                // building the providers reads the ChatGPT login: off the
+                // runtime's workers, which the chat's loop shares.
+                let (start, mut config, providers) = tokio::task::spawn_blocking(move || {
+                    let config = runtime.config_for(&start)?;
+                    let providers = Arc::new(providers(&config)?);
+                    anyhow::Ok((start, config, providers))
+                })
+                .await??;
                 prepare(&mut config, providers, start, subagents).await
             }
             .boxed()
@@ -442,6 +449,26 @@ pub(crate) mod tests {
                 assert_eq!(profile.llms, expected, "{text:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_saved_sessions_model_fills_the_config_it_resumes_with() {
+        // Before the providers are built from it, so their default is the
+        // session's provider; `--model` still wins.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").expect("writes");
+        let start = Start::Saved(Box::new(Session::new("zen/a", dir.path().into())));
+
+        let config = Runtime::new(Some(path.clone()), None)
+            .config_for(&start)
+            .expect("loads");
+        assert_eq!(config.model, "zen/a");
+
+        let config = Runtime::new(Some(path), Some("go/b".into()))
+            .config_for(&start)
+            .expect("loads");
+        assert_eq!(config.model, "go/b");
     }
 
     #[test]

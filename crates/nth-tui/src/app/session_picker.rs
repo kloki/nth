@@ -115,26 +115,7 @@ impl App {
     }
 
     fn install_runtime(&mut self, runtime: super::PreparedRuntime) {
-        let super::PreparedRuntime {
-            session,
-            paths,
-            provider,
-            model_tools,
-            shell,
-            checkers,
-            mode_llms,
-            profiles,
-            warnings,
-        } = runtime;
-        self.install(super::Installed {
-            paths,
-            provider,
-            model_tools,
-            shell,
-            checkers,
-            mode_llms,
-            profiles,
-        });
+        let (session, warnings) = self.install(runtime);
         // `resume` hands these to every session from here on.
         self.max_steps = session.max_steps;
         self.tool_timeout = session.tool_timeout;
