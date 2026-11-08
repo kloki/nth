@@ -11,9 +11,11 @@ use serde_json::json;
 
 const TIMEOUT: Duration = Duration::from_secs(25);
 const DEFAULT_NUM_RESULTS: u32 = 8;
-/// Sent as `exaApiKey` when set. Exa answers without a key too, at a lower
-/// rate limit.
+/// Sent as the `x-api-key` header when set, never in the URL, where it would
+/// reach error text and logs. Exa answers without a key too, at a lower rate
+/// limit.
 const API_KEY_ENV: &str = "EXA_API_KEY";
+const API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -33,7 +35,9 @@ impl Default for WebsearchConfig {
 pub struct Websearch {
     config: WebsearchConfig,
     api_key: Option<String>,
-    http: reqwest::Client,
+    /// The build error, kept for the call to report, when the client could
+    /// not be made.
+    http: Result<reqwest::Client, String>,
 }
 
 impl Websearch {
@@ -42,13 +46,16 @@ impl Websearch {
         Self {
             config,
             api_key,
-            http: reqwest::Client::new(),
+            http: client().map_err(|e| e.to_string()),
         }
     }
 
     async fn search(&self, args: Args) -> Result<String, String> {
-        let mut request = self
+        let http = self
             .http
+            .as_ref()
+            .map_err(|e| format!("web search failed: {e}"))?;
+        let mut request = http
             .post(&self.config.url)
             .timeout(TIMEOUT)
             .header(
@@ -70,22 +77,37 @@ impl Websearch {
                 }
             }));
         if let Some(key) = &self.api_key {
-            request = request.query(&[("exaApiKey", key)]);
+            let mut value = reqwest::header::HeaderValue::from_str(key).map_err(|_| {
+                format!("web search failed: {API_KEY_ENV} is not a valid header value")
+            })?;
+            // Kept out of `Debug` output and HTTP/2 header tables.
+            value.set_sensitive(true);
+            request = request.header(API_KEY_HEADER, value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("web search failed: {e}"))?;
+        let response = request.send().await.map_err(failed)?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| format!("web search failed: {e}"))?;
+        let body = response.text().await.map_err(failed)?;
         if !status.is_success() {
             return Err(format!("web search failed: HTTP {status}: {}", body.trim()));
         }
         parse_response(&body)
     }
+}
+
+/// Follows no redirect: reqwest keeps custom headers on a hop to another host
+/// or down to http, which would hand `x-api-key` to whoever the redirect
+/// names. Exa's endpoint answers directly, so a redirect is an error.
+fn client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+/// A request error's `Display` names the URL, and the configured one may carry
+/// a key of its own; the result goes to the model, the provider and the saved
+/// session.
+fn failed(e: reqwest::Error) -> String {
+    format!("web search failed: {}", e.without_url())
 }
 
 #[derive(Deserialize)]
@@ -210,12 +232,16 @@ mod tests {
 
     /// Serves one canned HTTP response and hands back the request it got.
     async fn server(status: &str, content_type: &str, body: &str) -> (String, JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let url = format!("http://{}/mcp", listener.local_addr().expect("addr"));
-        let response = format!(
+        serve(format!(
             "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()
-        );
+        ))
+        .await
+    }
+
+    async fn serve(response: String) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/mcp", listener.local_addr().expect("addr"));
         let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
             let mut request = Vec::new();
@@ -254,7 +280,7 @@ mod tests {
         let tool = Websearch {
             config: WebsearchConfig { url },
             api_key: api_key.map(String::from),
-            http: reqwest::Client::new(),
+            http: Ok(client().expect("client")),
         };
         tool.call(args, &ToolContext::new(".".into())).await
     }
@@ -311,15 +337,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_goes_in_the_query_string_encoded() {
+    async fn api_key_goes_in_a_header() {
         let (url, request) = server("200 OK", "application/json", &rpc_result("ok")).await;
-        search(url, Some("a b&c"), json!({ "query": "q" }))
+        search(url, Some("secret-key"), json!({ "query": "q" }))
             .await
             .expect("search");
         let request = request.await.expect("server");
-        assert!(
-            request.starts_with("POST /mcp?exaApiKey=a+b%26c HTTP/1.1"),
-            "{request}"
+        assert!(request.starts_with("POST /mcp HTTP/1.1"), "{request}");
+        assert!(request.contains("x-api-key: secret-key\r\n"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn the_search_key_never_reaches_the_error_text() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        // A key in the configured URL too, which only `without_url` hides.
+        let url = format!(
+            "http://{}/mcp?token=url-secret",
+            listener.local_addr().expect("addr")
+        );
+        // Reads the request head, then closes without answering.
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !complete(&request) {
+                let n = socket.read(&mut buf).await.expect("read");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8(request).expect("utf8")
+        });
+        let err = search(url, Some("exa-secret"), json!({ "query": "q" }))
+            .await
+            .expect_err("reset");
+        let request = server.await.expect("server");
+        assert!(err.starts_with("web search failed: "), "{err}");
+        for leak in ["exa-secret", "url-secret", "127.0.0.1", "http://"] {
+            assert!(!err.contains(leak), "{leak} in {err}");
+        }
+        let request_line = request.lines().next().expect("request line");
+        assert!(!request_line.contains("exaApiKey"), "{request_line}");
+        assert!(!request_line.contains("exa-secret"), "{request_line}");
+    }
+
+    #[tokio::test]
+    async fn a_redirect_never_carries_the_key_elsewhere() {
+        let (elsewhere, mut seen) = server("200 OK", "application/json", &rpc_result("ok")).await;
+        let (url, _) = serve(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: {elsewhere}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        ))
+        .await;
+        let out = search(url, Some("exa-secret"), json!({ "query": "q" })).await;
+        // A followed redirect would have reached it before the search returned.
+        match tokio::time::timeout(Duration::from_millis(200), &mut seen).await {
+            Ok(request) => {
+                let request = request.expect("server");
+                assert!(!request.contains("exa-secret"), "{request}");
+            }
+            Err(_) => seen.abort(),
+        }
+        assert_eq!(
+            out,
+            Err("web search failed: HTTP 307 Temporary Redirect: ".into())
         );
     }
 
