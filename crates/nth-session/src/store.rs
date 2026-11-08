@@ -259,7 +259,7 @@ impl Store {
         let plan = crate::plan::plan_path(&root, &id);
         deleted.record(plan.clone(), tokio::fs::remove_file(&plan).await);
         let dirs = [
-            crate::work::work_dir(&root, &id.to_string()),
+            nth_work::work_dir(&root, &id.to_string()),
             self.monitor_dir(id),
             // Its subagents' images too: they keep theirs in its folder.
             self.images_dir(id),

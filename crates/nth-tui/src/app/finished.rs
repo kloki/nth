@@ -30,7 +30,7 @@ pub(super) enum Finished {
     SessionSaved(Result<Result<(), store::Error>, JoinError>),
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
-    WorkRead(Result<(PathBuf, Option<nth_session::work::Plan>), JoinError>),
+    WorkRead(Result<(PathBuf, Option<nth_work::Plan>), JoinError>),
     ServersFound(Result<Vec<ServerInfo>, JoinError>),
     ToolsFound(Result<Result<Vec<(String, ToolUse)>, store::Error>, JoinError>),
     FormattersFound(Result<Vec<FormatterStatus>, JoinError>),

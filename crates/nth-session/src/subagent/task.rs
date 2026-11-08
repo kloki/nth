@@ -162,8 +162,13 @@ impl Tool for Task {
                     (id, false)
                 }
                 None => (
-                    self.spawner
-                        .spawn(agent, &args.description, ctx, Vec::new()),
+                    self.spawner.spawn(
+                        subagents.reserve(),
+                        agent,
+                        &args.description,
+                        ctx,
+                        Vec::new(),
+                    ),
                     true,
                 ),
             };

@@ -202,6 +202,51 @@ async fn with_an_inbox_it_returns_at_once_and_every_change_is_a_notice() {
 }
 
 #[tokio::test]
+async fn work_todo_knows_its_item_from_the_first_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    // Numbers taken and never spent, so the assigned one is not simply 1.
+    let _ = subagents.reserve();
+    let _ = subagents.reserve();
+    let work = work_with(
+        ticks_then_answers(),
+        Vec::new(),
+        subagents,
+        Inbox::new(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
+    write(&work, &ctx, 1, "store").await;
+
+    // Held to the end: the last handle gone stops the subagent.
+    let result = WorkAssign::new(work.clone())
+        .call(assign(1, "store"), &ctx)
+        .await
+        .unwrap();
+
+    assert!(result.contains("to subagent 3 "), "{result}");
+    let mut first = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            SubagentEvent::Session {
+                id,
+                event: nth_protocol::Event::ToolFinished { call, result },
+            } if call.name == "work_todo" => {
+                assert_eq!(id, 3);
+                first.get_or_insert(result);
+            }
+            SubagentEvent::TurnEnded { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(first, Some(Ok("Todo updated: 1/2 done.".into())));
+    let item = read(dir.path(), "01-c1", "store").await;
+    assert_eq!(item.task, Some(3), "the reserved number");
+    assert!(item.todos[0].done && !item.todos[1].done);
+}
+
+#[tokio::test]
 async fn cycles_run_one_after_another_and_closed_items_stay_closed() {
     let dir = tempfile::tempdir().unwrap();
     let work = work_with(
@@ -595,6 +640,7 @@ async fn a_failed_assign_write_reports_once() {
 
     let err = result.unwrap_err();
     assert!(err.starts_with("writing 01-c1/a failed"), "{err}");
+    assert!(subagents.ids().is_empty(), "no subagent was started");
     assert_eq!(subagents.queued(1), 0, "no job was queued");
     assert!(!subagents.is_running(1));
     // Long enough for a job that went out to start and end.

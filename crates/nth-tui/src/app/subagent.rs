@@ -290,6 +290,7 @@ mod tests {
         let explore = agents.get("explore").expect("built in");
         let session = Session::new("glm", "/repo".into()).as_subagent(None);
         app.subagents.spawn(
+            app.subagents.reserve(),
             explore,
             "find tabs",
             session,
@@ -673,9 +674,14 @@ mod tests {
         .agents;
         let explore = agents.get("explore").expect("built in");
         let session = Session::new("kimi", "/repo".into()).as_subagent(None);
-        let id = app
-            .subagents
-            .spawn(explore, "find tabs", session, Arc::new(Spends), Vec::new());
+        let id = app.subagents.spawn(
+            app.subagents.reserve(),
+            explore,
+            "find tabs",
+            session,
+            Arc::new(Spends),
+            Vec::new(),
+        );
         app.prompt_subagent(id, "go".into());
         for _ in 0..50 {
             tokio::task::yield_now().await;

@@ -23,6 +23,7 @@ nth-protocol = { path = "crates/nth-protocol" }
 nth-session = { path = "crates/nth-session" }
 nth-tools = { path = "crates/nth-tools" }
 nth-tui = { path = "crates/nth-tui" }
+nth-work = { path = "crates/nth-work" }
 nth-worktree = { path = "crates/nth-worktree" }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = [

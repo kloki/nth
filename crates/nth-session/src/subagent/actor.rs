@@ -510,6 +510,7 @@ mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "find tabs",
             session(),
@@ -692,6 +693,7 @@ mod tests {
             .map(|i| StreamEvent::TextDelta(i.to_string()))
             .collect();
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "d",
             session(),
@@ -719,6 +721,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "d",
             session(),

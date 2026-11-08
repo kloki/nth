@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nth_session::work::{Plan, Store};
+use nth_work::{Plan, Store};
 use tokio::task::JoinError;
 
 use super::{App, Tab, content::Change, job::Job};
@@ -136,11 +136,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use nth_protocol::{Event, Panel, Screen, ToolCall};
-    use nth_session::{
-        SubagentEvent,
-        subagent::TaskOutcome,
-        work::{Item, ItemRef, Status},
-    };
+    use nth_session::{SubagentEvent, subagent::TaskOutcome};
+    use nth_work::{Item, ItemRef, Status};
     use ratatui::style::Color;
 
     use super::*;
@@ -166,11 +163,11 @@ mod tests {
             item: slug.into(),
         };
         let todos = vec![
-            nth_session::work::Todo {
+            nth_work::Todo {
                 text: "one".into(),
                 done: true,
             },
-            nth_session::work::Todo {
+            nth_work::Todo {
                 text: "two".into(),
                 done: false,
             },
@@ -322,7 +319,7 @@ mod tests {
 
         app.inbox
             .post_work(notice(nth_session::work::WorkState::Returned {
-                outcome: nth_session::work::WorkOutcome::Completed("ok".into()),
+                outcome: nth_work::WorkOutcome::Completed("ok".into()),
                 done: 0,
                 total: 0,
             }));

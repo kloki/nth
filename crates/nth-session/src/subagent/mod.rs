@@ -22,8 +22,7 @@ use std::{
 
 pub(crate) use child::child_session;
 pub use mention::resolve;
-pub(crate) use notice::TaskId;
-pub use notice::{TaskNotice, TaskOutcome, TaskStall};
+pub use notice::{SubagentId, TaskNotice, TaskOutcome, TaskStall};
 use nth_context::Agent;
 use nth_protocol::{Event, Provider, Tool, Writable, tool_names};
 pub(crate) use spawn::{Spawner, find_agent};
@@ -37,10 +36,6 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{Error, Inbox, Session, Spend};
-
-/// Numbered from 1 for as long as the front-end runs, like a monitor; it is
-/// the `task_id` the model continues a subagent with.
-pub type SubagentId = TaskId;
 
 /// What a subagent reports to the front-end, for its tab.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +156,30 @@ pub(crate) struct ChildState {
     state: Option<State>,
 }
 
+/// A subagent's number, taken before it starts so what it is handed can
+/// name it: `work_todo` is bound to its item and the id the item file
+/// keeps. `Subagents::spawn` spends it; one never spent is a skipped
+/// number, which nothing counts on.
+#[derive(Debug)]
+#[must_use = "a reserved number is spent by Subagents::spawn"]
+pub struct Reserved {
+    id: SubagentId,
+    /// The child's own once it starts, so a tool built before then hears
+    /// when it is forgotten.
+    closed: CancellationToken,
+}
+
+impl Reserved {
+    pub fn id(&self) -> SubagentId {
+        self.id
+    }
+
+    /// Cancelled once the subagent is forgotten with its session.
+    pub(crate) fn closed(&self) -> CancellationToken {
+        self.closed.clone()
+    }
+}
+
 /// The front-end's subagents, cheap to clone. Children run with or without
 /// a front-end; without one, as in `nth run`, their events go nowhere.
 #[derive(Clone, Default)]
@@ -213,10 +232,23 @@ impl Subagents {
         }))
     }
 
-    /// Starts a subagent of `agent` on `session`, numbered and announced
-    /// as `Started` from its own task, and returns its id.
+    /// The next subagent's number, for [`spawn`](Self::spawn).
+    pub fn reserve(&self) -> Reserved {
+        let mut registry = self.0.lock();
+        registry.next += 1;
+        Reserved {
+            id: registry.next,
+            closed: CancellationToken::new(),
+        }
+    }
+
+    /// Starts a subagent of `agent` on `session` as the number `reserved`
+    /// holds, announced as `Started` from its own task, and returns its
+    /// id. One reserved before its session was left never starts: it is
+    /// that session's, and a prompt to it is refused as to one that ended.
     pub fn spawn(
         &self,
+        reserved: Reserved,
         agent: &Agent,
         description: &str,
         session: Session,
@@ -228,10 +260,12 @@ impl Subagents {
         let writes = tools
             .iter()
             .any(|tool| tool_names::writes_files(tool.spec().name));
-        let closed = CancellationToken::new();
+        let Reserved { id, closed } = reserved;
         let mut registry = self.0.lock();
-        registry.next += 1;
-        let id = registry.next;
+        if id <= registry.forgotten {
+            closed.cancel();
+            return id;
+        }
         let session_id = session.id;
         let actor = tokio::spawn(actor::run(actor::Actor {
             id,
@@ -472,11 +506,38 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_number_reserved_before_its_session_was_left_never_starts() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let reserved = subagents.reserve();
+        let closed = reserved.closed();
+        subagents.forget_all();
+        let provider = Arc::new(Scripted::new(vec![says("late")]));
+
+        let id = subagents.spawn(reserved, &explore(), "d", session(), provider, Vec::new());
+
+        assert_eq!(id, 1);
+        assert!(closed.is_cancelled(), "what it was handed hears it");
+        assert!(subagents.ids().is_empty());
+        let (late, _) = job("go", Done::Notify(Inbox::default()));
+        assert!(!subagents.prompt(id, late), "refused as an ended one");
+        assert!(rx.try_recv().is_err(), "no tab for it");
+        assert_eq!(subagents.reserve().id(), 2, "numbers go on");
+    }
+
+    #[tokio::test]
     async fn a_task_runs_and_replies_with_the_answer() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let provider = Arc::new(Scripted::new(vec![says("in content.rs")]));
-        let id = subagents.spawn(&explore(), "find tabs", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "find tabs",
+            session(),
+            provider,
+            Vec::new(),
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         let (first, _) = job("where do tabs open?", Done::Reply(reply_tx));
         assert!(subagents.prompt(id, first));
@@ -536,7 +597,14 @@ pub(crate) mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![says("done")]));
-        let id = subagents.spawn(&explore(), "find tabs", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "find tabs",
+            session(),
+            provider,
+            Vec::new(),
+        );
         subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
 
         until_ended(&mut rx).await;
@@ -575,7 +643,14 @@ pub(crate) mod tests {
             |id: &str| StreamEvent::ToolCall(crate::agent_loop::tests::call(id, "noop", "{}"));
         let provider = Arc::new(Scripted::new(vec![vec![same("1"), same("2"), same("3")]]));
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Noop)];
-        let id = subagents.spawn(&explore(), "d", session(), provider, tools);
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            tools,
+        );
         subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
 
         until_ended(&mut rx).await;
@@ -602,7 +677,14 @@ pub(crate) mod tests {
             }),
         ];
         let provider = Arc::new(Scripted::new(vec![reply]));
-        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
         subagents.prompt(id, job("go", Done::Nothing).0);
 
         until_ended(&mut rx).await;
@@ -621,7 +703,14 @@ pub(crate) mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![vec![]]));
-        let id = subagents.spawn(&explore(), "find tabs", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "find tabs",
+            session(),
+            provider,
+            Vec::new(),
+        );
         subagents.prompt(id, job("go", Done::Notify(inbox.clone())).0);
 
         until_ended(&mut rx).await;
@@ -638,7 +727,14 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let provider = Arc::new(Scripted::new(vec![says("first"), says("second")]));
-        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
         let (first_tx, first_rx) = oneshot::channel();
         let (skipped_tx, skipped_rx) = oneshot::channel();
         let (second_tx, second_rx) = oneshot::channel();
@@ -670,7 +766,14 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
-        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         subagents.prompt(id, job("one", Done::Nothing).0);
         subagents.prompt(id, job("two", Done::Reply(reply_tx)).0);
@@ -698,6 +801,7 @@ pub(crate) mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "slow",
             session(),
@@ -739,6 +843,7 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "slow",
             session(),
@@ -763,7 +868,14 @@ pub(crate) mod tests {
         let subagents = Subagents::new(tx);
         let inbox = Inbox::new();
         let provider = Arc::new(Scripted::new(vec![says("one"), says("two")]));
-        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
         subagents.prompt(id, job("one", Done::Notify(inbox.clone())).0);
         subagents.prompt(id, job("two", Done::Notify(inbox.clone())).0);
 
@@ -788,6 +900,7 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let id = subagents.spawn(
+            subagents.reserve(),
             &explore(),
             "d",
             session(),
@@ -823,7 +936,14 @@ pub(crate) mod tests {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let provider = Arc::new(Scripted::new(vec![says("x")]));
-        let id = subagents.spawn(&explore(), "d", session(), provider, Vec::new());
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
         assert_eq!(
             rx.recv()
                 .await

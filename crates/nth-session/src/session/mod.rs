@@ -10,9 +10,7 @@ use nth_protocol::{Cost, Effort, Listing, Message, Mode, ModelSettings, Usage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Ledger, plan, system_prompt, work,
-};
+use crate::{Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Ledger, plan, system_prompt};
 
 mod shell;
 mod turn;
@@ -352,7 +350,7 @@ impl Session {
     /// Where this session's orchestration keeps its work items: under the
     /// main checkout, wherever a worktree tool moved the session.
     pub fn work_dir(&self) -> PathBuf {
-        work::work_dir(&self.state_root(), &self.id.to_string())
+        nth_work::work_dir(&self.state_root(), &self.id.to_string())
     }
 
     /// Later turns go to `model`. The history is kept; only the system
