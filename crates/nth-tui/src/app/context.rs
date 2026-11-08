@@ -27,6 +27,9 @@ pub(super) struct ContextTab {
     /// rebuilds one that came into view without an input event: a resize
     /// that splits the panel, or a tab that closed on its own.
     shown: bool,
+    /// A turn or a compaction runs, which publishes snapshots; a `!`
+    /// command runs as a turn too but publishes none.
+    publishing: bool,
     /// How often the idle session was projected, for the tests that pin
     /// when that happens.
     #[cfg(test)]
@@ -120,13 +123,12 @@ impl App {
         }
     }
 
-    /// Before a turn's task starts: its first request publishes at once,
-    /// so an open tab subscribes now. The slot is emptied here as well as
-    /// by the turn, since the task may fill in a skill first, and the tab
-    /// opened in between must not take the last turn's snapshot for this
-    /// one's.
+    /// Before a turn's or a compaction's task starts: its first request
+    /// publishes at once, so an open tab subscribes now. The slot is empty
+    /// already, from the last turn's end, which matters while the task
+    /// fills in a skill before its turn resets the slot itself.
     pub(super) fn context_turn_starting(&mut self) {
-        self.context_tab.slot.reset();
+        self.context_tab.publishing = true;
         if self.content.tabs().contains(&Tab::Context) {
             self.context_tab.watch();
         }
@@ -135,9 +137,10 @@ impl App {
     /// The tab opened or showed while a turn runs: it follows the turn,
     /// starting from what the turn published so far, since subscribing
     /// marks that seen. An empty slot leaves it waiting for the next step
-    /// rather than on the preview from before the turn.
+    /// rather than on the preview from before the turn. A `!` command
+    /// publishes nothing, so there is nothing to follow or wait for.
     pub(super) fn follow_running_turn(&mut self) {
-        if self.context_tab.watch() {
+        if self.context_tab.publishing && self.context_tab.watch() {
             self.context_tab.view.update(self.context_tab.slot.get());
         }
     }
@@ -149,9 +152,12 @@ impl App {
 
     /// The turn ended, through the loop or not: a panicked task never
     /// reached the loop's end, which forgets what its `context` tool
-    /// asked for. What it published last is not kept: the end rebuilds a
-    /// shown tab, and a hidden one is rebuilt when it shows again.
+    /// asked for. Emptying the slot here keeps it empty until the next
+    /// turn resets it. What it published last is not kept: the end
+    /// rebuilds a shown tab, and a hidden one is rebuilt when it shows
+    /// again.
     pub(super) fn context_turn_ended(&mut self) {
+        self.context_tab.publishing = false;
         self.context_tab.live = None;
         self.context_tab.slot.reset();
     }

@@ -204,7 +204,7 @@ async fn opening_the_tab_mid_turn_shows_the_turn_so_far() {
     assert!(
         rows(&mut app)
             .iter()
-            .any(|row| row.contains("waiting for the turn's next step"))
+            .any(|row| row.contains("waiting for the running turn"))
     );
 
     app.close_content();
@@ -283,4 +283,62 @@ async fn a_failed_turn_task_forgets_what_it_asked() {
     };
     app.turn_task_failed(error);
     assert!(!app.context_tab.slot.builds());
+}
+
+#[tokio::test]
+async fn a_work_items_todo_tick_marks_the_tab_stale() {
+    let mut app = open_tab();
+    app.on_subagent(SubagentEvent::Session {
+        id: 1,
+        event: Event::ToolFinished {
+            call: ToolCall {
+                id: "1".into(),
+                name: nth_protocol::tool_names::WORK_TODO.into(),
+                arguments: "{}".into(),
+            },
+            result: Ok("ticked".into()),
+        },
+    });
+    assert_eq!(app.context_tab.rebuilds, 1);
+    app.every_second();
+    assert_eq!(app.context_tab.rebuilds, 2, "its notice is pending");
+}
+
+#[tokio::test]
+async fn a_command_has_no_snapshots_to_follow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = shell_app(dir.path());
+    app.run_command(Command::Context);
+    app.close_content();
+    command(&mut app, "sleep 0.2");
+    assert!(app.is_busy());
+
+    app.run_command(Command::Context);
+    assert!(!app.context_tab.watching());
+    assert!(!app.context_tab.slot.builds());
+    assert!(
+        app.context_tab.view.preview().is_some(),
+        "the preview from before the command stays"
+    );
+    end(&mut app).await;
+}
+
+#[tokio::test]
+async fn a_turn_opened_before_its_task_runs_shows_nothing_of_the_last() {
+    let session = Session::new("glm", "/repo".into());
+    let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    app.run_command(Command::Context);
+    send(&mut app, "one");
+    end(&mut app).await;
+    app.close_content();
+
+    // The task has not run yet, as while it fills in a skill: the turn's
+    // own reset is still to come.
+    send(&mut app, "two");
+    app.run_command(Command::Context);
+    assert!(
+        app.context_tab.view.preview().is_none(),
+        "the last turn's end is not this one's"
+    );
+    end(&mut app).await;
 }

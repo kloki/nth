@@ -74,10 +74,7 @@ fn document(preview: &Preview, width: usize) -> Vec<Line<'static>> {
 
 fn waiting(width: usize) -> Vec<Line<'static>> {
     barred(
-        vec![vec![
-            title("context"),
-            note("waiting for the turn's next step"),
-        ]],
+        vec![vec![title("context"), note("waiting for the running turn")]],
         width,
     )
 }

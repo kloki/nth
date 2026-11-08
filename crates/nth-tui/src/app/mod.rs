@@ -1134,7 +1134,9 @@ impl App {
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
             TermEvent::FocusGained => {
                 self.focused = true;
-                // Instruction files may have been edited while away.
+                // Instruction files may have been edited while away. Best
+                // effort: one edited while the terminal keeps the focus
+                // shows once something else marks the tab stale.
                 self.context_stale();
             }
             TermEvent::FocusLost => self.focused = false,

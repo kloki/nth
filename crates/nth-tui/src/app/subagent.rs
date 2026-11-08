@@ -59,11 +59,13 @@ impl App {
                 if let Event::Usage(usage) = event {
                     self.spent.subagent_usage(id, usage);
                 }
-                // A subagent on a work item ticked its todo.
+                // A subagent on a work item ticked its todo, whose notice
+                // the idle preview lists as pending.
                 if let Event::ToolFinished { call, .. } = &event
                     && call.name == tool_names::WORK_TODO
                 {
                     self.work.read();
+                    self.context_stale();
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.apply(&event);
