@@ -24,7 +24,7 @@ pub(crate) use agent_loop::{Route, Turn};
 pub use front_end::FrontEnd;
 pub use inbox::Inbox;
 pub(crate) use nth_protocol::Compaction;
-pub use session::{SHELL_PROMPT, Session};
+pub use session::{SHELL_PROMPT, Session, TurnEnv};
 pub use store::{Store, Summary};
 pub use subagent::{SubagentEvent, SubagentId, Subagents, Task, TaskStop};
 pub(crate) use system_prompt::system_prompt;

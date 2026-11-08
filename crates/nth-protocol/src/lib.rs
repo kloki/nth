@@ -29,14 +29,14 @@ pub use mode::Mode;
 pub use monitor::{MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream};
 pub use nth_context::agents::tool_names;
 pub use provider::{
-    BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, Origin, Provider,
-    Request, Retry, StreamEvent, SubagentLlm, Usage,
+    BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, ModelSettings,
+    Origin, Provider, Request, Retry, StreamEvent, Usage,
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
 pub use tool::{
-    INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec, failed,
-    failure_reason, parse_args, reject_old_timeout, timed_out,
+    ChildLlm, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
+    failed, failure_reason, parse_args, reject_old_timeout, timed_out,
 };
 pub use workdir::Workdir;
 pub use writable::Writable;

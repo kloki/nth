@@ -10,7 +10,7 @@ use nth_context::{Agent, Context, instructions::Watch};
 use tokio::sync::mpsc;
 
 use crate::{
-    Asker, Attachments, Compaction, Event, Llm, Monitors, Screen, SubagentLlm, Workdir, Writable,
+    Asker, Attachments, Compaction, Event, ModelSettings, Monitors, Screen, Workdir, Writable,
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,9 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
+/// Cloned whole into every call by [`ToolContext::for_call`], so a field
+/// is shared with the turn unless that says otherwise.
+#[derive(Clone)]
 pub struct ToolContext {
     /// Latest committed main-session preview, shared by all calls of a turn.
     pub context_preview: crate::ContextPreview,
@@ -56,23 +59,8 @@ pub struct ToolContext {
     /// The primary agent the session runs as, in place of plan or act:
     /// the model is offered only the tools it allows.
     pub agent: Option<Agent>,
-    /// The model and effort the session runs on, for a tool that starts
-    /// another session on the same.
-    pub llm: Llm,
-    /// What a subagent the session starts runs on, when that is not the
-    /// session's own model; an agent's own model still wins.
-    pub subagent: Option<SubagentLlm>,
-    /// What the built-in clerk runs on, when that is not `subagent`'s.
-    pub clerk: Option<SubagentLlm>,
-    /// The model's context window and output limit, when the front-end
-    /// knows them, for a tool that starts another session on the same
-    /// model: they size the child's compaction trigger.
-    pub context_window: Option<u64>,
-    pub max_output: Option<u64>,
-    /// How the session keeps itself inside the window, for a tool that
-    /// starts another session on the same model: a child of a session with
-    /// automatic compaction off must not compact on its own.
-    pub compaction: Compaction,
+    /// What a tool that starts another session starts it on.
+    pub child: ChildLlm,
     /// The id of the session the call runs for, for a tool that keeps
     /// something per session; empty outside one.
     pub session: String,
@@ -114,12 +102,7 @@ impl ToolContext {
             monitors: Monitors::default(),
             writable: Writable::Any,
             agent: None,
-            llm: Llm::default(),
-            subagent: None,
-            clerk: None,
-            context_window: None,
-            max_output: None,
-            compaction: Compaction::default(),
+            child: ChildLlm::default(),
             session: String::new(),
             attachments: Attachments::default(),
             takes_images: true,
@@ -133,33 +116,40 @@ impl ToolContext {
     /// and attachments of its own; the rest is shared with the turn.
     pub fn for_call(&self, call_id: String, output: OutputSink) -> Self {
         Self {
-            context_preview: self.context_preview.clone(),
             cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
-            state_root: self.state_root.clone(),
-            is_subagent: self.is_subagent,
-            workdir: self.workdir.clone(),
-            extra_dirs: self.extra_dirs.clone(),
-            output,
-            instructions: self.instructions.clone(),
-            watch: self.watch.clone(),
-            context: self.context.clone(),
             asker: self.asker.for_call(call_id),
-            screen: self.screen.clone(),
-            monitors: self.monitors.clone(),
-            writable: self.writable.clone(),
-            agent: self.agent.clone(),
-            llm: self.llm.clone(),
-            subagent: self.subagent.clone(),
-            clerk: self.clerk.clone(),
-            context_window: self.context_window,
-            max_output: self.max_output,
-            compaction: self.compaction,
-            session: self.session.clone(),
+            output,
             attachments: Attachments::default(),
-            takes_images: self.takes_images,
-            images: self.images.clone(),
-            tool_timeout: self.tool_timeout,
+            ..self.clone()
         }
+    }
+}
+
+/// What a tool that starts another session, as the task tool does, starts
+/// it on: the session's own model and limits, or what the front-end picked
+/// for its subagents or its clerk, and how it keeps inside the window,
+/// since a child of a session with automatic compaction off must not
+/// compact on its own.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChildLlm {
+    pub own: ModelSettings,
+    /// What a subagent runs on, when that is not `own`; an agent's own
+    /// model still wins.
+    pub subagent: Option<ModelSettings>,
+    /// What the built-in clerk runs on, when that is not `subagent`'s.
+    pub clerk: Option<ModelSettings>,
+    pub compaction: Compaction,
+}
+
+impl ChildLlm {
+    /// What a subagent runs on before its agent's own model is considered:
+    /// for the clerk its pick, else the subagents', else the session's own.
+    pub fn for_agent(&self, clerk: bool) -> &ModelSettings {
+        let picked = match clerk {
+            true => self.clerk.as_ref().or(self.subagent.as_ref()),
+            false => self.subagent.as_ref(),
+        };
+        picked.unwrap_or(&self.own)
     }
 }
 
@@ -272,10 +262,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn for_call_gives_each_call_its_own_attachments_and_asker_tag() {
+    async fn for_call_shares_the_turn_and_owns_its_attachments_and_asker() {
         let (asks_tx, mut asks) = mpsc::channel::<Ask>(2);
+        let child = ChildLlm {
+            own: ModelSettings::bare(crate::Llm {
+                model: "zen/a".into(),
+                effort: crate::Effort::High,
+            }),
+            ..ChildLlm::default()
+        };
         let turn = ToolContext {
             asker: Asker::new(asks_tx),
+            is_subagent: true,
+            state_root: Some("/repo".into()),
+            extra_dirs: vec!["/other".into()],
+            writable: Writable::Plan {
+                file: "/repo/plan.md".into(),
+                memory: None,
+                source: None,
+            },
+            child: child.clone(),
+            session: "s1".into(),
+            takes_images: false,
+            images: Some("/data/images/s1".into()),
+            tool_timeout: Some(Duration::from_secs(9)),
             ..ToolContext::new("/repo".into())
         };
         turn.workdir
@@ -312,5 +322,16 @@ mod tests {
             call_id
         });
         assert_eq!(ask, "2");
+
+        // Everything else is the turn's, a field added later included.
+        assert!(one.is_subagent);
+        assert_eq!(one.state_root, turn.state_root);
+        assert_eq!(one.extra_dirs, turn.extra_dirs);
+        assert_eq!(one.writable, turn.writable);
+        assert_eq!(one.child, child);
+        assert_eq!(one.session, "s1");
+        assert!(!one.takes_images);
+        assert_eq!(one.images, turn.images);
+        assert_eq!(one.tool_timeout, turn.tool_timeout);
     }
 }

@@ -335,7 +335,7 @@ mod tests {
             StreamEvent::Usage(usage(100, 10)),
         ]]);
         let mut session = crate::Session::new("model", ".".into());
-        session.compaction = route(40).compaction;
+        session.env.compaction = route(40).compaction;
         session.set_limits(Some(10_000), Some(2_000));
         session.last_usage = Some(usage(9_000, 0));
         session.messages = vec![

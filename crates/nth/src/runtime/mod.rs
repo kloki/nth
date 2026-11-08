@@ -17,8 +17,8 @@ use futures::FutureExt;
 use nth_config::Config;
 use nth_context::Paths;
 use nth_llm::Providers;
-use nth_protocol::{Llm, Mode, Provider, SubagentLlm};
-use nth_session::{Inbox, Session, Subagents};
+use nth_protocol::{Llm, Mode, ModelSettings, Provider};
+use nth_session::{Inbox, Session, Subagents, TurnEnv};
 use nth_tui::PreparedRuntime;
 pub(crate) use tools::{post_write, tools};
 
@@ -187,20 +187,19 @@ impl Runtime {
         let context =
             Arc::new(nth_context::Context::load(start.cwd().to_path_buf(), paths.clone()).await);
         let mut selection = llms::selection(&config, &providers);
-        let mut session = match start {
+        // Unsized until a listing sizes them with the model.
+        let picked = |llm: &Llm| ModelSettings::bare(llm.clone());
+        let (mut session, subagent, clerk) = match start {
             Start::Fresh { cwd, mode } => {
                 selection.mode = mode;
                 let Llm { model, effort } = selection.current();
                 let mut session = Session::new(model, cwd).with_context(context);
                 session.mode = mode;
                 session.effort = effort;
-                let picked = |llm: &Llm| SubagentLlm {
-                    llm: llm.clone(),
-                    ..SubagentLlm::default()
-                };
-                session.subagent_llm = selection.slots().subagent.as_ref().map(picked);
-                session.clerk_llm = selection.slots().clerk.as_ref().map(picked);
-                session
+                let slots = selection.slots();
+                let subagent = slots.subagent.as_ref().map(picked);
+                let clerk = slots.clerk.as_ref().map(picked);
+                (session, subagent, clerk)
             }
             Start::Saved(mut session) => {
                 session.set_context(context);
@@ -220,16 +219,24 @@ impl Runtime {
                         effort: session.effort,
                     },
                 );
-                *session
+                // Its subagents run on its own model until a front-end
+                // hands it the profile's, as the chat does each turn.
+                (*session, None, None)
             }
         };
         warnings.extend(apply_directories(&mut session, &config));
-        session.max_steps = config.session.max_steps;
-        session.tool_timeout = config.session.tool_timeout();
-        // The configured compaction policy; the limits come from a listing once
-        // the model is final, so preparing waits on no endpoint. A saved
-        // session keeps the limits it saved until then.
-        session.compaction = config.context;
+        // The configured compaction policy; the limits, whether the model
+        // takes images and its price come from a listing once the model is
+        // final, so preparing waits on no endpoint. A saved session keeps the
+        // limits it saved until then.
+        session.env = TurnEnv {
+            compaction: config.context,
+            max_steps: config.session.max_steps,
+            tool_timeout: config.session.tool_timeout(),
+            subagent,
+            clerk,
+            ..TurnEnv::default()
+        };
         let post_write = post_write(&config);
         let checkers = tools::checkers(&post_write, &config);
         let provider: Arc<dyn Provider> = providers;
@@ -416,7 +423,10 @@ pub(crate) mod tests {
         };
         let ctx = nth_protocol::ToolContext {
             context: prepared.session.context().clone(),
-            llm: llm("gone/a", Effort::default()),
+            child: nth_protocol::ChildLlm {
+                own: nth_protocol::ModelSettings::bare(llm("gone/a", Effort::default())),
+                ..nth_protocol::ChildLlm::default()
+            },
             session: "s1".into(),
             ..nth_protocol::ToolContext::new(dir.path().into())
         };
@@ -532,13 +542,13 @@ pub(crate) mod tests {
         assert_eq!(session.mode, Mode::Plan);
         assert_eq!(session.model, "zen/a");
         assert_eq!(session.effort, Effort::High);
-        assert_eq!(session.max_steps, 7);
-        assert!(!session.compaction.auto);
-        assert_eq!(session.compaction.reserved, 30_000);
-        assert_eq!(session.compaction.preserve, 1_000);
-        let subagent = session.subagent_llm.as_ref().expect("subagent llm");
+        assert_eq!(session.env.max_steps, 7);
+        assert!(!session.env.compaction.auto);
+        assert_eq!(session.env.compaction.reserved, 30_000);
+        assert_eq!(session.env.compaction.preserve, 1_000);
+        let subagent = session.env.subagent.as_ref().expect("subagent llm");
         assert_eq!(subagent.llm, llm("zen/c", Effort::Low));
-        let clerk = session.clerk_llm.as_ref().expect("clerk llm");
+        let clerk = session.env.clerk.as_ref().expect("clerk llm");
         assert_eq!(clerk.llm, llm("zen/d", Effort::Minimal));
         assert_eq!(
             prepared.selection.slots(),
@@ -623,8 +633,8 @@ pub(crate) mod tests {
             .expect("prepares");
 
         let session = &prepared.session;
-        assert!(!session.compaction.auto);
-        assert_eq!(session.compaction.reserved, 30_000);
+        assert!(!session.env.compaction.auto);
+        assert_eq!(session.env.compaction.reserved, 30_000);
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
     }

@@ -69,11 +69,11 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Compaction, ContextSnapshot, Event, Listing, Llm, Mode, MonitorEvent, Monitors,
-    Provider, Show, Tool, Usage, tool_names,
+    Ask, BoxError, ContextSnapshot, Event, Listing, Llm, Mode, MonitorEvent, Monitors, Provider,
+    Show, Tool, Usage, tool_names,
 };
 use nth_session::{
-    Inbox, Session, Store, Subagents, Summary, ToolUse, store,
+    Inbox, Session, Store, Subagents, Summary, ToolUse, TurnEnv, store,
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
@@ -267,14 +267,11 @@ pub struct App {
     /// the session is in the turn task while one runs and `/` still has to
     /// list the skills.
     context: Arc<ProjectContext>,
-    /// The configured step limit, which every session the app moves on to
-    /// keeps; a loaded one would otherwise fall back to the default.
-    max_steps: usize,
-    /// The configured tool ceiling, kept the same way as `max_steps`.
-    tool_timeout: Option<Duration>,
-    /// The configured `[context]` policy, which every session the app moves
-    /// on to takes, as it does `max_steps`: a session never saves it.
-    compaction: Compaction,
+    /// The configured step limit, tool ceiling and `[context]` policy,
+    /// which every session the app moves on to takes as its env: a session
+    /// never saves them, so a loaded one would otherwise fall back to the
+    /// defaults. `adopt_llm` fills in the model's share before each turn.
+    env: TurnEnv,
     session_listing: Job<Result<Vec<Summary>, store::Error>>,
     /// The session chosen in the session picker, being read.
     session_loading: Job<anyhow::Result<session_picker::Loaded>>,
@@ -548,9 +545,7 @@ impl App {
             paths: Paths::default(),
             reload: None,
             context: session.context().clone(),
-            max_steps: session.max_steps,
-            tool_timeout: session.tool_timeout,
-            compaction: session.compaction,
+            env: configured(&session.env),
             session_listing: Job::default(),
             session_loading: Job::default(),
             session_saving: Job::default(),
@@ -1325,9 +1320,7 @@ impl App {
         session.effort = effort;
         session.mode = self.selection.mode;
         session.set_agent(self.selection.agent.clone());
-        session.max_steps = self.max_steps;
-        session.tool_timeout = self.tool_timeout;
-        session.compaction = self.compaction;
+        session.env = self.env.clone();
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
@@ -1364,5 +1357,16 @@ impl App {
             }
             self.refresh_context();
         }
+    }
+}
+
+/// The config's share of `env`, which every session the app moves on to
+/// keeps; the model's share is the listing's, which `adopt_llm` hands over.
+fn configured(env: &TurnEnv) -> TurnEnv {
+    TurnEnv {
+        compaction: env.compaction,
+        max_steps: env.max_steps,
+        tool_timeout: env.tool_timeout,
+        ..TurnEnv::default()
     }
 }

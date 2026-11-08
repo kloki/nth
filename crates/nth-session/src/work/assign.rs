@@ -106,7 +106,7 @@ impl Tool for WorkAssign {
         async move {
             nth_protocol::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
-            if ctx.llm.model.is_empty() {
+            if ctx.child.own.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());
             }
             let store = Work::store(ctx)?;

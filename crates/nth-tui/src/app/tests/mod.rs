@@ -785,14 +785,14 @@ async fn a_fresh_session_takes_the_configured_compaction() {
         preserve: 500,
     };
     let mut session = Session::new("glm", "/repo".into());
-    session.compaction = configured;
+    session.env.compaction = configured;
     let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/clear");
     app.submit();
 
     assert_eq!(
-        app.session.as_ref().expect("idle").compaction,
+        app.session.as_ref().expect("idle").env.compaction,
         configured,
         "the new session follows [context], not the defaults"
     );

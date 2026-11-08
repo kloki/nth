@@ -23,9 +23,12 @@ fn ctx(dir: &Path) -> ToolContext {
     ToolContext {
         session: "s1".into(),
         context: Arc::new(Context::discover(Path::new("/nowhere"), &Paths::default())),
-        llm: Llm {
-            model: "glm-5.3".into(),
-            ..Llm::default()
+        child: nth_protocol::ChildLlm {
+            own: nth_protocol::ModelSettings::bare(Llm {
+                model: "glm-5.3".into(),
+                ..Llm::default()
+            }),
+            ..nth_protocol::ChildLlm::default()
         },
         ..ToolContext::new(dir.to_path_buf())
     }

@@ -82,7 +82,7 @@ pub async fn run(
     // The read tool keeps images beside the save, as the chat's does.
     let store = Store::open();
     if let Ok(store) = &store {
-        session.images = Some(store.images_dir(session.id));
+        session.env.images = Some(store.images_dir(session.id));
     }
     let cwd = session.cwd.clone();
     let lsp = checkers.lsp;

@@ -7,8 +7,8 @@ use std::{
 
 use nth_context::{Agent, Context, instructions::Watch};
 use nth_protocol::{
-    AssistantMessage, Cost, Effort, Event, Listing, Llm, Message, Mode, Phase, Provider,
-    SubagentLlm, Tool, ToolCall, ToolContext, Usage, Workdir,
+    AssistantMessage, ChildLlm, Cost, Effort, Event, Listing, Llm, Message, Mode, ModelSettings,
+    Phase, Provider, Tool, ToolCall, ToolContext, Usage, Workdir,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -33,6 +33,50 @@ fn first_line(text: &str) -> &str {
 /// The user message before a command the user ran themselves, as opencode
 /// words it. Front-ends that replay a session leave it out.
 pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
+
+/// What a front-end sets before each turn and never saves: today's config,
+/// so a resumed session follows it, and what the front-end's listing says
+/// of the models, which a later listing may say differently.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnEnv {
+    /// How the session keeps itself inside the model's window.
+    pub compaction: Compaction,
+    /// Model requests a turn may make before it gives up.
+    pub max_steps: usize,
+    /// How long one tool call may run before the loop stops it; `None`
+    /// never.
+    pub tool_timeout: Option<Duration>,
+    /// Whether the model takes images. Unknown counts as yes: the providers
+    /// still turn an image into a note for a model that takes none.
+    pub takes_images: bool,
+    /// What the model costs, when the listing says; stamped onto every
+    /// spend so the price survives without a listing.
+    pub cost: Option<Cost>,
+    /// The folder the read tool keeps image files in, from the store; a
+    /// subagent's is its parent's.
+    pub images: Option<PathBuf>,
+    /// What the subagents this session starts run on; `None` runs them on
+    /// its own model.
+    pub subagent: Option<ModelSettings>,
+    /// What the built-in clerk runs on; `None` runs it as the other
+    /// subagents.
+    pub clerk: Option<ModelSettings>,
+}
+
+impl Default for TurnEnv {
+    fn default() -> Self {
+        Self {
+            compaction: Compaction::default(),
+            max_steps: DEFAULT_MAX_STEPS,
+            tool_timeout: Some(DEFAULT_TOOL_TIMEOUT),
+            takes_images: true,
+            cost: None,
+            images: None,
+            subagent: None,
+            clerk: None,
+        }
+    }
+}
 
 /// One conversation: who it runs for, where, and everything said so far.
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
@@ -109,11 +153,6 @@ pub struct Session {
     /// replaced.
     #[serde(default)]
     pub last_usage: Option<Usage>,
-    /// How the session keeps itself inside the model's window. Comes from
-    /// the config's `[context]`, not the save, so a resumed session follows
-    /// today's config, as `max_steps` does.
-    #[serde(skip)]
-    pub compaction: Compaction,
     /// The model's context window, when the front-end knows it; without it
     /// nothing compacts on its own. Saved, so a resumed session keeps the
     /// window its model was listed with.
@@ -123,35 +162,10 @@ pub struct Session {
     /// default; `None` falls back to 20k.
     #[serde(default)]
     pub max_output: Option<u64>,
-    /// Model requests a turn may make before it gives up. Comes from the
-    /// config, not the save, so a resumed session follows today's config.
-    #[serde(skip, default = "default_max_steps")]
-    pub max_steps: usize,
-    /// How long one tool call may run before the loop stops it; `None`
-    /// never. Comes from the config, as `max_steps` does.
-    #[serde(skip, default = "default_tool_timeout")]
-    pub tool_timeout: Option<Duration>,
-    /// Whether the model takes images, as the listing says; the front-end
-    /// sets it with the limits. Unknown counts as yes: the providers still
-    /// turn an image into a note for a model that takes none.
-    #[serde(skip, default = "yes")]
-    pub takes_images: bool,
-    /// What the model costs, when the front-end's listing says; stamped onto
-    /// every spend it records so the price survives without a listing.
+    /// Set by the front-end before each turn, so it follows today's config
+    /// and listing rather than the save's.
     #[serde(skip)]
-    pub cost: Option<Cost>,
-    /// The folder the read tool keeps image files in, which the front-end
-    /// sets from the store; a subagent's is its parent's. Not saved.
-    #[serde(skip)]
-    pub images: Option<PathBuf>,
-    /// What the subagents this session starts run on; `None` runs them on
-    /// its own model. Set by the front-end before each turn, not saved.
-    #[serde(skip)]
-    pub subagent_llm: Option<SubagentLlm>,
-    /// What the built-in clerk runs on; `None` runs it as the other
-    /// subagents. Set by the front-end before each turn, not saved.
-    #[serde(skip)]
-    pub clerk_llm: Option<SubagentLlm>,
+    pub env: TurnEnv,
     /// Runs for another session's model rather than for you: it has no
     /// task tool, so it is told of no agents and `@name` means nothing.
     #[serde(default)]
@@ -211,16 +225,9 @@ impl Session {
             loaded_instructions: BTreeSet::new(),
             usage: Ledger::default(),
             last_usage: None,
-            compaction: Compaction::default(),
             context_window: None,
             max_output: None,
-            max_steps: DEFAULT_MAX_STEPS,
-            tool_timeout: Some(DEFAULT_TOOL_TIMEOUT),
-            takes_images: true,
-            cost: None,
-            images: None,
-            subagent_llm: None,
-            clerk_llm: None,
+            env: TurnEnv::default(),
             subagent: false,
             parent: None,
             persona: None,
@@ -373,13 +380,13 @@ impl Session {
         }
         // Unknown counts as taking images: the providers still turn an image
         // into a note for a model that takes none.
-        self.takes_images = info.and_then(|info| info.takes_images).unwrap_or(true);
-        self.cost = info.and_then(|info| info.cost);
-        for llm in [&mut self.subagent_llm, &mut self.clerk_llm]
+        self.env.takes_images = info.and_then(|info| info.takes_images).unwrap_or(true);
+        self.env.cost = info.and_then(|info| info.cost);
+        for llm in [&mut self.env.subagent, &mut self.env.clerk]
             .into_iter()
             .flatten()
         {
-            *llm = SubagentLlm::sized(llm.llm.clone(), listing);
+            *llm = ModelSettings::sized(llm.llm.clone(), listing);
         }
     }
 
@@ -559,7 +566,7 @@ impl Session {
     /// way keeps what it spent; whoever runs the turn closes it.
     fn held(&mut self, front_end: &FrontEnd) -> Held {
         let mut spend = Spend::new(&self.model, None);
-        spend.cost = self.cost;
+        spend.cost = self.env.cost;
         Held {
             spend: self.usage.open(spend),
             ctx: self.tool_context(front_end),
@@ -585,12 +592,12 @@ impl Session {
                 effort: self.effort,
                 session_id: &held.session_id,
                 parent_session_id: held.parent_session_id.as_deref(),
-                max_steps: self.max_steps,
+                max_steps: self.env.max_steps,
                 // The window and the output limit are the front-end's to
                 // fill; without them nothing compacts on its own.
                 context_window: self.context_window,
                 max_output: self.max_output,
-                compaction: self.compaction,
+                compaction: self.env.compaction,
             },
             tools,
             ctx: &held.ctx,
@@ -623,21 +630,27 @@ impl Session {
             context_preview: front_end.context_preview.clone(),
             writable,
             agent: self.primary().cloned(),
-            llm: Llm {
-                model: self.model.clone(),
-                effort: self.effort,
+            child: ChildLlm {
+                own: ModelSettings {
+                    llm: Llm {
+                        model: self.model.clone(),
+                        effort: self.effort,
+                    },
+                    context_window: self.context_window,
+                    max_output: self.max_output,
+                    takes_images: self.env.takes_images,
+                    cost: self.env.cost,
+                },
+                subagent: self.env.subagent.clone(),
+                clerk: self.env.clerk.clone(),
+                compaction: self.env.compaction,
             },
-            subagent: self.subagent_llm.clone(),
-            clerk: self.clerk_llm.clone(),
-            context_window: self.context_window,
-            max_output: self.max_output,
-            compaction: self.compaction,
             workdir: Workdir::new(self.origin.clone()),
             state_root: Some(self.state_root()),
             session: self.id.to_string(),
-            takes_images: self.takes_images,
-            images: self.images.clone(),
-            tool_timeout: self.tool_timeout,
+            takes_images: self.env.takes_images,
+            images: self.env.images.clone(),
+            tool_timeout: self.env.tool_timeout,
             ..ToolContext::new(self.cwd.clone())
         }
     }
@@ -788,24 +801,25 @@ impl Session {
     }
 }
 
-fn yes() -> bool {
-    true
-}
-
-fn default_max_steps() -> usize {
-    DEFAULT_MAX_STEPS
-}
-
-fn default_tool_timeout() -> Option<Duration> {
-    Some(DEFAULT_TOOL_TIMEOUT)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
 
     use nth_protocol::{AssistantMessage, INTERRUPTED, StreamEvent, ToolCall, Usage, failed};
 
     use super::*;
+
+    #[test]
+    fn a_fresh_env_takes_the_defaults() {
+        let env = TurnEnv::default();
+
+        assert_eq!(env.max_steps, DEFAULT_MAX_STEPS);
+        assert_eq!(env.tool_timeout, Some(DEFAULT_TOOL_TIMEOUT));
+        assert!(env.takes_images, "unknown counts as taking images");
+        assert_eq!(env.compaction, Compaction::default());
+        assert_eq!((env.cost, env.images), (None, None));
+        assert_eq!((env.subagent, env.clerk), (None, None));
+        assert_eq!(Session::new("glm-5.3", ".".into()).env, TurnEnv::default());
+    }
 
     #[test]
     fn starts_with_only_the_system_prompt() {
@@ -860,8 +874,8 @@ pub(crate) mod tests {
 
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
-        assert!(!session.takes_images);
-        assert_eq!(session.cost, Some(cost));
+        assert!(!session.env.takes_images);
+        assert_eq!(session.env.cost, Some(cost));
     }
 
     #[test]
@@ -873,8 +887,8 @@ pub(crate) mod tests {
 
         assert_eq!(session.context_window, None);
         assert_eq!(session.max_output, None);
-        assert!(session.takes_images, "unknown counts as taking images");
-        assert_eq!(session.cost, None);
+        assert!(session.env.takes_images, "unknown counts as taking images");
+        assert_eq!(session.env.cost, None);
     }
 
     #[test]
@@ -914,32 +928,31 @@ pub(crate) mod tests {
         let mut images = listed("zen/b", Some(400_000), Some(32_000));
         images.takes_images = Some(true);
         let listing = Listing::from(vec![listed("zen/a", Some(200_000), Some(64_000)), images]);
-        let picked = |model: &str| SubagentLlm {
-            llm: Llm {
-                model: model.into(),
-                effort: Effort::Low,
-            },
+        let picked = |model: &str| ModelSettings {
             context_window: Some(1),
             max_output: Some(1),
-            ..SubagentLlm::default()
+            ..ModelSettings::bare(Llm {
+                model: model.into(),
+                effort: Effort::Low,
+            })
         };
         let mut session = Session::new("zen/a", "/repo".into());
-        session.subagent_llm = Some(picked("zen/a"));
-        session.clerk_llm = Some(picked("zen/b"));
+        session.env.subagent = Some(picked("zen/a"));
+        session.env.clerk = Some(picked("zen/b"));
 
         session.size_to(&listing);
 
-        let subagent = session.subagent_llm.expect("kept");
+        let subagent = session.env.subagent.expect("kept");
         assert_eq!(subagent.llm.model, "zen/a");
         assert_eq!(subagent.llm.effort, Effort::Low);
         assert_eq!(
             (subagent.context_window, subagent.max_output),
             (Some(200_000), Some(64_000))
         );
-        let clerk = session.clerk_llm.expect("kept");
+        let clerk = session.env.clerk.expect("kept");
         assert_eq!(
             (clerk.context_window, clerk.max_output, clerk.takes_images),
-            (Some(400_000), Some(32_000), Some(true))
+            (Some(400_000), Some(32_000), true)
         );
     }
 
@@ -1638,9 +1651,25 @@ pub(crate) mod tests {
                 recent: "[User]: go".into(),
             },
         ]);
-        session.compaction.auto = false;
-        session.compaction.reserved = 1_000;
-        session.compaction.preserve = 2_000;
+        session.env = TurnEnv {
+            compaction: Compaction {
+                auto: false,
+                reserved: 1_000,
+                preserve: 2_000,
+            },
+            max_steps: 3,
+            tool_timeout: None,
+            takes_images: false,
+            cost: Some(Cost {
+                input: 1.0,
+                output: 2.0,
+                cache_read: None,
+                cache_write: None,
+            }),
+            images: Some("/data/images".into()),
+            subagent: Some(ModelSettings::default()),
+            clerk: Some(ModelSettings::default()),
+        };
         session.last_usage = Some(Usage {
             input: 10,
             output: 2,
@@ -1651,11 +1680,11 @@ pub(crate) mod tests {
         let mut back: Session = serde_json::from_str(&json).expect("deserializes");
 
         assert_eq!(
-            back.compaction,
-            Compaction::default(),
-            "the policy is the config's, never the save's"
+            back.env,
+            TurnEnv::default(),
+            "the config's and the listing's, never the save's"
         );
-        back.compaction = session.compaction;
+        back.env = session.env.clone();
         assert_eq!(back, session);
     }
 
@@ -1672,7 +1701,7 @@ pub(crate) mod tests {
         let old: Session = serde_json::from_value(json).expect("deserializes");
 
         assert_eq!(old.last_usage, None);
-        assert_eq!(old.compaction, Compaction::default());
+        assert_eq!(old.env.compaction, Compaction::default());
         assert_eq!(old.context_window, None);
         assert_eq!(old.max_output, None);
     }
@@ -1840,7 +1869,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_shell_command_outlasts_the_tool_ceiling() {
         let mut session = Session::new("glm-5.3", ".".into());
-        session.tool_timeout = Some(Duration::from_millis(10));
+        session.env.tool_timeout = Some(Duration::from_millis(10));
         let (events, _rx) = mpsc::channel(16);
 
         let result = session

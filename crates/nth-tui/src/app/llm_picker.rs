@@ -422,7 +422,10 @@ mod tests {
         let ended = app.turn.join().await.expect("turn task finished");
         app.end_turn(ended);
         let session = app.session.as_ref().expect("session came back");
-        assert!(session.cost.is_some() && !session.takes_images, "listed");
+        assert!(
+            session.env.cost.is_some() && !session.env.takes_images,
+            "listed"
+        );
 
         app.llms = None;
         app.pick_model("other");
@@ -432,8 +435,8 @@ mod tests {
         app.end_turn(ended);
 
         let session = app.session.as_ref().expect("session came back");
-        assert_eq!(session.cost, None);
-        assert!(session.takes_images, "unknown counts as taking images");
+        assert_eq!(session.env.cost, None);
+        assert!(session.env.takes_images, "unknown counts as taking images");
     }
 
     #[tokio::test]
@@ -579,7 +582,7 @@ mod tests {
         let ended = app.turn.join().await.expect("turn task finished");
         app.end_turn(ended);
         let session = app.session.as_ref().expect("idle");
-        assert_eq!(session.subagent_llm, None, "the parent's unless picked");
+        assert_eq!(session.env.subagent, None, "the parent's unless picked");
 
         app.selection.set(
             Target::Subagent,
@@ -593,7 +596,7 @@ mod tests {
         let ended = app.turn.join().await.expect("turn task finished");
         app.end_turn(ended);
         let session = app.session.as_ref().expect("idle");
-        let subagent = session.subagent_llm.as_ref().expect("picked");
+        let subagent = session.env.subagent.as_ref().expect("picked");
         assert_eq!(
             (subagent.llm.model.as_str(), subagent.llm.effort),
             ("plain", Effort::Low)
