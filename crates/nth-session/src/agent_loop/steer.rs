@@ -26,9 +26,10 @@ impl Turn<'_> {
             return false;
         };
         for call in calls {
-            emit(self.events, Event::ToolStarted(call.clone())).await;
+            emit(self.events, self.cancel, Event::ToolStarted(call.clone())).await;
             emit(
                 self.events,
+                self.cancel,
                 Event::ToolFinished {
                     call: call.clone(),
                     result: Err(INTERRUPTED.to_string()),
@@ -45,7 +46,7 @@ impl Turn<'_> {
         // The reminder hidden from the transcript, as the mention is.
         let text = steered(&prompts, self.ctx) + INTERRUPTED_REMINDER;
         self.messages.push(Message::User(text));
-        emit(self.events, Event::Notice(prompts)).await;
+        emit(self.events, self.cancel, Event::Notice(prompts)).await;
         true
     }
 
@@ -73,7 +74,7 @@ impl Turn<'_> {
         let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
         if !sent.is_empty() {
             self.messages.push(Message::User(sent));
-            emit(self.events, Event::Notice(shown)).await;
+            emit(self.events, self.cancel, Event::Notice(shown)).await;
         }
     }
 

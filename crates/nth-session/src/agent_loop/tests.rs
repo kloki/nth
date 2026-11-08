@@ -1,6 +1,12 @@
 //! What the agent loop's tests share, and the tests of a turn as a whole.
 
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures::{
     FutureExt, StreamExt,
@@ -471,6 +477,83 @@ async fn tools_called_on_the_last_step_do_not_run() {
             "the tool never started"
         );
     }
+}
+
+/// Streams its deltas, counting each one the turn takes, then never ends.
+struct Counted {
+    deltas: [&'static str; 3],
+    taken: Arc<AtomicUsize>,
+}
+
+impl Provider for Counted {
+    fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+        async { Ok(Listing::default()) }.boxed()
+    }
+
+    fn stream<'a>(
+        &'a self,
+        _request: Request<'a>,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>> {
+        let taken = self.taken.clone();
+        let deltas = self
+            .deltas
+            .map(|text| Ok(StreamEvent::TextDelta(text.into())));
+        async move {
+            Ok(stream::iter(deltas)
+                .inspect(move |_| {
+                    taken.fetch_add(1, Ordering::SeqCst);
+                })
+                .chain(stream::pending())
+                .boxed())
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn a_turn_blocked_on_a_full_event_channel_still_answers_its_cancel() {
+    let taken = Arc::new(AtomicUsize::new(0));
+    let provider = Counted {
+        deltas: ["a", "b", "c"],
+        taken: taken.clone(),
+    };
+    let ctx = ToolContext::new(".".into());
+    let mut messages = vec![Message::User("go".into())];
+    // Room for one event and nobody reading: a front-end that stopped
+    // draining.
+    let (tx, _rx) = mpsc::channel(1);
+    let cancel = CancellationToken::new();
+    let (mut spend, mut last_usage) = (spend(), None);
+    let run = Turn {
+        provider: &provider,
+        route: ROUTE,
+        tools: &[],
+        ctx: &ctx,
+        messages: &mut messages,
+        spend: &mut spend,
+        last_usage: &mut last_usage,
+        events: &tx,
+        cancel: &cancel,
+    }
+    .run();
+    // Both run on this one task, so `stop` only looks while the turn is
+    // parked. One slot cannot hold three deltas, so once the turn has taken
+    // a delta and the slot is full, it is parked sending one, not opening
+    // the stream or waiting for the next event: the cancel lands on the
+    // blocked send, however long the provider takes to answer.
+    let stop = async {
+        while taken.load(Ordering::SeqCst) == 0 || tx.capacity() > 0 {
+            tokio::task::yield_now().await;
+        }
+        cancel.cancel();
+    };
+
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(run, stop) })
+            .await
+            .expect("the turn answered its cancel");
+
+    assert!(matches!(result, Err(Error::Interrupted)), "{result:?}");
 }
 
 /// Runs a turn on [`ROUTE`] with a fresh token, and every event it sent.

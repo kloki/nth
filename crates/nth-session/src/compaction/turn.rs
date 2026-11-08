@@ -83,7 +83,7 @@ impl Turn<'_> {
             summary: summary.clone(),
             recent: split.recent,
         });
-        emit(self.events, Event::Compacted { summary }).await;
+        emit(self.events, self.cancel, Event::Compacted { summary }).await;
         self.publish_preview("ready", false, None);
         Ok(true)
     }
@@ -170,7 +170,7 @@ impl Turn<'_> {
                 StreamEvent::Usage(usage) => {
                     self.spend.steps += 1;
                     self.spend.tokens += usage;
-                    emit(events, Event::Usage(usage)).await;
+                    emit(events, cancel, Event::Usage(usage)).await;
                 }
             }
         }
