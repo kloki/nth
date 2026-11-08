@@ -462,6 +462,7 @@ mod tests {
         inbox.clear();
         assert!(!inbox.has_notices(), "shared, and cleared");
     }
+
     #[test]
     fn a_notice_line_is_cut_at_the_cap() {
         let inbox = Inbox::new();
