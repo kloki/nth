@@ -8,7 +8,7 @@ use std::{
 };
 
 use nth_notify::Event;
-use nth_protocol::{Asker, FrontEnd, Llm, Screen, SubagentLlm};
+use nth_protocol::{Asker, FrontEnd, Screen, SubagentLlm};
 use nth_session::{Session, Store, Subagents, plan, store};
 use tokio::task::JoinError;
 
@@ -430,38 +430,28 @@ impl App {
     /// its subagents and its clerk run on: the picker
     /// may have changed them since the last turn, maybe mid-turn, and the
     /// session is in its task while one runs, so a turn and a compaction
-    /// both take them from the app here. The limits follow the model in
-    /// use, so the compaction trigger sizes against it. Until the listing
-    /// names the model the session keeps the limits it has — a resumed
-    /// one's saved limits still fire its compaction — and a switch to a
-    /// model it does not name drops them rather than size against the old
-    /// one's window.
+    /// both take them from the app here, as the idle context preview does.
+    /// The limits follow the model in use (`Session::size_to`), so the
+    /// compaction trigger sizes against it. Until the listing names the
+    /// model the session keeps the limits it has — a resumed one's saved
+    /// limits still fire its compaction — and a switch to a model it does
+    /// not name drops them rather than size against the old one's window.
     pub(super) fn adopt_llm(&self, session: &mut Session) {
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
             session.set_limits(None, None);
         }
-        if let Some((context_window, max_output)) = self.limits_of(&self.model) {
-            session.set_limits(context_window, max_output);
-        }
-        session.takes_images = self.takes_images_of(&self.model).unwrap_or(true);
-        session.cost = self.cost_of(&self.model);
         session.effort = self.effort;
-        session.subagent_llm = self.mode_llms.subagent.clone().map(|llm| self.picked(llm));
-        session.clerk_llm = self.mode_llms.clerk.clone().map(|llm| self.picked(llm));
-    }
-
-    /// What subagents or the clerk run on, sized against its own model's
-    /// window when the listing names it.
-    fn picked(&self, llm: Llm) -> SubagentLlm {
-        let (context_window, max_output) = self.limits_of(&llm.model).unwrap_or_default();
-        SubagentLlm {
-            takes_images: self.takes_images_of(&llm.model),
-            cost: self.cost_of(&llm.model),
+        // Unsized until the listing is in, which sizes them with the model.
+        let bare = |llm| SubagentLlm {
             llm,
-            context_window,
-            max_output,
+            ..SubagentLlm::default()
+        };
+        session.subagent_llm = self.mode_llms.subagent.clone().map(bare);
+        session.clerk_llm = self.mode_llms.clerk.clone().map(bare);
+        if let Some(llms) = &self.llms {
+            session.size_to(llms);
         }
     }
 

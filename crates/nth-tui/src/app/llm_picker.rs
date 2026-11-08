@@ -69,28 +69,9 @@ impl App {
         self.context_window_of(&self.model)
     }
 
-    /// The context window and output limit of `model`; `None` until the
-    /// listing names it, so a caller keeps what it knew before.
-    pub fn limits_of(&self, model: &str) -> Option<(Option<u64>, Option<u64>)> {
-        let llm = self
-            .llms
-            .as_ref()?
-            .models
-            .iter()
-            .find(|llm| llm.id == model)?;
-        Some((llm.context, llm.output))
-    }
-
-    /// Whether `model` takes images, when the listing names it.
-    pub fn takes_images_of(&self, model: &str) -> Option<bool> {
-        let llms = self.llms.as_ref()?;
-        llms.models.iter().find(|llm| llm.id == model)?.takes_images
-    }
-
     /// The context window of `model`, when the provider says.
     pub fn context_window_of(&self, model: &str) -> Option<u64> {
-        let llms = self.llms.as_ref()?;
-        llms.models.iter().find(|llm| llm.id == model)?.context
+        self.llms.as_ref()?.get(model)?.context
     }
 
     /// What `model` costs, when the catalogue says.
@@ -424,8 +405,6 @@ mod tests {
         let session = app.session.as_ref().expect("session came back");
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
-        assert_eq!(app.limits_of("glm"), Some((Some(200_000), Some(64_000))));
-        assert_eq!(app.limits_of("unlisted"), None);
     }
 
     #[tokio::test]

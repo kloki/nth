@@ -310,60 +310,15 @@ fn apply_directories(session: &mut Session, config: &Config) -> Vec<String> {
 }
 
 /// Sizes the session's compaction to its model: the `[context]` policy,
-/// then the context window and output limit the provider's listing names
-/// for the session's model. Both front-ends call it once the model is
-/// final. A listing that fails changes no limits, so a fresh session keeps
-/// both unknown and nothing compacts on its own.
+/// then what the provider's listing says of the session's model
+/// (`Session::size_to`). `nth run` calls it once the model is final. A
+/// listing that fails changes nothing, so a fresh session keeps both limits
+/// unknown and nothing compacts on its own.
 pub(crate) async fn apply_context(session: &mut Session, config: &Config, provider: &dyn Provider) {
     session.compaction = config.context;
-    set_model_limits(session, provider).await;
-}
-
-/// Sizes the session's compaction to its model: the context window and
-/// output limit the providers' listing names for it, and for what its
-/// subagents and its clerk run on. A listing that fails
-/// changes nothing, so a fresh session keeps both limits unknown and
-/// nothing compacts on its own.
-pub(crate) async fn set_model_limits(session: &mut Session, provider: &dyn Provider) {
-    let Ok(listing) = provider.models().await else {
-        return;
-    };
-    if let Some((context_window, max_output)) = limits(&listing, &session.model) {
-        session.set_limits(context_window, max_output);
+    if let Ok(listing) = provider.models().await {
+        session.size_to(&listing);
     }
-    session.takes_images = takes_images(&listing, &session.model).unwrap_or(true);
-    session.cost = listing.cost_of(&session.model);
-    for picked in [&mut session.subagent_llm, &mut session.clerk_llm]
-        .into_iter()
-        .flatten()
-    {
-        if let Some((context_window, max_output)) = limits(&listing, &picked.llm.model) {
-            picked.context_window = context_window;
-            picked.max_output = max_output;
-        }
-        picked.takes_images = takes_images(&listing, &picked.llm.model);
-        picked.cost = listing.cost_of(&picked.llm.model);
-    }
-}
-
-/// Whether the listing says `model` takes images; `None` when it does not
-/// name it or knows nothing of it.
-fn takes_images(listing: &Listing, model: &str) -> Option<bool> {
-    listing
-        .models
-        .iter()
-        .find(|info| info.id == model)
-        .and_then(|info| info.takes_images)
-}
-
-/// The context window and output limit the listing gives `model`; `None`
-/// when the listing does not name it.
-fn limits(listing: &Listing, model: &str) -> Option<(Option<u64>, Option<u64>)> {
-    listing
-        .models
-        .iter()
-        .find(|info| info.id == model)
-        .map(|info| (info.context, info.output))
 }
 
 /// Any one of the models the providers list.
@@ -554,50 +509,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn limits_come_from_the_listing_entry_of_the_model() {
-        let listed = |id: &str, context: Option<u64>, output: Option<u64>| ModelInfo {
-            context,
-            output,
-            ..model(id)
-        };
-        let listing = Listing::from(vec![
-            listed("zen/a", Some(200_000), Some(64_000)),
-            listed("go/c", Some(1_000_000), None),
-        ]);
-
-        assert_eq!(
-            limits(&listing, "zen/a"),
-            Some((Some(200_000), Some(64_000)))
-        );
-        assert_eq!(limits(&listing, "go/c"), Some((Some(1_000_000), None)));
-        assert_eq!(limits(&listing, "not/listed"), None);
-    }
-
     /// A provider whose listing names `models`; its stream is never asked
-    /// for, as `set_model_limits` only lists.
+    /// for, as `apply_context` only lists.
     struct Listed(Vec<ModelInfo>);
 
     impl Provider for Listed {
         fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
             async move { Ok(Listing::from(self.0.clone())) }.boxed()
-        }
-
-        fn stream<'a>(
-            &'a self,
-            _: Request<'a>,
-        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
-        {
-            async { Err("unused".into()) }.boxed()
-        }
-    }
-
-    /// A provider whose listing fails, as an unreachable endpoint's does.
-    struct Unlistable;
-
-    impl Provider for Unlistable {
-        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
-            async { Err("no /models".into()) }.boxed()
         }
 
         fn stream<'a>(
@@ -615,35 +533,6 @@ mod tests {
             output,
             ..model(id)
         }
-    }
-
-    #[tokio::test]
-    async fn set_model_limits_puts_the_listed_window_and_output_on_the_session() {
-        let provider = Listed(vec![listed("zen/a", Some(200_000), Some(64_000))]);
-        let mut session = Session::new("zen/a", "/repo".into());
-
-        set_model_limits(&mut session, &provider).await;
-
-        assert_eq!(session.context_window, Some(200_000));
-        assert_eq!(session.max_output, Some(64_000));
-    }
-
-    #[tokio::test]
-    async fn set_model_limits_leaves_unknown_or_unlisted_models_alone() {
-        // Neither a model the listing does not name...
-        let unlisted = Listed(vec![listed("zen/b", Some(1_000), Some(100))]);
-        let mut session = Session::new("zen/a", "/repo".into());
-        set_model_limits(&mut session, &unlisted).await;
-        assert_eq!(session.context_window, None);
-        assert_eq!(session.max_output, None);
-
-        // ...nor a listing that fails changes what was already known: a
-        // fresh session keeps both unknown and nothing compacts on its own.
-        let mut resumed = Session::new("zen/a", "/repo".into());
-        resumed.set_limits(Some(100_000), Some(8_000));
-        set_model_limits(&mut resumed, &Unlistable).await;
-        assert_eq!(resumed.context_window, Some(100_000));
-        assert_eq!(resumed.max_output, Some(8_000));
     }
 
     #[tokio::test]
