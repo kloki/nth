@@ -33,6 +33,9 @@ impl App {
                 self.content.remove(Tab::Monitor(id));
             }
         }
+        // A line or an end may have gone into the inbox, which the idle
+        // preview lists as pending.
+        self.refresh_context();
         self.arm_notices();
     }
 

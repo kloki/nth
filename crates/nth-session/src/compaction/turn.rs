@@ -190,7 +190,9 @@ impl Turn<'_> {
 mod tests {
     use std::time::Duration;
 
-    use nth_protocol::{AssistantMessage, StreamEvent, Tool, ToolContext, Usage};
+    use nth_protocol::{
+        AssistantMessage, StreamEvent, Tool, ToolContext, Usage, context_preview::Phase,
+    };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -355,7 +357,7 @@ mod tests {
         let [preview] = &snapshots[..] else {
             panic!("one snapshot, when nothing follows: {snapshots:?}");
         };
-        assert_eq!(preview.phase, "idle");
+        assert_eq!(preview.phase, Phase::Idle);
         assert_eq!(
             preview.last_usage, None,
             "the old usage described the gone history"
@@ -386,7 +388,7 @@ mod tests {
         provider: &Scripted,
         messages: &mut Vec<Message>,
         mut last_usage: Option<Usage>,
-    ) -> Vec<String> {
+    ) -> Vec<Phase> {
         let ctx = ToolContext::new(".".into());
         let _watching = ctx.context_preview.subscribe();
         let (tx, _rx) = mpsc::channel(64);
@@ -424,7 +426,10 @@ mod tests {
         ];
         // Over the usable 8k, so the step compacts before its request.
         let phases = watched_turn(&provider, &mut messages, Some(usage(9_000, 0))).await;
-        assert_eq!(phases, ["compaction_required", "pending_reply", "idle"]);
+        assert_eq!(
+            phases,
+            [Phase::CompactionRequired, Phase::PendingReply, Phase::Idle]
+        );
         assert_eq!(last_summary(&messages), Some("# Objective\nship it"));
     }
 
@@ -437,7 +442,10 @@ mod tests {
         ]);
         let mut messages = overflowing_conversation();
         let phases = watched_turn(&provider, &mut messages, None).await;
-        assert_eq!(phases, ["pending_reply", "pending_reply", "idle"]);
+        assert_eq!(
+            phases,
+            [Phase::PendingReply, Phase::PendingReply, Phase::Idle]
+        );
         assert_eq!(last_summary(&messages), Some("the summary"));
     }
 

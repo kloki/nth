@@ -96,7 +96,9 @@ impl App {
                 self.take_subagent_spend();
             }
         }
-        // A task's answer waits in the inbox with the monitors' notices.
+        // A task's answer waits in the inbox with the monitors' notices,
+        // which the idle preview lists as pending.
+        self.refresh_context();
         self.arm_notices();
     }
 

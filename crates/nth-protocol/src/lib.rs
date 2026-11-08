@@ -2,7 +2,7 @@
 //! provider or tool be swapped without touching the session loop.
 
 mod compaction;
-mod context_preview;
+pub mod context_preview;
 mod curios;
 mod event;
 mod image;

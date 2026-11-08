@@ -22,7 +22,7 @@ pub(crate) use call::run_call;
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Provider, Request, Tool,
-    ToolContext, ToolSpec, Usage, failed,
+    ToolContext, ToolSpec, Usage, context_preview::Phase, failed,
 };
 pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
@@ -154,7 +154,8 @@ impl Turn<'_> {
         let mut last_usage = *self.last_usage;
         let result = self.step_loop(&mut last_usage).await;
         *self.last_usage = last_usage;
-        self.publish_preview("idle", false, last_usage);
+        self.publish_preview(Phase::Idle, false, last_usage);
+        self.ctx.context_preview.turn_ended();
         result
     }
 
@@ -163,7 +164,7 @@ impl Turn<'_> {
     /// unless a front-end subscribed or a tool asked. Instruction files are
     /// not looked at: `hand_over` delivers their changes before the next
     /// step's request, and only the idle preview shows one still pending.
-    pub(crate) fn publish_preview(&self, phase: &str, last: bool, usage: Option<Usage>) {
+    pub(crate) fn publish_preview(&self, phase: Phase, last: bool, usage: Option<Usage>) {
         if self.ctx.is_subagent || !self.ctx.context_preview.builds() {
             return;
         }
@@ -191,13 +192,10 @@ impl Turn<'_> {
             phase,
             last_step: last,
         });
-        if let Ok(value) = serde_json::to_value(preview) {
-            let value = Arc::new(value);
-            // A watch keeps only the newest; the tests count every boundary.
-            #[cfg(test)]
-            crate::context_preview::published::record(&value);
-            self.ctx.context_preview.publish(value);
-        }
+        // A watch keeps only the newest; the tests count every boundary.
+        #[cfg(test)]
+        crate::context_preview::published::record(&preview);
+        self.ctx.context_preview.publish(Arc::new(preview));
     }
 
     /// The step loop [`Turn::run`] wraps, with the usage the trigger reads.
@@ -232,7 +230,7 @@ impl Turn<'_> {
             // session left over it — and one compacting cannot get under
             // the window stops the turn rather than summarizing every step.
             if self.compaction_due(*last_usage) {
-                self.publish_preview("compaction_required", false, *last_usage);
+                self.publish_preview(Phase::CompactionRequired, false, *last_usage);
                 if !self.compact().await? {
                     return Err(Error::TooBigToCompact);
                 }
@@ -243,7 +241,7 @@ impl Turn<'_> {
                 continue;
             }
             let last = step + 1 == max_steps;
-            self.publish_preview("pending_reply", last, *last_usage);
+            self.publish_preview(Phase::PendingReply, last, *last_usage);
             let reply = match self.stream_step(last, &specs, last_usage).await {
                 Ok(reply) => reply,
                 Err(Stop::Cancelled(partial)) => {
@@ -283,7 +281,7 @@ impl Turn<'_> {
             if calls.is_empty() {
                 return Ok(());
             }
-            self.publish_preview("pending_results", false, *last_usage);
+            self.publish_preview(Phase::PendingResults, false, *last_usage);
             // Told not to, the model called tools anyway; they don't run, and
             // every call is answered so the session stays valid.
             if last {
@@ -325,7 +323,7 @@ impl Turn<'_> {
                 return Err(Error::Interrupted);
             }
             self.hand_over().await;
-            self.publish_preview("ready", false, *last_usage);
+            self.publish_preview(Phase::Ready, false, *last_usage);
         }
         Err(Error::TooManySteps(max_steps))
     }

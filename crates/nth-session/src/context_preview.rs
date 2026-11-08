@@ -3,181 +3,12 @@
 //! Token counts use compaction's byte-based heuristic (serialized bytes / 4,
 //! plus 2,500 per image), not a tokenizer or provider accounting.
 
-use nth_protocol::{Compaction, Effort, Inbox, Message, Mode, Tool, ToolSpec, Usage};
-use serde::{Deserialize, Serialize};
+use nth_protocol::{
+    Compaction, Effort, Inbox, Message, Mode, Tool, ToolSpec, Usage,
+    context_preview::{Budget, Entry, Phase, Preview, ToolDefinition},
+};
 
 use crate::{Session, agent_loop::offered_tools, compaction};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-    pub estimated_tokens: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Entry {
-    pub message: Message,
-    pub estimated_tokens: u64,
-    pub checkpoint: bool,
-    /// Availability reflects whether bytes are loaded, not whether the path exists.
-    pub images_available: Vec<bool>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Budget {
-    pub system: u64,
-    pub conversation: u64,
-    pub tools: u64,
-    pub images: u64,
-    pub input: u64,
-    pub context_window: Option<u64>,
-    pub output_reserve: u64,
-    pub usable: Option<u64>,
-    pub available: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Preview {
-    /// Idle, pending_reply, or pending_results. Partial work is not committed.
-    pub phase: String,
-    pub model: String,
-    pub effort: Effort,
-    pub mode: Mode,
-    pub agent: Option<String>,
-    pub entries: Vec<Entry>,
-    pub tools: Vec<ToolDefinition>,
-    pub budget: Budget,
-    pub last_usage: Option<Usage>,
-    pub compaction_required: bool,
-    /// Submitted but not yet delivered items, in inbox order.
-    pub pending: Vec<(String, String)>,
-}
-
-impl Preview {
-    /// Plain-text document shared by terminal consumers. Images are described
-    /// through metadata only; their encoded bytes never appear in the text.
-    pub fn render(&self) -> String {
-        use std::fmt::Write;
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "Next-request preview · {} · {}",
-            self.model,
-            self.agent.as_deref().unwrap_or(match self.mode {
-                Mode::Plan => "plan",
-                Mode::Act => "act",
-            })
-        );
-        let _ = writeln!(
-            out,
-            "Estimated input ~{} / {} context",
-            self.budget.input,
-            self.budget
-                .context_window
-                .map_or_else(|| "unknown".into(), |n| n.to_string())
-        );
-        let _ = writeln!(
-            out,
-            "System ~{} · Conversation ~{} · Tools ~{} · Images ~{}",
-            self.budget.system, self.budget.conversation, self.budget.tools, self.budget.images
-        );
-        let _ = writeln!(
-            out,
-            "Output reserve {} · usable {} · available {}",
-            self.budget.output_reserve,
-            self.budget
-                .usable
-                .map_or_else(|| "unknown".into(), |n| n.to_string()),
-            self.budget
-                .available
-                .map_or_else(|| "unknown".into(), |n| n.to_string())
-        );
-        let _ = writeln!(out, "State: {}", self.phase);
-        if self.compaction_required {
-            let _ = writeln!(out, "Compaction required before next request");
-        }
-        if let Some(usage) = self.last_usage {
-            let _ = writeln!(
-                out,
-                "Last reported input: {} · cached: {}",
-                usage.input,
-                usage
-                    .cache_read
-                    .map_or_else(|| "unknown".into(), |n| n.to_string())
-            );
-        }
-        for (kind, text) in &self.pending {
-            let _ = writeln!(out, "\nPending {kind}\n{text}");
-        }
-        for entry in &self.entries {
-            let label = if entry.checkpoint {
-                "Checkpoint"
-            } else {
-                match &entry.message {
-                    Message::System(_) => "System prompt",
-                    Message::User(_) => "User",
-                    Message::Assistant(_) => "Assistant",
-                    Message::ToolResult { .. } => "Tool result",
-                    Message::Compaction { .. } => "Compaction",
-                }
-            };
-            let _ = writeln!(out, "\n{label} · ~{} tokens", entry.estimated_tokens);
-            match &entry.message {
-                Message::System(text) | Message::User(text) => {
-                    let _ = writeln!(out, "{text}");
-                }
-                Message::Assistant(reply) => {
-                    if !reply.reasoning.is_empty() {
-                        let _ = writeln!(out, "Reasoning:\n{}", reply.reasoning);
-                    }
-                    let _ = writeln!(out, "{}", reply.text);
-                    for call in &reply.tool_calls {
-                        let _ = writeln!(
-                            out,
-                            "Tool call {} · {}\n{}",
-                            call.name, call.id, call.arguments
-                        );
-                    }
-                }
-                Message::ToolResult {
-                    call_id,
-                    content,
-                    images,
-                } => {
-                    let _ = writeln!(out, "Call {call_id}\n{content}");
-                    for (image, available) in images.iter().zip(&entry.images_available) {
-                        let _ = writeln!(
-                            out,
-                            "Image {} · {} · {} · ~{} tokens",
-                            image.path.display(),
-                            image.mime,
-                            if *available {
-                                "available"
-                            } else {
-                                "unavailable"
-                            },
-                            compaction::IMAGE_TOKENS
-                        );
-                    }
-                }
-                Message::Compaction { summary, recent } => {
-                    let _ = writeln!(out, "{summary}\n{recent}");
-                }
-            }
-        }
-        let _ = writeln!(out, "\nTool definitions · {} tools", self.tools.len());
-        for tool in &self.tools {
-            let _ = writeln!(
-                out,
-                "\n{} · ~{} tokens\n{}\n{}",
-                tool.name, tool.estimated_tokens, tool.description, tool.parameters
-            );
-        }
-        out
-    }
-}
 
 impl Session {
     /// Project committed history and offered tools without changing session or inbox.
@@ -223,7 +54,7 @@ impl Session {
             policy: self.compaction,
             last_usage: self.last_usage,
             pending,
-            phase: "idle",
+            phase: Phase::Idle,
             last_step: false,
         })
     }
@@ -241,7 +72,7 @@ pub(crate) struct Projection<'a> {
     pub policy: Compaction,
     pub last_usage: Option<Usage>,
     pub pending: Vec<(String, String)>,
-    pub phase: &'a str,
+    pub phase: Phase,
     pub last_step: bool,
 }
 
@@ -306,7 +137,7 @@ pub(crate) fn build(input: Projection<'_>) -> Preview {
                     .is_some_and(|usage| usage.context() >= usable)
         });
     Preview {
-        phase: input.phase.into(),
+        phase: input.phase,
         model: input.model.into(),
         effort: input.effort,
         mode: input.mode,
@@ -333,9 +164,8 @@ pub(crate) mod published {
         static BUILT: RefCell<Vec<Preview>> = const { RefCell::new(Vec::new()) };
     }
 
-    pub(crate) fn record(snapshot: &serde_json::Value) {
-        let preview = serde_json::from_value(snapshot.clone()).expect("a preview");
-        BUILT.with_borrow_mut(|built| built.push(preview));
+    pub(crate) fn record(snapshot: &Preview) {
+        BUILT.with_borrow_mut(|built| built.push(snapshot.clone()));
     }
 
     /// What was built since the last call.
@@ -455,16 +285,13 @@ mod tests {
             .unwrap();
         let snapshots = published::take();
         assert_eq!(
-            snapshots
-                .iter()
-                .map(|p| p.phase.as_str())
-                .collect::<Vec<_>>(),
+            snapshots.iter().map(|p| p.phase).collect::<Vec<_>>(),
             [
-                "pending_reply",
-                "pending_results",
-                "ready",
-                "pending_reply",
-                "idle"
+                Phase::PendingReply,
+                Phase::PendingResults,
+                Phase::Ready,
+                Phase::PendingReply,
+                Phase::Idle
             ]
         );
         assert!(
@@ -483,14 +310,11 @@ mod tests {
         ));
         assert!(rx.has_changed().unwrap(), "the subscriber was told");
         let newest = rx.borrow_and_update().clone().expect("a snapshot");
-        assert_eq!(
-            serde_json::from_value::<Preview>((*newest).clone()).unwrap(),
-            *idle
-        );
+        assert_eq!(*newest, *idle);
     }
 
     /// The phases of what was built since the last call.
-    fn phases() -> Vec<String> {
+    fn phases() -> Vec<Phase> {
         published::take().into_iter().map(|p| p.phase).collect()
     }
 
@@ -512,7 +336,12 @@ mod tests {
         result.expect("the turn goes on with the prompt");
         assert_eq!(
             phases(),
-            ["pending_reply", "pending_results", "pending_reply", "idle"]
+            [
+                Phase::PendingReply,
+                Phase::PendingResults,
+                Phase::PendingReply,
+                Phase::Idle
+            ]
         );
     }
 
@@ -568,10 +397,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             phases(),
-            ["ready", "pending_reply", "idle"],
+            [Phase::Ready, Phase::PendingReply, Phase::Idle],
             "nothing before the call asked"
         );
-        assert!(front_end.context_preview.get().is_some());
+        assert!(
+            !front_end.context_preview.builds(),
+            "the ask lasts its turn"
+        );
+        assert!(
+            front_end.context_preview.get().is_none(),
+            "a later turn's first call would read this turn's end as its own"
+        );
     }
 
     #[tokio::test]
@@ -598,10 +434,8 @@ mod tests {
                 ctx: &'a ToolContext,
             ) -> futures::future::BoxFuture<'a, ToolResult> {
                 async move {
-                    let snapshot = ctx.context_preview.get().ok_or("missing snapshot")?;
-                    let preview: Preview =
-                        serde_json::from_value((*snapshot).clone()).map_err(|e| e.to_string())?;
-                    assert_eq!(preview.phase, "pending_results");
+                    let preview = ctx.context_preview.get().ok_or("missing snapshot")?;
+                    assert_eq!(preview.phase, Phase::PendingResults);
                     assert!(
                         !preview
                             .entries
@@ -637,7 +471,7 @@ mod tests {
         let sent = provider.sent.lock().unwrap();
         let requests: Vec<_> = snapshots
             .iter()
-            .filter(|p| p.phase == "pending_reply")
+            .filter(|p| p.phase == Phase::PendingReply)
             .collect();
         assert_eq!(requests.len(), sent.len());
         for (preview, sent) in requests.iter().zip(sent.iter()) {
@@ -651,7 +485,7 @@ mod tests {
             );
             assert_eq!(preview.tools[0].name, "inspect");
         }
-        assert!(snapshots.iter().any(|p| p.phase == "ready" && p.entries.iter().any(|e| matches!(&e.message, Message::ToolResult { content, .. } if content == "seen"))));
+        assert!(snapshots.iter().any(|p| p.phase == Phase::Ready && p.entries.iter().any(|e| matches!(&e.message, Message::ToolResult { content, .. } if content == "seen"))));
     }
 
     #[tokio::test]
@@ -791,7 +625,7 @@ mod tests {
         let snapshots = published::take();
         let ready = snapshots
             .iter()
-            .find(|p| p.phase == "ready")
+            .find(|p| p.phase == Phase::Ready)
             .expect("a ready snapshot");
         let delivered = |p: &Preview| {
             p.entries

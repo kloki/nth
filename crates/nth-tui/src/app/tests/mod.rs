@@ -11,7 +11,10 @@ mod provider;
 
 use crossterm::event::Event as TermEvent;
 use nth_context::{Context as ProjectContext, Paths};
-use nth_protocol::{Effort, Event, Message, Panel, Screen, ToolCall, Usage};
+use nth_protocol::{
+    Effort, Event, Message, Panel, Screen, ToolCall, Usage,
+    context_preview::{Phase, Preview},
+};
 use nth_session::Session;
 pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
@@ -91,10 +94,10 @@ pub(crate) fn prompt_row(rows: &[String], offset: usize) -> &str {
 }
 
 /// A preview of a session whose system prompt is `body` lines long.
-fn context_preview(app: &App, body: usize) -> nth_session::context_preview::Preview {
+fn context_preview(app: &App, body: usize) -> Arc<Preview> {
     let mut session = Session::new("glm", "/repo".into());
     session.messages = vec![Message::System("body\n".repeat(body))];
-    session.context_preview(&app.tools, &app.inbox)
+    Arc::new(session.context_preview(&app.tools, &app.inbox))
 }
 
 #[test]
@@ -102,17 +105,17 @@ fn context_document_scrolls_and_keeps_its_position_on_update() {
     let mut app = app();
     let idle = rows(&mut app);
     app.run_command(crate::command::Command::Context);
-    app.context_view.update(Some(context_preview(&app, 30)));
+    app.context_tab.view.update(Some(context_preview(&app, 30)));
     let first = rows(&mut app);
     assert_eq!(app.content.active(), Tab::Context);
     assert!(first.iter().any(|row| row.contains("summary")));
     assert_eq!(prompt_row(&first, 0), prompt_row(&idle, 0));
     assert_eq!(status_row(&first, 0), status_row(&idle, 0));
-    app.context_view.pager.scroll_down(5);
-    app.context_view.update(Some(context_preview(&app, 35)));
+    app.context_tab.view.pager.scroll_down(5);
+    app.context_tab.view.update(Some(context_preview(&app, 35)));
     rows(&mut app);
-    assert_eq!(app.context_view.pager.top(), 5);
-    app.context_view.pager.jump_bottom();
+    assert_eq!(app.context_tab.view.pager.top(), 5);
+    app.context_tab.view.pager.jump_bottom();
     let bottom = rows(&mut app);
     assert!(bottom.iter().any(|row| row.contains("body")));
     app.close_content();
@@ -126,7 +129,7 @@ async fn context_wheel_and_prompt_keys_keep_their_normal_routing() {
     for (width, column) in [(40, 5), (120, 90)] {
         let mut app = app().with_split_width(80);
         app.run_command(crate::command::Command::Context);
-        app.context_view.update(Some(context_preview(&app, 50)));
+        app.context_tab.view.update(Some(context_preview(&app, 50)));
         rows_of(&mut app, width);
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Moved,
@@ -140,7 +143,7 @@ async fn context_wheel_and_prompt_keys_keep_their_normal_routing() {
             row: 3,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.context_view.pager.top(), 3);
+        assert_eq!(app.context_tab.view.pager.top(), 3);
         for key in [
             KeyCode::Char('a'),
             KeyCode::Char('c'),
@@ -166,7 +169,7 @@ async fn context_projects_idle_session_and_live_snapshots() {
         .push(Message::User("submitted message".into()));
     app.run_command(crate::command::Command::Context);
     rows(&mut app);
-    app.context_view.pager.jump_bottom();
+    app.context_tab.view.pager.jump_bottom();
     let rendered = rows(&mut app);
     assert!(!rendered.iter().any(|r| r.contains("submitted message")));
     let mut preview = app
@@ -174,21 +177,19 @@ async fn context_projects_idle_session_and_live_snapshots() {
         .as_ref()
         .unwrap()
         .context_preview(&app.tools, &app.inbox);
-    preview.phase = "pending_results".into();
-    preview.entries.push(nth_session::context_preview::Entry {
+    preview.phase = Phase::PendingResults;
+    preview.entries.push(nth_protocol::context_preview::Entry {
         message: Message::User("live revision".into()),
         estimated_tokens: 3,
         checkpoint: false,
         images_available: vec![],
     });
-    app.context_live = Some(app.context_preview.subscribe());
-    app.context_preview
-        .publish(Arc::new(serde_json::to_value(preview).unwrap()));
-    let snapshot = super::context::next_snapshot(&mut app.context_live)
-        .await
-        .expect("published");
-    app.context_updated(&snapshot);
-    app.context_view.pager.jump_top();
+    // As a turn starting with the tab open does.
+    app.watch_context();
+    app.context_tab.slot.publish(Arc::new(preview));
+    let snapshot = app.context_tab.next().await;
+    app.context_tab.show(snapshot);
+    app.context_tab.view.pager.jump_top();
     let rendered = rows(&mut app);
     assert!(rendered.iter().any(|r| r.contains("pending results")));
     assert!(!rendered.iter().any(|r| r.contains("live revision")));
@@ -206,7 +207,7 @@ fn context_refresh_uses_selected_settings_without_mutating_session() {
     assert!(rendered.contains("chosen-model"), "{rendered}");
     assert!(rendered.contains("plan"), "{rendered}");
     assert_eq!(app.session.as_ref().unwrap().model, "glm");
-    app.context_view.pager.jump_bottom();
+    app.context_tab.view.pager.jump_bottom();
     let rendered = rows(&mut app)[1..8].join("\n");
     assert!(!rendered.contains("unsent secret"));
 }

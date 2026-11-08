@@ -343,6 +343,9 @@ impl App {
         // stays: continued, it opens again with its turns.
         self.content.close();
         self.forget_closed_files();
+        if !self.content.tabs().contains(&Tab::Context) {
+            self.unwatch_context();
+        }
     }
 
     /// In front of the tab's name: what kind it is, or a subagent's
@@ -455,7 +458,7 @@ impl App {
     pub(super) fn view_mut(&mut self, tab: Tab) -> Option<&mut dyn Scrollable> {
         Some(match tab {
             Tab::Chat => &mut self.chat.pager,
-            Tab::Context => &mut self.context_view.pager,
+            Tab::Context => &mut self.context_tab.view.pager,
             Tab::Diagnostics => &mut self.diagnostics.pager,
             Tab::Usage => &mut self.usage_view.pager,
             Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,

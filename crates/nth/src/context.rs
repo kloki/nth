@@ -8,11 +8,11 @@ use std::{
 
 use anyhow::Result;
 use nth_llm::{Credentials, EndpointConfig, Providers};
-use nth_protocol::{Inbox, Message};
-use nth_session::{
-    Session, Store, Subagents,
+use nth_protocol::{
+    Inbox, Message,
     context_preview::{Entry, Preview},
 };
+use nth_session::{Session, Store, Subagents};
 use serde_json::json;
 
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";

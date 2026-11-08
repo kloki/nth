@@ -1,6 +1,6 @@
 //! Read-only inspection of the latest main-session request projection.
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_protocol::{Message, Tool, ToolContext, ToolResult, ToolSpec, context_preview::Preview};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -50,64 +50,115 @@ impl Tool for ContextPreview {
     }
 }
 
-/// Consumes no snapshot state. The serialized projection follows the session
-/// preview's public model; image data is excluded by Image's serialization.
-fn inspect(preview: Option<&Value>, args: Args) -> ToolResult {
+/// Consumes no snapshot state. Only the one entry or tool returned is
+/// serialized in full; image data is excluded by Image's serialization.
+fn inspect(preview: Option<&Preview>, args: Args) -> ToolResult {
     if args.entry.is_some() && args.tool.is_some() {
         return Err("specify either entry or tool, not both".into());
     }
     let preview = preview.ok_or(UNBUILT)?;
-    let entries = preview["entries"]
-        .as_array()
-        .ok_or("invalid context preview: missing entries")?;
-    let tools = preview["tools"]
-        .as_array()
-        .ok_or("invalid context preview: missing tools")?;
     if let Some(index) = args.entry {
-        let entry = entries
+        let entry = preview
+            .entries
             .get(index)
             .ok_or("context entry index out of range; request a fresh overview")?;
         return Ok(json!({"entry": index, "detail": entry}).to_string());
     }
     if let Some(name) = args.tool {
-        let tool = tools
+        let tool = preview
+            .tools
             .iter()
-            .find(|tool| tool["name"].as_str() == Some(&name))
+            .find(|tool| tool.name == name)
             .ok_or("tool not found in context preview; request a fresh overview")?;
         return Ok(json!({"tool": tool}).to_string());
     }
-    let entries: Vec<_> = entries.iter().enumerate().map(|(index, entry)| {
-        let message = &entry["message"];
-        let role = message.as_object().and_then(|object| object.keys().next()).map(String::as_str).unwrap_or("unknown");
-        json!({"index": index, "role": role, "estimated_tokens": entry["estimated_tokens"], "checkpoint": entry["checkpoint"]})
-    }).collect();
-    let tools: Vec<_> = tools
+    let entries: Vec<_> = preview
+        .entries
         .iter()
-        .map(|tool| json!({"name": tool["name"], "estimated_tokens": tool["estimated_tokens"]}))
+        .enumerate()
+        .map(|(index, entry)| {
+            json!({
+                "index": index,
+                "role": role(&entry.message),
+                "estimated_tokens": entry.estimated_tokens,
+                "checkpoint": entry.checkpoint,
+            })
+        })
+        .collect();
+    let tools: Vec<_> = preview
+        .tools
+        .iter()
+        .map(|tool| json!({"name": tool.name, "estimated_tokens": tool.estimated_tokens}))
         .collect();
     Ok(json!({
-        "phase": preview["phase"], "model": preview["model"], "effort": preview["effort"], "mode": preview["mode"],
-        "agent": preview["agent"], "budget": preview["budget"], "last_usage": preview["last_usage"],
-        "compaction_required": preview["compaction_required"],
-        "pending_count": preview["pending"].as_array().map_or(0, Vec::len),
-        "pending_types": preview["pending"].as_array().map(|pending| pending.iter().filter_map(|item| item.get(0).and_then(Value::as_str)).collect::<Vec<_>>()).unwrap_or_default(),
+        "phase": preview.phase, "model": preview.model, "effort": preview.effort, "mode": preview.mode,
+        "agent": preview.agent, "budget": preview.budget, "last_usage": preview.last_usage,
+        "compaction_required": preview.compaction_required,
+        "pending_count": preview.pending.len(),
+        "pending_types": preview.pending.iter().map(|(kind, _)| kind).collect::<Vec<_>>(),
         "entries": entries, "tools": tools
     })
     .to_string())
 }
 
+/// The message's variant as its serialized tag names it, which is what an
+/// `entry` detail shows the model.
+fn role(message: &Message) -> &'static str {
+    match message {
+        Message::System(_) => "system",
+        Message::User(_) => "user",
+        Message::Assistant(_) => "assistant",
+        Message::ToolResult { .. } => "tool_result",
+        Message::Compaction { .. } => "compaction",
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use nth_protocol::context_preview::{Budget, Entry, Phase, ToolDefinition};
+
     use super::*;
 
-    fn preview() -> Value {
-        json!({"phase":"pending_results", "model":"test/model", "mode":"plan", "budget":{"input":30},
-            "entries":[{"message":{"system":"private system text"},"estimated_tokens":5,"checkpoint":false},
-                {"message":{"tool_result":{"call_id":"1","content":"file contents"}},"estimated_tokens":10,"checkpoint":true}],
-            "tools":[{"name":"read","description":"full description","parameters":{"type":"object"},"estimated_tokens":15}],
-            "pending":[["prompt","pending text"]]})
+    fn preview() -> Preview {
+        Preview {
+            phase: Phase::PendingResults,
+            model: "test/model".into(),
+            effort: Default::default(),
+            mode: nth_protocol::Mode::Plan,
+            agent: None,
+            entries: vec![
+                Entry {
+                    message: Message::System("private system text".into()),
+                    estimated_tokens: 5,
+                    checkpoint: false,
+                    images_available: Vec::new(),
+                },
+                Entry {
+                    message: Message::ToolResult {
+                        call_id: "1".into(),
+                        content: "file contents".into(),
+                        images: Vec::new(),
+                    },
+                    estimated_tokens: 10,
+                    checkpoint: true,
+                    images_available: Vec::new(),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                name: "read".into(),
+                description: "full description".into(),
+                parameters: json!({"type": "object"}),
+                estimated_tokens: 15,
+            }],
+            budget: Budget {
+                input: 30,
+                ..Budget::default()
+            },
+            last_usage: None,
+            compaction_required: false,
+            pending: vec![("prompt".into(), "pending text".into())],
+        }
     }
-
     fn args(entry: Option<usize>, tool: Option<&str>) -> Args {
         Args {
             entry,
@@ -161,7 +212,8 @@ mod tests {
         assert!(ctx.context_preview.builds(), "the call asked for snapshots");
         ctx.context_preview.publish(std::sync::Arc::new(preview()));
         let overview = ContextPreview.call(json!({}), &ctx).await.unwrap();
-        assert!(overview.contains("pending_results"), "{overview}");
+        let parsed: Value = serde_json::from_str(&overview).unwrap();
+        assert_eq!(parsed["phase"], "pending_results", "{overview}");
     }
 
     #[tokio::test]

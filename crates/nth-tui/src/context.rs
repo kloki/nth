@@ -2,8 +2,12 @@
 //! summary, the system prompt and the offered tool definitions, in grey
 //! barred sections, without the conversation itself.
 
-use nth_protocol::Message;
-use nth_session::context_preview::{Budget, Preview};
+use std::sync::Arc;
+
+use nth_protocol::{
+    Message,
+    context_preview::{Budget, Phase, Preview},
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -19,14 +23,14 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub(crate) struct ContextView {
-    preview: Option<Preview>,
+    preview: Option<Arc<Preview>>,
     pub pager: Pager,
     cache: Cache,
 }
 
 impl ContextView {
     /// Replace the preview without moving the reader.
-    pub(crate) fn update(&mut self, preview: Option<Preview>) {
+    pub(crate) fn update(&mut self, preview: Option<Arc<Preview>>) {
         if self.preview != preview {
             self.preview = preview;
             self.cache.invalidate();
@@ -35,7 +39,7 @@ impl ContextView {
 
     #[cfg(test)]
     pub(crate) fn preview(&self) -> Option<&Preview> {
-        self.preview.as_ref()
+        self.preview.as_deref()
     }
 
     pub(crate) fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -111,8 +115,8 @@ fn summary(preview: &Preview) -> Vec<Line<'static>> {
             theme::dim(),
         ),
     ]));
-    if preview.phase != "idle" {
-        lines.push(field("state", preview.phase.replace('_', " ")));
+    if preview.phase != Phase::Idle {
+        lines.push(field("state", preview.phase.label().into()));
     }
     lines.push(note(
         "logical request · byte-based estimates; provider accounting may differ",
@@ -308,8 +312,8 @@ fn note(text: impl Into<String>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::{AssistantMessage, Inbox, ToolCall};
-    use nth_session::{Session, context_preview::ToolDefinition};
+    use nth_protocol::{AssistantMessage, Inbox, ToolCall, context_preview::ToolDefinition};
+    use nth_session::Session;
 
     use super::*;
 

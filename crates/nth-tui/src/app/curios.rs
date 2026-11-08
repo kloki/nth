@@ -329,6 +329,7 @@ impl App {
             }
         }
         if posted > 0 {
+            self.refresh_context();
             self.arm_notices();
         }
         // An acknowledgment that failed after a save is caught up here, so

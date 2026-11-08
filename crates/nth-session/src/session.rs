@@ -801,7 +801,7 @@ impl Session {
             Ok(true) => None,
             _ => *turn.last_usage,
         };
-        turn.publish_preview("idle", false, usage);
+        turn.publish_preview(nth_protocol::context_preview::Phase::Idle, false, usage);
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.

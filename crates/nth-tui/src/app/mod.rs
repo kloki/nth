@@ -69,9 +69,8 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Compaction, ContextPreview, ContextSnapshot, Effort, Event, Inbox, Listing,
-    Mode, MonitorEvent, MonitorId, Monitors, Provider, Show, Tool, Usage, monitor_log_dir,
-    tool_names,
+    Ask, BoxError, Compaction, ContextSnapshot, Effort, Event, Inbox, Listing, Mode, MonitorEvent,
+    MonitorId, Monitors, Provider, Show, Tool, Usage, monitor_log_dir, tool_names,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, ToolUse, store,
@@ -96,7 +95,6 @@ use crate::{
     Checkers, PreparedRuntime, RuntimeLoader,
     chat::Chat,
     command::Command,
-    context::ContextView,
     diagnostics::Diagnostics,
     file::FileRead,
     git::{GitStatus, Pr},
@@ -186,12 +184,7 @@ pub struct App {
     /// The content panel's tabs, and which one fills it.
     content: Content,
     diagnostics: Diagnostics,
-    context_view: ContextView,
-    /// Where each turn publishes its context preview.
-    context_preview: ContextPreview,
-    /// Subscribed to `context_preview` only while a turn runs: a receiver
-    /// held between turns would have every later turn build snapshots.
-    context_live: Option<watch::Receiver<Option<ContextSnapshot>>>,
+    context_tab: context::ContextTab,
     usage_view: UsageView,
     keymaps: Keymaps,
     /// Every saved session's tool totals, most called first; empty until
@@ -503,9 +496,7 @@ impl App {
             content: Content::default(),
             diagnostics: Diagnostics::default(),
             usage_view: UsageView::default(),
-            context_view: ContextView::default(),
-            context_preview: ContextPreview::default(),
-            context_live: None,
+            context_tab: context::ContextTab::default(),
             keymaps: Keymaps::default(),
             all_time_tools: Vec::new(),
             tools_lookup: Job::default(),
@@ -708,7 +699,7 @@ impl App {
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(Box::new(ended)),
-                Some(snapshot) = context::next_snapshot(&mut self.context_live) => Step::Preview(snapshot),
+                snapshot = self.context_tab.next() => Step::Preview(snapshot),
                 files = self.indexing.join() => Step::Job(Finished::Indexed(files)),
                 status = self.git_loading.join() => Step::Job(Finished::GitLoaded(status)),
                 pr = self.pr_loading.join() => Step::Job(Finished::PrLoaded(pr)),
@@ -732,7 +723,7 @@ impl App {
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
-                _ = curio_tick.tick() => { self.poll_curios(); self.refresh_context(); Step::Tick },
+                _ = curio_tick.tick() => { self.every_second(); Step::Tick },
             };
             match step {
                 Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
@@ -762,7 +753,7 @@ impl App {
                     Ok(ended) => self.end_turn(ended),
                     Err(e) => self.turn_task_failed(e),
                 },
-                Step::Preview(snapshot) => self.context_updated(&snapshot),
+                Step::Preview(snapshot) => self.context_tab.show(snapshot),
                 Step::Job(finished) => self.job_finished(finished),
                 Step::LoginUrl(url) => self.login_url(url),
                 Step::EditorClosed(ended) => {
@@ -790,6 +781,13 @@ impl App {
         }
         self.stop_background_for_exit().await;
         Ok(())
+    }
+
+    /// The work of the loop's one-second tick. The context tab is not
+    /// rebuilt here: it is on the events that change it, since each
+    /// rebuild projects the whole history.
+    fn every_second(&mut self) {
+        self.poll_curios();
     }
 
     /// Draws the screen once. The terminal holds the frame until it is all
@@ -958,8 +956,8 @@ impl App {
     fn draw_tab(&mut self, frame: &mut Frame, tab: Tab, area: Rect) {
         match tab {
             Tab::Context => {
-                self.context_view.draw(frame, area);
-                if let Some(state) = self.context_view.pager.scrollbar() {
+                self.context_tab.view.draw(frame, area);
+                if let Some(state) = self.context_tab.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -1286,7 +1284,7 @@ impl App {
         self.session_since = session.created_at;
         self.session_id = session.id;
         self.session = Some(session);
-        self.context_view.update(None);
+        self.context_tab.view.update(None);
         self.refresh_context();
         self.usage = None;
         self.spent = Spent::default();
@@ -1307,6 +1305,9 @@ impl App {
             }
         }
         if tab == Tab::Context {
+            if self.is_busy() {
+                self.watch_context();
+            }
             self.refresh_context();
         }
     }
