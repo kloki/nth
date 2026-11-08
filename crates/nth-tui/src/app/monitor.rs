@@ -361,6 +361,21 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn a_left_sessions_monitor_is_not_waited_for() {
+        let mut app = app();
+        start(&mut app, "ci").await;
+        assert!(app.awaits_monitor_ends(), "this session's");
+
+        app.run_command(crate::command::Command::Clear);
+        assert_eq!(
+            app.content.tabs(),
+            [Tab::Chat, Tab::Monitor(1)],
+            "not heard"
+        );
+        assert!(!app.awaits_monitor_ends(), "its end reaches no inbox");
+    }
+
+    #[tokio::test]
     async fn monitors_log_beside_the_session_save() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = nth_session::Store::at(dir.path());

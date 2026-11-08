@@ -461,10 +461,10 @@ impl App {
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
         let inbox = Inbox::new();
-        // No folder until `with_store` puts each session's monitor logs
-        // beside its save: every chat nth runs has a store, and tests that
-        // read a log path name their own.
-        let monitors = Monitors::new(monitor_tx, PathBuf::new());
+        // `with_store` puts each session's monitor logs beside its save; a
+        // chat without one, as in tests, logs in a temporary folder rather
+        // than the working directory.
+        let monitors = Monitors::new(monitor_tx, std::env::temp_dir().join("nth-monitors"));
         let home = std::env::var("HOME").ok();
         // Replaced by the config `new` installs.
         let notifier = Notifier::off();
