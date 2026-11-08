@@ -102,6 +102,38 @@ async fn esc_interrupts_the_turn_and_keeps_the_session() {
 }
 
 #[tokio::test]
+async fn a_turn_watches_the_context_preview_only_while_it_runs() {
+    let hang = Arc::new(Scripted::hang());
+    let session = Session::new("glm", "/repo".into());
+    let mut app = App::new(session, hang.clone(), Arc::new(Vec::new()));
+    assert!(!app.context_preview.builds(), "nothing watches an idle app");
+
+    app.prompt.insert_str("go");
+    app.submit();
+    hang.asked.notified().await;
+    assert!(app.context_preview.builds());
+    let snapshot = crate::app::context::next_snapshot(&mut app.context_live)
+        .await
+        .expect("the request was published");
+    assert_eq!(snapshot["phase"], "pending_reply");
+
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    // The turn's end comes in before its last snapshot was shown.
+    let ended = app.turn.join().await.expect("ends");
+    app.end_turn(ended);
+    assert_eq!(
+        app.context_view.preview().map(|p| p.phase.as_str()),
+        Some("idle"),
+        "the snapshot published as the turn ended is shown"
+    );
+    assert!(app.context_live.is_none());
+    assert!(
+        !app.context_preview.builds(),
+        "a receiver kept past the turn would have every later turn build"
+    );
+}
+
+#[tokio::test]
 async fn a_skill_command_sends_the_filled_in_skill() {
     let dir = tempfile::tempdir().expect("tempdir");
     let hang = Arc::new(Scripted::hang());

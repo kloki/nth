@@ -707,6 +707,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             inbox: front_end.inbox.clone(),
+            context_preview: front_end.context_preview.clone(),
             writable,
             agent: self.primary().cloned(),
             llm: Llm {
@@ -793,10 +794,14 @@ impl Session {
         let held = self.held(front_end);
         // Only `Turn::run` writes the trigger's usage: a compaction's is the
         // summary request's, not the conversation's size.
-        let result = self
-            .turn(&held, provider, tools, events, cancel)
-            .compact()
-            .await;
+        let mut turn = self.turn(&held, provider, tools, events, cancel);
+        let result = turn.compact().await;
+        // In a turn the next request shows the summary; here nothing follows.
+        let usage = match result {
+            Ok(true) => None,
+            _ => *turn.last_usage,
+        };
+        turn.publish_preview("idle", false, usage);
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.

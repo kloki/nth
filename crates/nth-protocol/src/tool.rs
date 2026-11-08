@@ -99,14 +99,15 @@ pub struct ToolContext {
 
 /// How tools reach the person at the front-end: to ask them questions, to
 /// switch what they see, to leave commands running, and to leave the model
-/// a notice it is woken for. The default reaches nobody, as in a headless
-/// run.
+/// a notice it is woken for, and where the turn publishes its context
+/// preview. The default reaches nobody, as in a headless run.
 #[derive(Debug, Clone, Default)]
 pub struct FrontEnd {
     pub asker: Asker,
     pub screen: Screen,
     pub monitors: Monitors,
     pub inbox: Inbox,
+    pub context_preview: crate::ContextPreview,
 }
 
 pub type LoadedInstructions = Arc<Mutex<BTreeSet<PathBuf>>>;

@@ -95,8 +95,8 @@ impl Watch {
 
     /// Inspect the same changes delivery would report, without advancing the
     /// shared watch. Newly attached files are treated as seen, as in delivery.
-    /// This reads the watched files synchronously; callers should refresh at
-    /// bounded intervals rather than on every screen draw.
+    /// It stats the watched files synchronously; only the idle preview asks,
+    /// since a turn delivers every change before its next request.
     pub fn preview(&self, loaded: BTreeSet<PathBuf>) -> Vec<Change> {
         let Some(files) = &self.0 else {
             return Vec::new();

@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 
 pub struct ContextPreview;
 
+/// What a call finds before the loop has built any snapshot.
+const UNBUILT: &str =
+    "the context preview is built from the next step on; call this tool again then";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -36,6 +40,9 @@ impl Tool for ContextPreview {
             if ctx.is_subagent {
                 return Err("context preview is available only to the main session".into());
             }
+            // Without a front-end watching, the loop builds snapshots only
+            // once something asks, so the first call may find none.
+            ctx.context_preview.want();
             let snapshot = ctx.context_preview.get();
             inspect(snapshot.as_deref(), args)
         }
@@ -49,7 +56,7 @@ fn inspect(preview: Option<&Value>, args: Args) -> ToolResult {
     if args.entry.is_some() && args.tool.is_some() {
         return Err("specify either entry or tool, not both".into());
     }
-    let preview = preview.ok_or("context preview is unavailable in this session")?;
+    let preview = preview.ok_or(UNBUILT)?;
     let entries = preview["entries"]
         .as_array()
         .ok_or("invalid context preview: missing entries")?;
@@ -140,29 +147,27 @@ mod tests {
         assert!(inspect(Some(&snapshot), args(Some(2), None)).is_err());
         assert!(inspect(Some(&snapshot), args(None, Some("missing"))).is_err());
         assert!(inspect(Some(&snapshot), args(Some(0), Some("read"))).is_err());
-        assert!(
-            inspect(None, args(None, None))
-                .unwrap_err()
-                .contains("unavailable")
-        );
+        assert_eq!(inspect(None, args(None, None)).unwrap_err(), UNBUILT);
     }
 
     #[tokio::test]
-    async fn headless_call_reports_unavailable_snapshot() {
+    async fn the_context_tool_asks_for_a_snapshot_headless() {
         let ctx = ToolContext::new(".".into());
-        assert!(
-            ContextPreview
-                .call(json!({}), &ctx)
-                .await
-                .unwrap_err()
-                .contains("unavailable")
+        assert!(!ctx.context_preview.builds());
+        assert_eq!(
+            ContextPreview.call(json!({}), &ctx).await.unwrap_err(),
+            UNBUILT
         );
+        assert!(ctx.context_preview.builds(), "the call asked for snapshots");
+        ctx.context_preview.publish(std::sync::Arc::new(preview()));
+        let overview = ContextPreview.call(json!({}), &ctx).await.unwrap();
+        assert!(overview.contains("pending_results"), "{overview}");
     }
 
     #[tokio::test]
     async fn headless_reads_shared_snapshot_without_consuming_it() {
         let ctx = ToolContext::new(".".into());
-        ctx.context_preview.set(std::sync::Arc::new(preview()));
+        ctx.context_preview.publish(std::sync::Arc::new(preview()));
         let overview = ContextPreview.call(json!({}), &ctx).await.unwrap();
         let detail = ContextPreview
             .call(json!({"entry": 1}), &ctx)
@@ -180,7 +185,7 @@ mod tests {
     async fn subagents_cannot_read_main_session_snapshot() {
         let mut ctx = ToolContext::new(".".into());
         ctx.is_subagent = true;
-        ctx.context_preview.set(std::sync::Arc::new(preview()));
+        ctx.context_preview.publish(std::sync::Arc::new(preview()));
         assert!(
             ContextPreview
                 .call(json!({}), &ctx)
