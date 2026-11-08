@@ -41,8 +41,15 @@ const GONE: &str = "nth stopped while this item ran, and its subagent with it. A
 #[derive(Debug, Default)]
 pub(crate) struct Live {
     /// The one on each running item. A file that says `running` without
-    /// an entry here was left so by a run of nth that ended.
+    /// an entry here or in `unreturned` was left so by a run of nth that
+    /// ended.
     running: BTreeMap<PathBuf, SubagentId>,
+    /// How the turn ended on each item whose file still says `running`
+    /// because writing its return failed: the next work tool call writes
+    /// it again rather than taking the file for a gone run's. Process
+    /// memory is the right scope, since a run that ends takes its
+    /// subagents with it.
+    unreturned: BTreeMap<PathBuf, (TaskId, WorkOutcome)>,
     /// The last one on each item, running or not: the only one `task_id`
     /// may continue it with, since an id in a file may be another run's.
     worked: BTreeMap<PathBuf, SubagentId>,
@@ -112,8 +119,8 @@ impl Work {
         &self,
         store: &Store,
     ) -> Result<(tokio::sync::MutexGuard<'_, Live>, Plan), String> {
-        let live = self.files().0.lock().await;
-        let plan = reconciled(store, &live).await?;
+        let mut live = self.files().0.lock().await;
+        let plan = reconciled(store, &mut live).await?;
         Ok((live, plan))
     }
 
@@ -136,28 +143,50 @@ pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
     })
 }
 
-/// The plan, with every item a gone run of nth left running settled as
-/// interrupted: no subagent of this process is on it. Subagent ids start
+/// The plan, with every item no subagent of this process is on settled:
+/// returned as its turn ended when writing that failed before, else as
+/// interrupted, left running by a gone run of nth. Subagent ids start
 /// again with every run, so the id in the file says nothing here.
-async fn reconciled(store: &Store, live: &Live) -> Result<Plan, String> {
+async fn reconciled(store: &Store, live: &mut Live) -> Result<Plan, String> {
     let mut plan = store
         .load()
         .await
         .map_err(|e| format!("reading the work plan failed: {e}"))?
         .unwrap_or_default();
     for item in plan.cycles.iter_mut().flat_map(|cycle| &mut cycle.items) {
-        if item.status != Status::Running || live.running.contains_key(&item.at.path(store.dir())) {
+        let path = item.at.path(store.dir());
+        // Taken whatever the file says: one no longer running was written
+        // since and is the orchestrator's, so its return is moot.
+        let unreturned = live.unreturned.remove(&path);
+        if item.status != Status::Running || live.running.contains_key(&path) {
             continue;
         }
-        item.status = Status::Returned;
-        item.outcome = Some(nth_protocol::WorkOutcome::Interrupted);
-        item.result = Some(GONE.into());
-        store
-            .write(item)
-            .await
-            .map_err(|e| format!("writing {} failed: {e}", item.at))?;
+        match &unreturned {
+            Some((task, outcome)) if item.task == Some(*task) => returns(item, outcome.clone()),
+            _ => {
+                item.status = Status::Returned;
+                item.outcome = Some(WorkOutcome::Interrupted);
+                item.result = Some(GONE.into());
+            }
+        }
+        if let Err(e) = store.write(item).await {
+            if let Some(unreturned) = unreturned {
+                live.unreturned.insert(path, unreturned);
+            }
+            return Err(format!("writing {} failed: {e}", item.at));
+        }
     }
     Ok(plan)
+}
+
+/// `item` returns as its subagent's turn ended.
+fn returns(item: &mut Item, outcome: WorkOutcome) {
+    item.status = Status::Returned;
+    item.result = Some(match outcome.text().trim() {
+        "" => STOPPED.to_string(),
+        text => text.to_string(),
+    });
+    item.outcome = Some(outcome);
 }
 
 /// How a turn ended, as a work item keeps it.
@@ -175,8 +204,10 @@ const STOPPED: &str = "The last subagent on this item was stopped before it answ
 
 /// Subagent `task`'s turn on the item at `at` ended with `outcome`: the
 /// file returns with it, unless someone wrote the item since, and the
-/// item is no longer running in this process. Returns the notice telling
-/// the orchestrator. Takes the lock itself, so the caller must not hold it.
+/// item is no longer running in this process. A write that fails, or a
+/// read, leaves the outcome in `Live.unreturned` for the next work tool
+/// call to write. Returns the notice telling the orchestrator. Takes the
+/// lock itself, so the caller must not hold it.
 async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
     let Assignment {
         files,
@@ -188,25 +219,33 @@ async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
     } = assignment;
     let path = at.path(store.dir());
     let mut live = files.0.lock().await;
-    if live.running.get(&path) == Some(task) {
-        live.running.remove(&path);
-    }
     let mut progress = (0, 0);
     // A missing or rewritten file is the orchestrator's now; the notice
     // still tells it how the turn ended.
-    if let Ok(Some(mut item)) = store.read(at).await {
-        progress = item.progress();
-        if item.status == Status::Running && item.task == Some(*task) {
-            item.status = Status::Returned;
-            item.result = Some(match outcome.text().trim() {
-                "" => STOPPED.to_string(),
-                text => text.to_string(),
-            });
-            item.outcome = Some(outcome.clone());
-            // Nothing more to do on failure: the notice carries what the
-            // file would have.
-            let _ = store.write(&item).await;
+    let written = match store.read(at).await {
+        Ok(Some(mut item)) => {
+            progress = item.progress();
+            if item.status == Status::Running && item.task == Some(*task) {
+                returns(&mut item, outcome.clone());
+                store.write(&item).await.is_ok()
+            } else {
+                true
+            }
         }
+        Ok(None) => true,
+        // Unknown whether it is still ours: `reconciled` writes it only
+        // if the file still says running with this task.
+        Err(_) => false,
+    };
+    // Kept for the next work tool call to write: a file still saying
+    // running with no entry is taken for a gone run's, and the answer
+    // would be overwritten.
+    if !written {
+        live.unreturned
+            .insert(path.clone(), (*task, outcome.clone()));
+    }
+    if live.running.get(&path) == Some(task) {
+        live.running.remove(&path);
     }
     WorkNotice {
         cycle: at.cycle.clone(),
@@ -306,6 +345,110 @@ pub(crate) mod tests {
         }
     }
 
+    /// Sets the Unix permission bits of `dir`.
+    pub(crate) fn chmod(dir: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreturned_outcome_is_written_only_to_its_own_running_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(work_dir(dir.path(), "s1"));
+        let item = |name: &str, status, task| Item {
+            status,
+            task,
+            ..Item::pending(
+                ItemRef {
+                    cycle: "01-a".into(),
+                    item: name.into(),
+                },
+                "X",
+                "",
+                Vec::new(),
+            )
+        };
+        let other = item("other", Status::Running, Some(4));
+        let pending = item("pending", Status::Pending, None);
+        store.write(&other).await.unwrap();
+        store.write(&pending).await.unwrap();
+        let before = store.read(&pending.at).await.unwrap();
+        let answer = WorkOutcome::Completed("All parsed.".into());
+        let mut live = Live::default();
+        for at in [&other.at, &pending.at] {
+            live.unreturned
+                .insert(at.path(store.dir()), (3, answer.clone()));
+        }
+
+        let plan = reconciled(&store, &mut live).await.unwrap();
+
+        let reassigned = plan.item(&other.at).unwrap();
+        assert_eq!(reassigned.outcome, Some(WorkOutcome::Interrupted));
+        assert_eq!(reassigned.result.as_deref(), Some(GONE));
+        assert_eq!(
+            store.read(&pending.at).await.unwrap(),
+            before,
+            "untouched, to its modified time"
+        );
+        assert!(live.unreturned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_returned_item_whose_write_failed_is_written_on_the_next_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path());
+        let store = Work::store(&ctx).unwrap();
+        let at = ItemRef {
+            cycle: "01-a".into(),
+            item: "x".into(),
+        };
+        let running = Item {
+            status: Status::Running,
+            task: Some(3),
+            ..Item::pending(at.clone(), "X", "", Vec::new())
+        };
+        store.write(&running).await.unwrap();
+        let work = work();
+        let path = at.path(store.dir());
+        work.files().0.lock().await.running.insert(path.clone(), 3);
+        let assignment = Assignment {
+            files: work.0.files.clone(),
+            store: store.clone(),
+            at: at.clone(),
+            task: 3,
+            agent: "general".into(),
+            inbox: Inbox::default(),
+            closed: Default::default(),
+        };
+        let cycle = path.parent().unwrap();
+        let status = WorkStatus::new(work.clone());
+
+        chmod(cycle, 0o500);
+        let answer = WorkOutcome::Completed("All parsed.".into());
+        returned(&assignment, answer.clone()).await;
+        assert_eq!(
+            store.read(&at).await.unwrap().unwrap().status,
+            Status::Running,
+            "the write failed"
+        );
+        let retried = status.call(serde_json::json!({}), &ctx).await;
+        chmod(cycle, 0o700);
+        assert!(retried.is_err(), "{retried:?}");
+        assert!(
+            work.files().0.lock().await.unreturned.contains_key(&path),
+            "kept for the call after"
+        );
+
+        let result = status.call(serde_json::json!({}), &ctx).await;
+        assert!(result.is_ok(), "{result:?}");
+        let item = store.read(&at).await.unwrap().unwrap();
+        assert_eq!(item.status, Status::Returned);
+        assert_eq!(item.outcome, Some(answer));
+        assert_eq!(item.result.as_deref(), Some("All parsed."));
+        let live = work.files().0.lock().await;
+        assert!(live.running.is_empty() && live.unreturned.is_empty());
+    }
+
     #[test]
     fn slugs_are_lowercase_words() {
         for fine in ["store", "a-b-2", "x", &"a".repeat(48)] {
@@ -333,14 +476,14 @@ pub(crate) mod tests {
         let mut live = Live::default();
         live.running.insert(at.path(store.dir()), 3);
 
-        let plan = reconciled(&store, &live).await.unwrap();
+        let plan = reconciled(&store, &mut live).await.unwrap();
         assert_eq!(
             plan.item(&at).unwrap().status,
             Status::Running,
             "still ours"
         );
 
-        let plan = reconciled(&store, &Live::default()).await.unwrap();
+        let plan = reconciled(&store, &mut Live::default()).await.unwrap();
         let item = plan.item(&at).unwrap();
         assert_eq!(item.status, Status::Returned);
         assert_eq!(item.outcome, Some(nth_protocol::WorkOutcome::Interrupted));
