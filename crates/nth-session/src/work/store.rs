@@ -18,7 +18,7 @@ const RESULT: &str = "## Result";
 
 /// Where the session `session` keeps its work plan.
 pub fn work_dir(cwd: &Path, session: &str) -> PathBuf {
-    cwd.join(".nth").join("work").join(session)
+    nth_directories::Directories::from_root(cwd.to_path_buf()).session_work(session)
 }
 
 /// Where an item stands. Only the orchestrator closes one, as done or

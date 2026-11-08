@@ -28,6 +28,8 @@ pub struct ToolContext {
     /// Trusted Curios owner scope; unavailable to subagents.
     pub curios: crate::Curios,
     pub cwd: PathBuf,
+    /// Stable root for this session's repository-local generated state.
+    pub state_root: Option<PathBuf>,
     /// Where a tool moves the session's working directory, as entering a
     /// worktree does; later steps of the turn run there.
     pub workdir: Workdir,
@@ -112,6 +114,7 @@ impl ToolContext {
         Self {
             context_preview: crate::ContextPreview::default(),
             cwd,
+            state_root: None,
             curios: crate::Curios::default(),
             is_subagent: false,
             workdir: Workdir::default(),
@@ -146,6 +149,7 @@ impl ToolContext {
         Self {
             context_preview: self.context_preview.clone(),
             cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
+            state_root: self.state_root.clone(),
             curios: self.curios.clone(),
             is_subagent: self.is_subagent,
             workdir: self.workdir.clone(),

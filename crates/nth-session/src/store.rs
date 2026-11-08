@@ -154,6 +154,9 @@ impl Store {
         let json = tokio::fs::read(&path).await.map_err(io_at(&path))?;
         let mut session: Session =
             serde_json::from_slice(&json).map_err(|source| Error::Json { path, source })?;
+        if session.state_root.is_none() {
+            session.state_root = Some(session.state_root());
+        }
         load_images(&mut session.messages, &self.images()).await;
         Ok(session)
     }

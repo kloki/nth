@@ -15,6 +15,7 @@ use nth_protocol::monitor_log_dir;
 use nth_session::{
     Session, Store, Summary, plan,
     store::{self, age},
+    work,
 };
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
@@ -121,26 +122,36 @@ async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec
     let curio_dir = curio_dir(session)?;
     store.delete(session.id).await?;
     let mut removed = Vec::new();
-    // The plan sits under the working directory, so one written before
-    // the session moved into a worktree is under where it came from.
+    // Also clean plans written by older versions at the original or current cwd.
     let mut plans = vec![session.plan_path()];
+    plans.push(plan::plan_path(&session.cwd, &session.id));
     plans.extend(
         session
             .origin
             .as_ref()
             .map(|o| plan::plan_path(o, &session.id)),
     );
+    plans.sort();
+    plans.dedup();
     for plan in plans {
         if gone(tokio::fs::remove_file(&plan).await, &plan)? {
             removed.push(plan);
         }
     }
-    let dirs = [
+    let mut work_dirs = vec![
         session.work_dir(),
+        work::work_dir(&session.cwd, &session.id.to_string()),
+    ];
+    if let Some(origin) = &session.origin {
+        work_dirs.push(work::work_dir(origin, &session.id.to_string()));
+    }
+    work_dirs.sort();
+    work_dirs.dedup();
+    let dirs = work_dirs.into_iter().chain([
         monitor_log_dir(data_dir, &session.id.to_string()),
         // Its subagents' images too: they keep theirs in its folder.
         store.images_dir(session.id),
-    ];
+    ]);
     for dir in dirs {
         if gone(tokio::fs::remove_dir_all(&dir).await, &dir)? {
             removed.push(dir);
@@ -477,7 +488,7 @@ mod tests {
 
         let removed = delete(&store, &session, dir.path()).await.expect("deletes");
 
-        assert_eq!(removed, [after.clone(), before.clone()]);
+        assert_eq!(removed, std::slice::from_ref(&before));
         assert!(!before.exists() && !after.exists());
     }
 }

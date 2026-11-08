@@ -19,6 +19,12 @@ struct Scope {
 }
 
 impl Curios {
+    /// Resolve new Curios scopes to the main checkout, after validating the repository.
+    pub fn repository_root(cwd: &std::path::Path) -> nth_curios::Result<PathBuf> {
+        let root = nth_curios::repository_root(cwd)?;
+        Ok(nth_context::main_project_root(&root).unwrap_or(root))
+    }
+
     pub fn new(
         cwd: PathBuf,
         session: String,
@@ -45,11 +51,11 @@ impl Curios {
             .expect("curios lock poisoned");
         let root = match &scope.root {
             Some(root) => root.clone(),
-            None => nth_curios::repository_root(&scope.cwd)?,
+            None => Self::repository_root(&scope.cwd)?,
         };
         let store = nth_curios::Store::new(&root, &scope.session)?;
         store.prepare_template()?;
-        scope.root = Some(root);
+        scope.root = Some(store.repo_root().to_path_buf());
         Ok(store)
     }
 

@@ -5,6 +5,114 @@ use tokio_util::sync::CancellationToken;
 use super::*;
 use crate::{Session, session::tests::send};
 
+fn linked_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let main = dir.path().join("main");
+    let linked = dir.path().join("linked");
+    std::fs::create_dir(&main).expect("main checkout");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(&main)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "initial",
+    ]);
+    git(&["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]);
+    std::fs::create_dir_all(linked.join("nested")).expect("nested directory");
+    (dir, main, linked)
+}
+
+#[tokio::test]
+async fn shared_state_survives_moves_worktree_removal_and_reload() {
+    let (dir, main, linked) = linked_worktree();
+    let mut session = Session::new("model", linked.join("nested"));
+    let plan = main.join(format!(".nth/plans/{}.md", session.id));
+    let work = main.join(format!(".nth/work/{}", session.id));
+    assert_eq!(session.state_root.as_ref(), Some(&main));
+    assert_eq!(session.plan_path(), plan);
+    assert_eq!(session.work_dir(), work);
+
+    session.mode = Mode::Plan;
+    send(&mut session, "plan it").await;
+    assert!(main.join(".nth/.gitignore").exists());
+    assert!(!linked.join("nested/.nth/.gitignore").exists());
+    std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(&plan, "shared plan").unwrap();
+    std::fs::write(work.join("item"), "shared work").unwrap();
+
+    session.set_cwd(main.clone(), Some(linked.join("nested")));
+    assert_eq!(session.plan_path(), plan);
+    assert_eq!(session.work_dir(), work);
+    let store = crate::Store::at(dir.path().join("sessions"));
+    store.save(&session).await.expect("save");
+    let output = std::process::Command::new("git")
+        .current_dir(&main)
+        .args(["worktree", "remove", "--force", linked.to_str().unwrap()])
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let loaded = store.load(session.id).await.expect("load");
+    assert_eq!(loaded.state_root.as_ref(), Some(&main));
+    assert_eq!(loaded.plan_path(), plan);
+    assert_eq!(loaded.work_dir(), work);
+    assert_eq!(
+        std::fs::read_to_string(loaded.plan_path()).unwrap(),
+        "shared plan"
+    );
+    assert_eq!(
+        std::fs::read_to_string(loaded.work_dir().join("item")).unwrap(),
+        "shared work"
+    );
+}
+
+#[tokio::test]
+async fn old_save_resolves_state_from_origin() {
+    let (dir, main, linked) = linked_worktree();
+    let mut session = Session::new("model", linked.join("nested"));
+    session.set_cwd(dir.path().to_path_buf(), Some(linked.join("nested")));
+    session.messages.push(Message::User("hello".into()));
+    let store_dir = dir.path().join("sessions");
+    let store = crate::Store::at(&store_dir);
+    store.save(&session).await.unwrap();
+    let path = store_dir.join(format!("{}.json", session.id));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("state_root");
+    std::fs::write(path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let loaded = store.load(session.id).await.unwrap();
+    assert_eq!(loaded.state_root.as_ref(), Some(&main));
+    assert_eq!(
+        loaded.plan_path(),
+        main.join(format!(".nth/plans/{}.md", session.id))
+    );
+    assert_eq!(
+        loaded.work_dir(),
+        main.join(format!(".nth/work/{}", session.id))
+    );
+}
+
 #[test]
 fn plan_lives_under_dot_nth() {
     let id = Uuid::nil();
@@ -213,4 +321,58 @@ async fn plan_mode_lets_tools_write_only_the_plan() {
         results[0]
     );
     assert_eq!(results[1], "writable");
+}
+
+#[tokio::test]
+async fn plan_mode_in_linked_worktree_allows_shared_plan() {
+    use crate::agent_loop::tests::{Scripted, call};
+
+    let (_dir, main, linked) = linked_worktree();
+    let mut session = Session::new("model", linked.join("nested"));
+    session.mode = Mode::Plan;
+    let plan = session.plan_path();
+    let local_plan = linked.join(format!(".nth/plans/{}.md", session.id));
+    let provider = Scripted::new(vec![
+        vec![
+            StreamEvent::ToolCall(call(
+                "1",
+                "probe",
+                &serde_json::json!({"path": plan}).to_string(),
+            )),
+            StreamEvent::ToolCall(call(
+                "2",
+                "probe",
+                &serde_json::json!({"path": local_plan}).to_string(),
+            )),
+        ],
+        vec![StreamEvent::TextDelta("done".into())],
+    ]);
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
+    let (tx, _rx) = mpsc::channel(64);
+    session
+        .prompt(
+            "plan",
+            &provider,
+            &tools,
+            &FrontEnd::default(),
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let results: Vec<&str> = session
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results[0], "writable");
+    assert!(
+        results[1].starts_with("Error: plan mode is active"),
+        "{}",
+        results[1]
+    );
+    assert!(main.join(".nth/.gitignore").exists());
 }

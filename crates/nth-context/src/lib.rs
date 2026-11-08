@@ -138,9 +138,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 /// The nearest directory at or above `cwd` that holds `.git`, a directory in
 /// a clone and a file in a worktree.
 pub fn project_root(cwd: &Path) -> Option<PathBuf> {
-    cwd.ancestors()
-        .find(|dir| dir.join(".git").exists())
-        .map(Path::to_path_buf)
+    nth_directories::project_root(cwd)
 }
 
 /// The directories from `cwd` up that project files are looked for in,
@@ -163,19 +161,13 @@ pub fn search_dirs<'a>(cwd: &'a Path, home: Option<&Path>) -> Vec<&'a Path> {
 
 /// The main checkout for the nearest repository, including from a worktree.
 pub fn main_project_root(cwd: &Path) -> Option<PathBuf> {
-    let root = project_root(cwd)?;
-    Some(main_checkout(&root).unwrap_or(root))
+    nth_directories::main_project_root(cwd)
 }
 
 /// The main checkout of the linked worktree at `root`, whose `.git` is a
 /// file naming `<main>/.git/worktrees/<name>`.
 pub(crate) fn main_checkout(root: &Path) -> Option<PathBuf> {
-    let link = std::fs::read_to_string(root.join(".git")).ok()?;
-    let gitdir = instructions::normalize(&root.join(link.strip_prefix("gitdir:")?.trim()));
-    let worktrees = gitdir.parent()?;
-    let git = worktrees.parent()?;
-    let linked = worktrees.file_name()? == "worktrees" && git.file_name()? == ".git";
-    linked.then(|| git.parent().map(Path::to_path_buf))?
+    nth_directories::main_checkout(root)
 }
 
 /// A program by name on `PATH`, or as given when it is a path already.

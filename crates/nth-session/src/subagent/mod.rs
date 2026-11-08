@@ -168,6 +168,9 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
         .with_context(ctx.context.clone())
         .as_subagent(agent.prompt.clone());
     session.effort = llm.effort;
+    if let Some(root) = &ctx.state_root {
+        session.state_root = Some(root.clone());
+    }
     session.mode = Mode::Act;
     session.max_steps = max_steps;
     session.set_limits(context_window, max_output);
