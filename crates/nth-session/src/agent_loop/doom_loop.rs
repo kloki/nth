@@ -257,6 +257,7 @@ mod tests {
             tools: &tools,
             ctx: &ctx,
             inbox: &crate::Inbox::default(),
+            receipts: None,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,

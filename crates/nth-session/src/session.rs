@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
@@ -19,6 +19,7 @@ use crate::{
     Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error, FrontEnd, Inbox, Ledger, Route,
     Spend, Turn,
     agent_loop::{emit, run_call},
+    curios::Receipts,
     inbox::instructions_notice,
     memory,
     plan::{self, Approver},
@@ -37,9 +38,20 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// Serializable so the [`Store`](crate::Store) can persist and resume it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
-    /// Original repository owning generated review state; absent until used.
+    /// The main checkout of `state_root`, where the session's Curios store
+    /// is, as last found: kept so deleting the session and acknowledging its
+    /// feedback find the store without asking git, even once the repository
+    /// has gone. Never decides where the store is; `state_root` does.
     #[serde(default)]
     pub curio_root: Option<PathBuf>,
+    /// Whether this run already looked for `curio_root`.
+    #[serde(skip)]
+    pub(crate) curio_root_found: bool,
+    /// Whether the store was readied for this turn, which alone lets plan
+    /// mode name and write the source folder: `curio_root` may be a cache
+    /// kept for a repository that is gone.
+    #[serde(skip)]
+    pub(crate) curio_source_ready: bool,
     /// Receipts persisted alongside the history which contains their notices.
     #[serde(default)]
     pub curio_receipts: BTreeSet<String>,
@@ -162,137 +174,7 @@ pub struct Session {
     watch: Watch,
 }
 
-/// [`Session::acknowledge_curios`]'s work, on a blocking thread.
-fn acknowledge(root: &Path, session: &str, receipts: &[String]) -> nth_curios::Result<()> {
-    // Saved history remains usable when its repository has gone away.
-    // Only repository absence is optional; state and write errors still fail.
-    match root.try_exists() {
-        Ok(false) => return Ok(()),
-        Err(error) => return Err(error.into()),
-        Ok(true) => {}
-    }
-    match nth_curios::repository_root(root) {
-        Err(nth_curios::Error::RepoRequired) => return Ok(()),
-        Err(error) => return Err(error),
-        Ok(found) if found != root.canonicalize()? => return Ok(()),
-        Ok(_) => {}
-    }
-    nth_curios::Store::new(root, session)?.acknowledge_recorded(receipts)
-}
-
 impl Session {
-    /// Trusted handle for tools or an active front-end delivery owner.
-    pub fn curios(&self) -> nth_protocol::Curios {
-        if self.subagent {
-            return nth_protocol::Curios::default();
-        }
-        nth_protocol::Curios::new(
-            self.state_root(),
-            self.id.to_string(),
-            self.curio_root.clone(),
-            self.curio_receipts.clone(),
-        )
-    }
-
-    pub fn curio_source_dir(&self) -> Option<PathBuf> {
-        self.curio_root.as_ref().map(|r| {
-            nth_directories::Directories::from_root(r.clone()).curio_source(&self.id.to_string())
-        })
-    }
-
-    /// Explicit preparation stores ownership for save/resume.
-    pub fn prepare_curios(&mut self) -> nth_curios::Result<nth_curios::Store> {
-        let store = self.curios().store()?;
-        self.curio_root = Some(store.repo_root().to_path_buf());
-        Ok(store)
-    }
-
-    /// Idle wakeup entry point. Never routes submitted text through prompt,
-    /// skill or agent-mention parsing. Caller owns the delivery lease and save.
-    pub async fn deliver_curios(
-        &mut self,
-        provider: &dyn Provider,
-        tools: &[Box<dyn Tool>],
-        front_end: &FrontEnd,
-        events: &mpsc::Sender<Event>,
-        cancel: &CancellationToken,
-    ) -> Result<(), Error> {
-        if cancel.is_cancelled() {
-            return Err(Error::Interrupted);
-        }
-        if self.tools_mode() == Mode::Plan {
-            plan::ensure_dir(&self.state_root())
-                .await
-                .map_err(Error::State)?;
-        }
-        self.ready_curios().await;
-        let Some(notices) = self.take_curios(front_end, events, cancel).await else {
-            return Ok(());
-        };
-        self.prepared_turn(
-            TurnInput::Feedback(notices),
-            provider,
-            tools,
-            front_end,
-            events,
-            cancel,
-        )
-        .await
-    }
-
-    /// This session's review feedback waiting in `front_end`'s inbox,
-    /// recorded and shown, as the notices that lead the next user message.
-    async fn take_curios(
-        &mut self,
-        front_end: &FrontEnd,
-        events: &mpsc::Sender<Event>,
-        cancel: &CancellationToken,
-    ) -> Option<String> {
-        let curios = self.curios();
-        let mut notices = Vec::new();
-        for notice in front_end.inbox.take_curios(&self.id.to_string()) {
-            if curios.record(&notice) {
-                let text = notice.render();
-                emit(events, cancel, Event::Notice(text.clone())).await;
-                notices.push(text);
-            }
-        }
-        self.curio_receipts.extend(curios.recorded());
-        // One element per line, as `split_notices` reads them back.
-        (!notices.is_empty()).then(|| notices.join("\n"))
-    }
-
-    /// Readies this session's Curios store and keeps its root. Building one
-    /// spawns git and waits on the store's lock, so it runs off the runtime.
-    async fn ready_curios(&mut self) {
-        let curios = self.curios();
-        if let Ok(root) =
-            nth_curios::offload(move || Ok(curios.store()?.repo_root().to_path_buf())).await
-        {
-            self.curio_root = Some(root);
-        }
-    }
-
-    /// Marks the Curios feedback this session recorded as recorded in its
-    /// store too. Call once the session is saved; one missed is caught up by
-    /// the next, since it covers every receipt. The future owns what it
-    /// reads, so a front-end can run it as a task of its own.
-    pub fn acknowledge_curios(
-        &self,
-    ) -> impl Future<Output = nth_curios::Result<()>> + Send + 'static {
-        let receipts: Vec<_> = self.curio_receipts.iter().cloned().collect();
-        let root = self.curio_root.clone();
-        let id = self.id.to_string();
-        async move {
-            match root {
-                Some(root) if !receipts.is_empty() => {
-                    nth_curios::offload(move || acknowledge(&root, &id, &receipts)).await
-                }
-                _ => Ok(()),
-            }
-        }
-    }
-
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
         let state_root = Some(nth_context::main_project_root(&cwd).unwrap_or_else(|| cwd.clone()));
@@ -310,6 +192,8 @@ impl Session {
         Self {
             id,
             curio_root: None,
+            curio_root_found: false,
+            curio_source_ready: false,
             curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
@@ -409,7 +293,7 @@ impl Session {
 
     /// The mode the session's tools follow: a primary agent acts, and what
     /// it may change is up to its tools and its prompt.
-    fn tools_mode(&self) -> Mode {
+    pub(crate) fn tools_mode(&self) -> Mode {
         match self.primary() {
             Some(_) => Mode::Act,
             None => self.mode,
@@ -578,7 +462,7 @@ impl Session {
 
     /// Shared turn preparation for ordinary prompts and typed review feedback.
     /// Feedback reaches this directly so document text is never parsed as input.
-    async fn prepared_turn(
+    pub(crate) async fn prepared_turn(
         &mut self,
         input: TurnInput,
         provider: &dyn Provider,
@@ -654,8 +538,9 @@ impl Session {
             .await;
         self.usage.close(held.spend);
         let Held { ctx, .. } = held;
-        self.curio_root = ctx.curios.root().or(self.curio_root.take());
-        self.curio_receipts.extend(ctx.curios.recorded());
+        if !self.subagent {
+            self.find_curio_root().await;
+        }
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
         self.loaded_instructions = ctx
@@ -710,6 +595,8 @@ impl Session {
             tools,
             ctx: &held.ctx,
             inbox: &held.inbox,
+            receipts: (!self.subagent)
+                .then(|| Receipts::new(&held.session_id, &mut self.curio_receipts)),
             messages: &mut self.messages,
             spend: self.usage.spend_mut(held.spend),
             last_usage: &mut self.last_usage,
@@ -722,10 +609,9 @@ impl Session {
     fn tool_context(&self, front_end: &FrontEnd) -> ToolContext {
         let mut writable = plan::writable(self.tools_mode(), self.plan_path(), self.memory_dir());
         if let nth_protocol::Writable::Plan { source, .. } = &mut writable {
-            *source = self.curio_source_dir();
+            *source = self.plan_source_dir();
         }
         ToolContext {
-            curios: self.curios(),
             is_subagent: self.subagent,
             extra_dirs: self.extra_dirs.clone(),
             instructions: Arc::new(Mutex::new(self.loaded())),
@@ -784,7 +670,7 @@ impl Session {
             reminders.push(reminder);
         }
         if self.tools_mode() == Mode::Plan
-            && let Some(source) = self.curio_source_dir()
+            && let Some(source) = self.plan_source_dir()
         {
             reminders.push(format!(
                 "<system-reminder>In plan mode you may also author review documents only in {} and use curio_publish and curio_reply. This grants no other project writes; private Curios state is changed only through domain tools.</system-reminder>",
@@ -843,7 +729,7 @@ impl Session {
 }
 
 /// Typed feedback keeps its own history entry after an unanswered prompt.
-enum TurnInput {
+pub(crate) enum TurnInput {
     Prompt(String),
     /// Curio notices, already recorded.
     Feedback(String),
@@ -1279,7 +1165,7 @@ pub(crate) mod tests {
         assert!(matches!(
             &events[..],
             [Event::Moved(cwd), Event::ToolFinished { .. }, Event::ToolFinished { .. }]
-                if cwd == Path::new("/repo/.nth/worktrees/x")
+                if cwd == std::path::Path::new("/repo/.nth/worktrees/x")
         ));
         assert_eq!(session.cwd, PathBuf::from("/repo/.nth/worktrees/x"));
         assert_eq!(session.origin, Some("/repo".into()));
@@ -1335,7 +1221,7 @@ pub(crate) mod tests {
             inbox: crate::Inbox::new(),
             ..FrontEnd::default()
         };
-        assert!(front_end.inbox.post_curio(nth_protocol::CurioNotice {
+        assert!(front_end.inbox.post_curio(crate::curios::CurioNotice {
             batch: nth_curios::Batch {
                 id: id.into(),
                 session_id: session.id.to_string(),

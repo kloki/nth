@@ -25,8 +25,6 @@ pub struct ToolContext {
     /// Latest committed main-session preview, shared by all calls of a turn.
     pub context_preview: crate::ContextPreview,
     pub is_subagent: bool,
-    /// Trusted Curios owner scope; unavailable to subagents.
-    pub curios: crate::Curios,
     pub cwd: PathBuf,
     /// Stable root for this session's repository-local generated state.
     pub state_root: Option<PathBuf>,
@@ -104,7 +102,6 @@ impl ToolContext {
             context_preview: crate::ContextPreview::default(),
             cwd,
             state_root: None,
-            curios: crate::Curios::default(),
             is_subagent: false,
             workdir: Workdir::default(),
             extra_dirs: Vec::new(),
@@ -139,7 +136,6 @@ impl ToolContext {
             context_preview: self.context_preview.clone(),
             cwd: self.workdir.moved_to().unwrap_or_else(|| self.cwd.clone()),
             state_root: self.state_root.clone(),
-            curios: self.curios.clone(),
             is_subagent: self.is_subagent,
             workdir: self.workdir.clone(),
             extra_dirs: self.extra_dirs.clone(),

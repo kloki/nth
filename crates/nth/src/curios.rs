@@ -6,10 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
+use nth_curios::{self as core, Author, Comment, Publish, Reply, Send, Status, Target, TargetKind};
 use nth_icons::icons;
-use nth_protocol::nth_curios::{
-    self as core, Author, Comment, Publish, Reply, Send, Status, Target, TargetKind,
-};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -137,9 +135,7 @@ enum Command {
 }
 
 pub async fn run(args: Args) -> Result<()> {
-    let root = nth_protocol::Curios::repository_root(
-        &std::env::current_dir().context("no working directory")?,
-    )?;
+    let root = core::owner_root(&std::env::current_dir().context("no working directory")?)?;
     let json_output = args.json || !io::stdout().is_terminal();
     let value = execute(args, &root).await?;
     print(&value, json_output)
@@ -519,7 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linked_worktree_shares_new_scopes_and_cli_discovery_but_keeps_saved_root() {
+    async fn a_worktree_session_and_its_tools_open_the_one_store_in_the_main_checkout() {
         let dir = repo();
         let git = |args: &[&str]| {
             assert!(
@@ -552,15 +548,10 @@ mod tests {
             worktree.to_str().unwrap(),
         ]);
         let root = dir.path().canonicalize().unwrap();
-        let scope = nth_protocol::Curios::new(
-            worktree.clone(),
-            "shared-owner".into(),
-            None,
-            Default::default(),
-        );
-        let store = scope.store().unwrap();
+        let mut owner = nth_session::Session::new("fake", worktree.clone());
+        let store = owner.prepare_curios().unwrap();
         assert_eq!(store.repo_root(), root);
-        assert_eq!(scope.root().as_deref(), Some(root.as_path()));
+        assert_eq!(owner.curio_root.as_deref(), Some(root.as_path()));
         store
             .publish(Publish {
                 request_id: "first".into(),
@@ -570,19 +561,31 @@ mod tests {
                 html: "<p>Shared</p>".into(),
             })
             .unwrap();
-        let cli_root = nth_protocol::Curios::repository_root(&worktree).unwrap();
+        let cli_root = core::owner_root(&worktree).unwrap();
         assert_eq!(
             execute(args(&["list"]), &cli_root).await.unwrap()["total"],
             1
         );
-        let saved = nth_protocol::Curios::new(
-            worktree.clone(),
-            "old-owner".into(),
-            Some(worktree.clone()),
-            Default::default(),
-        );
-        assert_eq!(saved.store().unwrap().repo_root(), worktree);
-        assert_eq!(saved.root().as_deref(), Some(worktree.as_path()));
+
+        // What the tools open, as a session's turn hands them its state
+        // root, is the store delivery, acknowledgment and the plan-mode
+        // source folder use; a root saved elsewhere decides nothing.
+        let mut session = nth_session::Session::new("fake", worktree.clone());
+        session.curio_root = Some(worktree.clone());
+        let mut ctx = nth_protocol::ToolContext::new(worktree.clone());
+        ctx.state_root = Some(session.state_root());
+        ctx.session = session.id.to_string();
+        let read = nth_protocol::Tool::call(&nth_tools::CurioRead, json!({}), &ctx)
+            .await
+            .unwrap();
+        let read: Value = serde_json::from_str(&read).unwrap();
+        let tools_source = std::path::PathBuf::from(read["source_path"].as_str().unwrap());
+        let delivered = session.curio_store().unwrap();
+        assert_eq!(delivered.repo_root(), root);
+        assert_eq!(delivered.source_dir(), tools_source);
+        assert_eq!(session.prepare_curios().unwrap().repo_root(), root);
+        assert_eq!(session.curio_root.as_deref(), Some(root.as_path()));
+        assert_eq!(session.curio_source_dir(), Some(tools_source));
     }
 
     #[test]

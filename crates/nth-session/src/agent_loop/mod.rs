@@ -28,7 +28,7 @@ pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Compaction, Inbox, Spend};
+use crate::{Compaction, Inbox, Spend, curios::Receipts};
 
 /// Guards against a model that never stops calling tools.
 pub const DEFAULT_MAX_STEPS: usize = 100;
@@ -127,6 +127,9 @@ pub struct Turn<'a> {
     /// What waits for the model: the turn hands it over between steps, and
     /// a prompt in it pre-empts the next tool calls.
     pub inbox: &'a Inbox,
+    /// Where review feedback the turn hands over is recorded; `None` for a
+    /// session that records none, as a subagent.
+    pub receipts: Option<Receipts<'a>>,
     /// The history. Everything the model and tools produce is appended to it.
     pub messages: &'a mut Vec<Message>,
     /// What the requests used, counted as they report it, so a turn that

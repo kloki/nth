@@ -1,10 +1,8 @@
 //! Independent acceptance scenarios using durable mutations from a second store handle.
 use std::sync::Arc;
 
-use nth_protocol::{
-    StreamEvent, ToolCall,
-    nth_curios::{self as core, Comment, Publish, Send, Target, TargetKind},
-};
+use nth_curios::{self as core, Comment, Publish, Send, Target, TargetKind};
+use nth_protocol::{StreamEvent, ToolCall};
 
 use super::{App, Message, Reply, Scripted, Session, rows_of};
 

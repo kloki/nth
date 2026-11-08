@@ -3,21 +3,52 @@
 //! viewer's feedback wakes one model; the others wait and try again.
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use nth_curios::{Batch, Store};
 use nth_directories::Directories;
-use nth_protocol::{CurioDelivery, CurioNotice};
 
-use super::Stores;
+use super::{CurioNotice, Stores};
 
 /// How long after a refused or failed claim the lease is tried again, and
 /// after a failed acknowledgment the next: another process that holds the
 /// lease may exit, and a failure that builds a store would otherwise repeat
 /// every poll.
 pub(crate) const CLAIM_RETRY: Duration = Duration::from_secs(10);
+
+/// A session's delivery lease on its store: while held, no other process
+/// delivers the session's feedback.
+#[derive(Debug)]
+pub struct CurioDelivery {
+    store: Store,
+    _lease: std::fs::File,
+}
+
+impl CurioDelivery {
+    /// Takes `store`'s delivery lease; refused while another holds it.
+    pub fn claim(store: Store) -> nth_curios::Result<Self> {
+        let lease = store.claim_delivery()?;
+        Ok(Self {
+            store,
+            _lease: lease,
+        })
+    }
+
+    /// The store the lease is on, for a poll that reads it elsewhere.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// The pending batches, or `None` while another holds the store's lock:
+    /// the next poll tries again rather than wait out its write. Reading
+    /// never acknowledges a batch, and leaves out none the session already
+    /// recorded; that is the caller's to decide.
+    pub fn poll(&self) -> nth_curios::Result<Option<Vec<Batch>>> {
+        self.store.try_batches(true)
+    }
+}
 
 /// A session's delivery as its front-end's loop keeps it: the lease while
 /// held, and when to try again for what failed. Time comes in as `now`, so
@@ -36,7 +67,6 @@ pub struct Delivery {
 
 /// What a poll reads on a blocking thread: plain values, so a job owns them.
 pub struct Poll {
-    root: PathBuf,
     me: String,
     claim: bool,
     delivering: Option<Store>,
@@ -129,12 +159,12 @@ impl Delivery {
         self.next_claim = now;
     }
 
-    /// The poll to run at `now` for session `me` of the repository at
-    /// `root`: it tries for the lease when none is held and the retry time
-    /// has come, and reads the pending feedback while one is.
-    pub fn poll(&self, root: PathBuf, me: String, stores: Stores, now: Instant) -> Poll {
+    /// The poll to run at `now` for session `me`: it tries for the lease
+    /// when none is held and the retry time has come, and reads the pending
+    /// feedback while one is. The repository is named when it runs, so a
+    /// front-end can find it on the same blocking thread.
+    pub fn poll(&self, me: String, stores: Stores, now: Instant) -> Poll {
         Poll {
-            root,
             me,
             claim: self.lease.is_none() && now >= self.next_claim,
             delivering: self.store().cloned(),
@@ -218,18 +248,19 @@ impl Poll {
         self
     }
 
-    /// Tries for the lease when due and reads the pending feedback. Builds
-    /// a store and takes its lock, so it runs on a blocking thread.
-    pub fn run(self) -> Read {
+    /// Tries for the lease of the store in the repository at `root` when
+    /// due, and reads the pending feedback. Builds a store and takes its
+    /// lock, so it runs on a blocking thread.
+    pub fn run(self, root: &Path) -> Read {
         let attempt = if !self.claim {
             Attempt::NotTried
-        } else if !Directories::from_root(self.root.clone())
+        } else if !Directories::from_root(root.to_path_buf())
             .curio_owner(&self.me)
             .is_dir()
         {
             Attempt::NoFolder
         } else {
-            match self.stores.get(&self.root, &self.me) {
+            match self.stores.get(root, &self.me) {
                 Ok(store) => {
                     let root = store.repo_root().to_path_buf();
                     CurioDelivery::claim(store).map_or(Attempt::Refused(root), Attempt::Lease)
@@ -274,8 +305,8 @@ mod tests {
     fn tick(delivery: &mut Delivery, session: &Session, stores: &Stores, now: Instant) -> Polled {
         let root = session.curio_root.clone().expect("prepared");
         let read = delivery
-            .poll(root, session.id.to_string(), stores.clone(), now)
-            .run();
+            .poll(session.id.to_string(), stores.clone(), now)
+            .run(&root);
         delivery.apply(read, &session.curio_receipts, now)
     }
 
@@ -347,7 +378,7 @@ mod tests {
     #[test]
     fn claim_waits_claim_retry_after_a_refusal() {
         let (_repo, session, _store, _) = published();
-        let _other = session.curios().claim_delivery().unwrap();
+        let _other = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
         let stores = Stores::default();
         let now = Instant::now();
         let mut delivery = Delivery::new(now);
@@ -371,7 +402,7 @@ mod tests {
     #[test]
     fn delivery_is_claimed_once_another_owner_lets_go() {
         let (_repo, session, _store, _) = published();
-        let other = session.curios().claim_delivery().unwrap();
+        let other = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
         let stores = Stores::default();
         let mut now = Instant::now();
         let mut delivery = Delivery::new(now);

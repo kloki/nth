@@ -86,7 +86,11 @@ impl Turn<'_> {
         let notices = self.inbox.take_curios(&self.ctx.session);
         let notices = notices
             .into_iter()
-            .filter(|notice| self.ctx.curios.record(notice))
+            .filter(|notice| {
+                self.receipts
+                    .as_mut()
+                    .is_some_and(|receipts| receipts.record(notice))
+            })
             .map(|notice| notice.render())
             .collect::<Vec<_>>();
         (!notices.is_empty()).then(|| notices.join("\n"))
@@ -162,6 +166,7 @@ mod tests {
             tools: &tools,
             ctx: &ctx,
             inbox: &inbox,
+            receipts: None,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -206,7 +211,7 @@ mod tests {
             ctx: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
-                self.0.post_curio(nth_protocol::CurioNotice {
+                self.0.post_curio(crate::curios::CurioNotice {
                     batch: nth_curios::Batch {
                         id: "batch".into(),
                         session_id: ctx.session.clone(),
@@ -231,8 +236,8 @@ mod tests {
         ]);
         let inbox = Inbox::new();
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Review(inbox.clone()))];
+        let mut recorded = std::collections::BTreeSet::new();
         let ctx = ToolContext {
-            curios: nth_protocol::Curios::new(".".into(), "s1".into(), None, Default::default()),
             session: "s1".into(),
             ..ToolContext::new(".".into())
         };
@@ -246,6 +251,7 @@ mod tests {
             tools: &tools,
             ctx: &ctx,
             inbox: &inbox,
+            receipts: Some(crate::curios::Receipts::new("s1", &mut recorded)),
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -255,6 +261,7 @@ mod tests {
         .run()
         .await
         .expect("turn completes");
+        assert!(recorded.contains("batch"));
 
         let Message::User(text) = &messages[3] else {
             panic!("{:#?}", messages[3]);
@@ -285,6 +292,7 @@ mod tests {
             tools: &tools,
             ctx: &ctx,
             inbox: &inbox,
+            receipts: None,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,
@@ -417,6 +425,7 @@ mod tests {
             tools: &tools,
             ctx: &ctx,
             inbox: &inbox,
+            receipts: None,
             messages: &mut messages,
             spend: &mut spend(),
             last_usage: &mut last_usage,

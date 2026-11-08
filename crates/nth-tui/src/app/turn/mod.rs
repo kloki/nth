@@ -22,7 +22,7 @@ pub(super) struct Ended {
     session: Session,
     result: Result<(), nth_session::Error>,
     saved: Result<(), store::Error>,
-    acknowledged: nth_protocol::nth_curios::Result<()>,
+    acknowledged: nth_curios::Result<()>,
     ran: Ran,
 }
 

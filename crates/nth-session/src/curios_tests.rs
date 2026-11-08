@@ -11,7 +11,7 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
     crate::session::tests::send(&mut session, "hello").await;
     assert!(session.curio_root.is_none());
     let inbox = Inbox::new();
-    let notice = nth_protocol::CurioNotice {
+    let notice = crate::curios::CurioNotice {
         batch: nth_curios::Batch {
             id: "delivery".into(),
             session_id: "other-owner".into(),
@@ -21,7 +21,8 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
             recorded: false,
         },
     };
-    assert!(!session.curios().record(&notice));
+    let id = session.id.to_string();
+    assert!(!crate::curios::Receipts::new(&id, &mut session.curio_receipts).record(&notice));
     assert!(inbox.post_curio(notice));
     assert!(inbox.take_curios(&session.id.to_string()).is_empty());
     assert_eq!(inbox.take_curios("other-owner").len(), 1);
@@ -29,10 +30,90 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
 
 use crate::{FrontEnd, Inbox, Session, Store};
 
+#[tokio::test]
+async fn plan_mode_names_no_source_folder_its_store_cannot_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Plan;
+    let stale = dir.path().join("stale");
+    session.curio_root = Some(stale.clone());
+    crate::session::tests::send(&mut session, "plan it").await;
+    // The cache stays for deletion; it backs no source folder.
+    assert_eq!(session.curio_root, Some(stale));
+    assert!(session.plan_source_dir().is_none());
+    let said = session
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::User(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !said
+            .iter()
+            .any(|t| t.contains("author review documents only in")),
+        "{said:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_store_that_cannot_be_readied_asks_git_again_at_the_turn_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Act;
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(session.curio_root.is_none(), "outside a repository");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    // A repository now, but one whose store cannot be made.
+    std::fs::create_dir_all(dir.path().join(".nth")).unwrap();
+    std::fs::write(dir.path().join(".nth/curios"), "not a folder").unwrap();
+    session.mode = nth_protocol::Mode::Plan;
+    crate::session::tests::send(&mut session, "plan it").await;
+    assert!(session.plan_source_dir().is_none());
+    assert_eq!(
+        session.curio_root,
+        Some(dir.path().canonicalize().unwrap()),
+        "the failed store sent the turn end back to git"
+    );
+}
+
+#[tokio::test]
+async fn a_session_outside_a_repository_asks_git_once_per_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = Session::new("fake", dir.path().to_path_buf());
+    session.mode = nth_protocol::Mode::Act;
+    crate::session::tests::send(&mut session, "hello").await;
+    assert!(session.curio_root.is_none());
+    // Becoming a repository mid-run goes unseen: the answer is remembered.
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    crate::session::tests::send(&mut session, "again").await;
+    assert!(session.curio_root.is_none());
+    // A resumed session asks again.
+    let mut resumed: Session =
+        serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+    crate::session::tests::send(&mut resumed, "resumed").await;
+    assert_eq!(resumed.curio_root, Some(dir.path().canonicalize().unwrap()));
+}
+
 /// Posts the batches a poll read that `inbox` does not hold yet: a child
 /// another test forks shares the store's lock until it execs, and a poll
 /// that finds it held reads nothing.
-fn poll(lease: &nth_protocol::CurioDelivery, inbox: &Inbox) -> usize {
+fn poll(lease: &crate::curios::CurioDelivery, inbox: &Inbox) -> usize {
     for _ in 0..50 {
         if let Some(batches) = lease.poll().unwrap() {
             return crate::curios::fresh(batches, &Default::default())
@@ -58,8 +139,16 @@ async fn curios_is_made_only_when_plan_mode_or_its_tools_need_it() {
     );
     let mut session = Session::new("fake", repo.path().to_path_buf());
     session.mode = nth_protocol::Mode::Act;
+    // A root saved elsewhere is replaced: the state root alone decides.
+    session.curio_root = Some(std::path::PathBuf::from("/elsewhere"));
     crate::session::tests::send(&mut session, "hello").await;
     assert!(!repo.path().join(".nth/curios").exists());
+    // The root is found once the turn ended all the same, so a curio the
+    // turn's tools published is found again when the session is deleted.
+    assert_eq!(
+        session.curio_root,
+        Some(repo.path().canonicalize().unwrap())
+    );
     session.mode = nth_protocol::Mode::Plan;
     crate::session::tests::send(&mut session, "plan it").await;
     assert!(session.curio_source_dir().unwrap().is_dir());
@@ -114,7 +203,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         )
         .unwrap();
     let inbox = Inbox::new();
-    let lease = session.curios().claim_delivery().unwrap();
+    let lease = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
     assert_eq!(poll(&lease, &inbox), 1);
     assert_eq!(poll(&lease, &inbox), 0);
     assert!(inbox.take_prompts().is_none());
@@ -229,7 +318,7 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
     let source = session.curio_source_dir();
     session.set_cwd(root.join("managed"), Some(root));
     assert_eq!(session.curio_source_dir(), source);
-    assert!(session.as_subagent(None).curios().store().is_err());
+    assert!(session.as_subagent(None).curio_store().is_err());
 }
 
 /// A session in a fresh repository with `count` batches of review feedback
@@ -285,7 +374,7 @@ fn waiting(count: usize) -> (tempfile::TempDir, Session, Inbox) {
             .unwrap();
     }
     let inbox = Inbox::new();
-    let lease = session.curios().claim_delivery().unwrap();
+    let lease = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
     assert_eq!(poll(&lease, &inbox), count);
     (repo, session, inbox)
 }
