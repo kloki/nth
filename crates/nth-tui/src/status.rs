@@ -179,13 +179,17 @@ fn link_rect(right: Rect, width: usize, at: usize, link: usize) -> Option<Rect> 
 
 /// Line 2, left: `> 2 queued · <first line of the next prompt>`. Prompts
 /// on their way into the running turn count too, and name the line: they
-/// are the next thing the model hears.
+/// are the next thing the model hears. So does a turn waiting for a save.
 fn queued(app: &App) -> Vec<Span<'static>> {
     let waiting = app.inbox.prompts_waiting();
-    let count = waiting.as_ref().map_or(0, |(count, _)| *count) + app.queue.len();
+    // A wake for notices is not something you sent.
+    let held = app.turn_after_save.as_ref().filter(|held| !held.is_wake());
+    let count = waiting.as_ref().map_or(0, |(count, _)| *count)
+        + usize::from(held.is_some())
+        + app.queue.len();
     let first = match waiting {
         Some((_, first)) => first,
-        None => match app.queue.front() {
+        None => match held.or(app.queue.front()) {
             Some(next) => {
                 let next = next.label();
                 let first = next.lines().find(|line| !line.trim().is_empty());

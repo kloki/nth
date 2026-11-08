@@ -5,7 +5,10 @@ use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -114,17 +117,28 @@ impl Store {
             .await
             .map_err(io_at(&self.dir))?;
         // Written aside and renamed over, so a crash mid-write never leaves
-        // a half file in place of the last good save.
+        // a half file in place of the last good save. The name is this
+        // save's own: saves of one session can still overlap, as the save
+        // on quitting does with one in flight, or through another store or
+        // another nth, and two sharing a name could rename a file the other
+        // is still writing. Counted per process, not per store, since more
+        // than one store may point at the same folder.
+        static SAVES: AtomicU64 = AtomicU64::new(0);
+        let n = SAVES.fetch_add(1, Ordering::Relaxed);
         let path = self.path(session.id);
-        let tmp = path.with_extension("json.tmp");
-        tokio::fs::write(&tmp, json).await.map_err(io_at(&tmp))?;
-        tokio::fs::File::open(&tmp)
-            .await
-            .map_err(io_at(&tmp))?
-            .sync_all()
-            .await
-            .map_err(io_at(&tmp))?;
-        tokio::fs::rename(&tmp, &path).await.map_err(io_at(&path))?;
+        let tmp = self.dir.join(format!(
+            "{}.{}.{n}.json.tmp",
+            session.id,
+            std::process::id()
+        ));
+        let written = write_synced(&tmp, &json, &path).await;
+        if written.is_err() {
+            // A full disk or a folder gone mid-write leaves no stray half.
+            // One cut short by quitting or a crash stays until the session
+            // is deleted.
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        written?;
         tokio::fs::File::open(&self.dir)
             .await
             .map_err(io_at(&self.dir))?
@@ -170,7 +184,23 @@ impl Store {
     /// Removes `id`'s save; one that was never saved is an error.
     pub async fn delete(&self, id: Uuid) -> Result<(), Error> {
         let path = self.path(id);
-        tokio::fs::remove_file(&path).await.map_err(io_at(&path))
+        tokio::fs::remove_file(&path).await.map_err(io_at(&path))?;
+        // A save cut short, on quitting or by a crash, leaves its temp file,
+        // and no later save replaces one named its own, so they stay until
+        // here. The save is gone either way, so a temp file that stays is
+        // no reason to fail.
+        let prefix = format!("{id}.");
+        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else {
+            return Ok(());
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".json.tmp") {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+            }
+        }
+        Ok(())
     }
 
     /// The session used last, if any was saved.
@@ -191,6 +221,18 @@ impl Store {
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
+}
+
+/// Writes `bytes` to `tmp`, syncs it and renames it over `path`.
+async fn write_synced(tmp: &Path, bytes: &[u8], path: &Path) -> Result<(), Error> {
+    tokio::fs::write(tmp, bytes).await.map_err(io_at(tmp))?;
+    tokio::fs::File::open(tmp)
+        .await
+        .map_err(io_at(tmp))?
+        .sync_all()
+        .await
+        .map_err(io_at(tmp))?;
+    tokio::fs::rename(tmp, path).await.map_err(io_at(path))
 }
 
 /// Reads the bytes of every image the tools showed, which the save leaves
@@ -508,6 +550,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlapping_saves_each_write_their_own_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path());
+        let first = session("first", 1);
+        let mut second = first.clone();
+        second.messages.push(Message::User("second".into()));
+
+        // Through two stores on one folder, which a count per store would
+        // not keep apart.
+        let other = Store::at(dir.path());
+        let (a, b) = tokio::join!(store.save(&first), other.save(&second));
+        a.expect("first saves");
+        b.expect("second saves");
+
+        let loaded = store.load(first.id).await.expect("parses");
+        assert!(loaded == first || loaded == second, "one whole save");
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("reads")
+            .map(|entry| entry.expect("entry").file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[tokio::test]
     async fn deletes_a_saved_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());
@@ -516,10 +583,18 @@ mod tests {
         store.save(&kept).await.expect("saves");
         store.save(&gone).await.expect("saves");
 
+        // What saves cut short left, and one of the kept session's.
+        let left = |id: Uuid, n: u32| dir.path().join(format!("{id}.1.{n}.json.tmp"));
+        std::fs::write(left(gone.id, 1), "{").expect("writes");
+        std::fs::write(left(gone.id, 2), "").expect("writes");
+        std::fs::write(left(kept.id, 3), "{").expect("writes");
+
         store.delete(gone.id).await.expect("deletes");
 
         let listed = store.list().await.expect("lists");
         assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), [kept.id]);
+        assert!(!left(gone.id, 1).exists() && !left(gone.id, 2).exists());
+        assert!(left(kept.id, 3).exists(), "another session's stays");
         assert!(matches!(
             store.delete(gone.id).await,
             Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound

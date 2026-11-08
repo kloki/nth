@@ -720,15 +720,16 @@ done
 
     /// [`scripted`], stopping the server after `idle` untouched.
     fn scripted_idling(args: &[&str], idle: Option<Duration>) -> (tempfile::TempDir, PathBuf, Lsp) {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".git")).unwrap();
         let file = tmp.path().join("a.nthtest");
         std::fs::write(&file, "x").unwrap();
         let script = tmp.path().join("server.sh");
         std::fs::write(&script, SCRIPTED_SERVER).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut command = vec![script.to_str().unwrap()];
+        // Run by `sh` rather than exec'd: another test thread forking while
+        // the script was open for writing holds that fd until its own exec,
+        // and exec'ing the script meanwhile fails with ETXTBSY.
+        let mut command = vec!["sh", script.to_str().unwrap()];
         command.extend(args);
         let config = config_with("fake", &command, &[".nthtest"]);
         let lsp = Lsp::with_servers(server::registry(&config), idle);

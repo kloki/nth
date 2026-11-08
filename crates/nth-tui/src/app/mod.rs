@@ -165,8 +165,11 @@ pub struct App {
     /// Saved like the history, one write at a time.
     llm_usage_saving: Job<std::io::Result<()>>,
     /// Prompts sent while a turn runs, oldest first; each runs as its own
-    /// turn once the one before ends well. Always empty while idle.
+    /// turn once the one before ends well. Empty while idle, unless a turn
+    /// waits in `turn_after_save`, which they queue behind.
     pub queue: VecDeque<Queued>,
+    /// What was started while `session_saving` ran, held until it ends.
+    pub(crate) turn_after_save: Option<Queued>,
     /// The mode, model and effort the running model turn has, which a
     /// prompt sent mid-turn steers into only while they are still yours;
     /// `None` while idle or running a command.
@@ -492,6 +495,7 @@ impl App {
             split_width: 0,
             wide: false,
             queue: VecDeque::new(),
+            turn_after_save: None,
             steerable: None,
             interrupted: false,
             last_turn: TabState::Idle,

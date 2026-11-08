@@ -176,9 +176,11 @@ impl App {
         // session in its mode.
         self.mode = session.mode;
         self.agent = session.primary().map(|agent| agent.name.clone());
-        if let Some(gone) = session.agent.as_ref().filter(|_| self.agent.is_none()) {
-            self.hint = Some(format!("agent {gone} is gone, back to {}", self.mode).into());
-        }
+        let gone = session
+            .agent
+            .as_ref()
+            .filter(|_| self.agent.is_none())
+            .map(|gone| format!("agent {gone} is gone, back to {}", self.mode));
         self.model = session.model.clone();
         self.effort = session.effort;
         self.save_llm();
@@ -197,6 +199,11 @@ impl App {
         self.session = Some(session);
         self.refresh_context();
         self.left_session();
+        // Set after leaving the old session: what that handed back to the
+        // prompt matters less than an agent gone.
+        if let Some(gone) = gone {
+            self.hint = Some(gone.into());
+        }
         self.index_files();
         self.load_git();
         self.load_pr();
