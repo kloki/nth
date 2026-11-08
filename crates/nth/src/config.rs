@@ -437,6 +437,8 @@ impl Config {
         if let Some((root, file)) = repo_config(&cwd, home) {
             let mut layer = read_layer(&file, true)?;
             normalize_paths(&mut layer, &root, home);
+            paths_inside(&layer, &root)
+                .with_context(|| format!("invalid config {}", file.display()))?;
             merge(&mut value, layer, "");
             sources.push(file);
         }
@@ -547,6 +549,31 @@ fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
             seen.insert(path)
         });
     }
+}
+
+/// Refuses a project layer's normalized `skills.paths` or `directories.paths`
+/// entry outside `root`: a cloned repository must not hand the session a
+/// directory such as `~/.ssh` or load prompt text from elsewhere on disk.
+/// The entries are already symlink-resolved, so a prefix check suffices.
+fn paths_inside(value: &toml::Value, root: &Path) -> Result<()> {
+    let root = canonicalize_existing_prefix(root);
+    for section in ["skills", "directories"] {
+        let Some(paths) = value
+            .get(section)
+            .and_then(|v| v.get("paths"))
+            .and_then(toml::Value::as_array)
+        else {
+            continue;
+        };
+        for path in paths.iter().filter_map(toml::Value::as_str) {
+            if !Path::new(path).starts_with(&root) {
+                bail!(
+                    "{section}.paths entry {path} is outside the repository; put it in ~/.config/nth/config.toml"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -739,6 +766,59 @@ mod tests {
         std::fs::write(&repo, "[session]\nmax_steps = 5").unwrap();
         let err = Config::load_for(Some(&global), root).unwrap_err();
         assert!(format!("{err:#}").contains(&global.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_config_cannot_add_directories_outside_the_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let sibling = tmp.path().join("sibling");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".nth/worktrees/w")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::os::unix::fs::symlink(&sibling, root.join("link")).unwrap();
+        let global = tmp.path().join("global.toml");
+        let repo = root.join(".nth/config");
+        std::fs::write(&global, "").unwrap();
+        let sibling = sibling.canonicalize().unwrap();
+        for section in ["skills", "directories"] {
+            for entry in [sibling.to_str().unwrap(), "../sibling", "link", "link/x"] {
+                std::fs::write(&repo, format!("[{section}]\npaths = ['{entry}']")).unwrap();
+                let err = Config::load_for(Some(&global), &root).unwrap_err();
+                let message = format!("{err:#}");
+                assert!(
+                    message.starts_with(&format!("invalid config {}: ", repo.display())),
+                    "{entry}: {message}"
+                );
+                assert!(
+                    message.contains(&format!("{section}.paths entry {}", sibling.display())),
+                    "{entry}: {message}"
+                );
+                assert!(
+                    message.ends_with(
+                        "is outside the repository; put it in ~/.config/nth/config.toml"
+                    ),
+                    "{entry}: {message}"
+                );
+            }
+            // Paths under the root stay allowed, worktrees included.
+            std::fs::write(
+                &repo,
+                format!("[{section}]\npaths = ['docs', '.nth/worktrees/w', 'sub/../x']"),
+            )
+            .unwrap();
+            Config::load_for(Some(&global), &root).unwrap();
+            // The global config may name any path.
+            std::fs::write(&repo, "").unwrap();
+            std::fs::write(
+                &global,
+                format!("[{section}]\npaths = ['{}']", sibling.display()),
+            )
+            .unwrap();
+            Config::load_for(Some(&global), &root).unwrap();
+            std::fs::write(&global, "").unwrap();
+        }
     }
 
     #[test]
