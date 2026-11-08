@@ -156,8 +156,8 @@ async fn context_wheel_and_prompt_keys_keep_their_normal_routing() {
     }
 }
 
-#[test]
-fn context_projects_idle_session_and_live_snapshots() {
+#[tokio::test]
+async fn context_projects_idle_session_and_live_snapshots() {
     let mut app = app();
     app.session
         .as_mut()
@@ -181,9 +181,13 @@ fn context_projects_idle_session_and_live_snapshots() {
         checkpoint: false,
         images_available: vec![],
     });
-    app.on_session(Event::ContextUpdated(Arc::new(
-        serde_json::to_value(preview).unwrap(),
-    )));
+    app.context_live = Some(app.context_preview.subscribe());
+    app.context_preview
+        .publish(Arc::new(serde_json::to_value(preview).unwrap()));
+    let snapshot = super::context::next_snapshot(&mut app.context_live)
+        .await
+        .expect("published");
+    app.context_updated(&snapshot);
     app.context_view.pager.jump_top();
     let rendered = rows(&mut app);
     assert!(rendered.iter().any(|r| r.contains("pending results")));

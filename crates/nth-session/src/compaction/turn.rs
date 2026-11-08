@@ -84,7 +84,6 @@ impl Turn<'_> {
             recent: split.recent,
         });
         emit(self.events, self.cancel, Event::Compacted { summary }).await;
-        self.publish_preview("ready", false, None);
         Ok(true)
     }
 
@@ -294,35 +293,9 @@ mod tests {
         assert_eq!(spent.steps, 1, "the summary request is counted");
         drop(tx);
         let mut events = Vec::new();
-        let mut preview = None;
         while let Some(event) = rx.recv().await {
-            match event {
-                Event::ContextUpdated(value) => preview = Some(value),
-                event => events.push(event),
-            }
+            events.push(event);
         }
-        let preview: crate::context_preview::Preview =
-            serde_json::from_value((*preview.expect("checkpoint published")).clone()).unwrap();
-        assert_eq!(preview.phase, "ready");
-        assert_eq!(preview.last_usage, None);
-        assert_eq!(
-            preview
-                .entries
-                .iter()
-                .filter(|entry| entry.checkpoint)
-                .count(),
-            1
-        );
-        assert_eq!(
-            preview
-                .entries
-                .iter()
-                .map(|entry| &entry.message)
-                .collect::<Vec<_>>(),
-            crate::compaction::effective(&messages)
-                .iter()
-                .collect::<Vec<_>>()
-        );
         assert_eq!(
             events,
             [
@@ -350,6 +323,60 @@ mod tests {
         assert!(
             !prompt.contains("second question"),
             "the kept part is not summarized"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manual_compaction_publishes_the_idle_checkpoint() {
+        let provider = Scripted::new(vec![vec![
+            StreamEvent::TextDelta("# Objective\nship it".into()),
+            StreamEvent::Usage(usage(100, 10)),
+        ]]);
+        let mut session = crate::Session::new("model", ".".into());
+        session.compaction = route(40).compaction;
+        session.set_limits(Some(10_000), Some(2_000));
+        session.last_usage = Some(usage(9_000, 0));
+        session.messages = vec![
+            Message::System("sys".into()),
+            Message::User("first question".into()),
+            assistant(&"x".repeat(400)),
+            Message::User("second question".into()),
+            assistant("second answer"),
+        ];
+        let front_end = nth_protocol::FrontEnd::default();
+        let _watching = front_end.context_preview.subscribe();
+        let (tx, _rx) = mpsc::channel(16);
+        session
+            .compact(&provider, &[], &front_end, &tx, &CancellationToken::new())
+            .await
+            .expect("compacts");
+
+        let snapshots = crate::context_preview::published::take();
+        let [preview] = &snapshots[..] else {
+            panic!("one snapshot, when nothing follows: {snapshots:?}");
+        };
+        assert_eq!(preview.phase, "idle");
+        assert_eq!(
+            preview.last_usage, None,
+            "the old usage described the gone history"
+        );
+        assert_eq!(
+            preview
+                .entries
+                .iter()
+                .filter(|entry| entry.checkpoint)
+                .count(),
+            1
+        );
+        assert_eq!(
+            preview
+                .entries
+                .iter()
+                .map(|entry| &entry.message)
+                .collect::<Vec<_>>(),
+            crate::compaction::effective(&session.messages)
+                .iter()
+                .collect::<Vec<_>>()
         );
     }
 

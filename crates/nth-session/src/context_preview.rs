@@ -320,6 +320,30 @@ pub(crate) fn build(input: Projection<'_>) -> Preview {
     }
 }
 
+/// Every snapshot the loop builds on this thread. A watch keeps only the
+/// newest, and the tests count boundaries; a current-thread test runtime
+/// runs the turn and its tools on the test's own thread.
+#[cfg(test)]
+pub(crate) mod published {
+    use std::cell::RefCell;
+
+    use super::Preview;
+
+    thread_local! {
+        static BUILT: RefCell<Vec<Preview>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(snapshot: &serde_json::Value) {
+        let preview = serde_json::from_value(snapshot.clone()).expect("a preview");
+        BUILT.with_borrow_mut(|built| built.push(preview));
+    }
+
+    /// What was built since the last call.
+    pub(crate) fn take() -> Vec<Preview> {
+        BUILT.with_borrow_mut(std::mem::take)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,54 +386,113 @@ mod tests {
         assert_eq!(preview.tools[0].name, "echo");
     }
 
+    /// A front-end that watches the turn's preview, and its receiver.
+    fn watching() -> (
+        nth_protocol::FrontEnd,
+        tokio::sync::watch::Receiver<Option<nth_protocol::ContextSnapshot>>,
+    ) {
+        let front_end = nth_protocol::FrontEnd::default();
+        let rx = front_end.context_preview.subscribe();
+        (front_end, rx)
+    }
+
+    /// One step calling `echo`, then an answer.
+    fn tool_step() -> crate::agent_loop::tests::Scripted {
+        use nth_protocol::StreamEvent;
+
+        use crate::agent_loop::tests::{Scripted, call};
+
+        Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
+            vec![StreamEvent::TextDelta("finished".into())],
+        ])
+    }
+
     #[tokio::test]
-    async fn live_snapshot_tracks_committed_reply() {
-        use nth_protocol::{Event, FrontEnd, StreamEvent};
+    async fn nothing_builds_without_a_subscriber() {
+        use nth_protocol::FrontEnd;
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
-        use crate::agent_loop::tests::Scripted;
-
         let mut session = Session::new("model", ".".into());
-        let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("finished".into())]]);
-        let (tx, mut rx) = mpsc::channel(64);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let front_end = FrontEnd::default();
+        let (tx, _rx) = mpsc::channel(64);
         session
             .prompt(
-                "hello",
-                &provider,
-                &[],
-                &FrontEnd::default(),
+                "go",
+                &tool_step(),
+                &tools,
+                &front_end,
                 &tx,
                 &CancellationToken::new(),
             )
             .await
             .unwrap();
-        let mut snapshots = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            if let Event::ContextUpdated(value) = event {
-                snapshots.push(serde_json::from_value::<Preview>((*value).clone()).unwrap());
-            }
-        }
-        assert_eq!(snapshots.first().unwrap().phase, "pending_reply");
+        assert!(front_end.context_preview.get().is_none());
+        assert!(published::take().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_step_publishes_each_boundary_once() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let mut session = Session::new("model", ".".into());
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let (front_end, mut rx) = watching();
+        let (tx, _events) = mpsc::channel(64);
+        session
+            .prompt(
+                "go",
+                &tool_step(),
+                &tools,
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let snapshots = published::take();
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|p| p.phase.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "pending_reply",
+                "pending_results",
+                "ready",
+                "pending_reply",
+                "idle"
+            ]
+        );
         assert!(
-            !snapshots
-                .first()
-                .unwrap()
+            !snapshots[0]
                 .entries
                 .iter()
-                .any(|entry| matches!(&entry.message, Message::Assistant(_)))
+                .any(|entry| matches!(&entry.message, Message::Assistant(_))),
+            "the request goes out before the reply is in"
         );
-        let last = snapshots.last().unwrap();
-        assert_eq!(last.phase, "idle");
-        assert!(last.entries.iter().any(
+        assert!(snapshots[2].entries.iter().any(
+            |entry| matches!(&entry.message, Message::ToolResult { content, .. } if content == "hi")
+        ));
+        let idle = snapshots.last().unwrap();
+        assert!(idle.entries.iter().any(
             |entry| matches!(&entry.message, Message::Assistant(reply) if reply.text == "finished")
         ));
+        assert!(rx.has_changed().unwrap(), "the subscriber was told");
+        let newest = rx.borrow_and_update().clone().expect("a snapshot");
+        assert_eq!(
+            serde_json::from_value::<Preview>((*newest).clone()).unwrap(),
+            *idle
+        );
     }
 
     #[tokio::test]
     async fn live_request_snapshots_match_provider_and_tool_sees_pending_results() {
         use futures::FutureExt;
-        use nth_protocol::{Event, FrontEnd, StreamEvent, ToolContext, ToolResult, ToolSpec};
+        use nth_protocol::{StreamEvent, ToolContext, ToolResult, ToolSpec};
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
@@ -452,24 +535,20 @@ mod tests {
             vec![StreamEvent::TextDelta("done".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Inspect)];
-        let (tx, mut rx) = mpsc::channel(64);
+        let (front_end, _watching) = watching();
+        let (tx, _rx) = mpsc::channel(64);
         session
             .prompt(
                 "go",
                 &provider,
                 &tools,
-                &FrontEnd::default(),
+                &front_end,
                 &tx,
                 &CancellationToken::new(),
             )
             .await
             .unwrap();
-        let mut snapshots = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            if let Event::ContextUpdated(value) = event {
-                snapshots.push(serde_json::from_value::<Preview>((*value).clone()).unwrap());
-            }
-        }
+        let snapshots = published::take();
         let sent = provider.sent.lock().unwrap();
         let requests: Vec<_> = snapshots
             .iter()
@@ -563,12 +642,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_instruction_change_is_pending_then_delivered_once() {
+    async fn a_live_instruction_change_is_delivered_never_pending() {
         use std::sync::Arc;
 
         use futures::FutureExt;
         use nth_context::{Context, Instruction};
-        use nth_protocol::{Event, FrontEnd, StreamEvent, ToolContext, ToolResult, ToolSpec};
+        use nth_protocol::{StreamEvent, ToolContext, ToolResult, ToolSpec};
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
@@ -611,35 +690,37 @@ mod tests {
             vec![StreamEvent::TextDelta("done".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Change(path))];
-        let (tx, mut rx) = mpsc::channel(64);
+        let (front_end, _watching) = watching();
+        let (tx, _rx) = mpsc::channel(64);
         session
             .prompt(
                 "go",
                 &provider,
                 &tools,
-                &FrontEnd::default(),
+                &front_end,
                 &tx,
                 &CancellationToken::new(),
             )
             .await
             .unwrap();
-        let mut snapshots = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            if let Event::ContextUpdated(value) = event {
-                snapshots.push(serde_json::from_value::<Preview>((*value).clone()).unwrap());
-            }
-        }
-        let pending = snapshots
+        let snapshots = published::take();
+        assert!(
+            snapshots
+                .iter()
+                .all(|p| !p.pending.iter().any(|(kind, _)| kind == "instructions")),
+            "the hand-over delivers the edit before any boundary"
+        );
+        let ready = snapshots
             .iter()
-            .find(|p| {
-                p.pending
-                    .iter()
-                    .any(|(kind, text)| kind == "instructions" && text.contains("changed live"))
-            })
-            .expect("edit is pending before handover");
-        assert!(pending.entries.iter().any(|entry| matches!(&entry.message, Message::ToolResult { content, .. } if content == "updated")));
-        let last = snapshots.last().unwrap();
-        assert!(!last.pending.iter().any(|(kind, _)| kind == "instructions"));
+            .find(|p| p.phase == "ready")
+            .expect("a ready snapshot");
+        let delivered = |p: &Preview| {
+            p.entries
+                .iter()
+                .filter(|entry| matches!(&entry.message, Message::User(text) if text.contains("changed live")))
+                .count()
+        };
+        assert_eq!(delivered(ready), 1, "the edit is in the history");
         let sent = provider.sent.lock().unwrap();
         let delivered = sent[1]
             .iter()

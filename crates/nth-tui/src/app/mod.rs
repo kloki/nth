@@ -69,8 +69,9 @@ use nth_format::FormatterStatus;
 use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Compaction, Effort, Event, Inbox, Listing, Mode, MonitorEvent, MonitorId,
-    Monitors, Provider, Show, Tool, Usage, monitor_log_dir, tool_names,
+    Ask, BoxError, Compaction, ContextPreview, ContextSnapshot, Effort, Event, Inbox, Listing,
+    Mode, MonitorEvent, MonitorId, Monitors, Provider, Show, Tool, Usage, monitor_log_dir,
+    tool_names,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, ToolUse, store,
@@ -186,6 +187,11 @@ pub struct App {
     content: Content,
     diagnostics: Diagnostics,
     context_view: ContextView,
+    /// Where each turn publishes its context preview.
+    context_preview: ContextPreview,
+    /// Subscribed to `context_preview` only while a turn runs: a receiver
+    /// held between turns would have every later turn build snapshots.
+    context_live: Option<watch::Receiver<Option<ContextSnapshot>>>,
     usage_view: UsageView,
     keymaps: Keymaps,
     /// Every saved session's tool totals, most called first; empty until
@@ -419,6 +425,8 @@ enum Step {
     NoticesDue,
     HintExpired,
     TurnEnded(Box<Result<Ended, JoinError>>),
+    /// The running turn published a context preview.
+    Preview(ContextSnapshot),
     Job(Finished),
     LoginUrl(String),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
@@ -496,6 +504,8 @@ impl App {
             diagnostics: Diagnostics::default(),
             usage_view: UsageView::default(),
             context_view: ContextView::default(),
+            context_preview: ContextPreview::default(),
+            context_live: None,
             keymaps: Keymaps::default(),
             all_time_tools: Vec::new(),
             tools_lookup: Job::default(),
@@ -698,6 +708,7 @@ impl App {
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(Box::new(ended)),
+                Some(snapshot) = context::next_snapshot(&mut self.context_live) => Step::Preview(snapshot),
                 files = self.indexing.join() => Step::Job(Finished::Indexed(files)),
                 status = self.git_loading.join() => Step::Job(Finished::GitLoaded(status)),
                 pr = self.pr_loading.join() => Step::Job(Finished::PrLoaded(pr)),
@@ -751,6 +762,7 @@ impl App {
                     Ok(ended) => self.end_turn(ended),
                     Err(e) => self.turn_task_failed(e),
                 },
+                Step::Preview(snapshot) => self.context_updated(&snapshot),
                 Step::Job(finished) => self.job_finished(finished),
                 Step::LoginUrl(url) => self.login_url(url),
                 Step::EditorClosed(ended) => {
@@ -1165,7 +1177,6 @@ impl App {
                 self.usage = Some(*usage);
                 self.spent.usage(&self.model, *usage);
             }
-            Event::ContextUpdated(value) => self.context_updated(value),
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }

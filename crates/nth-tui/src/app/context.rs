@@ -1,6 +1,8 @@
 //! Read-only projection of the main session for the context tab.
 
+use nth_protocol::ContextSnapshot;
 use nth_session::context_preview::Preview;
+use tokio::sync::watch;
 
 use super::{App, Tab};
 
@@ -26,9 +28,23 @@ impl App {
     }
 
     /// Live snapshots describe committed history, never streaming fragments.
-    pub(super) fn context_updated(&mut self, value: &std::sync::Arc<serde_json::Value>) {
+    pub(super) fn context_updated(&mut self, value: &ContextSnapshot) {
         if let Ok(preview) = serde_json::from_value::<Preview>((**value).clone()) {
             self.context_view.update(Some(preview));
         }
     }
+}
+
+/// The next snapshot the running turn publishes, or never without one.
+pub(super) async fn next_snapshot(
+    live: &mut Option<watch::Receiver<Option<ContextSnapshot>>>,
+) -> Option<ContextSnapshot> {
+    let Some(live) = live else {
+        return std::future::pending().await;
+    };
+    // The app owns the sender, so the slot never closes while it runs.
+    if live.changed().await.is_err() {
+        return std::future::pending().await;
+    }
+    live.borrow_and_update().clone()
 }

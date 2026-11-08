@@ -158,10 +158,13 @@ impl Turn<'_> {
         result
     }
 
-    /// Publish only committed boundaries; slow front-ends receive the latest
-    /// coalesced snapshot without delaying the turn.
+    /// Publishes the request as it stands at a committed boundary, never a
+    /// streaming fragment. Building one is O(history), so nothing is built
+    /// unless a front-end subscribed or a tool asked. Instruction files are
+    /// not looked at: `hand_over` delivers their changes before every
+    /// request, so none is pending at a boundary.
     pub(crate) fn publish_preview(&self, phase: &str, last: bool, usage: Option<Usage>) {
-        if self.ctx.is_subagent {
+        if self.ctx.is_subagent || !self.ctx.context_preview.builds() {
             return;
         }
         let specs = offered_tools(self.tools, self.ctx.is_subagent, self.ctx.agent.as_ref())
@@ -173,16 +176,6 @@ impl Turn<'_> {
         } else {
             nth_protocol::Mode::Act
         };
-        let mut pending = self.ctx.inbox.preview(self.route.session_id);
-        let loaded = self
-            .ctx
-            .instructions
-            .lock()
-            .expect("loaded instructions lock poisoned")
-            .clone();
-        if let Some(notice) = nth_protocol::instructions_notice(&self.ctx.watch.preview(loaded)) {
-            pending.insert(0, ("instructions".into(), notice));
-        }
         let preview = crate::context_preview::build(crate::context_preview::Projection {
             messages: self.messages,
             specs: &specs,
@@ -194,13 +187,16 @@ impl Turn<'_> {
             max_output: self.route.max_output,
             policy: self.route.compaction,
             last_usage: usage,
-            pending,
+            pending: self.ctx.inbox.preview(self.route.session_id),
             phase,
             last_step: last,
         });
         if let Ok(value) = serde_json::to_value(preview) {
             let value = Arc::new(value);
-            self.ctx.context_preview.publish(value, self.events);
+            // A watch keeps only the newest; the tests count every boundary.
+            #[cfg(test)]
+            crate::context_preview::published::record(&value);
+            self.ctx.context_preview.publish(value);
         }
     }
 
@@ -241,7 +237,6 @@ impl Turn<'_> {
                     return Err(Error::TooBigToCompact);
                 }
                 *last_usage = None;
-                self.publish_preview("ready", false, *last_usage);
                 if self.still_over_the_window() {
                     return Err(Error::TooBigToCompact);
                 }
@@ -267,7 +262,6 @@ impl Turn<'_> {
                         }
                         replayed = true;
                         *last_usage = None;
-                        self.publish_preview("ready", false, *last_usage);
                         continue;
                     }
                     return Err(Error::Provider(error));
@@ -301,8 +295,9 @@ impl Turn<'_> {
                     }));
                 return Err(Error::TooManySteps(max_steps));
             }
+            // The next request's `pending_reply` shows the same history, as
+            // it does after a compaction.
             if self.preempt(&calls).await {
-                self.publish_preview("ready", false, *last_usage);
                 continue;
             }
             self.check(start, &calls).await?;
@@ -326,7 +321,6 @@ impl Turn<'_> {
             }
             self.messages
                 .extend(answers.into_iter().map(|(_, message, _)| message));
-            self.publish_preview("ready", false, *last_usage);
             if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
             }
