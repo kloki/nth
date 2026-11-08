@@ -39,6 +39,24 @@ pub(crate) fn text<E: std::fmt::Debug>(events: Vec<Result<StreamEvent, E>>) -> V
         .collect()
 }
 
+/// A `*_cut.sse` fixture without the lines that stream its text: a reply
+/// cut before it said anything, having only thought, if that.
+pub(crate) fn without_text(fixture: &[u8]) -> String {
+    let fixture = std::str::from_utf8(fixture).expect("utf-8 fixture");
+    fixture
+        .lines()
+        .filter(|line| !line.contains("The essay so far") && !line.contains(" runs lo"))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// Whether the reply reported a usage of `output` tokens.
+pub(crate) fn reports_output<E>(events: &[Result<StreamEvent, E>], output: u64) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, Ok(StreamEvent::Usage(usage)) if usage.output == output))
+}
+
 /// A server on a free local port that answers one request with `body` as
 /// an event stream, and hands back the request's head (its request line
 /// and headers) and its body.

@@ -210,18 +210,26 @@ pub(crate) type Out<P> = VecDeque<Result<StreamEvent, Error<P>>>;
 /// ran long, so it is kept and the turn ends as answered; its tool calls
 /// have partial arguments and must not run, so the caller drops them. The
 /// note tells the model and the user why the reply stops where it does, and
-/// a model whose calls were dropped why nothing ran.
-pub(crate) fn cut<P: Payload>(calls_dropped: bool, out: &mut Out<P>) {
-    let note = match calls_dropped {
-        true => CUT_NOTE_WITH_CALLS,
-        false => CUT_NOTE,
+/// a model whose calls were dropped why nothing ran. It is set apart from
+/// the reply's text, but a reply with none is the note alone, never one
+/// that starts with blank lines.
+pub(crate) fn cut<P: Payload>(after_text: bool, calls_dropped: bool, out: &mut Out<P>) {
+    let note = if calls_dropped {
+        CUT_NOTE_WITH_CALLS
+    } else {
+        CUT_NOTE
     };
-    out.push_back(Ok(StreamEvent::TextDelta(note.into())));
+    let note = if after_text {
+        format!("\n\n{note}")
+    } else {
+        note.to_string()
+    };
+    out.push_back(Ok(StreamEvent::TextDelta(note)));
 }
 
-pub(crate) const CUT_NOTE: &str = "\n\n[reply cut at the output token limit]";
+pub(crate) const CUT_NOTE: &str = "[reply cut at the output token limit]";
 pub(crate) const CUT_NOTE_WITH_CALLS: &str =
-    "\n\n[reply cut at the output token limit; its tool calls were dropped]";
+    "[reply cut at the output token limit; its tool calls were dropped]";
 
 /// Whether the protocol's closing event arrived and it emitted the end.
 pub(crate) enum Flow {

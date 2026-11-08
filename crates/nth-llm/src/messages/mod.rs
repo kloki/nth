@@ -106,6 +106,8 @@ pub(crate) struct State {
     calls: BTreeMap<usize, ToolCall>,
     usage: event::Usage,
     stop_reason: Option<String>,
+    /// Whether any text went out, which a cut reply's note follows.
+    text: bool,
 }
 
 impl Protocol for State {
@@ -137,6 +139,7 @@ impl Protocol for State {
             }
             event::Event::ContentBlockDelta { index, delta } => match delta {
                 event::Delta::Text { text } if !text.is_empty() => {
+                    self.text = true;
                     out.push_back(Ok(StreamEvent::TextDelta(text)));
                 }
                 event::Delta::Thinking { thinking } if !thinking.is_empty() => {
@@ -181,7 +184,7 @@ impl Protocol for State {
     fn finish(&mut self, out: &mut Out<Provider>) {
         let calls = std::mem::take(&mut self.calls);
         if self.stop_reason.as_deref() == Some("max_tokens") {
-            stream::cut(!calls.is_empty(), out);
+            stream::cut(self.text, !calls.is_empty(), out);
             return;
         }
         out.extend(calls.into_values().map(|mut call| {
@@ -200,7 +203,9 @@ mod tests {
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
-    use crate::testing::{chunks, runs_no_tools, serve_status, text, until};
+    use crate::testing::{
+        chunks, reports_output, runs_no_tools, serve_status, text, until, without_text,
+    };
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
@@ -336,15 +341,29 @@ mod tests {
         assert!(runs_no_tools(&events));
     }
 
+    const CUT: &[u8] = include_bytes!("../../tests/fixtures/zen_messages_cut.sse");
+
     #[tokio::test]
     async fn a_reply_cut_at_the_limit_keeps_its_text() {
-        let fixture = include_bytes!("../../tests/fixtures/zen_messages_cut.sse");
-        let events = replay_bytes(fixture, fixture.len()).await;
+        let events = replay_bytes(CUT, CUT.len()).await;
         assert!(runs_no_tools(&events));
+        assert!(reports_output(&events, 200), "{events:?}");
         assert_eq!(
             text(events),
-            ["The essay so far", " runs lo", stream::CUT_NOTE]
+            [
+                "The essay so far".to_string(),
+                " runs lo".into(),
+                format!("\n\n{}", stream::CUT_NOTE)
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_before_any_text_is_the_note_alone() {
+        let input = without_text(CUT);
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(text(events), [stream::CUT_NOTE]);
     }
 
     #[tokio::test]
@@ -358,7 +377,11 @@ mod tests {
         assert!(runs_no_tools(&events));
         assert_eq!(
             text(events),
-            ["Reading wörld", " files.", stream::CUT_NOTE_WITH_CALLS]
+            [
+                "Reading wörld".to_string(),
+                " files.".into(),
+                format!("\n\n{}", stream::CUT_NOTE_WITH_CALLS)
+            ]
         );
     }
 

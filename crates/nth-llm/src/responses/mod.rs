@@ -91,6 +91,11 @@ impl Client {
 pub(crate) struct State {
     /// Tool calls by the index of their output item.
     calls: BTreeMap<usize, ToolCall>,
+    /// Whether a tool call began, though it may never have finished: a
+    /// call cut mid-arguments has no `output_item.done` to enter `calls`.
+    called: bool,
+    /// Whether any text went out, which a cut reply's note follows.
+    text: bool,
 }
 
 impl Protocol for State {
@@ -105,6 +110,7 @@ impl Protocol for State {
     fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
         match event {
             event::Event::TextDelta { delta } if !delta.is_empty() => {
+                self.text = true;
                 out.push_back(Ok(StreamEvent::TextDelta(delta)));
             }
             event::Event::ReasoningDelta { delta } if !delta.is_empty() => {
@@ -113,6 +119,9 @@ impl Protocol for State {
             event::Event::SummaryPart { summary_index } if summary_index > 0 => {
                 out.push_back(Ok(StreamEvent::ReasoningDelta("\n\n".into())));
             }
+            event::Event::ItemAdded {
+                item: event::AddedItem::FunctionCall,
+            } => self.called = true,
             event::Event::ItemDone {
                 output_index,
                 item:
@@ -126,6 +135,7 @@ impl Protocol for State {
                 if arguments.is_empty() {
                     arguments = "{}".into();
                 }
+                self.called = true;
                 self.calls.insert(
                     output_index,
                     ToolCall {
@@ -145,10 +155,10 @@ impl Protocol for State {
             // none run.
             event::Event::Incomplete { response } => {
                 usage(&response, out);
-                let calls = std::mem::take(&mut self.calls);
+                self.calls.clear();
                 let reason = response.incomplete_details.and_then(|d| d.reason);
                 if reason.as_deref() == Some("max_output_tokens") {
-                    stream::cut(!calls.is_empty(), out);
+                    stream::cut(self.text, self.called, out);
                 } else {
                     out.push_back(Err(Error::Provider(Provider {
                         kind: reason.unwrap_or_default(),
@@ -183,7 +193,9 @@ mod tests {
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
-    use crate::testing::{chunks, runs_no_tools, serve_status, text, until};
+    use crate::testing::{
+        chunks, reports_output, runs_no_tools, serve_status, text, until, without_text,
+    };
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
@@ -325,15 +337,29 @@ mod tests {
         assert!(runs_no_tools(&events));
     }
 
+    const CUT: &[u8] = include_bytes!("../../tests/fixtures/zen_responses_cut.sse");
+
     #[tokio::test]
     async fn a_reply_cut_at_the_limit_keeps_its_text() {
-        let fixture = include_bytes!("../../tests/fixtures/zen_responses_cut.sse");
-        let events = replay_bytes(fixture, fixture.len()).await;
+        let events = replay_bytes(CUT, CUT.len()).await;
         assert!(runs_no_tools(&events));
+        assert!(reports_output(&events, 200), "{events:?}");
         assert_eq!(
             text(events),
-            ["The essay so far", " runs lo", stream::CUT_NOTE]
+            [
+                "The essay so far".to_string(),
+                " runs lo".into(),
+                format!("\n\n{}", stream::CUT_NOTE)
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_before_any_text_is_the_note_alone() {
+        let input = without_text(CUT);
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(text(events), [stream::CUT_NOTE]);
     }
 
     #[tokio::test]
@@ -360,7 +386,36 @@ mod tests {
         assert!(runs_no_tools(&events));
         assert_eq!(
             text(events),
-            ["I’ll read wörld", " files.", stream::CUT_NOTE_WITH_CALLS]
+            [
+                "I’ll read wörld".to_string(),
+                " files.".into(),
+                format!("\n\n{}", stream::CUT_NOTE_WITH_CALLS)
+            ]
+        );
+    }
+
+    /// A call enters the reply only once its item is done, so one cut
+    /// mid-arguments is known from its item having begun.
+    #[tokio::test]
+    async fn a_reply_cut_mid_call_says_it_was_dropped() {
+        let fixture = std::str::from_utf8(CUT).expect("utf-8 fixture");
+        let input = fixture.replace(
+            "event: response.incomplete",
+            "event: response.output_item.added\n\
+             data: {\"type\":\"response.output_item.added\",\"sequence_number\":4,\"output_index\":1,\"item\":{\"id\":\"fc_cut\",\"type\":\"function_call\",\"status\":\"in_progress\",\"name\":\"read\",\"call_id\":\"call_cut\",\"arguments\":\"\"}}\n\n\
+             event: response.function_call_arguments.delta\n\
+             data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":5,\"output_index\":1,\"item_id\":\"fc_cut\",\"delta\":\"{\\\"filePa\"}\n\n\
+             event: response.incomplete",
+        );
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(runs_no_tools(&events));
+        assert_eq!(
+            text(events),
+            [
+                "The essay so far".to_string(),
+                " runs lo".into(),
+                format!("\n\n{}", stream::CUT_NOTE_WITH_CALLS)
+            ]
         );
     }
 
