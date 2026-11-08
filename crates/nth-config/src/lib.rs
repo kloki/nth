@@ -1097,22 +1097,34 @@ mod tests {
                 "`{key}` of [{table}] is not in the template"
             );
             // The skill lists a table's subtables in its own rows, as
-            // `plan` / `act` `model` under `[[profiles]]`.
+            // `plan` / `act` `model` under `[[profiles]]`: the row's first
+            // cell names the subtable and ends with the key.
             let mut parts: Vec<&str> = table.split('.').filter(|p| !p.is_empty()).collect();
-            let mut words = vec![key.as_str()];
+            let mut subtables = Vec::new();
             let found = loop {
                 let name = parts.join(".");
                 if let Some((_, text)) = skill.iter().find(|(table, _)| *table == name) {
                     break text;
                 }
-                words.push(parts.pop().expect("the root keys are a table"));
+                subtables.push(parts.pop().expect("the root keys are a table"));
             };
-            for word in words {
-                assert!(
-                    found.contains(&format!("`{word}`")),
-                    "`{key}` of [{table}] is not in the config skill's reference"
-                );
-            }
+            let listed = |cell: &str| match subtables.as_slice() {
+                [] => cell == format!("`{key}`"),
+                subtables => {
+                    cell.ends_with(&format!(" `{key}`"))
+                        && subtables
+                            .iter()
+                            .all(|sub| cell.contains(&format!("`{sub}`")))
+                }
+            };
+            assert!(
+                found.lines().any(|row| {
+                    row.strip_prefix('|')
+                        .and_then(|row| row.split('|').next())
+                        .is_some_and(|cell| listed(cell.trim()))
+                }),
+                "`{key}` of [{table}] is not a row of the config skill's reference"
+            );
         }
     }
 }

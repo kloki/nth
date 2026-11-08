@@ -429,8 +429,10 @@ mod tests {
 
     /// An app with the diagnostics tab open, after resuming a session that
     /// thought `pondering` and answered `hello`, its runtime prepared from
-    /// `config`.
-    async fn resumed_on(config: impl Fn() -> nth_config::Config + Send + Sync + 'static) -> App {
+    /// `config`; with the folder its store saves in, kept for the test.
+    async fn resumed_on(
+        config: impl Fn() -> nth_config::Config + Send + Sync + 'static,
+    ) -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path());
         let mut saved = Session::new("glm", dir.path().into());
@@ -461,7 +463,7 @@ mod tests {
         let loaded = app.session_loading.join().await.unwrap();
         app.session_loaded(loaded);
         assert_eq!(app.session_id, saved.id);
-        app
+        (app, dir)
     }
 
     /// The config `runtime` prepares, so a resume onto it changes nothing.
@@ -480,23 +482,33 @@ mod tests {
             .any(|row| row.chars().take(50).collect::<String>().contains(text))
     }
 
+    /// A repository's `.nth/config` cannot set `[chat]` or `[layout]`, so
+    /// what changes them on a resume is the global config, edited since nth
+    /// started.
     #[tokio::test]
-    async fn resuming_into_another_repository_takes_its_chat_and_layout() {
-        let mut app = resumed_on(unchanged).await;
+    async fn resuming_onto_a_changed_config_takes_its_chat_and_layout() {
+        let (mut app, _dir) = resumed_on(unchanged).await;
         assert!(
             !chat_shows(&mut app, "hello"),
             "the diagnostics tab fills the panel"
         );
 
-        let mut app = resumed_on(|| {
+        let split = || {
             let mut config = unchanged();
             config.layout.split_width = 1;
+            config
+        };
+        let (mut app, _dir) = resumed_on(split).await;
+        assert!(chat_shows(&mut app, "hello"), "beside the diagnostics tab");
+        assert!(chat_shows(&mut app, "pondering"), "thinking shows");
+
+        let (mut app, _dir) = resumed_on(move || {
+            let mut config = split();
             config.chat.thinking = false;
             config
         })
         .await;
-
-        assert!(chat_shows(&mut app, "hello"), "beside the diagnostics tab");
+        assert!(chat_shows(&mut app, "hello"));
         assert!(!chat_shows(&mut app, "pondering"), "thinking is hidden");
     }
 

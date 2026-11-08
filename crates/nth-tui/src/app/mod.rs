@@ -675,7 +675,8 @@ impl App {
     /// equal to the last config's is left alone, so the `/settings` flips of
     /// this run outlive a `/resume` whose config says the same, and the
     /// notifier is not built again for nothing; one that differs starts
-    /// over from the new config.
+    /// over from the new config. These sections are global only, so on a
+    /// `/resume` they differ when the global config was edited since start.
     fn apply_config(&mut self, config: nth_config::Config) {
         let old = self.config.as_ref();
         if old.is_none_or(|old| old.chat != config.chat) {
