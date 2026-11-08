@@ -263,6 +263,7 @@ tool_timeout_secs = 900 # seconds a tool call may run; 0 for no limit
 [task]                  # subagents started with the task tool
 max_steps = 50
 timeout_secs = 600      # 0 for no time limit
+stall_secs = 120        # report silence this long; 0 never
 
 [work]                  # subagents on a work item
 max_steps = 100
@@ -311,10 +312,11 @@ Every key with its default, in the order of `nth init`'s template.
 
 **`[task]`** — subagents started with the task tool.
 
-| Key            | Default | Meaning                                  |
-| -------------- | ------- | ---------------------------------------- |
-| `max_steps`    | `50`    | Model requests before the task fails.    |
-| `timeout_secs` | `600`   | Seconds before it fails; 0 for no limit. |
+| Key            | Default | Meaning                                      |
+| -------------- | ------- | -------------------------------------------- |
+| `max_steps`    | `50`    | Model requests before the task fails.        |
+| `timeout_secs` | `600`   | Seconds before it fails; 0 for no limit.     |
+| `stall_secs`   | `120`   | Report a subagent silent this long; 0 never. |
 
 **`[work]`** — subagents on a work item.
 

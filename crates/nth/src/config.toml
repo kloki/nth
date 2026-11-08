@@ -94,6 +94,10 @@ preserve = 0
 # time limit). The model hears why and can continue it by its task_id.
 max_steps = 50
 timeout_secs = 600
+# A subagent started with the task tool that has said nothing (no reply, no
+# tool call) for this many seconds is reported to the model as stalled, and
+# again every such interval while it stays silent (0 never reports one).
+stall_secs = 120
 
 [work]
 # A subagent the model puts on a work item with work_assign returns the
@@ -103,8 +107,9 @@ timeout_secs = 600
 max_steps = 100
 timeout_secs = 600
 # A subagent on a work item that has said nothing (no reply, no tool call)
-# for this many seconds is reported to the model as stalled, and left
-# running (0 never reports one).
+# for this many seconds is reported to the model as stalled, and again every
+# such interval while it stays silent; it is left running (0 never reports
+# one).
 stall_secs = 120
 
 [memory]

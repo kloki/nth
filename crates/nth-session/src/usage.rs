@@ -154,10 +154,26 @@ impl Ledger {
         self.0.get(at..).unwrap_or_default()
     }
 
-    /// Starts a turn's spend and returns where it is, for [`Ledger::add`].
-    pub fn begin(&mut self, model: impl Into<String>, agent: Option<String>) -> usize {
-        self.0.push(Spend::new(model, agent));
+    /// Starts a turn's spend and returns where it is, for [`Ledger::add`]
+    /// or [`Ledger::spend_mut`]: counted to as the turn goes, so a turn
+    /// that is dropped part way keeps what it spent. [`Ledger::close`]
+    /// ends it.
+    pub fn open(&mut self, spend: Spend) -> usize {
+        self.0.push(spend);
         self.0.len() - 1
+    }
+
+    /// The spend [`Ledger::open`] started at `at`, for a turn to count to.
+    pub(crate) fn spend_mut(&mut self, at: usize) -> &mut Spend {
+        &mut self.0[at]
+    }
+
+    /// Ends the spend [`Ledger::open`] started at `at`: one the provider
+    /// reported nothing for goes, as [`Ledger::record`] never keeps one.
+    pub(crate) fn close(&mut self, at: usize) {
+        if self.0.get(at).is_some_and(|spend| spend.steps == 0) {
+            self.0.remove(at);
+        }
     }
 
     /// One request's usage, counted to the spend at `at`.
@@ -411,6 +427,23 @@ pub fn short_duration(duration: Duration) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_open_spend_counts_as_it_goes_and_closes_only_when_empty() {
+        let mut ledger = Ledger::default();
+        let at = ledger.open(Spend::new("glm", None));
+        ledger.close(at);
+        assert!(ledger.spends().is_empty(), "nothing was reported");
+
+        let at = ledger.open(Spend::new("glm", None));
+        let spend = ledger.spend_mut(at);
+        spend.steps += 1;
+        spend.tokens += usage(300, 7, None);
+        // A turn dropped here never closes, and keeps what it spent.
+        assert_eq!(ledger.spends()[at].tokens.input, 300);
+        ledger.close(at);
+        assert_eq!(ledger.spends().len(), 1, "a spend with steps stays");
+    }
+
     fn usage(input: u64, output: u64, cache_read: Option<u64>) -> Usage {
         Usage {
             input,
@@ -424,7 +457,7 @@ mod tests {
     #[test]
     fn a_turn_adds_up_its_requests() {
         let mut ledger = Ledger::default();
-        let turn = ledger.begin("glm", None);
+        let turn = ledger.open(Spend::new("glm", None));
         ledger.add(turn, usage(100, 10, Some(80)));
         ledger.add(turn, usage(200, 20, None));
 
@@ -445,7 +478,7 @@ mod tests {
     #[test]
     fn totals_per_model_and_spends_without_requests_left_out() {
         let mut ledger = Ledger::default();
-        let mine = ledger.begin("glm", None);
+        let mine = ledger.open(Spend::new("glm", None));
         ledger.add(mine, usage(100, 10, None));
         let mut theirs = Spend::new("kimi", Some("explore".into()));
         theirs.steps = 3;
@@ -461,7 +494,7 @@ mod tests {
     #[test]
     fn saved_and_loaded_unchanged() {
         let mut ledger = Ledger::default();
-        let turn = ledger.begin("glm", Some("explore".into()));
+        let turn = ledger.open(Spend::new("glm", Some("explore".into())));
         ledger.add(turn, usage(100, 10, Some(5)));
         let mut spend = Spend::new("kimi", None);
         spend.steps = 1;
@@ -503,7 +536,7 @@ mod tests {
     #[test]
     fn priced_per_model_and_unpriced_models_marked() {
         let mut ledger = Ledger::default();
-        let glm = ledger.begin("glm", None);
+        let glm = ledger.open(Spend::new("glm", None));
         ledger.add(glm, usage(1_000_000, 100_000, Some(500_000)));
         let cost = |model: &str| {
             (model == "glm").then_some(Cost {
@@ -517,7 +550,7 @@ mod tests {
         assert!((price.dollars - (0.5 + 0.1 + 0.4)).abs() < 1e-9);
         assert_eq!(price.to_string(), "$1.00");
 
-        let kimi = ledger.begin("kimi", None);
+        let kimi = ledger.open(Spend::new("kimi", None));
         ledger.add(kimi, usage(10, 1, None));
         assert_eq!(ledger.price(cost).expect("partly").to_string(), "$1.00+");
         assert_eq!(ledger.price(|_| None), None);

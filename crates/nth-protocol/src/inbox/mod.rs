@@ -13,8 +13,9 @@ use std::{
 };
 
 pub use notice::{
-    NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, Todo, WorkNotice, WorkOutcome,
-    WorkState, instructions_notice, one_line, quiet_text, split_notices, todo_counts, todo_lines,
+    NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, TaskStall, Todo, WorkNotice,
+    WorkOutcome, WorkState, instructions_notice, one_line, quiet_text, split_notices, todo_counts,
+    todo_lines,
 };
 
 use crate::{MonitorEnd, MonitorId};
@@ -32,6 +33,7 @@ enum Pending {
     Curio(crate::CurioNotice),
     Monitor(MonitorNotice),
     Task(TaskNotice),
+    TaskStall(TaskStall),
     Work(WorkNotice),
     /// A prompt sent while a turn runs, for its next step.
     Prompt(String),
@@ -88,29 +90,60 @@ impl Inbox {
         self.0.is_some()
     }
 
-    /// Puts a subagent's answer in. `false` without an inbox.
+    /// Puts a subagent's answer in. `false` without an inbox. A stall of
+    /// the same subagent still waiting goes: the answer says it moved on.
     pub fn post_task(&self, task: TaskNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
-        lock(pending).push(Pending::Task(task));
+        let mut pending = lock(pending);
+        pending.retain(|p| !matches!(p, Pending::TaskStall(s) if s.id == task.id));
+        pending.push(Pending::Task(task));
+        true
+    }
+
+    /// Puts a subagent's silence in. It replaces the subagent's earlier
+    /// stall still waiting, so one that stays silent reads as one notice
+    /// with how long it has been. `false` without an inbox.
+    pub fn post_task_stalled(&self, stall: TaskStall) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        let mut pending = lock(pending);
+        match pending
+            .iter_mut()
+            .find(|p| matches!(p, Pending::TaskStall(s) if s.id == stall.id))
+        {
+            Some(waiting) => *waiting = Pending::TaskStall(stall),
+            None => pending.push(Pending::TaskStall(stall)),
+        }
         true
     }
 
     /// Puts what happened to a work item in. A todo list replaces the
     /// item's latest notice when that is a todo list too, so a burst of
-    /// ticks reads as one notice with the last list; after a return or a
-    /// stall it starts a new one, so the order stays as it happened.
-    /// `false` without an inbox.
+    /// ticks reads as one notice with the last list, and a stall replaces a
+    /// stall, so a subagent that stays silent reads as one notice with how
+    /// long it has been; anything else starts a new one, so the order stays
+    /// as it happened. A return takes the item's stall still waiting with
+    /// it: the subagent moved on. `false` without an inbox.
     pub fn post_work(&self, notice: WorkNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         let mut pending = lock(pending);
+        if matches!(notice.state, WorkState::Returned { .. }) {
+            pending.retain(|p| {
+                !matches!(p, Pending::Work(w) if w.cycle == notice.cycle
+                    && w.item == notice.item
+                    && matches!(w.state, WorkState::Stalled { .. }))
+            });
+        }
         let latest = pending.iter_mut().rev().find_map(|p| match p {
             Pending::Work(w) if w.cycle == notice.cycle && w.item == notice.item => Some(w),
             _ => None,
         });
         match latest {
             Some(latest)
-                if matches!(latest.state, WorkState::Todo(_))
-                    && matches!(notice.state, WorkState::Todo(_)) =>
+                if matches!(
+                    (&latest.state, &notice.state),
+                    (WorkState::Todo(_), WorkState::Todo(_))
+                        | (WorkState::Stalled { .. }, WorkState::Stalled { .. })
+                ) =>
             {
                 *latest = notice;
             }
@@ -281,7 +314,11 @@ fn monitor_notice<'a>(
     match &mut pending[index] {
         Pending::Monitor(monitor) => monitor,
         // Just pushed or found as a monitor's.
-        Pending::Task(_) | Pending::Work(_) | Pending::Prompt(_) | Pending::Curio(_) => {
+        Pending::Task(_)
+        | Pending::TaskStall(_)
+        | Pending::Work(_)
+        | Pending::Prompt(_)
+        | Pending::Curio(_) => {
             unreachable!("the index is a monitor's notice")
         }
     }
@@ -301,6 +338,7 @@ impl Pending {
                 m.ended,
             )),
             Pending::Task(task) => Some(notice::render_task(task)),
+            Pending::TaskStall(stall) => Some(notice::render_task_stall(stall)),
             Pending::Work(work) => Some(notice::render_work(work)),
             Pending::Prompt(_) => None,
             Pending::Curio(_) => None,
@@ -311,7 +349,11 @@ impl Pending {
     fn prompt(&self) -> Option<&str> {
         match self {
             Pending::Prompt(text) => Some(text),
-            Pending::Monitor(_) | Pending::Task(_) | Pending::Work(_) | Pending::Curio(_) => None,
+            Pending::Monitor(_)
+            | Pending::Task(_)
+            | Pending::TaskStall(_)
+            | Pending::Work(_)
+            | Pending::Curio(_) => None,
         }
     }
 }
@@ -481,5 +523,74 @@ mod tests {
         assert!(!inbox.wakes(), "ticks wait for a wake");
         inbox.post_work(work("y", returned));
         assert!(inbox.wakes(), "a return is one");
+    }
+
+    fn stall(id: TaskId, secs: u64) -> TaskStall {
+        TaskStall {
+            id,
+            agent: "explore".into(),
+            description: "find tabs".into(),
+            quiet: std::time::Duration::from_secs(secs),
+        }
+    }
+
+    #[test]
+    fn a_silent_subagent_is_one_notice_that_wakes_and_its_answer_ends_it() {
+        let inbox = Inbox::new();
+        assert!(!Inbox::default().post_task_stalled(stall(1, 60)));
+        assert!(inbox.post_task_stalled(stall(1, 60)));
+        assert!(inbox.wakes(), "a stall wakes the model");
+        inbox.post_task_stalled(stall(2, 60));
+        inbox.post_task_stalled(stall(1, 120));
+
+        assert_eq!(
+            inbox.take_notices().unwrap(),
+            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"2m0s\"/>\n\
+             <task id=\"2\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"1m0s\"/>",
+            "the later stall took the earlier one's place"
+        );
+
+        inbox.post_task_stalled(stall(1, 180));
+        inbox.post_task(task());
+        assert_eq!(
+            split_notices(&inbox.take_notices().unwrap()).0,
+            [NoticeSummary::Task {
+                id: 1,
+                agent: "explore".into(),
+                description: "find tabs".into(),
+                state: "completed".into(),
+            }],
+            "the answer leaves no stall behind it"
+        );
+    }
+
+    #[test]
+    fn a_stall_replaces_the_items_stall_and_goes_with_its_return() {
+        let inbox = Inbox::new();
+        let stalled = |secs| WorkState::Stalled {
+            quiet: std::time::Duration::from_secs(secs),
+        };
+        inbox.post_work(work("x", stalled(60)));
+        inbox.post_work(work("x", stalled(120)));
+        inbox.post_work(work("x", ticked(1)));
+        inbox.post_work(work("x", stalled(60)));
+
+        inbox.post_work(work("y", stalled(60)));
+        inbox.post_work(work(
+            "y",
+            WorkState::Returned {
+                outcome: WorkOutcome::Interrupted,
+                done: 0,
+                total: 0,
+            },
+        ));
+
+        let text = inbox.take_notices().unwrap();
+        assert_eq!(
+            text.matches("state=\"stalled\"").count(),
+            2,
+            "y's stall went with its return: {text}"
+        );
+        assert!(text.starts_with("<work_item cycle=\"01-a\" item=\"x\" task=\"1\" agent=\"general\" state=\"stalled\" quiet=\"2m0s\"/>"), "{text}");
     }
 }

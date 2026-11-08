@@ -590,3 +590,38 @@ pub(crate) async fn turn(
     };
     tokio::join!(run, sent)
 }
+
+#[test]
+fn settling_a_dropped_turn_answers_only_the_calls_left_open() {
+    let interrupted = |id: &str| Message::ToolResult {
+        call_id: id.into(),
+        content: failed(nth_protocol::INTERRUPTED),
+        images: Vec::new(),
+    };
+    let answered = Message::ToolResult {
+        call_id: "2".into(),
+        content: "done".into(),
+        images: Vec::new(),
+    };
+    let reply = Message::Assistant(AssistantMessage {
+        tool_calls: ["1", "2", "3"].map(|id| call(id, "echo", "{}")).to_vec(),
+        ..AssistantMessage::default()
+    });
+    let mut messages = vec![Message::User("go".into()), reply.clone(), answered.clone()];
+
+    settle_unanswered(&mut messages);
+    assert_eq!(
+        messages[1..],
+        [reply, answered, interrupted("1"), interrupted("3")]
+    );
+    let settled = messages.clone();
+    settle_unanswered(&mut messages);
+    assert_eq!(messages, settled, "nothing is left to answer");
+
+    let mut answer = vec![
+        Message::User("hi".into()),
+        Message::Assistant(AssistantMessage::default()),
+    ];
+    settle_unanswered(&mut answer);
+    assert_eq!(answer.len(), 2, "an answer has no calls");
+}

@@ -604,15 +604,15 @@ impl Session {
             }
         }
         self.updated_at = SystemTime::now();
-        let mut held = self.held(front_end);
+        let held = self.held(front_end);
         let result = self
-            .turn(&mut held, provider, tools, events, cancel)
+            .turn(&held, provider, tools, events, cancel)
             .run()
             .await;
-        let Held { ctx, spend, .. } = held;
+        self.usage.close(held.spend);
+        let Held { ctx, .. } = held;
         self.curio_root = ctx.curios.root().or(self.curio_root.take());
         self.curio_receipts.extend(ctx.curios.recorded());
-        self.usage.record(spend);
         // Prompts you sent mid-turn joined it.
         self.updated_at = SystemTime::now();
         self.loaded_instructions = ctx
@@ -627,12 +627,14 @@ impl Session {
     }
 
     /// What a turn of this session needs held for as long as it runs.
-    fn held(&self, front_end: &FrontEnd) -> Held {
+    /// Its spend is in the ledger from the start, so a turn dropped part
+    /// way keeps what it spent; whoever runs the turn closes it.
+    fn held(&mut self, front_end: &FrontEnd) -> Held {
         let mut spend = Spend::new(&self.model, None);
         spend.cost = self.cost;
         Held {
+            spend: self.usage.open(spend),
             ctx: self.tool_context(front_end),
-            spend,
             session_id: self.id.to_string(),
             parent_session_id: self.parent.map(|p| p.to_string()),
         }
@@ -641,7 +643,7 @@ impl Session {
     /// A turn on this session's history and route, with what `held` holds.
     fn turn<'a>(
         &'a mut self,
-        held: &'a mut Held,
+        held: &'a Held,
         provider: &'a dyn Provider,
         tools: &'a [Box<dyn Tool>],
         events: &'a mpsc::Sender<Event>,
@@ -664,7 +666,7 @@ impl Session {
             tools,
             ctx: &held.ctx,
             messages: &mut self.messages,
-            spend: &mut held.spend,
+            spend: self.usage.spend_mut(held.spend),
             last_usage: &mut self.last_usage,
             events,
             cancel,
@@ -771,20 +773,19 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        let mut held = self.held(front_end);
+        let held = self.held(front_end);
         // Only `Turn::run` writes the trigger's usage: a compaction's is the
         // summary request's, not the conversation's size.
         let result = self
-            .turn(&mut held, provider, tools, events, cancel)
+            .turn(&held, provider, tools, events, cancel)
             .compact()
             .await;
-        let spend = held.spend;
         if matches!(result, Ok(true)) {
             // The conversation the old usage described is gone; keeping it
             // would fire the trigger again at once.
             self.last_usage = None;
         }
-        self.usage.record(spend);
+        self.usage.close(held.spend);
         self.updated_at = SystemTime::now();
         result.map(|_| ())
     }
@@ -808,7 +809,8 @@ fn append(text: &mut String, part: &str) {
 /// What a turn borrows that the session does not hold.
 struct Held {
     ctx: ToolContext,
-    spend: Spend,
+    /// Where the turn's spend is in the ledger.
+    spend: usize,
     session_id: String,
     parent_session_id: Option<String>,
 }

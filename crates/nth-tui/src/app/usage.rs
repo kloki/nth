@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use nth_protocol::Usage;
-use nth_session::{Ledger, SubagentId, ToolUse, store};
+use nth_session::{Ledger, Spend, SubagentId, ToolUse, store};
 
 use super::App;
 
@@ -40,14 +40,14 @@ impl Spent {
     }
 
     pub fn turn_started(&mut self, model: &str) {
-        self.turn = Some(self.ledger.begin(model, None));
+        self.turn = Some(self.ledger.open(Spend::new(model, None)));
     }
 
     /// One request of the session's own; a report outside a turn opens one.
     pub fn usage(&mut self, model: &str, usage: Usage) {
         let at = *self
             .turn
-            .get_or_insert_with(|| self.ledger.begin(model, None));
+            .get_or_insert_with(|| self.ledger.open(Spend::new(model, None)));
         self.ledger.add(at, usage);
     }
 
@@ -67,7 +67,10 @@ impl Spent {
         };
         let ledger = &mut self.ledger;
         let at = *subagent.turn.get_or_insert_with(|| {
-            ledger.begin(subagent.model.clone(), Some(subagent.agent.clone()))
+            ledger.open(Spend::new(
+                subagent.model.clone(),
+                Some(subagent.agent.clone()),
+            ))
         });
         ledger.add(at, usage);
     }

@@ -13,7 +13,7 @@ mod status;
 pub mod store;
 mod todo;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub use assign::Assigned;
 use assign::WorkAssign;
@@ -27,7 +27,7 @@ pub use store::{Cycle, Item, ItemRef, Plan, Status, Store, cycle_name, work_dir}
 
 use crate::{
     Error, SubagentId, Subagents,
-    subagent::{self, Spawner},
+    subagent::{Limits, Spawner},
 };
 
 /// The tools that write and read the plan, which no subagent gets: the one
@@ -61,17 +61,6 @@ pub(crate) struct Live {
 #[derive(Debug, Default)]
 pub(crate) struct Files(tokio::sync::Mutex<Live>);
 
-/// What an assigned item's subagent may spend.
-#[derive(Debug, Clone, Copy)]
-pub struct Limits {
-    /// Its steps, and how long its turn may run before the item returns
-    /// as timed out.
-    pub subagent: subagent::Limits,
-    /// How long it may say nothing before the orchestrator hears it
-    /// stalled; `None` never.
-    pub stall: Option<Duration>,
-}
-
 /// What the work tools share; cheap to clone. Only the orchestrator's
 /// tools hold it: what a subagent's tool holds must not hold `Subagents`,
 /// which holds the subagent.
@@ -80,12 +69,13 @@ pub struct Work(Arc<Shared>);
 
 struct Shared {
     spawner: Spawner,
-    /// How long an assigned subagent may say nothing; see [`Limits`].
-    stall: Option<Duration>,
     files: Arc<Files>,
 }
 
 impl Work {
+    /// `limits` are what an assigned item's subagent may spend: the item
+    /// returns as timed out past its time, and the orchestrator hears it
+    /// stalled once it has said nothing for long enough.
     pub fn new(
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
@@ -93,8 +83,7 @@ impl Work {
         limits: Limits,
     ) -> Self {
         Self(Arc::new(Shared {
-            spawner: Spawner::new(provider, tools, subagents, limits.subagent),
-            stall: limits.stall,
+            spawner: Spawner::new(provider, tools, subagents, limits),
             files: Arc::default(),
         }))
     }
@@ -325,10 +314,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) const LIMITS: Limits = Limits {
-        subagent: subagent::Limits {
-            max_steps: 10,
-            timeout: None,
-        },
+        max_steps: 10,
+        timeout: None,
         stall: None,
     };
 

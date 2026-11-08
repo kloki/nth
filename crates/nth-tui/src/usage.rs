@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn totals_then_per_model_then_per_turn() {
         let mut ledger = Ledger::default();
-        let mine = ledger.begin("glm", None);
+        let mine = ledger.open(nth_session::Spend::new("glm", None));
         ledger.add(
             mine,
             Usage {

@@ -27,6 +27,17 @@ pub struct TaskNotice {
     pub outcome: TaskOutcome,
 }
 
+/// A subagent whose turn has said nothing for `quiet`, though it still
+/// runs: no reply, no tool call. Told again while it stays silent, so the
+/// model can decide to stop it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStall {
+    pub id: TaskId,
+    pub agent: String,
+    pub description: String,
+    pub quiet: Duration,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskOutcome {
     /// The subagent's last answer.
@@ -252,6 +263,18 @@ pub(super) fn render_task(task: &TaskNotice) -> String {
         "<task {attributes}>\n<{tag}>\n{}\n</{tag}>\n</task>",
         self::body(body.1.trim(), "task"),
         tag = body.0
+    )
+}
+
+/// An empty `<task>` element whose state is `stalled`, with how long its
+/// subagent has been silent.
+pub(super) fn render_task_stall(stall: &TaskStall) -> String {
+    format!(
+        "<task id=\"{}\" agent=\"{}\" description=\"{}\" state=\"stalled\" quiet=\"{}\"/>",
+        stall.id,
+        attribute(&stall.agent),
+        attribute(&stall.description),
+        quiet_text(stall.quiet),
     )
 }
 

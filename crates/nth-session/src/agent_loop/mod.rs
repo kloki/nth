@@ -363,6 +363,40 @@ pub(crate) fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
     sent
 }
 
+/// Answers every call of the last reply that has no result yet as
+/// interrupted, as the loop does when a turn is cancelled, for a turn that
+/// was dropped instead: a call left unanswered would make the next request
+/// invalid.
+pub(crate) fn settle_unanswered(messages: &mut Vec<Message>) {
+    let Some(at) = messages
+        .iter()
+        .rposition(|message| matches!(message, Message::Assistant(_)))
+    else {
+        return;
+    };
+    let Message::Assistant(reply) = &messages[at] else {
+        return;
+    };
+    let answered: Vec<&str> = messages[at + 1..]
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let unanswered: Vec<Message> = reply
+        .tool_calls
+        .iter()
+        .filter(|call| !answered.contains(&call.id.as_str()))
+        .map(|call| Message::ToolResult {
+            call_id: call.id.clone(),
+            content: failed(nth_protocol::INTERRUPTED),
+            images: Vec::new(),
+        })
+        .collect();
+    messages.extend(unanswered);
+}
+
 /// Sends `event`, waiting for room on the channel until `cancel` fires: a
 /// front-end that stopped reading must not keep a turn from answering its
 /// cancel. Once cancelled the event still goes if there is room, so a
