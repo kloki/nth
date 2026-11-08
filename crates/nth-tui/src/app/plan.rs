@@ -93,9 +93,10 @@ impl PlanTab {
     }
 
     /// What the model gets for `/approve`.
-    pub(super) fn approval(&self) -> String {
+    pub(super) fn approval(&self, instructions: &str) -> String {
+        let command = Queued::Approve(instructions.to_string()).label();
         format!(
-            "/approve{}{}\n</system-reminder>",
+            "{command}{}{}\n</system-reminder>",
             REMINDER_OPEN,
             plan::approved(&self.path)
         )
@@ -125,21 +126,24 @@ impl App {
     /// `/approve`: act on the plan. The mode switches now and the chat
     /// shows; the approval runs as its own turn, queued behind one that is
     /// running.
-    pub(super) fn approve(&mut self) {
+    pub(super) fn approve(&mut self, instructions: String) {
         if !self.plan.view.exists() {
             self.hint = Some("no plan to approve".into());
+            if !instructions.is_empty() {
+                self.prompt.set(&Queued::Approve(instructions).label());
+            }
             return;
         }
         self.set_mode(Mode::Act);
         self.plan.view.approve();
         // Acting happens in the chat.
         self.content.select(0);
-        self.send(Queued::Approve);
+        self.send(Queued::Approve(instructions));
     }
 }
 
 /// The approval goes to the model inside a reminder, so the chat shows only
-/// `/approve`, live and when the session is resumed.
+/// the command and its instructions, live and when the session is resumed.
 const REMINDER_OPEN: &str = "\n\n<system-reminder>\n";
 
 #[cfg(test)]
@@ -290,6 +294,18 @@ mod tests {
         assert!(!app.is_busy());
     }
 
+    #[test]
+    fn approval_instructions_without_a_plan_return_to_the_prompt() {
+        let (mut app, _dir) = app_with_plan_dir();
+        app.prompt
+            .insert_str("/approve Use SQLite\nand skip migration");
+        app.apply(Action::Submit);
+
+        assert_eq!(app.hint.as_deref(), Some("no plan to approve"));
+        assert_eq!(app.prompt.text(), "/approve Use SQLite\nand skip migration");
+        assert!(!app.is_busy());
+    }
+
     #[tokio::test]
     async fn approve_acts_on_the_plan_and_clears_its_marks() {
         let (mut app, _dir) = app_with_plan_dir();
@@ -327,5 +343,59 @@ mod tests {
             app.chat.transcript.entries().next(),
             Some(&Entry::User("/approve".into()))
         );
+    }
+
+    #[tokio::test]
+    async fn approval_instructions_reach_the_model_and_replay_in_chat() {
+        let (mut app, _dir) = app_with_plan_dir();
+        write_plan(&app, "# Plan\n");
+        app.plan.read();
+        read(&mut app).await;
+        app.prompt
+            .insert_str("/approve Use SQLite instead\nof Postgres");
+        app.apply(Action::Submit);
+        app.interrupt();
+        let ended = app.turn.join().await.expect("ends");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session");
+        let Some(Message::User(sent)) = session.messages.last() else {
+            panic!("approval sent")
+        };
+        assert!(sent.starts_with("/approve Use SQLite instead\nof Postgres\n\n<system-reminder>"));
+        assert!(sent.contains("override conflicting details in the plan"));
+        let expected = Entry::User("/approve Use SQLite instead\nof Postgres".into());
+        assert_eq!(app.chat.transcript.entries().next(), Some(&expected));
+        let replay = crate::chat::Transcript::replay(app.cwd.clone(), &session.messages);
+        assert_eq!(replay.entries().next(), Some(&expected));
+    }
+
+    #[tokio::test]
+    async fn approval_with_instructions_waits_for_the_running_turn() {
+        let (mut app, _dir) = app_with_plan_dir();
+        app.provider = Arc::new(Scripted::default());
+        write_plan(&app, "# Plan\n");
+        app.plan.read();
+        read(&mut app).await;
+        app.prompt.insert_str("first");
+        app.apply(Action::Submit);
+        app.prompt.insert_str("/approve Skip the migration");
+        app.apply(Action::Submit);
+        assert_eq!(
+            app.queue.front(),
+            Some(&Queued::Approve("Skip the migration".into()))
+        );
+        let ended = app.turn.join().await.expect("first ends");
+        app.end_turn(ended);
+        assert!(app.is_busy());
+        assert!(
+            app.chat
+                .transcript
+                .entries()
+                .any(|entry| entry == &Entry::User("/approve Skip the migration".into()))
+        );
+        let ended = app.turn.join().await.expect("approval ends");
+        app.end_turn(ended);
+        assert!(app.session.as_ref().unwrap().messages.iter().any(|message| matches!(message, Message::User(text) if text.starts_with("/approve Skip the migration\n\n<system-reminder>"))));
     }
 }
