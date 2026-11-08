@@ -14,6 +14,7 @@ mod dirs;
 mod editor;
 mod file;
 mod files;
+mod finished;
 mod flash;
 mod git;
 mod hint;
@@ -56,6 +57,7 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 use diagnostics::lsp_changed;
+use finished::Finished;
 use futures::StreamExt;
 use input::Input;
 use job::Job;
@@ -94,7 +96,7 @@ use crate::{
     chat::Chat,
     command::Command,
     context::ContextView,
-    diagnostics::{Diagnostics, Program},
+    diagnostics::Diagnostics,
     file::FileRead,
     git::{GitStatus, Pr},
     header, hero,
@@ -408,27 +410,9 @@ enum Step {
     NoticesDue,
     HintExpired,
     TurnEnded(Box<Result<Ended, JoinError>>),
-    Indexed(Result<Vec<String>, JoinError>),
-    GitLoaded(Result<Result<Option<GitStatus>, String>, JoinError>),
-    PrLoaded(Result<Option<Pr>, JoinError>),
-    LlmsListed(Result<Result<Listing, BoxError>, JoinError>),
+    Job(Finished),
     LoginUrl(String),
-    Connected(Result<Result<nth_auth::Account, nth_auth::Error>, JoinError>),
-    SessionsListed(Result<Result<Vec<Summary>, store::Error>, JoinError>),
-    SessionLoaded(Result<anyhow::Result<session_picker::Loaded>, JoinError>),
-    HistorySaved(Result<std::io::Result<()>, JoinError>),
-    SessionSaved(Result<Result<(), store::Error>, JoinError>),
-    LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     EditorClosed(Result<std::io::Result<std::process::ExitStatus>, JoinError>),
-    PlanRead(Result<Option<String>, JoinError>),
-    WorkRead(Result<(PathBuf, Option<nth_session::work::Plan>), JoinError>),
-    ServersFound(Result<Vec<ServerInfo>, JoinError>),
-    ToolsFound(Result<Result<Vec<(String, ToolUse)>, store::Error>, JoinError>),
-    FormattersFound(Result<Vec<FormatterStatus>, JoinError>),
-    RtkFound(Result<Option<PathBuf>, JoinError>),
-    BrowserFound(Result<Option<PathBuf>, JoinError>),
-    TeaFound(Result<Option<PathBuf>, JoinError>),
-    GhFound(Result<Option<PathBuf>, JoinError>),
     /// Whether the servers' states changed; `false` when the sender is gone.
     LspChanged(bool),
     LspUsageChanged(bool),
@@ -706,26 +690,26 @@ impl App {
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
                 ended = self.turn.join() => Step::TurnEnded(Box::new(ended)),
-                files = self.indexing.join() => Step::Indexed(files),
-                status = self.git_loading.join() => Step::GitLoaded(status),
-                pr = self.pr_loading.join() => Step::PrLoaded(pr),
-                llms = self.llm_listing.join() => Step::LlmsListed(llms),
+                files = self.indexing.join() => Step::Job(Finished::Indexed(files)),
+                status = self.git_loading.join() => Step::Job(Finished::GitLoaded(status)),
+                pr = self.pr_loading.join() => Step::Job(Finished::PrLoaded(pr)),
+                llms = self.llm_listing.join() => Step::Job(Finished::LlmsListed(llms)),
                 Some(url) = login_url(&mut self.connect_url) => Step::LoginUrl(url),
-                account = self.login.join() => Step::Connected(account),
-                sessions = self.session_listing.join() => Step::SessionsListed(sessions),
-                session = self.session_loading.join() => Step::SessionLoaded(session),
-                saved = self.history_saving.join() => Step::HistorySaved(saved),
-                saved = self.session_saving.join() => Step::SessionSaved(saved),
-                saved = self.llm_usage_saving.join() => Step::LlmUsageSaved(saved),
-                plan = self.plan.next() => Step::PlanRead(plan),
-                plan = self.work.next() => Step::WorkRead(plan),
-                servers = self.servers_lookup.join() => Step::ServersFound(servers),
-                tools = self.tools_lookup.join() => Step::ToolsFound(tools),
-                formatters = self.formatters_lookup.join() => Step::FormattersFound(formatters),
-                rtk = self.rtk_lookup.join() => Step::RtkFound(rtk),
-                browser = self.browser_lookup.join() => Step::BrowserFound(browser),
-                tea = self.tea_lookup.join() => Step::TeaFound(tea),
-                gh = self.gh_lookup.join() => Step::GhFound(gh),
+                account = self.login.join() => Step::Job(Finished::Connected(account)),
+                sessions = self.session_listing.join() => Step::Job(Finished::SessionsListed(sessions)),
+                session = self.session_loading.join() => Step::Job(Finished::SessionLoaded(session)),
+                saved = self.history_saving.join() => Step::Job(Finished::HistorySaved(saved)),
+                saved = self.session_saving.join() => Step::Job(Finished::SessionSaved(saved)),
+                saved = self.llm_usage_saving.join() => Step::Job(Finished::LlmUsageSaved(saved)),
+                plan = self.plan.next() => Step::Job(Finished::PlanRead(plan)),
+                plan = self.work.next() => Step::Job(Finished::WorkRead(plan)),
+                servers = self.servers_lookup.join() => Step::Job(Finished::ServersFound(servers)),
+                tools = self.tools_lookup.join() => Step::Job(Finished::ToolsFound(tools)),
+                formatters = self.formatters_lookup.join() => Step::Job(Finished::FormattersFound(formatters)),
+                rtk = self.rtk_lookup.join() => Step::Job(Finished::RtkFound(rtk)),
+                browser = self.browser_lookup.join() => Step::Job(Finished::BrowserFound(browser)),
+                tea = self.tea_lookup.join() => Step::Job(Finished::TeaFound(tea)),
+                gh = self.gh_lookup.join() => Step::Job(Finished::GhFound(gh)),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
@@ -757,72 +741,10 @@ impl App {
                     Ok(ended) => self.end_turn(ended),
                     Err(e) => self.turn_task_failed(e),
                 },
-                Step::Indexed(files) => self.indexed(files.context("listing files failed")?),
-                Step::GitLoaded(status) => {
-                    self.git_loaded(status.context("reading git status failed")?)
-                }
-                Step::PrLoaded(pr) => {
-                    self.pr_loaded(pr.context("reading the pull request failed")?)
-                }
-                Step::LlmsListed(llms) => self.llms_listed(llms.context("listing LLMs failed")?),
+                Step::Job(finished) => self.job_finished(finished),
                 Step::LoginUrl(url) => self.login_url(url),
-                Step::Connected(account) => self.connected(account.context("signing in failed")?),
-                Step::SessionsListed(sessions) => {
-                    self.sessions_listed(sessions.context("listing sessions failed")?)
-                }
-                Step::SessionLoaded(session) => {
-                    self.session_loaded(session.context("loading the session failed")?)
-                }
-                Step::HistorySaved(saved) => {
-                    self.history_saved(saved.context("saving prompt history failed")?)
-                }
-                Step::SessionSaved(saved) => {
-                    self.session_saved(saved.context("saving the session failed")?)
-                }
-                Step::LlmUsageSaved(saved) => {
-                    self.llm_usage_saved(saved.context("saving model usage failed")?)
-                }
                 Step::EditorClosed(ended) => {
                     self.editor_closed(terminal, &mut input, ended).await?
-                }
-                Step::PlanRead(plan) => self.plan_read(plan.context("reading the plan failed")?),
-                Step::WorkRead(plan) => {
-                    self.work_read(plan.context("reading the work plan failed")?)
-                }
-                Step::ServersFound(servers) => {
-                    self.diagnostics.servers = Some(servers.context("finding servers failed")?)
-                }
-                Step::ToolsFound(tools) => {
-                    self.tools_found(tools.context("reading tool usage failed")?)
-                }
-                Step::FormattersFound(formatters) => {
-                    self.diagnostics.formatters =
-                        Some(formatters.context("checking formatters failed")?)
-                }
-                Step::RtkFound(rtk) => {
-                    self.diagnostics.rtk = Some(match rtk.context("finding rtk failed")? {
-                        Some(program) => Program::Found(program),
-                        None => Program::Missing,
-                    });
-                }
-                Step::BrowserFound(browser) => {
-                    self.diagnostics.browser =
-                        Some(match browser.context("finding agent-browser failed")? {
-                            Some(program) => Program::Found(program),
-                            None => Program::Missing,
-                        });
-                }
-                Step::TeaFound(tea) => {
-                    self.diagnostics.tea = Some(match tea.context("finding tea failed")? {
-                        Some(program) => Program::Found(program),
-                        None => Program::Missing,
-                    });
-                }
-                Step::GhFound(gh) => {
-                    self.diagnostics.gh = Some(match gh.context("finding gh failed")? {
-                        Some(program) => Program::Found(program),
-                        None => Program::Missing,
-                    });
                 }
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 Step::LspUsageChanged(changed) => {
