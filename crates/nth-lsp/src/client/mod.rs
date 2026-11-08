@@ -35,6 +35,10 @@ use crate::{
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_millis(45_000);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_000);
+/// The most a touch waits for the task to hand its text to the server. The
+/// task only writes, never waits for an answer, so running out means the
+/// connection is wedged: a server that stopped reading its stdin.
+pub(crate) const TOUCH_TIMEOUT: Duration = Duration::from_millis(10_000);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -172,6 +176,8 @@ pub struct Client {
     /// The server answers `textDocument/diagnostic` without registering.
     pull: bool,
     stderr: Stderr,
+    /// Stops the task, which kills the server.
+    cancel: CancellationToken,
 }
 
 impl Client {
@@ -238,7 +244,7 @@ impl Client {
             initialization.clone(),
             store_tx,
         );
-        tokio::spawn(task.run(reader, commands_rx, cancel));
+        tokio::spawn(task.run(reader, commands_rx, cancel.clone()));
 
         let mut client = Self {
             id: id.to_string(),
@@ -248,6 +254,7 @@ impl Client {
             store,
             pull: false,
             stderr: Stderr::default(),
+            cancel,
         };
         let root_uri = uri::from_path(root);
         let params = json!({
@@ -310,6 +317,12 @@ impl Client {
         self.pid
     }
 
+    /// Stops the task and kills the server without asking it to leave, for
+    /// one that stopped reading and would never hear the request.
+    pub fn kill(&self) {
+        self.cancel.cancel();
+    }
+
     /// The task is gone: the server exited or the connection broke.
     pub fn is_closed(&self) -> bool {
         self.commands.is_closed()
@@ -353,17 +366,24 @@ impl Client {
 
     /// Tells the server about the file's current text: `didOpen` the first
     /// time, `didChange` with the next version after that. Returns the
-    /// version sent.
+    /// version sent, or [`Error::Timeout`] after [`TOUCH_TIMEOUT`].
     pub async fn open_or_change(&self, path: &Path) -> Result<i32, Error> {
         let text = tokio::fs::read_to_string(path).await?;
         let (reply, rx) = oneshot::channel();
-        self.send(Command::Touch {
-            path: path.to_path_buf(),
-            text,
-            reply,
-        })
-        .await?;
-        rx.await.map_err(|_| Error::Closed)?
+        // The send too: a wedged task stops taking commands once its queue
+        // is full.
+        let touch = async {
+            self.send(Command::Touch {
+                path: path.to_path_buf(),
+                text,
+                reply,
+            })
+            .await?;
+            rx.await.map_err(|_| Error::Closed)?
+        };
+        tokio::time::timeout(TOUCH_TIMEOUT, touch)
+            .await
+            .map_err(|_| Error::Timeout("touch"))?
     }
 
     /// Everything this server has reported, by file.

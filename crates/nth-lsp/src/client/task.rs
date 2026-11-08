@@ -104,16 +104,24 @@ impl<W: AsyncWrite + Unpin> Task<W> {
     ) {
         let mut incoming = std::pin::pin!(messages(reader));
         loop {
+            let step = async {
+                tokio::select! {
+                    command = commands.recv() => match command {
+                        Some(command) => self.command(command).await,
+                        None => Err(Error::Closed),
+                    },
+                    body = incoming.next() => match body {
+                        Some(body) => self.incoming(&body).await,
+                        None => Err(Error::Closed),
+                    },
+                }
+            };
+            // Around the handling too: a write to a server that stopped
+            // reading never ends, and only stopping frees it.
             let step = tokio::select! {
+                biased;
                 _ = cancel.cancelled() => break,
-                command = commands.recv() => match command {
-                    Some(command) => self.command(command).await,
-                    None => break,
-                },
-                body = incoming.next() => match body {
-                    Some(body) => self.incoming(&body).await,
-                    None => break,
-                },
+                step = step => step,
             };
             if step.is_err() {
                 break;

@@ -266,6 +266,7 @@ async fn setup(config: &mut Config, paths: &Paths, mode: Mode) -> Result<(Sessio
     session.mode = mode;
     session.effort = effort;
     session.max_steps = config.session.max_steps;
+    session.tool_timeout = config.session.tool_timeout();
     let picked = |(model, effort): (String, Effort)| SubagentLlm {
         llm: Llm {
             model: providers.qualify(&model),

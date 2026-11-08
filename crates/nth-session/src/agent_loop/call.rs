@@ -1,7 +1,12 @@
 //! Running one tool call: its arguments parsed and repaired, its output
 //! streamed, and its result or why it failed.
 
-use nth_protocol::{Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed};
+use std::time::Duration;
+
+use nth_protocol::{
+    Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed, timed_out,
+    tool_names::UNTIMED,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +18,9 @@ use super::{emit, repair::repair};
 /// `tool` means the model named one that does not exist. Cancelling
 /// `cancel` stops the tool and fails the call with [`INTERRUPTED`],
 /// finished event included, so a front-end that keeps up sees every started
-/// call end; one whose channel is full misses it (see [`emit`]).
+/// call end; one whose channel is full misses it (see [`emit`]). A call
+/// still running after `ctx.tool_timeout` is stopped the same way and fails
+/// as [`timed_out`], unless the tool is one of [`UNTIMED`].
 pub(crate) async fn run_call(
     tool: Option<&dyn Tool>,
     ctx: &ToolContext,
@@ -25,6 +32,9 @@ pub(crate) async fn run_call(
     // Where an earlier step moved the session, to tell whether this call
     // moves it again.
     let moved = ctx.workdir.moved_to();
+    let ceiling = ctx
+        .tool_timeout
+        .filter(|_| !UNTIMED.contains(&call.name.as_str()));
     // Output goes straight onto the event channel from inside this future,
     // so it is dropped with the call and always lands before ToolFinished.
     let ctx = ctx.for_call(
@@ -45,6 +55,8 @@ pub(crate) async fn run_call(
         // Dropping the tool's future stops it; bash kills its process group.
         _ = cancel.cancelled() => Err(INTERRUPTED.to_string()),
         result = run => result,
+        // After the tool, so a result ready as the ceiling passes is kept.
+        ceiling = deadline(ceiling) => Err(timed_out(ceiling)),
     };
     // This call moved it: the front-ends follow at once, not when the turn
     // ends.
@@ -73,6 +85,17 @@ pub(crate) async fn run_call(
         call_id: call.id.clone(),
         content,
         images,
+    }
+}
+
+/// Resolves with `ceiling` once it has passed; never without one.
+async fn deadline(ceiling: Option<Duration>) -> Duration {
+    match ceiling {
+        Some(ceiling) => {
+            tokio::time::sleep(ceiling).await;
+            ceiling
+        }
+        None => std::future::pending().await,
     }
 }
 
@@ -120,13 +143,35 @@ mod tests {
         }
     }
 
-    /// Asks one question and returns the first label you picked.
+    /// Never finishes, nor cancels anything.
+    struct Hang;
+
+    impl Tool for Hang {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "hang",
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        fn call<'a>(
+            &'a self,
+            _: serde_json::Value,
+            _: &'a ToolContext,
+        ) -> BoxFuture<'a, ToolResult> {
+            std::future::pending().boxed()
+        }
+    }
+
+    /// Asks one question and returns the first label you picked, under the
+    /// question tool's name.
     struct Pick;
 
     impl Tool for Pick {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "pick",
+                name: "question",
                 description: String::new(),
                 parameters: serde_json::json!({}),
             }
@@ -212,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn tools_ask_under_their_own_call_id() {
         let provider = Scripted::new(vec![
-            vec![StreamEvent::ToolCall(call("7", "pick", ""))],
+            vec![StreamEvent::ToolCall(call("7", "question", ""))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Pick)];
@@ -256,6 +301,77 @@ mod tests {
             Message::ToolResult {
                 call_id: "7".into(),
                 content: "for 7".into(),
+                images: Vec::new(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_past_the_ceiling_is_answered_as_timed_out() {
+        let raw = call("1", "hang", "");
+        let (tx, mut rx) = mpsc::channel(16);
+        let ceiling = Duration::from_millis(10);
+        let ctx = ToolContext {
+            tool_timeout: Some(ceiling),
+            ..ToolContext::new(".".into())
+        };
+
+        let answer = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_call(Some(&Hang), &ctx, &raw, &tx, &CancellationToken::new()),
+        )
+        .await
+        .expect("the ceiling stops the call");
+
+        assert_eq!(
+            answer,
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: failed(&timed_out(ceiling)),
+                images: Vec::new(),
+            }
+        );
+        drop(tx);
+        let mut finished = None;
+        while let Some(event) = rx.recv().await {
+            if let Event::ToolFinished { result, .. } = event {
+                finished = Some(result);
+            }
+        }
+        assert_eq!(finished, Some(Err(timed_out(ceiling))));
+    }
+
+    #[tokio::test]
+    async fn a_question_is_never_timed() {
+        let raw = call("1", "question", "");
+        let (asks, mut asked) = mpsc::channel(1);
+        let ctx = ToolContext {
+            asker: Asker::new(asks),
+            tool_timeout: Some(Duration::from_millis(10)),
+            ..ToolContext::new(".".into())
+        };
+        let (tx, _rx) = mpsc::channel(16);
+        // Answered well past the ceiling, as a person would be.
+        let answering = tokio::spawn(async move {
+            let ask = asked.recv().await.expect("asks");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let answer = Answer {
+                picked: vec!["this one".into()],
+                typed: None,
+            };
+            ask.reply
+                .send(Reply::Answered(vec![answer]))
+                .expect("tool waits");
+        });
+
+        let answer = run_call(Some(&Pick), &ctx, &raw, &tx, &CancellationToken::new()).await;
+        answering.await.expect("answers");
+
+        assert_eq!(
+            answer,
+            Message::ToolResult {
+                call_id: "1".into(),
+                content: "this one".into(),
                 images: Vec::new(),
             }
         );
