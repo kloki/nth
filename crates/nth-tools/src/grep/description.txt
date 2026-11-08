@@ -4,6 +4,7 @@
 - Set literal to search for exact text and caseSensitive to false for case-insensitive matching.
 - Filter files by pattern with the include parameter (eg. "*.js", "*.{ts,tsx}")
 - Returns file paths and line numbers with matching lines, most recently modified files first
-- Skips binary files and files ignored by .gitignore
+- Skips binary files, files larger than 10 MiB and files ignored by .gitignore
+- Stops after searching 50,000 files or counting 10,000 matches, and says so; narrow the path or pattern then
 - Use this tool when you need to find files containing specific patterns
 - If you need to count the number of matches within files, use the bash tool with `rg` (ripgrep) directly. Do NOT use `grep`.
