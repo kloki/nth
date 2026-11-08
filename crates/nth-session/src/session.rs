@@ -204,7 +204,7 @@ impl Session {
         if let Ok(store) = self.curios().store() {
             self.curio_root = Some(store.repo_root().to_path_buf());
         }
-        let Some(notices) = self.take_curios(front_end, events).await else {
+        let Some(notices) = self.take_curios(front_end, events, cancel).await else {
             return Ok(());
         };
         self.prepared_turn(
@@ -224,13 +224,14 @@ impl Session {
         &mut self,
         front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
+        cancel: &CancellationToken,
     ) -> Option<String> {
         let curios = self.curios();
         let mut notices = Vec::new();
         for notice in front_end.inbox.take_curios(&self.id.to_string()) {
             if curios.record(&notice) {
                 let text = notice.render();
-                emit(events, Event::Notice(text.clone())).await;
+                emit(events, cancel, Event::Notice(text.clone())).await;
                 notices.push(text);
             }
         }
@@ -548,7 +549,7 @@ impl Session {
         // Notices lead the message, as `split_notices` reads them; feedback
         // is notices alone, with only the reminders after it.
         let (curios, mut text) = match input {
-            TurnInput::Prompt(text) => (self.take_curios(front_end, events).await, text),
+            TurnInput::Prompt(text) => (self.take_curios(front_end, events, cancel).await, text),
             TurnInput::Feedback(notices) => (Some(notices), String::new()),
         };
         let agent = self.primary().map(|agent| agent.name.clone());
@@ -568,7 +569,7 @@ impl Session {
         let changes = self.watch.changes(self.loaded()).await;
         let changed = instructions_notice(&changes);
         if let Some(changed) = &changed {
-            emit(events, Event::Notice(changed.clone())).await;
+            emit(events, cancel, Event::Notice(changed.clone())).await;
         }
         let notices = [changed, curios].into_iter().flatten().collect::<Vec<_>>();
         self.last_turn_mode = match agent {

@@ -359,7 +359,21 @@ pub(crate) fn max_steps_messages(messages: &[Message]) -> Vec<Message> {
     sent
 }
 
-pub(crate) async fn emit(events: &mpsc::Sender<Event>, event: Event) {
+/// Sends `event`, waiting for room on the channel until `cancel` fires: a
+/// front-end that stopped reading must not keep a turn from answering its
+/// cancel. Once cancelled the event still goes if there is room, so a
+/// front-end that keeps up sees every started call end.
+pub(crate) async fn emit(events: &mpsc::Sender<Event>, cancel: &CancellationToken, event: Event) {
     // No listener is fine: the turn still completes and lands in `messages`.
-    let _ = events.send(event).await;
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            let _ = events.try_send(event);
+        }
+        permit = events.reserve() => {
+            if let Ok(permit) = permit {
+                permit.send(event);
+            }
+        }
+    }
 }

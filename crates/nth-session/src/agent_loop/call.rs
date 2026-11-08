@@ -12,7 +12,8 @@ use super::{emit, repair::repair};
 /// it: the tool's text, or why it failed, with the images it showed. No
 /// `tool` means the model named one that does not exist. Cancelling
 /// `cancel` stops the tool and fails the call with [`INTERRUPTED`],
-/// finished event included, so a front-end sees every started call end.
+/// finished event included, so a front-end that keeps up sees every started
+/// call end; one whose channel is full misses it (see [`emit`]).
 pub(crate) async fn run_call(
     tool: Option<&dyn Tool>,
     ctx: &ToolContext,
@@ -20,7 +21,7 @@ pub(crate) async fn run_call(
     events: &mpsc::Sender<Event>,
     cancel: &CancellationToken,
 ) -> Message {
-    emit(events, Event::ToolStarted(call.clone())).await;
+    emit(events, cancel, Event::ToolStarted(call.clone())).await;
     // Where an earlier step moved the session, to tell whether this call
     // moves it again.
     let moved = ctx.workdir.moved_to();
@@ -52,10 +53,11 @@ pub(crate) async fn run_call(
         .moved_to()
         .filter(|cwd| moved.as_ref() != Some(cwd))
     {
-        emit(events, Event::Moved(cwd)).await;
+        emit(events, cancel, Event::Moved(cwd)).await;
     }
     emit(
         events,
+        cancel,
         Event::ToolFinished {
             call: call.clone(),
             result: result.clone(),

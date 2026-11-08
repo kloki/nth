@@ -96,18 +96,18 @@ impl Turn<'_> {
             match event.map_err(Stop::Failed)? {
                 StreamEvent::TextDelta(text) => {
                     reply.text.push_str(&text);
-                    emit(events, Event::TextDelta(text)).await;
+                    emit(events, cancel, Event::TextDelta(text)).await;
                 }
                 StreamEvent::ReasoningDelta(text) => {
                     reply.reasoning.push_str(&text);
-                    emit(events, Event::ReasoningDelta(text)).await;
+                    emit(events, cancel, Event::ReasoningDelta(text)).await;
                 }
                 StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
                 StreamEvent::Usage(usage) => {
                     *last_usage = Some(usage);
                     self.spend.steps += 1;
                     self.spend.tokens += usage;
-                    emit(events, Event::Usage(usage)).await;
+                    emit(events, cancel, Event::Usage(usage)).await;
                 }
             }
         }
@@ -129,7 +129,7 @@ impl Turn<'_> {
     /// Announces a retry and waits out its delay; `false` when cancelled
     /// during the wait, which ends the caller's request.
     pub(crate) async fn wait_to_retry(&self, attempt: u32, delay: Duration) -> bool {
-        emit(self.events, Event::Retry { attempt, delay }).await;
+        emit(self.events, self.cancel, Event::Retry { attempt, delay }).await;
         tokio::select! {
             biased;
             _ = self.cancel.cancelled() => false,
