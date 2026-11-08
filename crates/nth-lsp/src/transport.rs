@@ -6,6 +6,12 @@ use std::io;
 use serde::Serialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// The largest message body read. The body is allocated from the header
+/// before a byte of it arrives, so a garbled or hostile header would
+/// otherwise ask for any amount; real messages, a big crate's workspace
+/// diagnostics included, stay in single-digit megabytes.
+pub const MAX_MESSAGE_BYTES: usize = 64 << 20;
+
 /// Reads one message body. `None` means the stream ended cleanly between
 /// messages; ending inside one is an error.
 pub async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Option<Vec<u8>>> {
@@ -41,6 +47,12 @@ pub async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result
     let length = length.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "message without Content-Length")
     })?;
+    if length > MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Content-Length {length} is past the {MAX_MESSAGE_BYTES} byte cap"),
+        ));
+    }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).await?;
     Ok(Some(body))
@@ -97,5 +109,17 @@ mod tests {
         assert!(read_message(&mut read).await.is_err());
         let mut read = BufReader::new(&b"Content-Length: 10\r\n"[..]);
         assert!(read_message(&mut read).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_message_past_the_cap_closes_the_connection() {
+        let mut read = BufReader::new(&b"Content-Length: 99999999999\r\n\r\n{}"[..]);
+        let error = read_message(&mut read).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+
+        let past_cap = format!("Content-Length: {}\r\n\r\n{{}}", MAX_MESSAGE_BYTES + 1);
+        let mut read = BufReader::new(past_cap.as_bytes());
+        let error = read_message(&mut read).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
 }
