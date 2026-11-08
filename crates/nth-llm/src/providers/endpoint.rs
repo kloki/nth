@@ -14,7 +14,7 @@ use super::{Error, chatgpt, images, listing};
 use crate::{
     auth::{Auth, Credentials},
     catalog::{self, Catalog, Snapshot, Wire},
-    chat_completions, messages, responses,
+    chat_completions, messages, responses, stream,
 };
 
 /// An endpoint that can sign its requests: a configured one whose key is
@@ -223,8 +223,12 @@ impl Endpoint {
         request: Request<'_>,
         catalog: &Snapshot,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        // A ChatGPT login that cannot refresh fails here, for good.
-        let auth = self.auth().await?;
+        // A ChatGPT login that cannot refresh fails here, retried only
+        // when the token server, not the login, is what failed.
+        let auth = self
+            .auth()
+            .await
+            .map_err(|e| stream::boxed(stream::Error::Auth(e)))?;
         let catalog = catalog.get().await;
         let catalog = catalog.as_deref();
         let (wire, known) = self.wire(catalog, request.model);

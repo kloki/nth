@@ -615,6 +615,128 @@ mod tests {
         );
     }
 
+    /// Providers whose one endpoint, ChatGPT at `base_url`, holds a login
+    /// whose token must be refreshed at `issuer` first, kept in the temp dir
+    /// handed back with them.
+    async fn refreshing(issuer: &str, base_url: String) -> (tempfile::TempDir, Providers) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let store = nth_auth::Store::at(dir.path().join("auth.json"));
+        let login = nth_auth::ChatGpt::with_issuer(store.clone(), issuer, 0).expect("a client");
+        connect(&store).await;
+        let mut auth = store
+            .oauth(nth_auth::ChatGpt::ID)
+            .await
+            .expect("readable")
+            .expect("connected");
+        auth.expires = 0;
+        store
+            .save(nth_auth::ChatGpt::ID, &auth)
+            .await
+            .expect("saved");
+        let providers = Providers::build(
+            vec![EndpointConfig {
+                base_url,
+                ..EndpointConfig::chatgpt(login)
+            }],
+            Vec::new(),
+            "chatgpt/gpt-5.5",
+            reqwest::Client::new(),
+            openai(),
+        )
+        .expect("connected");
+        (dir, providers)
+    }
+
+    fn to_chatgpt() -> Request<'static> {
+        Request {
+            model: "chatgpt/gpt-5.5",
+            session_id: "ses_1",
+            parent_session_id: None,
+            effort: Default::default(),
+            messages: &[],
+            tools: &[],
+        }
+    }
+
+    /// What a ChatGPT request whose token must be refreshed first at
+    /// `issuer` fails with: the error's text, and whether it is retried.
+    /// The request never gets as far as its endpoint, which is not there.
+    async fn refreshed_at(issuer: &str) -> (String, Option<Retry>) {
+        let (_dir, providers) = refreshing(issuer, "http://127.0.0.1:1".into()).await;
+        let error = providers.stream(to_chatgpt()).await.err().expect("refused");
+        (error.to_string(), providers.retry(&error))
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_fails_on_the_network_is_retried() {
+        let (message, retry) = refreshed_at(&crate::testing::serve_reset().await).await;
+        assert!(message.starts_with("token request failed:"), "{message}");
+        assert_eq!(retry, Some(Retry { after: None }), "{message}");
+
+        let (url, _) = crate::testing::serve_status(503, b"{}").await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert_eq!(message, "token request answered 503: {}");
+        assert_eq!(retry, Some(Retry { after: None }));
+
+        let (url, _) = crate::testing::serve_status(429, b"{}").await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert_eq!(message, "token request answered 429: {}");
+        assert_eq!(retry, Some(Retry { after: None }), "a rate limit passes");
+    }
+
+    #[tokio::test]
+    async fn a_retried_refresh_signs_the_request_once_it_works() {
+        let (issuer, asked) = crate::testing::serve_many(vec![
+            (503, b"{}"),
+            (
+                200,
+                br#"{"access_token": "fresh", "refresh_token": "refresh-2", "expires_in": 3600}"#,
+            ),
+        ])
+        .await;
+        let (url, head) =
+            crate::testing::serve_once(include_bytes!("../../tests/fixtures/zen_responses.sse"))
+                .await;
+        let (_dir, providers) = refreshing(&issuer, url).await;
+
+        let error = providers.stream(to_chatgpt()).await.err().expect("refused");
+        assert!(providers.retry(&error).is_some(), "{error}");
+        let events: Vec<_> = providers
+            .stream(to_chatgpt())
+            .await
+            .expect("refreshed this time")
+            .collect()
+            .await;
+
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let (head, _) = head.await.expect("a request");
+        let head = head.to_lowercase();
+        assert!(
+            head.lines().any(|l| l == "authorization: bearer fresh"),
+            "{head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_only_you_can_fix_is_never_retried() {
+        let (url, _) = crate::testing::serve_status(400, br#"{"error":"invalid_grant"}"#).await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert_eq!(
+            message,
+            "ChatGPT needs you to sign in again: run /connect or `nth connect`"
+        );
+        assert_eq!(retry, None);
+
+        let (url, _) = crate::testing::serve_status(400, br#"{"error":"invalid_client"}"#).await;
+        let (message, retry) = refreshed_at(&url).await;
+        assert!(
+            message.starts_with("token request answered 400:"),
+            "{message}"
+        );
+        assert_eq!(retry, None);
+    }
+
     #[tokio::test]
     async fn chatgpt_alone_runs_once_connected() {
         let dir = tempfile::tempdir().expect("a temp dir");

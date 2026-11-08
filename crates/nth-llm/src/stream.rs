@@ -53,6 +53,11 @@ pub(crate) enum Error {
         /// upfront. Only chat completions' gateways say so in-stream.
         overflow: bool,
     },
+    /// Signing the request failed before it was sent: a ChatGPT login
+    /// whose token could not be refreshed. Kept whole, so it reads as the
+    /// login says (what to do about it) with its cause behind it.
+    #[error(transparent)]
+    Auth(nth_auth::Error),
     #[error("stream ended before the response was complete")]
     Incomplete,
     #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
@@ -211,11 +216,26 @@ fn retry(error: &Error) -> Option<Retry> {
         Error::Provider {
             retryable: true, ..
         } => Some(Retry { after: None }),
+        Error::Auth(e) if refresh_retryable(e) => Some(Retry { after: None }),
         Error::Http(e) if retryable(e) => Some(Retry { after: None }),
         // The server never answered, or the stream ended or went quiet
         // before the reply did.
         Error::Unanswered | Error::Incomplete | Error::Stalled => Some(Retry { after: None }),
         _ => None,
+    }
+}
+
+/// Whether a sign-in that failed may work if tried again: the token server
+/// could not be reached, was rate limited or failed (a 429 or a 5xx), so
+/// the turn survives a blip. Signing in again, a refusal or a token that
+/// does not check out is for you to fix, which no wait helps.
+fn refresh_retryable(error: &nth_auth::Error) -> bool {
+    match error {
+        nth_auth::Error::Http(e) => retryable(e),
+        nth_auth::Error::Status { status, .. } => {
+            reqwest::StatusCode::from_u16(*status).is_ok_and(transient)
+        }
+        _ => false,
     }
 }
 
