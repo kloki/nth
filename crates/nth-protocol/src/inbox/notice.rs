@@ -15,6 +15,11 @@ use crate::{MonitorEnd, MonitorId};
 /// counted, and the log has them.
 pub const NOTICE_LINES: usize = 50;
 
+/// A monitor line in a notice is cut at this many characters, whatever the
+/// command printed: the log keeps it whole, and the model's context should
+/// not take megabytes from one line.
+pub const NOTICE_LINE_CHARS: usize = 2000;
+
 /// Numbers a subagent for as long as the front-end runs, like a monitor.
 pub type TaskId = u32;
 

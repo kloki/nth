@@ -28,9 +28,9 @@ pub use image::{
     unsupported as image_unsupported,
 };
 pub use inbox::{
-    Inbox, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome, TaskStall, Todo,
-    WorkNotice, WorkOutcome, WorkState, instructions_notice, one_line, quiet_text, split_notices,
-    todo_counts, todo_lines,
+    Inbox, NOTICE_LINE_CHARS, NOTICE_LINES, NoticeSummary, TaskId, TaskNotice, TaskOutcome,
+    TaskStall, Todo, WorkNotice, WorkOutcome, WorkState, instructions_notice, one_line, quiet_text,
+    split_notices, todo_counts, todo_lines,
 };
 pub use message::{AssistantMessage, Message, ToolCall};
 pub use mode::Mode;
