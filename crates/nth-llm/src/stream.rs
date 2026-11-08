@@ -1,10 +1,12 @@
 //! What the three protocols' streams share: the loop that turns a
 //! response's bytes into `StreamEvent`s, one error shape, and which of its
 //! kinds a retry or a compaction fixes. What differs is how a protocol
-//! reads its events into a reply (its `Protocol`) and the error it reports
-//! inside the stream, after the 200 status (its `Payload`).
+//! reads its events into a reply (its `Protocol`), how it reads a refused
+//! request's body (its `Refusal`) and how it classifies the error it
+//! reports inside the stream, after the 200 status, into
+//! [`Error::Provider`].
 
-use std::{collections::VecDeque, marker::PhantomData, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 
 use futures::{Stream, StreamExt, stream::BoxStream};
 use nth_protocol::{BoxError, ContextOverflow, Request, Retry, StreamEvent};
@@ -17,36 +19,8 @@ use crate::{
     sse,
 };
 
-/// A protocol's in-stream error and the policy that reads it. Kept per
-/// protocol, since each names its retryable failures differently: a
-/// chat completions error without a numeric status is not retried, though
-/// the same words from another protocol would be.
-pub(crate) trait Payload: std::error::Error + Send + Sync + 'static {
-    /// A rate limit or a server failure reported after the 200 status.
-    fn retryable(&self) -> bool;
-
-    /// A refusal as too long reported after the 200 status, which is
-    /// compacted for like one refused upfront. Only chat completions'
-    /// gateways say so in-stream.
-    fn context_overflow(&self) -> bool {
-        false
-    }
-
-    /// The message a refused request's body carries, where the protocol
-    /// knows the body's shape; `None` keeps the whole body.
-    fn status_message(_body: &str) -> Option<String> {
-        None
-    }
-
-    /// Whether a refused request's body says waiting cannot help, though
-    /// its status (a 429, say) would otherwise be retried.
-    fn final_refusal(_body: &str) -> bool {
-        false
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error<P: Payload> {
+pub(crate) enum Error {
     #[error("request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("{status}: {message}")]
@@ -66,50 +40,81 @@ pub(crate) enum Error<P: Payload> {
         /// The start of the offending line; see `crate::sse::EXCERPT_CHARS`.
         line: String,
     },
-    /// Transparent, so each protocol keeps the wording of its own.
-    #[error(transparent)]
-    Provider(P),
+    /// An error the provider reported inside its stream, after the 200
+    /// status, classified by the protocol that read it, since each names
+    /// its retryable failures differently.
+    #[error("{message}")]
+    Provider {
+        /// In the wording of the protocol that reported it.
+        message: String,
+        /// A rate limit or a server failure.
+        retryable: bool,
+        /// A refusal as too long, which is compacted for like one refused
+        /// upfront. Only chat completions' gateways say so in-stream.
+        overflow: bool,
+    },
     #[error("stream ended before the response was complete")]
     Incomplete,
     #[error("stream stalled: nothing arrived for {}s", STREAM_IDLE_TIMEOUT.as_secs())]
     Stalled,
     #[error("no response within {}s", RESPONSE_TIMEOUT.as_secs())]
     Unanswered,
-    #[error("response hit the output token limit")]
-    Truncated,
 }
 
-/// One endpoint's route for protocol `P`. Each protocol's `stream` signs
+/// How a protocol reads a refused request's body, where it knows the
+/// body's shape.
+#[derive(Clone, Copy)]
+pub(crate) struct Refusal {
+    /// The message the body carries; `None` keeps the whole body.
+    pub(crate) message: fn(&str) -> Option<String>,
+    /// Whether the body says waiting cannot help, though its status (a
+    /// 429, say) would otherwise be retried.
+    pub(crate) is_final: fn(&str) -> bool,
+}
+
+impl Refusal {
+    /// For a protocol that knows nothing of the body: all of it is the
+    /// message, and only the status decides a retry.
+    pub(crate) const PLAIN: Refusal = Refusal {
+        message: |_| None,
+        is_final: |_| false,
+    };
+}
+
+/// One endpoint's route for one protocol. Each protocol's `stream` signs
 /// the request and sets its body, then hands it to [`send`].
-pub(crate) struct Client<P> {
+pub(crate) struct Client {
     http: reqwest::Client,
     base_url: String,
-    protocol: PhantomData<fn() -> P>,
+    route: &'static str,
 }
 
-impl<P: Protocol> Client<P> {
-    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+impl Client {
+    /// `route` is where the protocol's requests go, under `base_url`.
+    pub(crate) fn new(http: reqwest::Client, base_url: String, route: &'static str) -> Self {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            protocol: PhantomData,
+            route,
         }
     }
 
     /// A request to the protocol's route, not yet signed.
     pub(crate) fn post(&self) -> reqwest::RequestBuilder {
-        self.http.post(format!("{}{}", self.base_url, P::ROUTE))
+        self.http.post(format!("{}{}", self.base_url, self.route))
     }
 }
 
 /// Sends `builder`, signed and with its body set, as `request`'s session,
-/// and streams the reply once the server accepted it.
+/// and streams the reply once the server accepted it; a refusal's body is
+/// read as `refusal` says.
 pub(crate) async fn send<P: Protocol>(
     builder: reqwest::RequestBuilder,
     request: &Request<'_>,
+    refusal: Refusal,
 ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-    let response = send_within::<P::Provider>(builder, request).await?;
-    let response = success::<P::Provider>(response).await?;
+    let response = send_within(builder, request).await?;
+    let response = success(response, refusal).await?;
     let bytes = response
         .bytes_stream()
         .map(|chunk| chunk.map_err(Error::from))
@@ -120,10 +125,10 @@ pub(crate) async fn send<P: Protocol>(
 /// Sends `builder` as `request`'s session, failing as `Unanswered` when
 /// the response's headers take longer than [`RESPONSE_TIMEOUT`]. Only the
 /// headers: the body streams under the idle deadline instead.
-async fn send_within<P: Payload>(
+async fn send_within(
     builder: reqwest::RequestBuilder,
     request: &Request<'_>,
-) -> Result<reqwest::Response, Error<P>> {
+) -> Result<reqwest::Response, Error> {
     let sent = http::session(builder, request).send();
     match tokio::time::timeout(RESPONSE_TIMEOUT, sent).await {
         Ok(response) => response.map_err(Error::from),
@@ -134,7 +139,10 @@ async fn send_within<P: Payload>(
 /// Turns a non-2xx response into the stream's error: the shared
 /// [`ContextOverflow`] marker when the body is a refusal as too long, so
 /// the loop compacts and replays, else the status error it always was.
-async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Response, BoxError> {
+async fn success(
+    response: reqwest::Response,
+    refusal: Refusal,
+) -> Result<reqwest::Response, BoxError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -145,22 +153,23 @@ async fn success<P: Payload>(response: reqwest::Response) -> Result<reqwest::Res
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
-    Err(status_error::<P>(status, body, retry_after))
+    Err(status_error(status, body, retry_after, refusal))
 }
 
 /// A failed response as its stream's error; apart from `success` so the
 /// classification is testable without an HTTP response in hand.
-pub(crate) fn status_error<P: Payload>(
+pub(crate) fn status_error(
     status: reqwest::StatusCode,
     body: String,
     retry_after: Option<Duration>,
+    refusal: Refusal,
 ) -> BoxError {
     if http::context_overflow(status, &body) {
         return Box::new(ContextOverflow);
     }
-    let final_refusal = P::final_refusal(&body);
-    let message = P::status_message(&body).unwrap_or(body);
-    Box::new(Error::<P>::Status {
+    let final_refusal = (refusal.is_final)(&body);
+    let message = (refusal.message)(&body).unwrap_or(body);
+    Box::new(Error::Status {
         status,
         message,
         retry_after,
@@ -171,21 +180,24 @@ pub(crate) fn status_error<P: Payload>(
 /// A stream's error as the session sees it: an in-stream refusal as too
 /// long becomes the shared [`ContextOverflow`] marker, so a gateway that
 /// reports one after the 200 status is compacted like one that refused
-/// upfront. Everything else stays the protocol's error.
-pub(crate) fn boxed<P: Payload>(error: Error<P>) -> BoxError {
-    if let Error::Provider(payload) = &error
-        && payload.context_overflow()
-    {
-        return Box::new(ContextOverflow);
+/// upfront. Everything else stays the stream's error.
+pub(crate) fn boxed(error: Error) -> BoxError {
+    match error {
+        Error::Provider { overflow: true, .. } => Box::new(ContextOverflow),
+        error => Box::new(error),
     }
-    Box::new(error)
 }
 
-/// Whether `error`, one a client of protocol `P` produced, may be retried.
-/// Reads only the error, so whatever fronts the clients answers the same
-/// way; an error of another protocol is none of its business.
-pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
-    match error.downcast_ref::<Error<P>>()? {
+/// Whether `error`, as the session holds it, may be retried: only the
+/// stream's own error ever is, a [`ContextOverflow`] being compacted for
+/// instead. Reads only the error, so whatever fronts the clients answers
+/// the same way for every protocol.
+pub(crate) fn retry_boxed(error: &BoxError) -> Option<Retry> {
+    retry(error.downcast_ref::<Error>()?)
+}
+
+fn retry(error: &Error) -> Option<Retry> {
+    match error {
         // A rate limit or a transient server failure; the server may have
         // said how long to wait.
         Error::Status {
@@ -196,7 +208,9 @@ pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
         } if transient(*status) => Some(Retry {
             after: *retry_after,
         }),
-        Error::Provider(payload) if payload.retryable() => Some(Retry { after: None }),
+        Error::Provider {
+            retryable: true, ..
+        } => Some(Retry { after: None }),
         Error::Http(e) if retryable(e) => Some(Retry { after: None }),
         // The server never answered, or the stream ended or went quiet
         // before the reply did.
@@ -206,7 +220,32 @@ pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
 }
 
 /// What a protocol hands on while it reads its events.
-pub(crate) type Out<P> = VecDeque<Result<StreamEvent, Error<P>>>;
+pub(crate) type Out = VecDeque<Result<StreamEvent, Error>>;
+
+/// Ends a reply cut at the model's output limit. Its text is an answer that
+/// ran long, so it is kept and the turn ends as answered; its tool calls
+/// have partial arguments and must not run, so the caller drops them. The
+/// note tells the model and the user why the reply stops where it does, and
+/// a model whose calls were dropped why nothing ran. It is set apart from
+/// the reply's text, but a reply with none is the note alone, never one
+/// that starts with blank lines.
+pub(crate) fn cut(after_text: bool, calls_dropped: bool, out: &mut Out) {
+    let note = if calls_dropped {
+        CUT_NOTE_WITH_CALLS
+    } else {
+        CUT_NOTE
+    };
+    let note = if after_text {
+        format!("\n\n{note}")
+    } else {
+        note.to_string()
+    };
+    out.push_back(Ok(StreamEvent::TextDelta(note)));
+}
+
+pub(crate) const CUT_NOTE: &str = "[reply cut at the output token limit]";
+pub(crate) const CUT_NOTE_WITH_CALLS: &str =
+    "[reply cut at the output token limit; its tool calls were dropped]";
 
 /// Whether the protocol's closing event arrived and it emitted the end.
 pub(crate) enum Flow {
@@ -217,17 +256,14 @@ pub(crate) enum Flow {
 /// One wire protocol's stream, as the reply it assembles from its events.
 /// A fresh value (`Default`) reads one response.
 pub(crate) trait Protocol: Default + Send + 'static {
-    type Provider: Payload;
     type Event: Send;
-    /// Where requests go, under the endpoint's base URL.
-    const ROUTE: &'static str;
 
     /// One line's events, or the protocol's parse or in-stream error.
-    fn parse(line: &str) -> Result<Vec<Self::Event>, Error<Self::Provider>>;
+    fn parse(line: &str) -> Result<Vec<Self::Event>, Error>;
 
     /// Takes in one event, pushing what goes out; `Done` once the closing
     /// event ended the reply, after pushing its end.
-    fn apply(&mut self, event: Self::Event, out: &mut Out<Self::Provider>) -> Flow;
+    fn apply(&mut self, event: Self::Event, out: &mut Out) -> Flow;
 
     /// Whether the reply's end marker (a finish or stop reason) arrived
     /// though its closing event has not: what the connection loses after
@@ -239,16 +275,14 @@ pub(crate) trait Protocol: Default + Send + 'static {
 
     /// Pushes the end of a reply that is `complete` but never got its
     /// closing event.
-    fn finish(&mut self, _out: &mut Out<Self::Provider>) {}
+    fn finish(&mut self, _out: &mut Out) {}
 }
-
-type Parse<P> = fn(&str) -> Result<Vec<<P as Protocol>::Event>, Error<<P as Protocol>::Provider>>;
 
 struct Driver<P: Protocol, S> {
     bytes: S,
-    parser: sse::Parser<Parse<P>>,
+    parser: sse::Parser<P::Event>,
     reply: P,
-    pending: Out<P::Provider>,
+    pending: Out,
     finished: bool,
 }
 
@@ -256,10 +290,10 @@ struct Driver<P: Protocol, S> {
 /// Text and reasoning go out as they arrive; what the protocol holds back
 /// (tool calls, which may be partial until the reply is complete) goes
 /// out at its end.
-pub(crate) fn events<P, S>(bytes: S) -> impl Stream<Item = Result<StreamEvent, Error<P::Provider>>>
+pub(crate) fn events<P, S>(bytes: S) -> impl Stream<Item = Result<StreamEvent, Error>>
 where
     P: Protocol,
-    S: Stream<Item = Result<bytes::Bytes, Error<P::Provider>>> + Unpin,
+    S: Stream<Item = Result<bytes::Bytes, Error>> + Unpin,
 {
     let driver = Driver::<P, S> {
         bytes,
@@ -320,46 +354,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{serve_silent, serve_status, serve_unfinished};
+    use crate::testing::{retry, serve_silent, serve_status, serve_unfinished};
 
     /// A protocol with no events of its own, for what every protocol
     /// shares: how a refused request and a failed stream are classified.
     #[derive(Default)]
     struct Null;
 
-    #[derive(Debug, thiserror::Error)]
-    #[error("fault {kind}")]
-    struct Fault {
-        kind: &'static str,
-    }
-
-    impl Payload for Fault {
-        fn retryable(&self) -> bool {
-            self.kind == "busy"
-        }
-    }
-
     impl Protocol for Null {
-        type Provider = Fault;
         type Event = ();
-        const ROUTE: &'static str = "/null";
 
-        fn parse(_line: &str) -> Result<Vec<()>, Error<Fault>> {
+        fn parse(_line: &str) -> Result<Vec<()>, Error> {
             Ok(Vec::new())
         }
 
-        fn apply(&mut self, _event: (), _out: &mut Out<Fault>) -> Flow {
+        fn apply(&mut self, _event: (), _out: &mut Out) -> Flow {
             Flow::Continue
         }
     }
 
-    fn retry(error: &BoxError) -> Option<Retry> {
-        super::retry::<Fault>(error)
-    }
-
     /// The error a request to `url` fails with.
     async fn failed(url: String) -> BoxError {
-        let client = Client::<Null>::new(reqwest::Client::new(), url);
+        let client = Client::new(reqwest::Client::new(), url, "/null");
         let request = Request {
             model: "test-model",
             session_id: "ses_test",
@@ -368,7 +384,7 @@ mod tests {
             messages: &[],
             tools: &[],
         };
-        send::<Null>(client.post(), &request)
+        send::<Null>(client.post(), &request, Refusal::PLAIN)
             .await
             .err()
             .expect("failed")
@@ -394,10 +410,7 @@ mod tests {
         .expect("answered within the deadline");
 
         assert!(
-            matches!(
-                error.downcast_ref::<Error<Fault>>(),
-                Some(Error::Unanswered)
-            ),
+            matches!(error.downcast_ref::<Error>(), Some(Error::Unanswered)),
             "{error}"
         );
         assert_eq!(error.to_string(), "no response within 300s");
@@ -419,7 +432,7 @@ mod tests {
         tokio::time::pause();
         let start = tokio::time::Instant::now();
         // Free on the paused clock; fails a regression instead of hanging.
-        let error = tokio::time::timeout(ERROR_BODY_TIMEOUT * 2, success::<Fault>(response))
+        let error = tokio::time::timeout(ERROR_BODY_TIMEOUT * 2, success(response, Refusal::PLAIN))
             .await
             .expect("classified within the deadline")
             .expect_err("refused");
@@ -427,7 +440,7 @@ mod tests {
         assert!(start.elapsed() >= ERROR_BODY_TIMEOUT);
         assert!(
             matches!(
-                error.downcast_ref::<Error<Fault>>(),
+                error.downcast_ref::<Error>(),
                 Some(Error::Status { status, message, retry_after, .. })
                     if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
                         && message.is_empty()
@@ -476,7 +489,7 @@ mod tests {
             let expected = reqwest::StatusCode::from_u16(status).expect("a status");
             assert!(
                 matches!(
-                    error.downcast_ref::<Error<Fault>>(),
+                    error.downcast_ref::<Error>(),
                     Some(Error::Status { status, .. }) if *status == expected
                 ),
                 "{error}"
@@ -489,7 +502,7 @@ mod tests {
     fn only_an_overflow_body_on_an_overflow_status_is_marked() {
         let bad_request = reqwest::StatusCode::BAD_REQUEST;
         let marked = |status, body: &str| {
-            status_error::<Fault>(status, body.to_string(), None)
+            status_error(status, body.to_string(), None, Refusal::PLAIN)
                 .downcast_ref::<ContextOverflow>()
                 .is_some()
         };
@@ -526,10 +539,10 @@ mod tests {
         ));
 
         let body = r#"{"error":{"message":"invalid model"}}"#;
-        let ordinary = status_error::<Fault>(bad_request, body.into(), None);
+        let ordinary = status_error(bad_request, body.into(), None, Refusal::PLAIN);
         assert!(
             matches!(
-                ordinary.downcast_ref::<Error<Fault>>(),
+                ordinary.downcast_ref::<Error>(),
                 Some(Error::Status { status, message, .. })
                     if *status == bad_request && message == body
             ),
@@ -537,14 +550,22 @@ mod tests {
         );
         assert_eq!(retry(&ordinary), None);
 
-        let limited =
-            status_error::<Fault>(reqwest::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
+        let limited = status_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            String::new(),
+            None,
+            Refusal::PLAIN,
+        );
         assert_eq!(retry(&limited), Some(Retry { after: None }));
     }
 
+    /// Which errors a retry fixes: a transient status, an in-stream error
+    /// its protocol marked retryable, and a stream that never answered,
+    /// stalled or was cut. Each protocol's tests pin how it marks its own
+    /// in-stream errors.
     #[test]
     fn only_transient_errors_are_retryable() {
-        let boxed = |error: Error<Fault>| -> BoxError { Box::new(error) };
+        let boxed = |error: Error| -> BoxError { Box::new(error) };
         let status = |status, retry_after| {
             boxed(Error::Status {
                 status,
@@ -578,18 +599,36 @@ mod tests {
             None
         );
 
+        let in_stream = |retryable| {
+            boxed(Error::Provider {
+                message: "from the stream".into(),
+                retryable,
+                overflow: false,
+            })
+        };
         assert_eq!(
-            retry(&boxed(Error::Provider(Fault { kind: "busy" }))),
+            retry(&in_stream(true)),
             Some(Retry { after: None }),
-            "as the payload says"
+            "as the protocol classified it"
         );
-        assert_eq!(retry(&boxed(Error::Provider(Fault { kind: "nope" }))), None);
+        assert_eq!(retry(&in_stream(false)), None);
 
         let overflow: BoxError = Box::new(ContextOverflow);
         assert_eq!(
             retry(&overflow),
             None,
             "compacting, not retrying, is the fix"
+        );
+        let in_stream_overflow = super::boxed(Error::Provider {
+            message: "too long".into(),
+            retryable: false,
+            overflow: true,
+        });
+        assert!(
+            in_stream_overflow
+                .downcast_ref::<ContextOverflow>()
+                .is_some(),
+            "{in_stream_overflow}"
         );
 
         assert_eq!(
@@ -601,7 +640,6 @@ mod tests {
             retry(&boxed(Error::Unanswered)),
             Some(Retry { after: None })
         );
-        assert_eq!(retry(&boxed(Error::Truncated)), None);
 
         let bad_url = reqwest::Client::new()
             .get("not a url")

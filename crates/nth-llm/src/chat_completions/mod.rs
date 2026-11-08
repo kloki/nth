@@ -13,37 +13,36 @@ use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 use crate::{
     auth::Auth,
     http::{self, transient},
-    stream::{self, Flow, Out, Payload, Protocol},
+    stream::{self, Error, Flow, Out, Protocol, Refusal},
 };
 
-pub(crate) type Error = stream::Error<Provider>;
-
 /// An error chunk, which gateways such as OpenRouter send after the 200
-/// status for a rate limit, an overload or a refusal.
-#[derive(Debug, thiserror::Error)]
-#[error("provider error{}: {message}", .status.map(|s| format!(" {s}")).unwrap_or_default())]
-pub(crate) struct Provider {
-    pub(crate) message: String,
-    /// The HTTP status the error stands for, when the chunk gave one.
-    pub(crate) status: Option<reqwest::StatusCode>,
-}
-
-impl Payload for Provider {
-    /// Only by its status: a symbolic code such as `rate_limit_exceeded`
-    /// says nothing every gateway agrees on.
-    fn retryable(&self) -> bool {
-        self.status.is_some_and(transient)
-    }
-
-    fn context_overflow(&self) -> bool {
-        self.status
-            .is_some_and(|status| http::context_overflow(status, &self.message))
+/// status for a rate limit, an overload or a refusal, with the HTTP status
+/// it stands for when the chunk gave one. Retried only by that status: a
+/// symbolic code such as `rate_limit_exceeded` says nothing every gateway
+/// agrees on.
+pub(crate) fn provider_error(message: String, status: Option<reqwest::StatusCode>) -> Error {
+    let overflow = status.is_some_and(|status| http::context_overflow(status, &message));
+    Error::Provider {
+        message: match status {
+            Some(status) => format!("provider error {status}: {message}"),
+            None => format!("provider error: {message}"),
+        },
+        retryable: status.is_some_and(transient),
+        overflow,
     }
 }
 
-pub(crate) type Client = stream::Client<State>;
+/// Where requests go, under the endpoint's base URL.
+const ROUTE: &str = "/chat/completions";
+
+pub(crate) struct Client(stream::Client);
 
 impl Client {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+        Self(stream::Client::new(http, base_url, ROUTE))
+    }
+
     /// `cache_key` goes out as `prompt_cache_key`: only to a provider known
     /// to take it ([`takes_cache_key`]), since strict ones refuse a field
     /// they do not know.
@@ -53,14 +52,14 @@ impl Client {
         cache_key: Option<&str>,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let builder = auth.bearer(self.post()).json(&wire::body(
+        let builder = auth.bearer(self.0.post()).json(&wire::body(
             request.model,
             request.effort,
             cache_key,
             request.messages,
             request.tools,
         ));
-        stream::send::<State>(builder, &request).await
+        stream::send::<State>(builder, &request, Refusal::PLAIN).await
     }
 }
 
@@ -103,18 +102,18 @@ pub(crate) fn takes_cache_key(provider: &str) -> bool {
 pub(crate) struct State {
     calls: BTreeMap<usize, ToolCall>,
     finish_reason: Option<String>,
+    /// Whether any text went out, which a cut reply's note follows.
+    text: bool,
 }
 
 impl Protocol for State {
-    type Provider = Provider;
     type Event = event::Event;
-    const ROUTE: &'static str = "/chat/completions";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
         event::parse_line(line)
     }
 
-    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+    fn apply(&mut self, event: event::Event, out: &mut Out) -> Flow {
         match event {
             event::Event::Delta(delta) => self.delta(delta, out),
             event::Event::Finish(reason) => self.finish_reason = Some(reason),
@@ -140,24 +139,23 @@ impl Protocol for State {
         self.finish_reason.is_some()
     }
 
-    fn finish(&mut self, out: &mut Out<Provider>) {
-        // Tool calls cut off at the token limit have partial JSON
-        // arguments and must not run.
+    fn finish(&mut self, out: &mut Out) {
+        let calls = std::mem::take(&mut self.calls);
         if self.finish_reason.as_deref() == Some("length") {
-            out.push_back(Err(Error::Truncated));
+            stream::cut(self.text, !calls.is_empty(), out);
             return;
         }
-        let calls = std::mem::take(&mut self.calls);
         out.extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
     }
 }
 
 impl State {
-    fn delta(&mut self, delta: event::Delta, out: &mut Out<Provider>) {
+    fn delta(&mut self, delta: event::Delta, out: &mut Out) {
         if let Some(text) = delta.reasoning_content.filter(|t| !t.is_empty()) {
             out.push_back(Ok(StreamEvent::ReasoningDelta(text)));
         }
         if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
+            self.text = true;
             out.push_back(Ok(StreamEvent::TextDelta(text)));
         }
         for part in delta.tool_calls.into_iter().flatten() {
@@ -187,11 +185,10 @@ mod tests {
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
-    use crate::testing::{chunks, runs_no_tools, serve_once, serve_status, until};
-
-    fn retry(error: &BoxError) -> Option<Retry> {
-        stream::retry::<Provider>(error)
-    }
+    use crate::testing::{
+        chunks, reports_output, retry, runs_no_tools, serve_once, serve_status, text, until,
+        without_text,
+    };
 
     fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
     where
@@ -380,16 +377,48 @@ mod tests {
         assert!(runs_no_tools(&events));
     }
 
+    const CUT: &[u8] = include_bytes!("../../tests/fixtures/go_cut.sse");
+
     #[tokio::test]
-    async fn length_finish_is_an_error_and_runs_no_tools() {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let input = text.replace(
+    async fn a_reply_cut_at_the_limit_keeps_its_text() {
+        let events = replay_bytes(CUT, CUT.len()).await;
+        assert!(runs_no_tools(&events));
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(
+            text(events),
+            [
+                "The essay so far".to_string(),
+                " runs lo".into(),
+                format!("\n\n{}", stream::CUT_NOTE)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_before_any_text_is_the_note_alone() {
+        let input = without_text(CUT);
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(text(events), [stream::CUT_NOTE]);
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_with_tool_calls_says_they_were_dropped() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture.replace(
             "\"finish_reason\":\"tool_calls\"",
             "\"finish_reason\":\"length\"",
         );
         let events = replay_bytes(input.as_bytes(), input.len()).await;
-        assert!(matches!(events.last(), Some(Err(Error::Truncated))));
         assert!(runs_no_tools(&events));
+        assert_eq!(
+            text(events),
+            [
+                "Reading wörld".to_string(),
+                " files.".into(),
+                format!("\n\n{}", stream::CUT_NOTE_WITH_CALLS)
+            ]
+        );
     }
 
     #[tokio::test]
@@ -451,14 +480,11 @@ mod tests {
         assert_eq!(retry(&error), None);
     }
 
-    /// The payload's part of the policy; the rest is `stream`'s.
+    /// The protocol's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
         let in_stream = |status: Option<reqwest::StatusCode>| -> BoxError {
-            Box::new(Error::Provider(Provider {
-                message: "from the gateway".into(),
-                status,
-            }))
+            Box::new(provider_error("from the gateway".into(), status))
         };
         assert_eq!(
             retry(&in_stream(Some(reqwest::StatusCode::TOO_MANY_REQUESTS))),

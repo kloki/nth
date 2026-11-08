@@ -2,6 +2,8 @@
 //! reads its `data:` payloads into its own events, and a payload that does
 //! not parse is quoted.
 
+use crate::stream::Error;
+
 /// How much of an unparseable line an error quotes. Enough to see what the
 /// server sent, little enough that the error still fits in the TUI.
 pub(crate) const EXCERPT_CHARS: usize = 200;
@@ -42,26 +44,25 @@ pub(crate) fn data(line: &str) -> Option<&str> {
     (!data.is_empty()).then_some(data)
 }
 
-/// Turns raw response bytes into a protocol's events: `Lines` splits them,
-/// and `parse` reads one line into whatever events it carries.
-pub(crate) struct Parser<F> {
+/// How a protocol reads one line into the events it carries.
+pub(crate) type Parse<E> = fn(&str) -> Result<Vec<E>, Error>;
+
+/// Turns raw response bytes into a protocol's events `E`: `Lines` splits
+/// them, and `parse` reads one line into whatever events it carries.
+pub(crate) struct Parser<E> {
     lines: Lines,
-    parse: F,
+    parse: Parse<E>,
 }
 
-impl<F, I, E> Parser<F>
-where
-    F: FnMut(&str) -> Result<I, E>,
-    I: IntoIterator,
-{
-    pub(crate) fn new(parse: F) -> Self {
+impl<E> Parser<E> {
+    pub(crate) fn new(parse: Parse<E>) -> Self {
         Self {
             lines: Lines::default(),
             parse,
         }
     }
 
-    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<I::Item>, E> {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<E>, Error> {
         let mut events = Vec::new();
         for line in self.lines.push(bytes) {
             events.extend((self.parse)(&line)?);
@@ -70,8 +71,8 @@ where
     }
 
     /// Parses what is left once the bytes end.
-    pub(crate) fn finish(&mut self) -> Result<Vec<I::Item>, E> {
-        Ok((self.parse)(&self.lines.finish())?.into_iter().collect())
+    pub(crate) fn finish(&mut self) -> Result<Vec<E>, Error> {
+        (self.parse)(&self.lines.finish())
     }
 }
 
@@ -100,8 +101,7 @@ mod tests {
 
     #[test]
     fn the_parser_hands_each_line_to_the_protocol() {
-        let mut parser =
-            Parser::new(|line: &str| -> Result<Option<usize>, ()> { Ok(data(line).map(str::len)) });
+        let mut parser = Parser::new(|line| Ok(data(line).map(str::len).into_iter().collect()));
         assert_eq!(
             parser.push(b"data: ab\n: comment\ndata: c").expect("valid"),
             [2]

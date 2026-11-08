@@ -4,8 +4,11 @@
 
 use serde::Deserialize;
 
-use super::{Error, Provider};
-use crate::sse::{data, excerpt};
+use super::provider_error;
+use crate::{
+    sse::{data, excerpt},
+    stream::Error,
+};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -124,23 +127,20 @@ pub struct ErrorResponse {
 
 /// Turns raw response bytes into events, as the stream does.
 #[cfg(test)]
-pub(super) type Parser = crate::sse::Parser<fn(&str) -> Result<Option<Event>, Error>>;
+pub(super) type Parser = crate::sse::Parser<Event>;
 
 #[cfg(test)]
 pub(super) fn parser() -> Parser {
     crate::sse::Parser::new(parse_line)
 }
 
-pub(super) fn parse_line(line: &str) -> Result<Option<Event>, Error> {
+pub(super) fn parse_line(line: &str) -> Result<Vec<Event>, Error> {
     let Some(data) = data(line) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     match serde_json::from_str(data) {
-        Ok(Event::Error { error }) => Err(Error::Provider(Provider {
-            kind: error.kind,
-            message: error.message,
-        })),
-        Ok(event) => Ok(Some(event)),
+        Ok(Event::Error { error }) => Err(provider_error(error.kind, error.message)),
+        Ok(event) => Ok(vec![event]),
         Err(source) => Err(Error::Parse {
             source,
             line: excerpt(data),
