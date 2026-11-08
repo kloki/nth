@@ -37,7 +37,8 @@ impl Drop for StopOnDrop {
 }
 
 /// Runs `job` on the blocking pool, setting its [`Stop`] when this future is
-/// dropped before the job returns.
+/// dropped. That happens after the job returned too, when nobody reads the
+/// flag any more, so only a drop before then stops anything.
 pub(crate) async fn run<T, F>(job: F) -> Result<T, JoinError>
 where
     T: Send + 'static,
@@ -46,6 +47,21 @@ where
     let stop = Stop::default();
     let _guard = StopOnDrop(stop.clone());
     tokio::task::spawn_blocking(move || job(&stop)).await
+}
+
+/// Waits on the job's thread for the call to be dropped, as a test that
+/// drops it does before the job goes on. A guard that never sets the stop
+/// makes the test fail after a few seconds instead of hanging it, since the
+/// runtime's shutdown waits for a blocking thread that would spin forever.
+#[cfg(test)]
+pub(crate) fn wait_for(stop: &Stop) -> bool {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !stop.is_set() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    stop.is_set()
 }
 
 #[cfg(test)]
@@ -60,16 +76,17 @@ mod tests {
     async fn dropping_the_call_stops_the_job() {
         let (ended, end) = mpsc::channel();
         let call = run(move |stop| {
-            while !stop.is_set() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let _ = ended.send(());
+            let _ = ended.send(wait_for(stop));
         });
         let mut call = Box::pin(call);
         assert!((&mut call).now_or_never().is_none(), "the job is running");
         drop(call);
         let ended = tokio::task::spawn_blocking(move || end.recv_timeout(Duration::from_secs(5)));
-        assert!(ended.await.expect("join").is_ok(), "the job never stopped");
+        assert_eq!(
+            ended.await.expect("join"),
+            Ok(true),
+            "the job never stopped"
+        );
     }
 
     #[tokio::test]

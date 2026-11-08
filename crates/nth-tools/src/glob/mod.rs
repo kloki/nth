@@ -340,9 +340,7 @@ mod tests {
         // The walk starts only once the call is gone, so it sees the stop
         // on its first entry whatever the machine's speed.
         let call = Box::pin(blocking::run(move |stop| {
-            while !stop.is_set() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            blocking::wait_for(stop);
             let _ = ended.send(find(&root, "*.txt", false, MAX_FILES, stop).map(|f| f.files));
         }));
         let call = tokio::time::timeout(Duration::from_millis(10), call).await;

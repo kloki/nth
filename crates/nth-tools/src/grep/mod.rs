@@ -120,6 +120,9 @@ struct Searched {
     total: usize,
     /// Files passed over for being larger than `MAX_FILE_BYTES`.
     oversized: usize,
+    /// The file the search was pointed at, when it was a file: skipped for
+    /// its size, it gets a note on how to search it after all.
+    named: Option<PathBuf>,
     stopped: Option<Limit>,
 }
 
@@ -154,6 +157,7 @@ fn search(
         files: Vec::new(),
         total: 0,
         oversized: 0,
+        named: root.is_file().then(|| root.to_path_buf()),
         stopped: None,
     };
     let mut searched = 0;
@@ -182,8 +186,9 @@ fn search(
             continue;
         }
         bytes.clear();
-        // Read one byte past the cap: a file that grew since its stat shows
-        // it is over, without reading the rest.
+        // The stat above can be stale: a log being written grows between it
+        // and the read. Reading one byte past the cap tells such a file is
+        // over without reading the rest of it, so memory stays bounded.
         let read = File::open(entry.path())
             .and_then(|file| file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes));
         if read.is_err() {
@@ -234,10 +239,14 @@ fn search(
 fn render(found: &Searched, limits: Limits) -> String {
     let mut out = matches(&found.files, found.total);
     let mut notes = Vec::new();
-    match found.oversized {
-        0 => {}
-        1 => notes.push(format!("(Skipped 1 file larger than {MAX_FILE_MIB} MiB.)")),
-        n => notes.push(format!(
+    match (found.oversized, &found.named) {
+        (0, _) => {}
+        (_, Some(file)) => notes.push(format!(
+            "(Skipped {}: it is larger than {MAX_FILE_MIB} MiB. Search it with `rg` through bash.)",
+            file.display()
+        )),
+        (1, None) => notes.push(format!("(Skipped 1 file larger than {MAX_FILE_MIB} MiB.)")),
+        (n, None) => notes.push(format!(
             "(Skipped {n} files larger than {MAX_FILE_MIB} MiB.)"
         )),
     }
@@ -468,6 +477,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_named_file_over_the_cap_points_to_rg() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut big = b"needle\n".to_vec();
+        big.resize(11 * 1024 * 1024, b'x');
+        let path = write(dir.path(), "big.log", big);
+        let out = grep(
+            dir.path(),
+            json!({ "pattern": "needle", "path": "big.log" }),
+        )
+        .await
+        .expect("grep");
+        assert_eq!(
+            out,
+            format!(
+                "No files found\n\n(Skipped {}: it is larger than 10 MiB. Search it with `rg` through bash.)",
+                path.display()
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn grep_stops_when_the_call_is_cancelled() {
         let dir = tempfile::tempdir().expect("tempdir");
         for i in 0..20 {
@@ -479,9 +509,7 @@ mod tests {
         // The walk starts only once the call is gone, so it sees the stop
         // on its first entry whatever the machine's speed.
         let call = Box::pin(blocking::run(move |stop| {
-            while !stop.is_set() {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            blocking::wait_for(stop);
             let _ = ended.send(search(&root, &regex, None, LIMITS, stop));
         }));
         let call = tokio::time::timeout(std::time::Duration::from_millis(10), call).await;
