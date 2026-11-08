@@ -1,12 +1,13 @@
 //! Working directories added with `/add-dir`: adding one, and keeping the
 //! session and the status bar in step with the ones there are.
 
-use std::path::PathBuf;
-
-use nth_session::store;
+use nth_session::{
+    directories::{self, Overlap, Refusal},
+    store,
+};
 
 use super::App;
-use crate::{path, status};
+use crate::status;
 
 impl App {
     /// Adds the directory `arg` names to the session's working directories,
@@ -22,38 +23,37 @@ impl App {
             self.hint = Some("usage: /add-dir <directory>".into());
             return;
         }
-        let spelled = path::expand(&self.cwd, self.home.as_deref(), arg);
-        let dir: PathBuf = match std::fs::canonicalize(&spelled) {
-            Ok(dir) if dir.is_dir() => dir,
-            Ok(_) => {
-                self.hint = Some(format!("not a directory: {}", spelled.display()).into());
-                return;
-            }
-            Err(e) => {
-                self.hint = Some(format!("cannot add {}: {e}", spelled.display()).into());
+        let spelled = directories::expand(
+            &self.cwd,
+            self.home.as_deref().map(std::path::Path::new),
+            arg,
+        );
+        let dir = match directories::validate(&spelled, &self.cwd, &self.extra_dirs) {
+            Ok(dir) => dir,
+            Err(refusal) => {
+                let hint = match refusal {
+                    Refusal::Inaccessible { path, error } => {
+                        format!("cannot add {}: {error}", path.display())
+                    }
+                    Refusal::NotDirectory(path) => format!("not a directory: {}", path.display()),
+                    Refusal::Overlap {
+                        other,
+                        working_directory,
+                        kind,
+                    } => {
+                        let place = status::place(&other, self.home.as_deref());
+                        match (working_directory, kind) {
+                            (true, Overlap::Equal) => "already the working directory".to_string(),
+                            (_, Overlap::Equal) => format!("already added: {place}"),
+                            (_, Overlap::Inside) => format!("already in {place}"),
+                            (_, Overlap::Contains) => format!("contains {place}"),
+                        }
+                    }
+                };
+                self.hint = Some(hint.into());
                 return;
             }
         };
-        // A directory inside one already there, or around one, would list
-        // its files twice for `@` and tell the model of them twice.
-        // Compared canonical, as `dir` is: on macOS `/var` is `/private/var`.
-        let cwd = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
-        let home = self.home.as_deref();
-        let dirs = std::iter::once(&cwd).chain(&self.extra_dirs);
-        let refused = dirs.enumerate().find_map(|(i, other)| {
-            let place = status::place(other, home);
-            match (i, dir == *other) {
-                (0, true) => Some("already the working directory".to_string()),
-                (_, true) => Some(format!("already added: {place}")),
-                _ if dir.starts_with(other) => Some(format!("already in {place}")),
-                _ if other.starts_with(&dir) => Some(format!("contains {place}")),
-                _ => None,
-            }
-        });
-        if refused.is_some() {
-            self.hint = refused.map(Into::into);
-            return;
-        }
         // The status bar shows the same place the hint names.
         self.hint = Some(format!("added {}", status::place(&dir, self.home.as_deref())).into());
         self.extra_dirs.push(dir.clone());
@@ -94,7 +94,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
     use nth_protocol::Message;
     use nth_session::{Session, Store};

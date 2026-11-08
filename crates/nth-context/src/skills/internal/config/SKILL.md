@@ -11,22 +11,36 @@ $ARGUMENTS
 
 ## Where it lives
 
-One file, for the user, not for a project:
+The global file applies everywhere:
 
 - `$XDG_CONFIG_HOME/nth/config.toml`, else `~/.config/nth/config.toml`.
 - `--config <path>` or `NTH_CONFIG` names another file instead.
 
-There is no per-project config: the one file applies everywhere.
+An optional `.nth/config` overlays it for a project. In Git this is the main
+checkout's file, shared by linked worktrees. Outside Git the nearest one from
+the working directory up to the home directory is used, or only the working
+directory's own when it is not under home. The folder holding `.nth/` is the
+base for its relative paths.
+
+Project config accepts `model`, `profiles`, `mode`, `session`, `task`, `work`,
+`context`, `memory`, `skills` and `directories`. Provider, formatter, language
+server, tool, notification, chat and layout settings are global only, since a
+repository should not choose the commands nth runs.
 
 ## How it loads
 
-- Every key is optional. The file lists only what it changes; everything else
-  keeps its default.
+- Every key is optional. Defaults are overlaid by the global file, then the
+  project file. Tables merge recursively; other arrays replace the prior array.
+- `skills.paths` and `directories.paths` append instead, deduplicated after
+  resolution; an empty list contributes nothing. Global relative paths use the
+  session's initial working directory, and project paths use the project root.
+  `~` names the home directory.
 - Unknown keys are an error, so a typo stops nth with a message naming the key.
 - Flags and environment variables win over the file: `--model` / `NTH_MODEL`
   over `model`, `--config` / `NTH_CONFIG` over the path.
-- nth reads the file once at startup, so a change applies on the next launch,
-  not to the session already running.
+- Project settings are selected on launch and when resuming a session. Directory
+  defaults are added to saved directories; previously saved directories remain
+  even after their defaults are removed from config.
 - `nth config` prints the resolved config with every default filled in, and
   says on stderr which file it used.
 - `nth init` writes the commented template to the default path; `nth init
@@ -46,6 +60,15 @@ There is no per-project config: the one file applies everywhere.
   to see what the providers list.
 
 ## Recipes
+
+### Add project directories
+
+```toml
+[directories]
+paths = ["../docs", "../shared-library"]
+```
+
+These are persistent defaults equivalent to `/add-dir`.
 
 ### Add a provider
 

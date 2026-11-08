@@ -196,6 +196,11 @@ url = "https://mcp.exa.ai/mcp"
 # ~/ is the home directory; relative paths are from the working directory.
 paths = []
 
+[directories]
+# Additional directories available to sessions, like /add-dir. Relative paths
+# use the initial working directory; project config paths use the project root.
+paths = []
+
 [format]
 # Run the file's formatters after a tool writes it. false turns them all off.
 # `nth formatters` lists them and whether they apply to the working directory.

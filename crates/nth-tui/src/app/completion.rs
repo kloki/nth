@@ -1,6 +1,8 @@
 //! The completion popup over the prompt: nth's commands and the skills
 //! after `/`, agents and files after `@`.
 
+use std::path::Path;
+
 use nth_context::Agents;
 use ratatui::{
     Frame,
@@ -152,7 +154,12 @@ impl App {
                 let end = self.prompt.text().len();
                 let arg = self.prompt.text()[start..].to_string();
                 let named = arg.ends_with('/')
-                    && path::expand(&self.cwd, self.home.as_deref(), &arg).is_dir();
+                    && nth_session::directories::expand(
+                        &self.cwd,
+                        self.home.as_deref().map(Path::new),
+                        &arg,
+                    )
+                    .is_dir();
                 if submit && named {
                     self.prompt.clear();
                     self.add_dir(&arg);
