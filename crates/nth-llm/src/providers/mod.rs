@@ -68,8 +68,8 @@ impl Providers {
 
     /// As `new`, but without the catalogue, never fetched nor read from a
     /// cache: what `nth context` and tests run on, which must send nothing
-    /// but what they ask for. An endpoint with configured models lists them without a
-    /// request.
+    /// but what they ask for. An endpoint with configured models lists
+    /// them without a request.
     pub fn offline(
         endpoints: Vec<EndpointConfig>,
         unavailable: Vec<Unavailable>,

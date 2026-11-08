@@ -205,14 +205,16 @@ impl Provider {
     }
 }
 
-/// The catalogue, fetched by whichever needs it first and then kept for
-/// the life of the process. A failed fetch leaves no catalogue, under which
-/// every model speaks chat completions as with an unknown endpoint, and is
-/// tried again after `backoff`: a blip at start-up must not route Claude
-/// over the wrong protocol for the whole run. Every fetched catalogue is
-/// kept on disk, and a failed fetch with nothing to serve falls back on
-/// that copy: stale, it still routes models right. It is served at once
-/// while `refresh` keeps trying the network behind it.
+/// The catalogue, fetched by the providers' background task (`refresh`),
+/// or by a request that needs it before that has one, and then kept for
+/// the life of the process. Every fetched catalogue is kept on disk, and
+/// that copy is served before the network is asked: stale, it still routes
+/// models right, and a request never waits on a network that hangs while
+/// it is there. `refresh` replaces it with a fetched one. Without either, a
+/// failed fetch leaves no catalogue, under which every model speaks chat
+/// completions as with an unknown endpoint, and is tried again after
+/// `backoff`: a blip at start-up must not route Claude over the wrong
+/// protocol for the whole run.
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     http: reqwest::Client,
@@ -275,14 +277,15 @@ impl Snapshot {
         }
     }
 
-    /// The catalogue: at once when one is served, fetched or cached; else a
-    /// fetch when one is due, waiting for one already under way; else none,
-    /// without waiting. So with nothing to serve, the request or listing
-    /// that first asks once the backoff has run out waits on the retry, at
-    /// most `TIMEOUT`, as does any caller that asks while it runs: without
-    /// the catalogue a model may go over the wrong protocol, which is worse
-    /// than a short wait. A cached catalogue is never retried here, so no
-    /// caller waits while one serves; `refresh` retries it.
+    /// The catalogue: at once when one is served, fetched or cached; else,
+    /// when a fetch is due, the copy on disk, else a fetch, waiting for
+    /// whatever is under way first; else none, without waiting. So with
+    /// nothing on disk, the request or listing that first asks once the
+    /// backoff has run out waits on the retry, at most `TIMEOUT`, as does
+    /// any caller that asks while it runs: without the catalogue a model
+    /// may go over the wrong protocol, which is worse than a short wait. A
+    /// cached catalogue is never retried here, so no caller waits on the
+    /// network while one serves; `refresh` retries it.
     pub(crate) async fn get(&self) -> Option<Arc<Catalog>> {
         let url = self.url.as_deref()?;
         if let Some(found) = self.settled() {
@@ -294,17 +297,28 @@ impl Snapshot {
         if let Some(found) = self.settled() {
             return found;
         }
+        if let Some(cached) = self.load_cache().await {
+            return Some(cached);
+        }
         self.fetch(url).await
     }
 
-    /// Fetches until a fetch succeeds, each try once the backoff allows:
-    /// what the providers' background task runs, so the catalogue loads
-    /// before a request asks for it and a cached one is replaced without a
-    /// request waiting on the network.
+    /// Serves the copy on disk, then fetches until a fetch succeeds, each
+    /// try once the backoff allows: what the providers' background task
+    /// runs, so the catalogue loads before a request asks for it and a
+    /// cached one is replaced without a request waiting on the network.
     pub(crate) async fn refresh(&self) {
         let Some(url) = self.url.as_deref() else {
             return;
         };
+        {
+            // Held while reading, so a request that comes meanwhile waits
+            // on the disk rather than going to the network.
+            let _one = self.fetching.lock().await;
+            if self.state().catalog.is_none() {
+                self.load_cache().await;
+            }
+        }
         loop {
             let Some(wait) = self.state().next_try() else {
                 return;
@@ -319,8 +333,7 @@ impl Snapshot {
     }
 
     /// One fetch from `url`, the caller holding `fetching`. A success is
-    /// served and kept on disk; a failure serves what was served before,
-    /// else the copy on disk.
+    /// served and kept on disk; a failure serves what was served before.
     async fn fetch(&self, url: &str) -> Option<Arc<Catalog>> {
         // A caller dropped mid-fetch records no failure, deliberately: the
         // next caller simply fetches again.
@@ -337,22 +350,24 @@ impl Snapshot {
                 Some(catalog)
             }
             Err(_) => {
-                let served = {
-                    let mut state = self.state();
-                    state.failed_at = Some(Instant::now());
-                    state.attempts = state.attempts.saturating_add(1);
-                    state.catalog.clone()
-                };
-                if served.is_some() {
-                    return served;
-                }
-                let cached = Arc::new(read_cache(self.cache.clone()?).await?);
                 let mut state = self.state();
-                state.catalog = Some(cached.clone());
-                state.cached = true;
-                Some(cached)
+                state.failed_at = Some(Instant::now());
+                state.attempts = state.attempts.saturating_add(1);
+                state.catalog.clone()
             }
         }
+    }
+
+    /// The copy on disk, served, the caller holding `fetching` with nothing
+    /// served yet. Read, then served in one step, so a caller dropped
+    /// mid-read leaves everything as it was. The backoff stays as it is:
+    /// with no fetch failed yet, `refresh` fetches at once.
+    async fn load_cache(&self) -> Option<Arc<Catalog>> {
+        let cached = Arc::new(read_cache(self.cache.clone()?).await?);
+        let mut state = self.state();
+        state.catalog = Some(cached.clone());
+        state.cached = true;
+        Some(cached)
     }
 
     /// The answer without a fetch, when there is one: the catalogue served,
@@ -602,22 +617,73 @@ mod tests {
         assert!(catalog.contains_key("opencode-go"));
     }
 
+    /// A cache file holding `CACHED`, in `dir`.
+    fn cached(dir: &tempfile::TempDir) -> PathBuf {
+        let cache = dir.path().join("models.json");
+        std::fs::write(&cache, CACHED).expect("writes");
+        cache
+    }
+
+    /// Moves the last failure back past its backoff, so the next fetch is
+    /// due without the clock paused: a fetch goes over the network, where
+    /// a paused clock would jump to reqwest's timeout.
+    fn rewind(snapshot: &Snapshot) {
+        let mut state = snapshot.state();
+        let wait = backoff(state.attempts);
+        state.failed_at = state.failed_at.and_then(|at| at.checked_sub(wait));
+    }
+
     #[tokio::test]
-    async fn a_cached_catalogue_is_read_when_the_fetch_fails() {
+    async fn a_cached_catalogue_is_served_before_the_network_answers() {
+        // Well under the fetch's 5 s timeout, which a request would wait
+        // out on a network that hangs.
+        const AT_ONCE: Duration = Duration::from_secs(1);
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let asked = Snapshot::at(testing::serve_silent().await, Some(cached(&dir)));
+        let catalog = tokio::time::timeout(AT_ONCE, asked.get())
+            .await
+            .expect("without waiting on the network")
+            .expect("the cached one");
+        assert!(catalog.contains_key("cached"));
+
+        // The background task serves it before its own fetch, so a request
+        // that comes while that hangs need not wait on it.
+        let refreshed = Snapshot::at(testing::serve_silent().await, Some(cached(&dir)));
+        let refreshing = refreshed.refresh();
+        tokio::pin!(refreshing);
+        tokio::select! {
+            () = &mut refreshing => panic!("the fetch never answers"),
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        let catalog = tokio::time::timeout(AT_ONCE, async {
+            tokio::select! {
+                () = &mut refreshing => panic!("the fetch never answers"),
+                catalog = refreshed.get() => catalog,
+            }
+        })
+        .await
+        .expect("without waiting on the network")
+        .expect("the cached one");
+        assert!(catalog.contains_key("cached"));
+    }
+
+    #[tokio::test]
+    async fn while_a_cached_catalogue_serves_no_request_fetches() {
         use std::sync::atomic::Ordering::SeqCst;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join("models.json");
-        std::fs::write(&cache, CACHED).expect("writes");
         let (url, answered) = testing::serve_many(vec![(500, b"{}")]).await;
-        let snapshot = Snapshot::at(url, Some(cache));
+        let snapshot = Snapshot::at(url.clone(), Some(cached(&dir)));
 
-        let catalog = snapshot.get().await.expect("the cached one");
-        assert!(catalog.contains_key("cached"));
+        assert!(snapshot.get().await.expect("cached").contains_key("cached"));
+        assert!(
+            snapshot.fetch(&url).await.is_some(),
+            "a failed retry keeps it"
+        );
         assert_eq!(answered.load(SeqCst), 1);
 
-        // Due again, yet served at once: the retry is `refresh`'s, and no
-        // request waits on the network while a catalogue serves. Nothing
+        // Due again, yet served at once: the retry is `refresh`'s. Nothing
         // goes over the network here, so the clock can stand still.
         tokio::time::pause();
         tokio::time::advance(RETRY_MAX).await;
@@ -632,35 +698,80 @@ mod tests {
         use std::sync::atomic::Ordering::SeqCst;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join("models.json");
-        std::fs::write(&cache, CACHED).expect("writes");
+        let cache = cached(&dir);
         let (url, answered) =
-            testing::serve_many(vec![(500, b"{}"), (500, b"{}"), (200, FIXTURE.as_bytes())]).await;
+            testing::serve_many(vec![(500, b"{}"), (200, FIXTURE.as_bytes())]).await;
         let snapshot = Snapshot::at(url.clone(), Some(cache.clone()));
         assert!(snapshot.get().await.expect("cached").contains_key("cached"));
+        assert!(snapshot.fetch(&url).await.is_some(), "a failed retry");
 
-        let retried = snapshot.fetch(&url).await.expect("cached");
-        assert!(
-            retried.contains_key("cached"),
-            "a failed retry keeps the cached one"
-        );
-        assert_eq!(answered.load(SeqCst), 2);
-
-        // Moved back past the backoff rather than the clock paused: the
-        // fetch goes over the network, where a paused clock would jump to
-        // reqwest's timeout.
-        {
-            let mut state = snapshot.state();
-            let wait = backoff(state.attempts);
-            state.failed_at = state.failed_at.and_then(|at| at.checked_sub(wait));
-        }
+        rewind(&snapshot);
         snapshot.refresh().await;
 
-        assert_eq!(answered.load(SeqCst), 3);
+        assert_eq!(answered.load(SeqCst), 2);
         let catalog = snapshot.get().await.expect("fetched");
         assert!(catalog.contains_key("opencode-go"));
         assert!(!snapshot.state().cached);
         assert_eq!(std::fs::read(&cache).expect("kept"), FIXTURE.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn without_a_cache_refresh_keeps_fetching_until_one_succeeds() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let (url, answered) =
+            testing::serve_many(vec![(500, b"{}"), (200, FIXTURE.as_bytes())]).await;
+        let snapshot = Snapshot::at(url, None);
+        let refreshing = snapshot.refresh();
+        tokio::pin!(refreshing);
+
+        // Driven until the first fetch has failed; it then sleeps out the
+        // backoff with nothing on the network, so the clock may jump it.
+        while snapshot.state().failed_at.is_none() {
+            tokio::select! {
+                () = &mut refreshing => panic!("gave up after a failed fetch"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+        tokio::time::pause();
+        tokio::time::advance(RETRY_INITIAL).await;
+        tokio::time::resume();
+        refreshing.await;
+
+        assert_eq!(answered.load(SeqCst), 2);
+        let catalog = snapshot.get().await.expect("the second fetch loaded it");
+        assert!(catalog.contains_key("opencode-go"));
+    }
+
+    #[tokio::test]
+    async fn refresh_skips_a_retry_a_request_just_made() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let (url, answered) = testing::serve_many(vec![(500, b"{}")]).await;
+        let snapshot = Snapshot::at(url.clone(), None);
+        assert!(snapshot.get().await.is_none());
+        let refreshing = snapshot.refresh();
+        tokio::pin!(refreshing);
+        assert!(futures::poll!(&mut refreshing).is_pending(), "backing off");
+
+        // A request takes the fetch as the backoff runs out, so `refresh`,
+        // finding one due, waits on it; the request's fails, which puts the
+        // next off. The clock stands still only while nothing is on the
+        // network.
+        let request = snapshot.fetching.clone().lock_owned().await;
+        tokio::time::pause();
+        tokio::time::advance(RETRY_INITIAL).await;
+        tokio::time::resume();
+        assert!(futures::poll!(&mut refreshing).is_pending(), "waiting");
+        assert!(snapshot.fetch(&url).await.is_none());
+        assert_eq!(answered.load(SeqCst), 2);
+        drop(request);
+
+        tokio::select! {
+            () = &mut refreshing => panic!("gave up while backing off"),
+            () = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        assert_eq!(answered.load(SeqCst), 2, "no second fetch in the backoff");
     }
 
     #[tokio::test]
