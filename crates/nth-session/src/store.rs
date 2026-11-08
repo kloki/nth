@@ -487,7 +487,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path().join("sessions"));
         let mut spent = session("fix the build", 2);
-        let turn = spent.usage.begin("glm-5.3", None);
+        let turn = spent.usage.open(crate::Spend::new("glm-5.3", None));
         spent.usage.add(
             turn,
             nth_protocol::Usage {

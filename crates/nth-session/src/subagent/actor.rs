@@ -132,12 +132,8 @@ pub(super) async fn run(actor: Actor) {
         } = watch;
         let result = match ended {
             Some(result) => result,
-            // Dropped part way: the calls it left open are answered as a
-            // cancel would, so the session stays valid to continue from,
-            // and what it spent so far stays in the ledger.
             None => {
-                settle_unanswered(&mut session.messages);
-                session.usage.close();
+                give_up(&mut session, spends);
                 Err(Error::Interrupted)
             }
         };
@@ -299,6 +295,15 @@ impl Watch<'_> {
             self.outbox.push_back(event);
         }
     }
+}
+
+/// What a turn dropped part way leaves, mended: the calls it left open are
+/// answered as a cancel would, so the session stays valid to continue
+/// from, and the spend it opened at `at` is closed, kept if it counted
+/// anything.
+fn give_up(session: &mut Session, at: usize) {
+    settle_unanswered(&mut session.messages);
+    session.usage.close(at);
 }
 
 /// A child that was forgotten spent for a session that was left. Checked
@@ -487,7 +492,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        agent_loop::tests::{Reply, Scripted},
+        agent_loop::tests::{Reply, Scripted, call},
         subagent::{
             Subagents,
             tests::{explore, job, session},
@@ -590,7 +595,8 @@ mod tests {
             CancellationToken::new(),
         );
         let mut watch = watch(&done, &None, &closed, &cancel);
-        watch.timeout = Some(Duration::from_secs(60));
+        // Runs out inside the grace: a stopped turn's budget no longer counts.
+        watch.timeout = Some(Duration::from_millis(5));
         let (_tx, mut rx) = mpsc::channel(1);
         cancel.cancel();
 
@@ -598,6 +604,51 @@ mod tests {
 
         assert!(ended.is_none(), "given up");
         assert!(!watch.timed_out, "stopped, not timed out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_turn_is_never_reported_stalled() {
+        let inbox = Inbox::new();
+        let done = Done::Notify(inbox.clone());
+        let (closed, cancel) = (CancellationToken::new(), CancellationToken::new());
+        let mut watch = watch(&done, &None, &closed, &cancel);
+        watch.stall = Some(Duration::from_millis(5));
+        watch.grace = Duration::from_millis(50);
+        let (_tx, mut rx) = mpsc::channel(1);
+        cancel.cancel();
+
+        let ended = watch.turn(deaf(), &mut rx).await;
+
+        assert!(ended.is_none(), "given up");
+        assert!(
+            !inbox.has_notices(),
+            "silent through the grace, not stalled"
+        );
+    }
+
+    #[test]
+    fn giving_up_answers_the_open_calls_and_closes_an_empty_spend() {
+        let mut session = session();
+        let at = session.usage.open(Spend::new("glm-5.3", None));
+        session.messages.push(Message::User("go".into()));
+        session
+            .messages
+            .push(Message::Assistant(nth_protocol::AssistantMessage {
+                tool_calls: vec![call("1", "bash", "{}")],
+                ..nth_protocol::AssistantMessage::default()
+            }));
+
+        give_up(&mut session, at);
+
+        assert!(session.usage.spends().is_empty(), "nothing was spent");
+        assert_eq!(
+            session.messages.last(),
+            Some(&Message::ToolResult {
+                call_id: "1".into(),
+                content: nth_protocol::failed(nth_protocol::INTERRUPTED),
+                images: Vec::new(),
+            })
+        );
     }
 
     #[tokio::test(start_paused = true)]
