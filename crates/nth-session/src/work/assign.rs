@@ -264,23 +264,27 @@ impl Tool for WorkAssign {
                 done: Done::Work(assigned),
                 timeout,
             };
-            // The job goes out before the file says running, all under the
-            // lock the job's settling takes: a call dropped before this
-            // leaves the item pending, and one dropped after is settled by
-            // the actor, which sees the file only once it is written.
-            live.running.insert(path.clone(), id);
-            live.worked.insert(path.clone(), id);
+            // The file says running before the job goes out, all under the
+            // lock the job's settling takes: a write that fails starts no
+            // job, so the model hears one error and no return after it. A
+            // call dropped mid-write, or a restore that fails, can leave the
+            // file running for nobody, which the next work tool call settles
+            // as left by a gone run.
+            store
+                .write(&running)
+                .await
+                .map_err(|e| format!("writing {at} failed: {e}"))?;
             if !subagents.prompt(id, job) {
-                live.running.remove(&path);
+                let restored = match store.write(&before).await {
+                    Ok(()) => String::new(),
+                    Err(e) => format!(" (and putting {at} back failed: {e})"),
+                };
                 return Err(format!(
-                    "subagent {id} has ended; leave task_id out to start a fresh one"
+                    "subagent {id} has ended{restored}; leave task_id out to start a fresh one"
                 ));
             }
-            if let Err(e) = store.write(&running).await {
-                live.running.remove(&path);
-                subagents.cancel(id);
-                return Err(format!("writing {at} failed: {e}"));
-            }
+            live.running.insert(path.clone(), id);
+            live.worked.insert(path.clone(), id);
             let Some(waiting) = waiting else {
                 let verb = match continued {
                     Some(_) => format!("Sent {at} back to subagent {id} (@{})", agent.name),

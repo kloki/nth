@@ -15,7 +15,7 @@ use crate::{
     work::{
         Item, Limits, Store,
         item::WorkItem,
-        tests::{LIMITS, work_with},
+        tests::{LIMITS, chmod, work_with},
         work_dir,
     },
 };
@@ -534,4 +534,40 @@ async fn a_timeout_of_zero_is_no_limit() {
     let result = WorkAssign::new(work).call(args, &ctx).await.unwrap();
 
     assert!(result.contains("outcome=\"completed\""), "{result}");
+}
+
+#[tokio::test]
+async fn a_failed_assign_write_reports_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    let work = work_with(vec![says("done")], Vec::new(), subagents.clone(), LIMITS);
+    let inbox = Inbox::new();
+    let ctx = ctx(dir.path(), inbox.clone());
+    write(&work, &ctx, 1, "a").await;
+    let cycle = work_dir(dir.path(), "s1").join("01-c1");
+    chmod(&cycle, 0o500);
+
+    let result = WorkAssign::new(work.clone())
+        .call(assign(1, "a"), &ctx)
+        .await;
+    chmod(&cycle, 0o700);
+
+    let err = result.unwrap_err();
+    assert!(err.starts_with("writing 01-c1/a failed"), "{err}");
+    assert_eq!(subagents.queued(1), 0, "no job was queued");
+    assert!(!subagents.is_running(1));
+    // Long enough for a job that went out to start and end.
+    let prompted = tokio::time::timeout(Duration::from_millis(100), async {
+        while let Some(event) = rx.recv().await {
+            if matches!(event, SubagentEvent::Prompted { .. }) {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(prompted.is_err(), "the subagent was never prompted");
+    assert!(!inbox.has_notices(), "no return follows the error");
+    assert!(work.files().0.lock().await.running.is_empty());
+    assert_eq!(read(dir.path(), "01-c1", "a").await.status, Status::Pending);
 }
