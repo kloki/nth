@@ -145,14 +145,16 @@ impl Protocol for State {
             // none run.
             event::Event::Incomplete { response } => {
                 usage(&response, out);
+                let calls = std::mem::take(&mut self.calls);
                 let reason = response.incomplete_details.and_then(|d| d.reason);
-                out.push_back(Err(match reason.as_deref() {
-                    Some("max_output_tokens") => Error::Truncated,
-                    _ => Error::Provider(Provider {
+                if reason.as_deref() == Some("max_output_tokens") {
+                    stream::cut(!calls.is_empty(), out);
+                } else {
+                    out.push_back(Err(Error::Provider(Provider {
                         kind: reason.unwrap_or_default(),
                         message: "response stopped early".into(),
-                    }),
-                }));
+                    })));
+                }
                 return Flow::Done;
             }
             _ => {}
@@ -181,7 +183,7 @@ mod tests {
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
-    use crate::testing::{chunks, runs_no_tools, serve_status, until};
+    use crate::testing::{chunks, runs_no_tools, serve_status, text, until};
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
@@ -324,16 +326,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_limit_is_an_error_and_runs_no_tools() {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let input = text
+    async fn a_reply_cut_at_the_limit_keeps_its_text() {
+        let fixture = include_bytes!("../../tests/fixtures/zen_responses_cut.sse");
+        let events = replay_bytes(fixture, fixture.len()).await;
+        assert!(runs_no_tools(&events));
+        assert_eq!(
+            text(events),
+            ["The essay so far", " runs lo", stream::CUT_NOTE]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_with_tool_calls_says_they_were_dropped() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture
             .replace("response.completed", "response.incomplete")
             .replace(
                 r#""incomplete_details":null,"output":[]"#,
                 r#""incomplete_details":{"reason":"max_output_tokens"},"output":[]"#,
             );
         let events = replay_bytes(input.as_bytes(), input.len()).await;
-        assert!(matches!(events.last(), Some(Err(Error::Truncated))));
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -346,13 +358,27 @@ mod tests {
             "{events:?}"
         );
         assert!(runs_no_tools(&events));
+        assert_eq!(
+            text(events),
+            ["I’ll read wörld", " files.", stream::CUT_NOTE_WITH_CALLS]
+        );
+    }
 
-        let filtered = input.replace("max_output_tokens", "content_filter");
-        let events = replay_bytes(filtered.as_bytes(), filtered.len()).await;
+    #[tokio::test]
+    async fn a_response_stopped_for_another_reason_is_the_error() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture
+            .replace("response.completed", "response.incomplete")
+            .replace(
+                r#""incomplete_details":null,"output":[]"#,
+                r#""incomplete_details":{"reason":"content_filter"},"output":[]"#,
+            );
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
         assert!(matches!(
             events.last(),
             Some(Err(Error::Provider(Provider { kind, .. }))) if kind == "content_filter"
         ));
+        assert!(runs_no_tools(&events));
     }
 
     #[tokio::test]

@@ -27,6 +27,18 @@ pub(crate) fn runs_no_tools<E>(events: &[Result<StreamEvent, E>]) -> bool {
         .any(|e| matches!(e, Ok(StreamEvent::ToolCall(_))))
 }
 
+/// The text a reply streamed, every event having come out as no error:
+/// what a reply cut at the output limit must still give.
+pub(crate) fn text<E: std::fmt::Debug>(events: Vec<Result<StreamEvent, E>>) -> Vec<String> {
+    events
+        .into_iter()
+        .filter_map(|e| match e.expect("no error") {
+            StreamEvent::TextDelta(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A server on a free local port that answers one request with `body` as
 /// an event stream, and hands back the request's head (its request line
 /// and headers) and its body.
