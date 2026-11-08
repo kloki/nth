@@ -11,9 +11,11 @@ use serde_json::json;
 
 const TIMEOUT: Duration = Duration::from_secs(25);
 const DEFAULT_NUM_RESULTS: u32 = 8;
-/// Sent as `exaApiKey` when set. Exa answers without a key too, at a lower
-/// rate limit.
+/// Sent as the `x-api-key` header when set, never in the URL, where it would
+/// reach error text and logs. Exa answers without a key too, at a lower rate
+/// limit.
 const API_KEY_ENV: &str = "EXA_API_KEY";
+const API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -70,22 +72,28 @@ impl Websearch {
                 }
             }));
         if let Some(key) = &self.api_key {
-            request = request.query(&[("exaApiKey", key)]);
+            let mut value = reqwest::header::HeaderValue::from_str(key).map_err(|_| {
+                format!("web search failed: {API_KEY_ENV} is not a valid header value")
+            })?;
+            // Kept out of `Debug` output and HTTP/2 header tables.
+            value.set_sensitive(true);
+            request = request.header(API_KEY_HEADER, value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("web search failed: {e}"))?;
+        let response = request.send().await.map_err(failed)?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| format!("web search failed: {e}"))?;
+        let body = response.text().await.map_err(failed)?;
         if !status.is_success() {
             return Err(format!("web search failed: HTTP {status}: {}", body.trim()));
         }
         parse_response(&body)
     }
+}
+
+/// A request error's `Display` names the URL, and the configured one may carry
+/// a key of its own; the result goes to the model, the provider and the saved
+/// session.
+fn failed(e: reqwest::Error) -> String {
+    format!("web search failed: {}", e.without_url())
 }
 
 #[derive(Deserialize)]
@@ -311,16 +319,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_goes_in_the_query_string_encoded() {
+    async fn api_key_goes_in_a_header() {
         let (url, request) = server("200 OK", "application/json", &rpc_result("ok")).await;
-        search(url, Some("a b&c"), json!({ "query": "q" }))
+        search(url, Some("secret-key"), json!({ "query": "q" }))
             .await
             .expect("search");
         let request = request.await.expect("server");
-        assert!(
-            request.starts_with("POST /mcp?exaApiKey=a+b%26c HTTP/1.1"),
-            "{request}"
+        assert!(request.starts_with("POST /mcp HTTP/1.1"), "{request}");
+        assert!(request.contains("x-api-key: secret-key\r\n"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn the_search_key_never_reaches_the_error_text() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        // A key in the configured URL too, which only `without_url` hides.
+        let url = format!(
+            "http://{}/mcp?token=url-secret",
+            listener.local_addr().expect("addr")
         );
+        // Reads the request head, then closes without answering.
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !complete(&request) {
+                let n = socket.read(&mut buf).await.expect("read");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8(request).expect("utf8")
+        });
+        let err = search(url, Some("exa-secret"), json!({ "query": "q" }))
+            .await
+            .expect_err("reset");
+        let request = server.await.expect("server");
+        assert!(err.starts_with("web search failed: "), "{err}");
+        for leak in ["exa-secret", "url-secret", "127.0.0.1", "http://"] {
+            assert!(!err.contains(leak), "{leak} in {err}");
+        }
+        let request_line = request.lines().next().expect("request line");
+        assert!(!request_line.contains("exaApiKey"), "{request_line}");
+        assert!(!request_line.contains("exa-secret"), "{request_line}");
     }
 
     #[tokio::test]
