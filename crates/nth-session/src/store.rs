@@ -14,6 +14,7 @@ use std::{
 
 use base64::Engine;
 use nth_context::Paths;
+use nth_directories::Directories;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -32,8 +33,12 @@ pub enum Error {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("listing sessions failed: {0}")]
-    Listing(#[from] tokio::task::JoinError),
+    #[error("a blocking task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+    #[error("saved Curios root {} {reason}", root.display())]
+    CurioRoot { root: PathBuf, reason: &'static str },
+    #[error("refusing Curios deletion through symlink {}", path.display())]
+    CurioSymlink { path: PathBuf },
 }
 
 /// What the resume picker shows of a saved session.
@@ -58,6 +63,25 @@ pub fn age(now: SystemTime, then: SystemTime) -> String {
         60..3_600 => format!("{}m", secs / 60),
         3_600..86_400 => format!("{}h", secs / 3_600),
         _ => format!("{}d", secs / 86_400),
+    }
+}
+
+/// What [`Store::delete_session`] removed besides the save, and what it
+/// could not.
+#[derive(Debug, Default)]
+pub struct Deleted {
+    pub removed: Vec<PathBuf>,
+    pub failed: Vec<(PathBuf, io::Error)>,
+}
+
+impl Deleted {
+    /// Notes one removal; one that was never there is neither.
+    fn record(&mut self, path: PathBuf, result: io::Result<()>) {
+        match result {
+            Ok(()) => self.removed.push(path),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => self.failed.push((path, e)),
+        }
     }
 }
 
@@ -203,6 +227,50 @@ impl Store {
         Ok(())
     }
 
+    /// Removes `session`'s save, then whatever else it kept, each only if it
+    /// is there: its plan, its work folder, its monitor logs, its images and
+    /// its Curios workspace. Its worktrees stay, since they may hold work
+    /// not merged yet.
+    ///
+    /// A Curios folder it refuses to follow fails the call before anything
+    /// is removed, so the session can still be deleted once that is fixed.
+    /// Once the save is gone nothing finds the session again, so a folder
+    /// that will not go is reported in [`Deleted::failed`] and the rest are
+    /// removed all the same.
+    pub async fn delete_session(&self, session: &Session) -> Result<Deleted, Error> {
+        let (saved, origin, cwd, cached, id) = (
+            session.state_root.clone(),
+            session.origin.clone(),
+            session.cwd.clone(),
+            session.curio_root.clone(),
+            session.id,
+        );
+        // Finding the main checkout asks git and the Curios check walks the
+        // folder's ancestors, so off the runtime; the root is worked out once
+        // so every folder is found under the same one.
+        let (root, curios) = tokio::task::spawn_blocking(move || {
+            let root = crate::session::state_root(saved.as_deref(), origin.as_deref(), &cwd);
+            let curios = curio_owner_dir(&root, cached.as_deref(), &id.to_string())?;
+            Ok::<_, Error>((root, curios))
+        })
+        .await??;
+        self.delete(id).await?;
+        let mut deleted = Deleted::default();
+        let plan = crate::plan::plan_path(&root, &id);
+        deleted.record(plan.clone(), tokio::fs::remove_file(&plan).await);
+        let dirs = [
+            nth_work::work_dir(&root, &id.to_string()),
+            self.monitor_dir(id),
+            // Its subagents' images too: they keep theirs in its folder.
+            self.images_dir(id),
+        ];
+        for dir in dirs.into_iter().chain(curios) {
+            let result = tokio::fs::remove_dir_all(&dir).await;
+            deleted.record(dir, result);
+        }
+        Ok(deleted)
+    }
+
     /// The session used last, if any was saved.
     pub async fn latest(&self) -> Result<Option<Session>, Error> {
         match self.list().await?.first() {
@@ -227,6 +295,52 @@ impl Store {
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
+}
+
+/// Session `id`'s Curios folder in the main checkout of `state_root`, where
+/// the tools made it; the `cached` root when git cannot say, because that
+/// is no longer a repository or git itself is missing, so the save can go
+/// all the same. Never follows a replaced ancestor into another directory.
+fn curio_owner_dir(
+    state_root: &Path,
+    cached: Option<&Path>,
+    id: &str,
+) -> Result<Option<PathBuf>, Error> {
+    let root = match nth_curios::owner_root(state_root) {
+        Ok(root) => root,
+        Err(_) => match cached {
+            Some(root) => root.to_path_buf(),
+            None => return Ok(None),
+        },
+    };
+    let refused = |reason| Error::CurioRoot {
+        root: root.clone(),
+        reason,
+    };
+    if !root.is_absolute() {
+        return Err(refused("is not absolute"));
+    }
+    if root
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(refused("contains a parent traversal"));
+    }
+    // The root and what Curios made below it; its ancestors are the
+    // system's (macOS keeps temporary folders under `/var`, a symlink).
+    let dirs = Directories::from_root(&root);
+    let dir = dirs.curio_owner(id);
+    for current in [root.clone(), dirs.nth(), dirs.curios(), dir.clone()] {
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::CurioSymlink { path: current });
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_at(&current)(e)),
+        }
+    }
+    Ok(Some(dir))
 }
 
 /// Writes `bytes` to `tmp`, syncs it and renames it over `path`.
@@ -686,5 +800,223 @@ mod tests {
         assert_eq!(ago(5 * 60 + 59), "5m");
         assert_eq!(ago(3 * 3_600), "3h");
         assert_eq!(ago(2 * 86_400 + 1), "2d");
+    }
+
+    /// A session that ran in `cwd`, with a prompt so it saves.
+    fn prompted(cwd: PathBuf) -> Session {
+        let mut session = Session::new("glm", cwd);
+        session.messages.push(Message::User("fix it".into()));
+        session
+    }
+
+    fn touch(file: &Path) {
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("creates");
+        std::fs::write(file, "x").expect("writes");
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_every_folder_it_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        let mut session = prompted(repo.clone());
+        // Moved into a worktree: everything it kept is still under the
+        // main checkout, and the worktree is left for its unmerged work.
+        let worktree = repo.join(".nth/worktrees/x");
+        session.set_cwd(worktree.clone(), Some(repo.clone()));
+        // Not a repository, so the cached root is where its Curios are.
+        session.curio_root = Some(repo.clone());
+        store.save(&session).await.expect("saves");
+        let other = prompted(repo.clone());
+        let plan = session.plan_path();
+        let work = session.work_dir();
+        let monitors = store.monitor_dir(session.id);
+        let images = store.images_dir(session.id);
+        let curios = repo.join(".nth/curios").join(session.id.to_string());
+        let kept = [
+            other.plan_path(),
+            worktree.join("main.rs"),
+            repo.join(".nth/curios/another-session/source/index.html"),
+        ];
+        for file in [
+            &plan,
+            &work.join("01-a/item.md"),
+            &monitors.join("1.log"),
+            &images.join("ab.png"),
+            &curios.join("source/index.html"),
+        ]
+        .into_iter()
+        .chain(&kept)
+        {
+            touch(file);
+        }
+
+        let deleted = store.delete_session(&session).await.expect("deletes");
+
+        let all = [plan, work, monitors, images, curios];
+        assert_eq!(deleted.removed, all);
+        assert!(deleted.failed.is_empty(), "{:?}", deleted.failed);
+        assert!(all.iter().all(|path| !path.exists()), "{all:?}");
+        assert!(store.list().await.expect("lists").is_empty());
+        assert!(kept.iter().all(|path| path.exists()), "{kept:?}");
+        assert!(store.delete_session(&session).await.is_err(), "gone");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_session_removes_the_rest_past_a_folder_that_will_not_go() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let session = prompted(dir.path().join("repo"));
+        store.save(&session).await.expect("saves");
+        let plan = session.plan_path();
+        let monitors = store.monitor_dir(session.id);
+        let images = store.images_dir(session.id);
+        for file in [&plan, &monitors.join("1.log"), &images.join("ab.png")] {
+            touch(file);
+        }
+        // Its parent read-only, the monitor folder cannot be unlinked.
+        let parent = monitors.parent().expect("a folder").to_path_buf();
+        let mode = |bits| std::fs::Permissions::from_mode(bits);
+        std::fs::set_permissions(&parent, mode(0o555)).expect("chmods");
+        // Root writes through any mode, so there is nothing to refuse.
+        let refuses = std::fs::write(parent.join("probe"), "x").is_err();
+
+        let deleted = store.delete_session(&session).await;
+
+        std::fs::set_permissions(&parent, mode(0o755)).expect("chmods back");
+        let deleted = deleted.expect("deletes the save");
+        if refuses {
+            assert_eq!(deleted.removed, [plan.clone(), images.clone()]);
+            let failed: Vec<&PathBuf> = deleted.failed.iter().map(|(path, _)| path).collect();
+            assert_eq!(failed, [&monitors]);
+            assert!(monitors.exists());
+        }
+        assert!(!plan.exists() && !images.exists());
+        assert!(store.list().await.expect("lists").is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_session_without_a_plan_or_work_removes_only_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let session = prompted(dir.path().join("repo"));
+        store.save(&session).await.expect("saves");
+
+        let deleted = store.delete_session(&session).await.expect("deletes");
+
+        assert!(deleted.removed.is_empty(), "{:?}", deleted.removed);
+        assert!(deleted.failed.is_empty(), "{:?}", deleted.failed);
+        assert!(store.list().await.expect("lists").is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_session_finds_curios_in_the_state_root_not_a_stale_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("creates");
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&repo)
+            .status()
+            .expect("runs git");
+        assert!(init.success());
+        let stale = dir.path().join("stale");
+        let mut session = prompted(repo.clone());
+        session.curio_root = Some(stale.clone());
+        store.save(&session).await.expect("saves");
+        let id = session.id.to_string();
+        let own = repo
+            .canonicalize()
+            .expect("exists")
+            .join(".nth/curios")
+            .join(&id);
+        let cached = stale.join(".nth/curios").join(&id);
+        std::fs::create_dir_all(&own).expect("creates");
+        std::fs::create_dir_all(&cached).expect("creates");
+
+        let deleted = store.delete_session(&session).await.expect("deletes");
+
+        assert_eq!(deleted.removed.as_slice(), std::slice::from_ref(&own));
+        assert!(!own.exists());
+        assert!(cached.exists(), "a stale cached root is left alone");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_session_refuses_a_curio_folder_through_a_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        // A linked `.nth` below the root, and a root that is itself a link.
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("creates");
+        std::os::unix::fs::symlink(target.path(), repo.join(".nth")).expect("links");
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(target.path(), &linked).expect("links");
+        for (root, behind) in [
+            (repo, target.path().join("curios")),
+            (linked, target.path().join(".nth/curios")),
+        ] {
+            let mut session = prompted(root.clone());
+            session.curio_root = Some(root);
+            store.save(&session).await.expect("saves");
+            let followed = behind.join(session.id.to_string());
+            std::fs::create_dir_all(&followed).expect("creates");
+
+            let refused = store.delete_session(&session).await;
+
+            assert!(
+                matches!(refused, Err(Error::CurioSymlink { .. })),
+                "{refused:?}"
+            );
+            assert!(followed.exists(), "nothing behind the link is removed");
+            store.delete(session.id).await.expect("the save was kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_session_refuses_a_relative_or_traversing_curio_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("creates");
+        for root in ["repo".into(), repo.join("../elsewhere")] {
+            let mut session = prompted(dir.path().join("gone"));
+            session.curio_root = Some(root);
+            store.save(&session).await.expect("saves");
+            // Without the guard, the traversing root would reach this.
+            let reached = dir
+                .path()
+                .join("elsewhere/.nth/curios")
+                .join(session.id.to_string());
+            std::fs::create_dir_all(&reached).expect("creates");
+
+            let refused = store.delete_session(&session).await;
+
+            assert!(
+                matches!(refused, Err(Error::CurioRoot { .. })),
+                "{refused:?}"
+            );
+            assert!(reached.exists());
+            store.delete(session.id).await.expect("the save was kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_session_with_its_repository_gone_still_removes_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path().join("sessions"));
+        let mut session = prompted(dir.path().join("gone"));
+        session.curio_root = Some(session.cwd.clone());
+        store.save(&session).await.expect("saves");
+
+        let deleted = store.delete_session(&session).await.expect("deletes");
+
+        assert!(deleted.removed.is_empty(), "{:?}", deleted.removed);
+        assert!(store.list().await.expect("lists").is_empty());
     }
 }

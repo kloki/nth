@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -19,6 +19,15 @@ pub(crate) use turn::TurnInput;
 
 fn first_line(text: &str) -> &str {
     text.trim().lines().next().unwrap_or_default()
+}
+
+/// [`Session::state_root`] from the fields it reads, for a caller that
+/// works it out on a blocking thread: finding the main checkout runs git.
+pub(crate) fn state_root(saved: Option<&Path>, origin: Option<&Path>, cwd: &Path) -> PathBuf {
+    saved.map(Path::to_path_buf).unwrap_or_else(|| {
+        let start = origin.unwrap_or(cwd);
+        nth_directories::main_project_root(start).unwrap_or_else(|| start.to_path_buf())
+    })
 }
 
 /// The user message before a command the user ran themselves, as opencode
@@ -331,10 +340,11 @@ impl Session {
 
     /// Resolve old saves without a recorded state root from their original directory.
     pub fn state_root(&self) -> PathBuf {
-        self.state_root.clone().unwrap_or_else(|| {
-            let start = self.origin.as_ref().unwrap_or(&self.cwd);
-            nth_directories::main_project_root(start).unwrap_or_else(|| start.clone())
-        })
+        state_root(
+            self.state_root.as_deref(),
+            self.origin.as_deref(),
+            &self.cwd,
+        )
     }
 
     /// Where this session's orchestration keeps its work items: under the

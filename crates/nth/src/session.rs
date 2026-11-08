@@ -3,16 +3,15 @@
 
 use std::{
     io::{self, IsTerminal, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::SystemTime,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use jiff::Timestamp;
-use nth_directories::Directories;
 use nth_icons::icons;
-use nth_session::{Session, Store, Summary, plan, store::age};
+use nth_session::{Session, Store, Summary, store::age};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -57,7 +56,7 @@ pub async fn run(command: SessionCommand) -> Result<()> {
         }
         SessionCommand::Delete { session } => {
             let session = pick(&store, Some(&session)).await?;
-            let removed = delete(&store, &session).await?;
+            let deleted = store.delete_session(&session).await?;
             let mut out = io::stdout().lock();
             let title = session.title().unwrap_or_default();
             writeln!(
@@ -67,10 +66,22 @@ pub async fn run(command: SessionCommand) -> Result<()> {
                 title.bold(),
                 session.id.to_string().dimmed()
             )?;
-            for path in removed {
+            for path in &deleted.removed {
                 writeln!(out, "  {}", path.display().dimmed())?;
             }
-            Ok(())
+            // The save is gone, so a retry cannot find what stayed: name it
+            // for removing by hand.
+            for (path, error) in &deleted.failed {
+                eprintln!(
+                    "{} could not remove {}: {error}",
+                    icons().fail.red().bold(),
+                    path.display()
+                );
+            }
+            match deleted.failed.len() {
+                0 => Ok(()),
+                n => bail!("{n} of what the session kept could not be removed"),
+            }
         }
     }
 }
@@ -108,114 +119,6 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
         .filter(|s| cwd.is_none_or(|cwd| s.cwd == cwd || s.origin.as_deref() == Some(cwd)))
         .take(max.unwrap_or(usize::MAX))
         .collect()
-}
-
-/// Removes `session`'s save, then whatever else it kept: its plan file,
-/// its work items and its monitor logs, each only if it is there. Its
-/// worktrees are left alone, since they may hold work not merged yet.
-/// Returns what went besides the save.
-async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
-    // Asks git and walks the folder's ancestors, so off the runtime.
-    let (state_root, cached, id) = (
-        session.state_root(),
-        session.curio_root.clone(),
-        session.id.to_string(),
-    );
-    let curio_dir =
-        tokio::task::spawn_blocking(move || curio_dir(&state_root, cached.as_deref(), &id))
-            .await??;
-    store.delete(session.id).await?;
-    let mut removed = Vec::new();
-    // Also clean plans written by older versions at the original or current cwd.
-    let mut plans = vec![session.plan_path()];
-    plans.push(plan::plan_path(&session.cwd, &session.id));
-    plans.extend(
-        session
-            .origin
-            .as_ref()
-            .map(|o| plan::plan_path(o, &session.id)),
-    );
-    plans.sort();
-    plans.dedup();
-    for plan in plans {
-        if gone(tokio::fs::remove_file(&plan).await, &plan)? {
-            removed.push(plan);
-        }
-    }
-    let mut work_dirs = vec![
-        session.work_dir(),
-        nth_work::work_dir(&session.cwd, &session.id.to_string()),
-    ];
-    if let Some(origin) = &session.origin {
-        work_dirs.push(nth_work::work_dir(origin, &session.id.to_string()));
-    }
-    work_dirs.sort();
-    work_dirs.dedup();
-    let dirs = work_dirs.into_iter().chain([
-        store.monitor_dir(session.id),
-        // Its subagents' images too: they keep theirs in its folder.
-        store.images_dir(session.id),
-    ]);
-    for dir in dirs {
-        if gone(tokio::fs::remove_dir_all(&dir).await, &dir)? {
-            removed.push(dir);
-        }
-    }
-    if let Some(dir) = curio_dir
-        && gone(tokio::fs::remove_dir_all(&dir).await, &dir)?
-    {
-        removed.push(dir);
-    }
-    Ok(removed)
-}
-
-/// Session `id`'s Curios folder in the main checkout of `state_root`, where
-/// the tools made it; the `cached` root when git cannot say, because that
-/// is no longer a repository or git itself is missing, so the save can go
-/// all the same. Never follow a replaced ancestor into another directory.
-fn curio_dir(state_root: &Path, cached: Option<&Path>, id: &str) -> Result<Option<PathBuf>> {
-    let root = match nth_curios::owner_root(state_root) {
-        Ok(root) => root,
-        Err(_) => match cached {
-            Some(root) => root.to_path_buf(),
-            None => return Ok(None),
-        },
-    };
-    if !root.is_absolute() {
-        bail!("saved Curios root must be absolute");
-    }
-    if root
-        .components()
-        .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        bail!("saved Curios root contains a parent traversal");
-    }
-    // The root and what Curios made below it; its ancestors are the
-    // system's (macOS keeps temporary folders under `/var`, a symlink).
-    let dirs = Directories::from_root(&root);
-    let dir = dirs.curio_owner(id);
-    for current in [root.clone(), dirs.nth(), dirs.curios(), dir.clone()] {
-        match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => bail!(
-                "refusing Curios deletion through symlink {}",
-                current.display()
-            ),
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(Some(dir))
-}
-
-/// Whether a removal took something away; one that was never there is
-/// not an error.
-fn gone(result: io::Result<()>, path: &Path) -> Result<bool> {
-    match result {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
-    }
 }
 
 fn list_text(
@@ -267,8 +170,6 @@ fn list_json(sessions: &[&Summary]) -> Value {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
-
-    use nth_protocol::Message;
 
     use super::*;
 
@@ -379,157 +280,5 @@ mod tests {
         assert_eq!(value[1]["cwd"], "/b");
         assert_eq!(value[1]["model"], "glm");
         assert_eq!(value[1]["updated"], "1970-01-01T00:00:02Z");
-    }
-
-    #[tokio::test]
-    async fn delete_removes_the_save_plan_work_monitor_logs_and_images() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::at(dir.path().join("sessions"));
-        let mut session = Session::new("glm", dir.path().join("repo"));
-        session.messages.push(Message::User("fix it".into()));
-        store.save(&session).await.expect("saves");
-        let other = Session::new("glm", dir.path().join("repo"));
-        let plan = session.plan_path();
-        let work = session.work_dir();
-        let monitors = store.monitor_dir(session.id);
-        let images = store.images_dir(session.id);
-        let kept = other.plan_path();
-        for file in [
-            &plan,
-            &work.join("01-a/item.md"),
-            &monitors.join("1.log"),
-            &images.join("ab.png"),
-            &kept,
-        ] {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(file, "x").unwrap();
-        }
-
-        let removed = delete(&store, &session).await.expect("deletes");
-
-        assert_eq!(
-            removed,
-            [plan.clone(), work.clone(), monitors.clone(), images.clone()]
-        );
-        assert!(store.list().await.expect("lists").is_empty());
-        assert!(!plan.exists() && !work.exists() && !monitors.exists() && !images.exists());
-        assert!(kept.exists(), "another session's plan stays");
-        assert!(delete(&store, &session).await.is_err(), "gone");
-    }
-
-    #[tokio::test]
-    async fn delete_without_a_plan_or_work_removes_only_the_save() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::at(dir.path().join("sessions"));
-        let mut session = Session::new("glm", dir.path().join("repo"));
-        session.messages.push(Message::User("fix it".into()));
-        store.save(&session).await.expect("saves");
-
-        let removed = delete(&store, &session).await.expect("deletes");
-
-        assert!(removed.is_empty(), "{removed:?}");
-    }
-
-    #[tokio::test]
-    async fn delete_curios_uses_stored_root_even_without_git() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("sessions"));
-        let root = dir.path().join("original");
-        let mut session = Session::new("glm", dir.path().join("worktree"));
-        session.curio_root = Some(root.clone());
-        session.messages.push(Message::User("review".into()));
-        store.save(&session).await.unwrap();
-        let own = root.join(".nth/curios").join(session.id.to_string());
-        let other = root.join(".nth/curios/another-session");
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(root.join("project.html"), "keep").unwrap();
-        let removed = delete(&store, &session).await.unwrap();
-        assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
-        assert!(!own.exists());
-        assert!(other.exists());
-        assert!(root.join("project.html").exists());
-    }
-
-    #[tokio::test]
-    async fn delete_curios_finds_the_store_in_the_state_root_not_a_stale_cache() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("sessions"));
-        let repo = dir.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        assert!(
-            std::process::Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(&repo)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let stale = dir.path().join("stale");
-        let mut session = Session::new("glm", repo.clone());
-        session.curio_root = Some(stale.clone());
-        session.messages.push(Message::User("review".into()));
-        store.save(&session).await.unwrap();
-        let id = session.id.to_string();
-        let own = repo.canonicalize().unwrap().join(".nth/curios").join(&id);
-        let cached = stale.join(".nth/curios").join(&id);
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::create_dir_all(&cached).unwrap();
-        let removed = delete(&store, &session).await.unwrap();
-        assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
-        assert!(!own.exists());
-        assert!(cached.exists(), "a stale cached root is left alone");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn curio_deletion_rejects_symlink_ancestors() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(target.path(), dir.path().join(".nth")).unwrap();
-        let mut session = Session::new("glm", dir.path().into());
-        session.curio_root = Some(dir.path().into());
-        assert!(
-            curio_dir(
-                &session.state_root(),
-                session.curio_root.as_deref(),
-                &session.id.to_string()
-            )
-            .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_with_missing_curio_repository_still_removes_save() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("sessions"));
-        let mut session = Session::new("glm", dir.path().join("gone"));
-        session.curio_root = Some(session.cwd.clone());
-        session.messages.push(Message::User("review".into()));
-        store.save(&session).await.unwrap();
-        assert!(delete(&store, &session).await.unwrap().is_empty());
-        assert!(store.list().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn delete_removes_the_plan_from_before_a_worktree() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::at(dir.path().join("sessions"));
-        let repo = dir.path().join("repo");
-        let mut session = Session::new("glm", repo.clone());
-        session.messages.push(Message::User("fix it".into()));
-        let before = session.plan_path();
-        session.set_cwd(repo.join(".nth/worktrees/x"), Some(repo));
-        let after = session.plan_path();
-        store.save(&session).await.expect("saves");
-        for file in [&before, &after] {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(file, "x").unwrap();
-        }
-
-        let removed = delete(&store, &session).await.expect("deletes");
-
-        assert_eq!(removed, std::slice::from_ref(&before));
-        assert!(!before.exists() && !after.exists());
     }
 }
