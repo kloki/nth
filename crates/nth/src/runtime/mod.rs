@@ -102,9 +102,11 @@ impl Runtime {
         Ok(self.chatgpt.get_or_init(|| built).clone())
     }
 
-    /// The providers `config` names, ChatGPT's on the process's login.
+    /// The providers `config` names, ChatGPT's on the process's login,
+    /// keeping the models.dev catalogue in the data directory.
     pub fn providers(&self, config: &Config) -> Result<Providers> {
-        providers::providers(config, &self.chatgpt()?)
+        let cache = self.env.nth_data().map(|dir| dir.join("models.json"));
+        providers::providers(config, &self.chatgpt()?, cache)
     }
 
     /// The config for `cwd`, with the model override applied over it.

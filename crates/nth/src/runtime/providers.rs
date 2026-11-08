@@ -1,6 +1,8 @@
 //! The providers a session talks through, and a model for it when the
 //! config names none.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 use nth_config::Config;
 use nth_context::Paths;
@@ -41,8 +43,12 @@ fn pick(mut listing: Listing) -> Result<String> {
 /// `chatgpt`, which runs once you connect, even mid-run. Neither a key set
 /// nor ChatGPT connected is an error naming every variable; so is a model,
 /// the config's or a mode's, on a provider whose key is not set or that is
-/// not connected.
-pub(super) fn providers(config: &Config, chatgpt: &nth_auth::ChatGpt) -> Result<Providers> {
+/// not connected. The catalogue is kept at `cache` between runs.
+pub(super) fn providers(
+    config: &Config,
+    chatgpt: &nth_auth::ChatGpt,
+    cache: Option<PathBuf>,
+) -> Result<Providers> {
     let mut endpoints = Vec::new();
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
@@ -79,7 +85,7 @@ pub(super) fn providers(config: &Config, chatgpt: &nth_auth::ChatGpt) -> Result<
     }
     // Last, so a bare model goes to a configured provider first.
     endpoints.push(EndpointConfig::chatgpt(chatgpt.clone()));
-    let providers = Providers::new(endpoints, unavailable, &config.model)
+    let providers = Providers::new(endpoints, unavailable, &config.model, cache)
         .with_context(|| format!("model {} cannot run", config.model))?;
     for mode in [Mode::Plan, Mode::Act] {
         // What the chat starts on: the first profile's, else the model above.
