@@ -389,6 +389,39 @@ mod tests {
         assert_eq!((session.context_window, session.max_output), (None, None));
     }
 
+    /// The listing may be gone when the model switches (`/connect` drops
+    /// it), and then the old model's price and image support go with it.
+    #[tokio::test]
+    async fn switching_models_without_a_listing_drops_the_old_price() {
+        let mut app = app();
+        let mut glm = model("glm", true);
+        glm.cost = Some(Cost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        });
+        glm.takes_images = Some(false);
+        app.llms = Some(vec![glm].into());
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+        let session = app.session.as_ref().expect("session came back");
+        assert!(session.cost.is_some() && !session.takes_images, "listed");
+
+        app.llms = None;
+        app.model = "other".into();
+        app.prompt.insert_str("again");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn task finished");
+        app.end_turn(ended);
+
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.cost, None);
+        assert!(session.takes_images, "unknown counts as taking images");
+    }
+
     #[tokio::test]
     async fn a_turn_puts_the_listed_limits_on_the_session() {
         let mut app = app();

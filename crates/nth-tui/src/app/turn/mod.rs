@@ -440,7 +440,11 @@ impl App {
         // Picked in the model picker since the last turn, maybe mid-turn.
         if session.model != self.model {
             session.set_model(self.model.clone());
+            // Without a listing (`/connect` drops it) nothing sizes the new
+            // model below, and the old one's price would land on its spends.
             session.set_limits(None, None);
+            session.takes_images = true;
+            session.cost = None;
         }
         session.effort = self.effort;
         // Unsized until the listing is in, which sizes them with the model.

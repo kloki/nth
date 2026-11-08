@@ -489,11 +489,11 @@ impl Session {
         // into a note for a model that takes none.
         self.takes_images = info.and_then(|info| info.takes_images).unwrap_or(true);
         self.cost = info.and_then(|info| info.cost);
-        for picked in [&mut self.subagent_llm, &mut self.clerk_llm]
+        for llm in [&mut self.subagent_llm, &mut self.clerk_llm]
             .into_iter()
             .flatten()
         {
-            *picked = SubagentLlm::sized(picked.llm.clone(), listing);
+            *llm = SubagentLlm::sized(llm.llm.clone(), listing);
         }
     }
 
@@ -954,13 +954,24 @@ pub(crate) mod tests {
 
     #[test]
     fn size_to_puts_the_listed_window_and_output_on_the_session() {
-        let listing = Listing::from(vec![listed("zen/a", Some(200_000), Some(64_000))]);
+        let cost = Cost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        let mut entry = listed("zen/a", Some(200_000), Some(64_000));
+        entry.takes_images = Some(false);
+        entry.cost = Some(cost);
+        let listing = Listing::from(vec![entry]);
         let mut session = Session::new("zen/a", "/repo".into());
 
         session.size_to(&listing);
 
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
+        assert!(!session.takes_images);
+        assert_eq!(session.cost, Some(cost));
     }
 
     #[test]

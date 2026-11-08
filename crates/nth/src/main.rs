@@ -527,6 +527,37 @@ mod tests {
         }
     }
 
+    /// A provider whose listing fails, as an unreachable endpoint's does.
+    struct Unlistable;
+
+    impl Provider for Unlistable {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Err("no /models".into()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_listing_leaves_the_saved_limits_alone() {
+        // A resumed session keeps what it was listed with, so its
+        // compaction still fires; a fresh one keeps both unknown.
+        let config = Config::default();
+        let mut resumed = Session::new("zen/a", "/repo".into());
+        resumed.set_limits(Some(100_000), Some(8_000));
+
+        apply_context(&mut resumed, &config, &Unlistable).await;
+
+        assert_eq!(resumed.context_window, Some(100_000));
+        assert_eq!(resumed.max_output, Some(8_000));
+    }
+
     fn listed(id: &str, context: Option<u64>, output: Option<u64>) -> ModelInfo {
         ModelInfo {
             context,
