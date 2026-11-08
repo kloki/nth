@@ -4,12 +4,9 @@
 
 use std::{path::Path, process::Stdio, time::Duration};
 
-use tokio::io::AsyncReadExt;
-
 use crate::{
-    command_output,
-    output::{self, tail},
-    process::{self, DRAIN, KillGroupOnDrop, kill_group},
+    output,
+    process::{self, Outcome, Tail},
 };
 
 /// Where the script lives, relative to the main checkout.
@@ -44,40 +41,17 @@ async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration)
     let Some(mut stdout) = child.stdout.take() else {
         return Some(format!("Could not run {SCRIPT}: its stdout is not piped"));
     };
-    // Declared after `child` so it drops first, while the child is still
-    // unreaped: a cancelled turn kills the whole script.
-    let mut abandoned = KillGroupOnDrop(child.id());
-
-    let mut buf = Vec::new();
-    let exit = async {
-        loop {
-            tokio::select! {
-                read = stdout.read_buf(&mut buf) => {
-                    if read? == 0 {
-                        return child.wait().await;
-                    }
-                }
-                status = child.wait() => return status,
-            }
-        }
-    };
-    let run = tokio::time::timeout(timeout, exit).await;
-    let outcome = match run {
-        Ok(Ok(status)) => match status.code() {
+    let mut ring = Tail::new(output::MAX_CHARS);
+    let outcome = process::run_to_exit(&mut child, &mut stdout, Some(timeout), &mut ring).await;
+    let outcome = match outcome {
+        Outcome::Exited(status) => match status.code() {
             Some(code) => format!("exit {code}"),
             None => "killed by signal".to_string(),
         },
-        Ok(Err(e)) => format!("failed: {e}"),
-        Err(_) => {
-            kill_group(&child);
-            format!("timed out after {timeout:?} and was killed")
-        }
+        Outcome::TimedOut => format!("timed out after {timeout:?} and was killed"),
+        Outcome::Failed(e) => format!("failed: {e}"),
     };
-    abandoned.0 = None;
-    // Processes the script put in the background may hold the pipe open;
-    // take what they already wrote and move on.
-    let _ = tokio::time::timeout(DRAIN, stdout.read_to_end(&mut buf)).await;
-    let out = tail(&command_output::clean(&buf), output::MAX_CHARS);
+    let out = ring.text();
     Some(format!("Ran {SCRIPT} ({outcome}):\n{}", out.trim_end()))
 }
 

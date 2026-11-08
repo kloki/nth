@@ -6,16 +6,12 @@ use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{OutputSink, Tool, ToolContext, ToolResult, ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Child,
-};
 
 use self::rtk::Rtk;
 use crate::{
-    command_output::{self, Cleaner},
-    output::{self, tail},
-    process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
+    command_output::Cleaner,
+    output,
+    process::{self, MIN_TIMEOUT_MS, Outcome, Receiver, Tail},
 };
 
 /// Told to the model when rtk rewrites its commands, so it can follow the
@@ -175,25 +171,22 @@ impl Tool for Bash {
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             let mut stdout = child.stdout.take().ok_or("bash stdout is not piped")?;
-            // Declared after `child` so it drops first, while the child is
-            // still unreaped and its pid cannot have been reused.
-            let mut abandoned = KillGroupOnDrop(child.id());
 
-            let mut buf = Vec::new();
-            let mut streamed = Streamed::new(&ctx.output);
-            let exit = wait_for_exit(&mut child, &mut stdout, &mut buf, &mut streamed);
-            let run = if self.untimed {
-                Ok(exit.await)
-            } else {
-                tokio::time::timeout(Duration::from_millis(limit.ms), exit).await
+            // Streamed before it goes into the ring, so the chat shows all
+            // of it while the model is shown the tail.
+            let mut shown = Shown {
+                streamed: Streamed::new(&ctx.output),
+                ring: Tail::new(max_chars),
             };
-            abandoned.0 = None;
-            let status = match run {
-                Ok(status) => status.map_err(|e| e.to_string())?,
-                Err(_) => {
-                    kill_group(&child);
-                    streamed.rest(&buf).await;
-                    let mut out = tail(&command_output::clean(&buf), max_chars);
+            let timeout = (!self.untimed).then(|| Duration::from_millis(limit.ms));
+            let outcome = process::run_to_exit(&mut child, &mut stdout, timeout, &mut shown).await;
+            let Shown { mut streamed, mut ring } = shown;
+            streamed.finish().await;
+
+            let mut out = ring.text();
+            let status = match outcome {
+                Outcome::Exited(status) => status,
+                Outcome::TimedOut => {
                     let ms = limit.ms;
                     out.push_str(&match limit.ceiling {
                         true => format!(
@@ -205,13 +198,11 @@ impl Tool for Bash {
                     });
                     return Err(out);
                 }
+                Outcome::Failed(e) => {
+                    out.push_str(&format!("\n\ncommand killed: reading its output failed: {e}"));
+                    return Err(out);
+                }
             };
-            // Processes the command put in the background may hold the pipe
-            // open indefinitely; take what they already wrote and move on.
-            let _ = tokio::time::timeout(DRAIN, stdout.read_to_end(&mut buf)).await;
-            streamed.rest(&buf).await;
-
-            let mut out = tail(&command_output::clean(&buf), max_chars);
             match status.code() {
                 Some(0) => {}
                 Some(code) => out.push_str(&format!("\n\n(exit code {code})")),
@@ -228,34 +219,33 @@ impl Tool for Bash {
     }
 }
 
-/// Waits for bash itself to exit rather than for stdout to close, which
-/// background processes can delay forever.
-async fn wait_for_exit(
-    child: &mut Child,
-    stdout: &mut (impl AsyncRead + Unpin),
-    buf: &mut Vec<u8>,
-    streamed: &mut Streamed<'_>,
-) -> std::io::Result<std::process::ExitStatus> {
-    loop {
-        tokio::select! {
-            read = stdout.read_buf(buf) => {
-                if read? == 0 {
-                    return child.wait().await;
-                }
-                streamed.lines(buf).await;
-            }
-            status = child.wait() => return status,
-        }
+/// Where a command's output goes: all of it to the chat, its tail to the
+/// model.
+struct Shown<'a> {
+    streamed: Streamed<'a>,
+    ring: Tail,
+}
+
+impl Receiver for Shown<'_> {
+    async fn receive(&mut self, bytes: &[u8]) {
+        self.streamed.push(bytes).await;
+        self.ring.push(bytes);
     }
 }
 
-/// Streams the output as it arrives, in whole lines, so a multi-byte
-/// character split across two reads is never sent in halves.
+/// The most cleaned output held back waiting for a line to end: a
+/// command that never prints a newline (a progress bar redrawn with `\r`)
+/// still shows as it runs, and is never held whole.
+const STREAM_FLUSH: usize = 8 * 1024;
+
+/// Streams the output as it arrives, in whole lines where it can. The
+/// cleaner only ever emits whole characters, so a multi-byte character
+/// split across two reads is never sent in halves.
 struct Streamed<'a> {
     sink: &'a OutputSink,
     cleaner: Cleaner,
-    /// How much of the output has been sent.
-    sent: usize,
+    /// Cleaned output not sent yet: the start of a line.
+    pending: Vec<u8>,
 }
 
 impl<'a> Streamed<'a> {
@@ -263,28 +253,29 @@ impl<'a> Streamed<'a> {
         Self {
             sink,
             cleaner: Cleaner::default(),
-            sent: 0,
+            pending: Vec::new(),
         }
     }
 
-    /// Sends the complete lines not sent yet. Awaiting a full channel pauses
-    /// reading the command's output, which is the backpressure we want.
-    async fn lines(&mut self, buf: &[u8]) {
-        let Some(newline) = buf[self.sent..].iter().rposition(|&b| b == b'\n') else {
-            return;
+    /// Sends the complete lines the bytes finish. Awaiting a full channel
+    /// pauses reading the command's output, which is the backpressure we
+    /// want.
+    async fn push(&mut self, bytes: &[u8]) {
+        self.pending.extend(self.cleaner.push(bytes));
+        let end = match self.pending.iter().rposition(|&b| b == b'\n') {
+            _ if self.pending.len() >= STREAM_FLUSH => self.pending.len(),
+            Some(newline) => newline + 1,
+            None => return,
         };
-        let end = self.sent + newline + 1;
-        let clean = self.cleaner.push(&buf[self.sent..end]);
-        self.send(&clean).await;
-        self.sent = end;
+        let lines: Vec<u8> = self.pending.drain(..end).collect();
+        self.send(&lines).await;
     }
 
     /// Sends whatever is left, once the command is done.
-    async fn rest(&mut self, buf: &[u8]) {
-        if self.sent < buf.len() {
-            let clean = self.cleaner.push(&buf[self.sent..]);
-            self.send(&clean).await;
-            self.sent = buf.len();
+    async fn finish(&mut self) {
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.send(&rest).await;
         }
     }
 
@@ -298,6 +289,7 @@ impl<'a> Streamed<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::tests::assert_process_gone;
 
     async fn bash(args: serde_json::Value) -> ToolResult {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -367,55 +359,90 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let sink = OutputSink::new(tx, "1".into());
         let mut streamed = Streamed::new(&sink);
-        streamed.lines(&[0xe2, 0x82]).await;
+        streamed.push(&[b'a', 0xe2, 0x82]).await;
         assert!(rx.try_recv().is_err());
-        streamed.lines(&[0xe2, 0x82, 0xac, b'\n']).await;
-        assert_eq!(next_text(&mut rx).await, "€\n");
+        streamed.push(&[0xac, b'\n', b'b']).await;
+        assert_eq!(next_text(&mut rx).await, "a€\n");
+        assert!(rx.try_recv().is_err());
+        streamed.finish().await;
+        assert_eq!(next_text(&mut rx).await, "b");
     }
 
-    async fn assert_process_gone(pid: &str) {
-        tokio::time::timeout(DEADLINE, async {
-            loop {
-                let alive = std::process::Command::new("kill")
-                    .args(["-0", pid.trim()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .expect("run kill")
-                    .success();
-                if !alive || process_is_zombie(pid.trim()) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("background process survived cleanup");
+    #[tokio::test]
+    async fn a_line_that_never_ends_is_streamed_in_pieces() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sink = OutputSink::new(tx, "1".into());
+        let mut streamed = Streamed::new(&sink);
+        streamed.push(&[b'x'; STREAM_FLUSH - 1]).await;
+        assert!(rx.try_recv().is_err());
+        streamed.push(b"yz").await;
+        assert_eq!(next_text(&mut rx).await.len(), STREAM_FLUSH + 1);
+        assert!(streamed.pending.is_empty());
     }
 
-    #[cfg(target_os = "linux")]
-    fn process_is_zombie(pid: &str) -> bool {
-        let Ok(pid) = pid.parse::<u32>() else {
-            return false;
+    /// A ring that remembers the most it ever held.
+    struct Peak {
+        ring: Tail,
+        peak: usize,
+    }
+
+    impl Receiver for Peak {
+        async fn receive(&mut self, bytes: &[u8]) {
+            self.ring.push(bytes);
+            self.peak = self.peak.max(self.ring.len());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chatty_command_keeps_only_its_tail_in_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut child = process::shell("yes | head -c 50M", dir.path(), "")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let mut stdout = child.stdout.take().expect("piped");
+        let mut peak = Peak {
+            ring: Tail::new(1_000),
+            peak: 0,
         };
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                stat.rsplit_once(')')
-                    .map(|(_, rest)| rest.trim().starts_with("Z "))
-            })
-            .unwrap_or(false)
-    }
+        let outcome =
+            process::run_to_exit(&mut child, &mut stdout, Some(DEADLINE), &mut peak).await;
+        let Peak { mut ring, peak } = peak;
+        assert!(
+            matches!(&outcome, Outcome::Exited(status) if status.success()),
+            "{outcome:?}"
+        );
+        assert!(peak <= 4_000, "held {peak} bytes");
+        assert_eq!(
+            ring.text(),
+            format!(
+                "...output truncated, showing the last 1000 characters of {} bytes...\n{}",
+                50 * 1024 * 1024,
+                "y\n".repeat(500)
+            )
+        );
 
-    #[cfg(not(target_os = "linux"))]
-    fn process_is_zombie(_pid: &str) -> bool {
-        false
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn running_process_is_not_a_zombie() {
-        assert!(!process_is_zombie(&std::process::id().to_string()));
+        // The tool shows the model the same tail.
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let bash = Bash::new(BashConfig {
+            max_output_chars: 1_000,
+            rtk: false,
+            ..BashConfig::default()
+        });
+        let out = bash
+            .call(
+                json!({ "command": "yes | head -c 1M", "description": "t" }),
+                &ctx,
+            )
+            .await;
+        assert_eq!(
+            out,
+            Ok(format!(
+                "...output truncated, showing the last 1000 characters of {} bytes...\n{}",
+                1024 * 1024,
+                "y\n".repeat(500)
+            ))
+        );
     }
 
     #[tokio::test]
