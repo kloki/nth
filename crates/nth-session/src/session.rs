@@ -196,6 +196,11 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(Error::Interrupted);
         }
+        if self.tools_mode() == Mode::Plan {
+            plan::ensure_dir(&self.state_root())
+                .await
+                .map_err(Error::State)?;
+        }
         if let Ok(store) = self.curios().store() {
             self.curio_root = Some(store.repo_root().to_path_buf());
         }
@@ -533,6 +538,13 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if self.tools_mode() == Mode::Plan && matches!(input, TurnInput::Prompt(_)) {
+            // Prepare before consuming Curios feedback so a failure cannot
+            // record a receipt without adding the notice to the conversation.
+            plan::ensure_dir(&self.state_root())
+                .await
+                .map_err(Error::State)?;
+        }
         // Notices lead the message, as `split_notices` reads them; feedback
         // is notices alone, with only the reminders after it.
         let (curios, mut text) = match input {
@@ -540,13 +552,6 @@ impl Session {
             TurnInput::Feedback(notices) => (Some(notices), String::new()),
         };
         let agent = self.primary().map(|agent| agent.name.clone());
-        if self.tools_mode() == Mode::Plan {
-            // The `.nth` directory, with the `.gitignore` that keeps plan
-            // files out of git, is ready before the model writes the plan.
-            plan::ensure_dir(&self.state_root())
-                .await
-                .map_err(Error::State)?;
-        }
         if let Some(dir) = self.memory_dir() {
             // Kept out of git before the model first saves to it.
             let _ = memory::ensure_dir(&dir, &self.cwd).await;
