@@ -39,11 +39,7 @@ impl App {
     /// What the next turn runs as and on.
     pub(super) fn runs_as(&self) -> Steerable {
         let selection = &self.selection;
-        (
-            selection.mode,
-            selection.agent.clone(),
-            selection.current().clone(),
-        )
+        (selection.mode, selection.agent.clone(), selection.current())
     }
 
     /// What each kind of turn runs with.
@@ -118,7 +114,7 @@ mod tests {
 
         app.apply(Action::NextTab);
         assert_eq!(app.selection.mode, Mode::Plan);
-        assert_eq!(app.selection.current(), &llm("kimi", Effort::High));
+        assert_eq!(app.selection.current(), llm("kimi", Effort::High));
         let shown = rows(&mut app);
         assert_eq!(prompt_row(&shown, 0).trim_end(), " ▎ plan · kimi · high");
         assert_eq!(status_row(&shown, 0).trim_end(), " /repo 0m");
@@ -130,7 +126,7 @@ mod tests {
 
         app.selection.set_current(llm("kimi", Effort::Low));
         app.apply(Action::PrevTab);
-        assert_eq!(app.selection.current(), &llm("glm", Effort::Default));
+        assert_eq!(app.selection.current(), llm("glm", Effort::Default));
         app.apply(Action::NextTab);
         assert_eq!(
             app.selection.current().effort,
@@ -160,14 +156,14 @@ mod tests {
         app.set_agent("review".into());
         assert_eq!(
             app.selection.current(),
-            &llm("glm", Effort::Default),
+            llm("glm", Effort::Default),
             "act's to start"
         );
         app.selection.set(Target::Agent, llm("qwen", Effort::Low));
         assert_eq!(app.selection.current().model, "qwen");
         assert_eq!(
             app.selection.llm(Target::Act),
-            &llm("glm", Effort::Default),
+            llm("glm", Effort::Default),
             "act keeps its own"
         );
 

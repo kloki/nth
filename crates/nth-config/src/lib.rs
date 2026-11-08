@@ -335,16 +335,6 @@ impl Config {
         }
     }
 
-    /// The model and effort `mode` starts on: the first profile's, or
-    /// the model above with the default effort when there are no
-    /// profiles.
-    pub fn llm_for(&self, mode: Mode) -> (String, Effort) {
-        match self.profiles.first() {
-            Some(profile) => self.profile_llm(profile, mode),
-            None => (self.model.clone(), Effort::default()),
-        }
-    }
-
     /// The model and effort `mode` runs with in `profile`; an empty model
     /// falls back to the model above.
     pub fn profile_llm(&self, profile: &ProfileConfig, mode: Mode) -> (String, Effort) {
@@ -359,24 +349,10 @@ impl Config {
         (model, defaults.effort)
     }
 
-    /// The model and effort subagents start on: the first profile's
-    /// subagent slot. `None` when it names no model, or there are no
-    /// profiles: subagents then run on their parent's.
-    pub fn subagent_for(&self) -> Option<(String, Effort)> {
-        self.profile_subagent(self.profiles.first()?)
-    }
-
     /// The model and effort subagents run with in `profile`; `None` when
     /// its subagent slot names no model, so they run on their parent's.
     pub fn profile_subagent(&self, profile: &ProfileConfig) -> Option<(String, Effort)> {
         slot(&profile.subagent)
-    }
-
-    /// The model and effort the clerk starts on: the first profile's clerk
-    /// slot. `None` when it names no model, or there are no profiles: the
-    /// clerk then runs as the other subagents.
-    pub fn clerk_for(&self) -> Option<(String, Effort)> {
-        self.profile_clerk(self.profiles.first()?)
     }
 
     /// The model and effort the clerk runs with in `profile`; `None` when
@@ -550,8 +526,15 @@ mod tests {
 
         assert_eq!(config.mode.default, Mode::Act);
         assert_eq!(config.profiles.len(), 2);
-        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
-        assert_eq!(config.llm_for(Mode::Act), ("glm".into(), Effort::Low));
+        let first = &config.profiles[0];
+        assert_eq!(
+            config.profile_llm(first, Mode::Plan),
+            ("kimi-k3".into(), Effort::High)
+        );
+        assert_eq!(
+            config.profile_llm(first, Mode::Act),
+            ("glm".into(), Effort::Low)
+        );
         assert_eq!(
             config.profile_llm(&config.profiles[1], Mode::Act),
             ("".into(), Effort::Default),
@@ -582,17 +565,14 @@ mod tests {
         )
         .expect("parses");
 
-        assert_eq!(config.subagent_for(), Some(("minimax".into(), Effort::Low)));
+        assert_eq!(
+            config.profile_subagent(&config.profiles[0]),
+            Some(("minimax".into(), Effort::Low))
+        );
         assert_eq!(
             config.profile_subagent(&config.profiles[1]),
             None,
             "an empty subagent model means the parent's, not the model above"
-        );
-        assert_eq!(
-            Config::parse("model = \"glm\"")
-                .expect("parses")
-                .subagent_for(),
-            None
         );
     }
 
@@ -619,7 +599,10 @@ mod tests {
         )
         .expect("parses");
 
-        assert_eq!(config.clerk_for(), Some(("flash".into(), Effort::Minimal)));
+        assert_eq!(
+            config.profile_clerk(&config.profiles[0]),
+            Some(("flash".into(), Effort::Minimal))
+        );
         assert_eq!(
             config.profile_clerk(&config.profiles[1]),
             None,
@@ -646,9 +629,13 @@ mod tests {
 
         config.model = "from-file".into();
 
-        assert_eq!(config.llm_for(Mode::Plan), ("kimi-k3".into(), Effort::High));
+        let first = &config.profiles[0];
         assert_eq!(
-            config.llm_for(Mode::Act),
+            config.profile_llm(first, Mode::Plan),
+            ("kimi-k3".into(), Effort::High)
+        );
+        assert_eq!(
+            config.profile_llm(first, Mode::Act),
             ("from-file".into(), Effort::Low),
             "an empty profile model means the config's"
         );
@@ -658,8 +645,16 @@ mod tests {
     #[test]
     fn without_profiles_both_modes_run_the_model_above() {
         let config = Config::parse("model = \"glm\"\n").expect("parses");
-        assert_eq!(config.llm_for(Mode::Plan), ("glm".into(), Effort::Default));
-        assert_eq!(config.llm_for(Mode::Act), ("glm".into(), Effort::Default));
+        let selection = Selection::from_config(&config, &|m| m.into(), &|_| None);
+        let glm = nth_protocol::Llm {
+            model: "glm".into(),
+            effort: Effort::Default,
+        };
+        assert_eq!(
+            selection.slots(),
+            &Slots::same(glm),
+            "subagents and the clerk on their parent's"
+        );
         assert!(!config.needs_model());
 
         let empty = Config::parse("").expect("parses");
@@ -764,19 +759,20 @@ mod tests {
         .expect("parses");
 
         config.set_model("from-flag".into());
+        let first = &config.profiles[0];
         assert_eq!(
-            config.subagent_for(),
+            config.profile_subagent(first),
             None,
             "subagents run on their parent's, the flag's model"
         );
-        assert_eq!(config.clerk_for(), None, "so does the clerk");
+        assert_eq!(config.profile_clerk(first), None, "so does the clerk");
 
         assert_eq!(
-            config.llm_for(Mode::Plan),
+            config.profile_llm(first, Mode::Plan),
             ("from-flag".into(), Effort::High)
         );
         assert_eq!(
-            config.llm_for(Mode::Act),
+            config.profile_llm(first, Mode::Act),
             ("from-flag".into(), Effort::Low),
             "the profile keeps its effort, not its model"
         );

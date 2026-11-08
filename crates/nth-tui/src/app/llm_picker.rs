@@ -152,7 +152,7 @@ impl App {
             false => picker.target().next(agent),
             true => picker.target().prev(agent),
         };
-        let llm = self.selection.llm(target).clone();
+        let llm = self.selection.llm(target);
         if let Input::LlmPicker(picker) = &mut self.input {
             picker.retarget(target, &llm.model, llm.effort);
         }
@@ -562,7 +562,7 @@ mod tests {
             model: "glm".into(),
             effort: Effort::Low,
         };
-        assert_eq!(app.selection.llm(Target::Clerk), &low);
+        assert_eq!(app.selection.llm(Target::Clerk), low);
         assert_eq!(
             app.selection.llm(Target::Subagent).model,
             "plain",

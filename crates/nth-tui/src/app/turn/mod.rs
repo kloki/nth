@@ -343,9 +343,9 @@ impl App {
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
-        let model = &self.selection.current().model;
-        self.llm_usage.count(model);
-        self.spent.turn_started(model);
+        let model = self.selection.current().model;
+        self.llm_usage.count(&model);
+        self.spent.turn_started(&model);
         self.save_llm_usage();
         session.mode = self.selection.mode;
         if session.agent != self.selection.agent {

@@ -146,8 +146,13 @@ pub struct Selection {
     /// The primary agent the next turn runs as, in place of `mode`.
     pub agent: Option<String>,
     slots: Slots,
-    /// What each primary agent runs with, once it ran in this run.
+    /// What each primary agent runs with once pinned: picked by hand, or
+    /// left after it ran.
     agents: BTreeMap<String, Llm>,
+    /// The running agent's own model, qualified. Until it is pinned the
+    /// agent runs on this at act's effort, else on act's, so a profile
+    /// cycle moves it along with act.
+    own: Option<String>,
     /// In config order; the first is where a chat starts.
     profiles: Vec<Profile>,
     /// The profile ctrl+p is on. A model picked by hand hides its name
@@ -163,6 +168,7 @@ impl Selection {
             agent: None,
             slots,
             agents: BTreeMap::new(),
+            own: None,
             profiles: Vec::new(),
             profile: None,
         }
@@ -231,12 +237,37 @@ impl Selection {
         self
     }
 
-    /// What the next turn runs on: the agent's, else the mode's. An agent
-    /// named without `set_agent` runs on act's, as a new one would.
-    pub fn current(&self) -> &Llm {
+    /// What the next turn runs on: the agent's, else the mode's.
+    pub fn current(&self) -> Llm {
         match &self.agent {
-            Some(name) => self.agents.get(name).unwrap_or(&self.slots.act),
-            None => self.slots.mode(self.mode),
+            Some(name) => self.agent_llm(name),
+            None => self.slots.mode(self.mode).clone(),
+        }
+    }
+
+    /// What the agent `name` runs on: its pin, else its own model at act's
+    /// effort, else act's. An agent named without `set_agent` has no own
+    /// model, so it runs on act's.
+    fn agent_llm(&self, name: &str) -> Llm {
+        if let Some(llm) = self.agents.get(name) {
+            return llm.clone();
+        }
+        let act = &self.slots.act;
+        match &self.own {
+            Some(model) => Llm {
+                model: model.clone(),
+                effort: act.effort,
+            },
+            None => act.clone(),
+        }
+    }
+
+    /// Keeps the running agent on what it runs on now, whatever act and
+    /// the profiles do from here.
+    fn pin(&mut self) {
+        if let Some(name) = self.agent.clone() {
+            let llm = self.current();
+            self.agents.insert(name, llm);
         }
     }
 
@@ -252,20 +283,16 @@ impl Selection {
 
     /// What `target` runs on: subagents on their own, else the current;
     /// the clerk on its own, else the subagents'.
-    pub fn llm(&self, target: Target) -> &Llm {
-        let subagent = || {
-            self.slots
-                .subagent
-                .as_ref()
-                .unwrap_or_else(|| self.current())
-        };
+    pub fn llm(&self, target: Target) -> Llm {
+        let slots = &self.slots;
         match target {
-            Target::Plan => &self.slots.plan,
-            Target::Act => &self.slots.act,
-            Target::Agent => self.current(),
-            Target::Subagent => subagent(),
-            Target::Clerk => self.slots.clerk.as_ref().unwrap_or_else(subagent),
+            Target::Plan => Some(slots.plan.clone()),
+            Target::Act => Some(slots.act.clone()),
+            Target::Agent => None,
+            Target::Subagent => slots.subagent.clone(),
+            Target::Clerk => slots.clerk.clone().or_else(|| slots.subagent.clone()),
         }
+        .unwrap_or_else(|| self.current())
     }
 
     /// Puts `target` on `llm`. `Agent` does nothing while no agent runs,
@@ -273,7 +300,11 @@ impl Selection {
     pub fn set(&mut self, target: Target, llm: Llm) {
         match target {
             Target::Plan => self.slots.plan = llm,
-            Target::Act => self.slots.act = llm,
+            // A pick for act is not one for the agent running on it.
+            Target::Act => {
+                self.pin();
+                self.slots.act = llm;
+            }
             Target::Agent if self.agent.is_some() => self.set_current(llm),
             Target::Agent => {}
             Target::Subagent => self.slots.subagent = Some(llm),
@@ -281,8 +312,11 @@ impl Selection {
         }
     }
 
-    /// Runs `mode` next, leaving the agent that ran in its place.
+    /// Runs `mode` next, leaving the agent that ran in its place on what
+    /// it ran on.
     pub fn switch_mode(&mut self, mode: Mode) {
+        self.pin();
+        self.own = None;
         self.agent = None;
         self.mode = mode;
     }
@@ -296,25 +330,19 @@ impl Selection {
         }
     }
 
-    /// Runs the primary agent `name` next, on what it ran on last in this
-    /// run, else on `own`, its own model, at act's effort, else on act's.
+    /// Runs the primary agent `name` next: on what it was picked or left
+    /// on in this run, else on `own`, its own model, at act's effort, else
+    /// on act's. The agent running before is left on what it ran on.
     pub fn set_agent(&mut self, name: String, own: Option<String>) {
-        let act = &self.slots.act;
-        self.agents
-            .entry(name.clone())
-            .or_insert_with(|| match own {
-                Some(model) => Llm {
-                    model,
-                    effort: act.effort,
-                },
-                None => act.clone(),
-            });
+        self.pin();
+        self.own = own;
         self.agent = Some(name);
     }
 
     /// Takes on a session's mode, agent and the llm it runs on; the other
     /// slots keep theirs.
     pub fn resume(&mut self, mode: Mode, agent: Option<String>, llm: Llm) {
+        self.own = None;
         self.mode = mode;
         self.agent = agent;
         self.set_current(llm);
@@ -439,52 +467,118 @@ mod tests {
         selection.set(Target::Act, llm("glm", Effort::High));
         selection.set(Target::Plan, plain("kimi"));
         selection.switch_mode(Mode::Plan);
-        assert_eq!(selection.current(), &plain("kimi"));
+        assert_eq!(selection.current(), plain("kimi"));
 
         selection.set_agent("review".into(), Some("zen/qwen".into()));
         assert_eq!(
             selection.current(),
-            &llm("zen/qwen", Effort::High),
+            llm("zen/qwen", Effort::High),
             "its own model at act's effort"
         );
         selection.set_agent("explore".into(), None);
-        assert_eq!(selection.current(), &llm("glm", Effort::High), "act's");
+        assert_eq!(selection.current(), llm("glm", Effort::High), "act's");
 
         selection.set_current(plain("picked"));
         selection.set_agent("review".into(), Some("zen/qwen".into()));
         selection.set_agent("explore".into(), None);
         assert_eq!(
             selection.current(),
-            &plain("picked"),
+            plain("picked"),
             "what it ran on last holds for the run"
         );
-        assert_eq!(selection.llm(Target::Act), &llm("glm", Effort::High));
+        assert_eq!(selection.llm(Target::Act), llm("glm", Effort::High));
 
         selection.toggle_mode();
         assert_eq!((selection.mode, &selection.agent), (Mode::Plan, &None));
-        assert_eq!(selection.current(), &plain("kimi"));
+        assert_eq!(selection.current(), plain("kimi"));
+    }
+
+    #[test]
+    fn an_agent_follows_a_profile_cycle_until_picked() {
+        let mut selection = profiled(vec![profile("go"), profile("zen")]);
+        selection.set_agent("review".into(), None);
+        assert_eq!(selection.current(), plain("go-act"));
+
+        assert_eq!(selection.next_profile(true), applied("zen"));
+        assert_eq!(selection.current(), plain("zen-act"), "act's, as act moved");
+
+        let mut selection = profiled(vec![profile("go"), profile("zen")]);
+        selection.set(Target::Act, llm("go-act", Effort::High));
+        selection.set_agent("review".into(), Some("own".into()));
+        assert_eq!(selection.current(), llm("own", Effort::High));
+        selection.next_profile(true);
+        assert_eq!(
+            selection.current(),
+            plain("own"),
+            "its own model at the new act's effort"
+        );
+
+        selection.set_current(plain("picked"));
+        assert_eq!(selection.next_profile(true), applied("zen"));
+        assert_eq!(selection.current(), plain("picked"), "a pick stays");
+
+        selection.set_agent("explore".into(), None);
+        selection.set(Target::Act, plain("act-pick"));
+        assert_eq!(
+            selection.current(),
+            plain("zen-act"),
+            "a pick for act is not one for the agent"
+        );
+
+        let mut selection = profiled(vec![profile("go"), profile("zen")]);
+        selection.set_agent("explore".into(), None);
+        selection.toggle_mode();
+        assert_eq!(selection.next_profile(true), applied("zen"));
+        selection.set_agent("explore".into(), None);
+        assert_eq!(selection.current(), plain("go-act"), "left, it stays");
+    }
+
+    #[test]
+    fn a_resumed_session_runs_its_agent_or_its_mode_on_its_llm() {
+        let mut selection = Selection::new(Slots {
+            plan: plain("kimi"),
+            act: plain("glm"),
+            subagent: None,
+            clerk: None,
+        });
+
+        selection.resume(Mode::Plan, Some("review".into()), plain("saved"));
+        assert_eq!(selection.agent.as_deref(), Some("review"));
+        assert_eq!(selection.current(), plain("saved"), "on the agent");
+        assert_eq!(selection.llm(Target::Plan), plain("kimi"));
+        assert_eq!(selection.llm(Target::Act), plain("glm"));
+
+        // An agent gone is passed as none: the session runs in its mode.
+        selection.resume(Mode::Plan, None, plain("saved"));
+        assert_eq!(selection.agent, None);
+        assert_eq!(
+            selection.llm(Target::Plan),
+            plain("saved"),
+            "in plan's slot"
+        );
+        assert_eq!(selection.llm(Target::Act), plain("glm"));
     }
 
     #[test]
     fn subagent_falls_back_to_current_and_clerk_to_subagent() {
         let mut selection = Selection::same(plain("glm"));
-        assert_eq!(selection.llm(Target::Subagent), &plain("glm"));
-        assert_eq!(selection.llm(Target::Clerk), &plain("glm"));
+        assert_eq!(selection.llm(Target::Subagent), plain("glm"));
+        assert_eq!(selection.llm(Target::Clerk), plain("glm"));
 
         selection.set_current(plain("kimi"));
-        assert_eq!(selection.llm(Target::Clerk), &plain("kimi"), "the current");
+        assert_eq!(selection.llm(Target::Clerk), plain("kimi"), "the current");
 
         selection.set(Target::Subagent, plain("flash"));
-        assert_eq!(selection.llm(Target::Subagent), &plain("flash"));
+        assert_eq!(selection.llm(Target::Subagent), plain("flash"));
         assert_eq!(
             selection.llm(Target::Clerk),
-            &plain("flash"),
+            plain("flash"),
             "the subagents'"
         );
 
         selection.set(Target::Clerk, plain("mini"));
-        assert_eq!(selection.llm(Target::Clerk), &plain("mini"));
-        assert_eq!(selection.llm(Target::Subagent), &plain("flash"));
+        assert_eq!(selection.llm(Target::Clerk), plain("mini"));
+        assert_eq!(selection.llm(Target::Subagent), plain("flash"));
     }
 
     #[test]
@@ -506,7 +600,7 @@ mod tests {
             applied("zen"),
             "then moves on"
         );
-        assert_eq!(selection.current(), &plain("zen-act"));
+        assert_eq!(selection.current(), plain("zen-act"));
         assert_eq!(selection.next_profile(true), applied("go"), "and wraps");
     }
 
@@ -545,7 +639,7 @@ mod tests {
             selection.next_profile(true),
             Cycled::Stayed(vec!["zen (ZEN_API_KEY is not set)".into()])
         );
-        assert_eq!(selection.current(), &plain("go-act"), "stays where it is");
+        assert_eq!(selection.current(), plain("go-act"), "stays where it is");
 
         let mut selection = profiled(vec![profile("go")]);
         assert_eq!(selection.next_profile(true), Cycled::Stayed(Vec::new()));

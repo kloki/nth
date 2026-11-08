@@ -185,7 +185,7 @@ impl Runtime {
         let mut session = match start {
             Start::Fresh { cwd, mode } => {
                 selection.mode = mode;
-                let Llm { model, effort } = selection.current().clone();
+                let Llm { model, effort } = selection.current();
                 let mut session = Session::new(model, cwd).with_context(context);
                 session.mode = mode;
                 session.effort = effort;

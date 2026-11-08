@@ -480,7 +480,15 @@ impl App {
         Self {
             chat,
             prompt: Prompt::default(),
-            selection: mode::of_session(Selection::same(Llm::default()), session),
+            // `install` puts a runtime's in; until then, as `bare` leaves
+            // it, every slot is on the session's llm.
+            selection: mode::of_session(
+                Selection::same(Llm {
+                    model: session.model.clone(),
+                    effort: session.effort,
+                }),
+                session,
+            ),
             history: History::default(),
             history_saving: Job::default(),
             llm_usage: LlmUsage::default(),
@@ -972,7 +980,7 @@ impl App {
                         spinner,
                         target,
                         agent: self.selection.agent.as_deref(),
-                        llm: self.selection.current(),
+                        llm: &self.selection.current(),
                         profile: self.selection.profile_name(),
                     },
                 );
@@ -1070,13 +1078,13 @@ impl App {
                 });
                 let subagent = row(
                     "subagent",
-                    selection.llm(Target::Subagent),
+                    &selection.llm(Target::Subagent),
                     false,
                     selection.slots().subagent.is_none().then_some("the mode"),
                 );
                 let clerk = row(
                     "clerk",
-                    selection.llm(Target::Clerk),
+                    &selection.llm(Target::Clerk),
                     false,
                     selection.slots().clerk.is_none().then_some("subagent"),
                 );
@@ -1317,7 +1325,7 @@ impl App {
     /// and mode picked. The directories added with `/add-dir` are kept too.
     /// The chat is the caller's to clear or keep.
     fn start_fresh_session(&mut self) {
-        let Llm { model, effort } = self.selection.current().clone();
+        let Llm { model, effort } = self.selection.current();
         let mut session = Session::new(model, self.cwd.clone()).with_context(self.context.clone());
         session.curio_root = self.session.as_ref().and_then(|s| s.curio_root.clone());
         session.effort = effort;
