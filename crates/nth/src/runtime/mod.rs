@@ -187,19 +187,14 @@ impl Runtime {
         let context =
             Arc::new(nth_context::Context::load(start.cwd().to_path_buf(), paths.clone()).await);
         let mut selection = llms::selection(&config, &providers);
-        // Unsized until a listing sizes them with the model.
-        let picked = |llm: &Llm| ModelSettings::bare(llm.clone());
-        let (mut session, subagent, clerk) = match start {
+        let mut session = match start {
             Start::Fresh { cwd, mode } => {
                 selection.mode = mode;
                 let Llm { model, effort } = selection.current();
                 let mut session = Session::new(model, cwd).with_context(context);
                 session.mode = mode;
                 session.effort = effort;
-                let slots = selection.slots();
-                let subagent = slots.subagent.as_ref().map(picked);
-                let clerk = slots.clerk.as_ref().map(picked);
-                (session, subagent, clerk)
+                session
             }
             Start::Saved(mut session) => {
                 session.set_context(context);
@@ -219,16 +214,23 @@ impl Runtime {
                         effort: session.effort,
                     },
                 );
-                // Its subagents run on its own model until a front-end
-                // hands it the profile's, as the chat does each turn.
-                (*session, None, None)
+                *session
             }
         };
         warnings.extend(apply_directories(&mut session, &config));
         // The configured compaction policy; the limits, whether the model
         // takes images and its price come from a listing once the model is
         // final, so preparing waits on no endpoint. A saved session keeps the
-        // limits it saved until then.
+        // limits it saved until then. Its subagents and clerk run on the
+        // profile's picks, fresh or saved, as the chat hands them over each
+        // turn; a subagent's own model still wins when it starts.
+        // Unsized until a listing sizes them with the model.
+        let picked = |llm: &Llm| ModelSettings::bare(llm.clone());
+        let slots = selection.slots();
+        let (subagent, clerk) = (
+            slots.subagent.as_ref().map(picked),
+            slots.clerk.as_ref().map(picked),
+        );
         session.env = TurnEnv {
             compaction: config.context,
             max_steps: config.session.max_steps,
@@ -562,6 +564,52 @@ pub(crate) mod tests {
         assert!(prepared.warnings.is_empty(), "{:?}", prepared.warnings);
         // Your own instruction files stay out of a test's session.
         assert_eq!(session.context().instructions, []);
+    }
+
+    #[tokio::test]
+    async fn a_saved_session_gets_the_profiles_subagent_and_clerk_picks() {
+        // As a fresh one does and as the chat hands them over each turn, so
+        // `nth run -c` runs its subagents where the chat would.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let saved = Session::new("zen/a", dir.path().into());
+        let config = config(
+            r#"
+            [[profiles]]
+            name = "p"
+
+            [profiles.act]
+            model = "b"
+
+            [profiles.subagent]
+            model = "c"
+            effort = "low"
+
+            [profiles.clerk]
+            model = "d"
+            "#,
+        );
+
+        let prepared = runtime(dir.path(), None)
+            .prepare(
+                config,
+                zen(&[]),
+                Start::Saved(Box::new(saved)),
+                subagents(),
+                Inbox::default(),
+            )
+            .await
+            .expect("prepares");
+
+        let env = &prepared.session.env;
+        assert_eq!(prepared.session.model, "zen/a", "it keeps its own model");
+        assert_eq!(
+            env.subagent,
+            Some(ModelSettings::bare(llm("zen/c", Effort::Low)))
+        );
+        assert_eq!(
+            env.clerk,
+            Some(ModelSettings::bare(llm("zen/d", Effort::Default)))
+        );
     }
 
     #[tokio::test]

@@ -295,9 +295,11 @@ mod tests {
         let two = turn.for_call("2".into(), OutputSink::default());
         one.attachments.add(image("a"));
 
-        assert_eq!(one.attachments.take().len(), 1);
+        // Taken from the others first: were the vec shared, taking from
+        // `one` first would empty theirs too and hide it.
         assert!(two.attachments.take().is_empty(), "calls never mix images");
         assert!(turn.attachments.take().is_empty());
+        assert_eq!(one.attachments.take().len(), 1);
         assert_eq!(
             one.cwd,
             Path::new("/repo/.nth/worktrees/x"),
@@ -323,7 +325,7 @@ mod tests {
         });
         assert_eq!(ask, "2");
 
-        // Everything else is the turn's, a field added later included.
+        // Everything else is the turn's.
         assert!(one.is_subagent);
         assert_eq!(one.state_root, turn.state_root);
         assert_eq!(one.extra_dirs, turn.extra_dirs);

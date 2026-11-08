@@ -225,10 +225,10 @@ mod tests {
         let own = settings("own", 1_000, false, 1.0);
         let subagent = settings("sub", 2_000, false, 2.0);
         let clerk_llm = settings("clerk", 3_000, false, 3.0);
-        let child = |subagent: bool, clerk: bool| ChildLlm {
+        let child = |with_subagent: bool, with_clerk: bool| ChildLlm {
             own: own.clone(),
-            subagent: subagent.then(|| settings("sub", 2_000, false, 2.0)),
-            clerk: clerk.then(|| settings("clerk", 3_000, false, 3.0)),
+            subagent: with_subagent.then(|| subagent.clone()),
+            clerk: with_clerk.then(|| clerk_llm.clone()),
             compaction: Compaction::default(),
         };
         // (subagent picked, clerk picked, runs the clerk, what it runs on)
