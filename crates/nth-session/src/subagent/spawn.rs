@@ -1,7 +1,7 @@
 //! What the task tool and `work_assign` share to start a subagent: finding
 //! the agent the model named, and starting it on its share of the tools.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use nth_context::Agent;
 use nth_protocol::{Provider, Tool, ToolContext, Writable};
@@ -67,6 +67,16 @@ impl Spawner {
         ctx: &ToolContext,
         extra: Vec<Box<dyn Tool>>,
     ) -> SubagentId {
+        // The agent's own model is as its frontmatter wrote it, perhaps
+        // bare; qualified, its tab names it as the picker would.
+        let agent = match &agent.model {
+            Some(model) => Cow::Owned(Agent {
+                model: Some(self.provider.qualify(model)),
+                ..agent.clone()
+            }),
+            None => Cow::Borrowed(agent),
+        };
+        let agent = agent.as_ref();
         let session = child_session(agent, ctx, self.limits.max_steps);
         let mut tools = self.tools_for(agent, &ctx.writable);
         tools.extend(extra);
@@ -84,5 +94,62 @@ impl Spawner {
             )),
             false => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{BoxError, Listing, Request, StreamEvent};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::subagent::{SubagentEvent, tests::explore};
+
+    /// A provider that names every model as Zen's, as `Providers` does a
+    /// bare id when Zen is the default.
+    struct Zen;
+
+    impl Provider for Zen {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+
+        fn qualify(&self, model: &str) -> String {
+            format!("zen/{model}")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subagents_own_model_is_qualified() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let limits = Limits {
+            max_steps: 5,
+            timeout: None,
+            stall: None,
+        };
+        let spawner = Spawner::new(Arc::new(Zen), Vec::new(), Subagents::new(tx), limits);
+        let mut agent = explore();
+        agent.model = Some("glm".into());
+
+        spawner.spawn(
+            &agent,
+            "look",
+            &ToolContext::new("/repo".into()),
+            Vec::new(),
+        );
+
+        let Some(SubagentEvent::Started { model, .. }) = rx.recv().await else {
+            panic!("a tab first");
+        };
+        assert_eq!(model, "zen/glm");
     }
 }

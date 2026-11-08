@@ -393,6 +393,14 @@ pub trait Provider: Send + Sync {
         let _ = error;
         None
     }
+
+    /// `model` as the listing names it, so an id written by hand (an
+    /// agent's frontmatter, a saved session) shows and compares like a
+    /// picked one. The default, for a provider fronting one endpoint,
+    /// leaves it as it is.
+    fn qualify(&self, model: &str) -> String {
+        model.to_string()
+    }
 }
 
 #[cfg(test)]
