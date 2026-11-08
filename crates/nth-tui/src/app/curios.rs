@@ -1,13 +1,18 @@
 //! Repository review documents. Capabilities remain inside this front-end.
+//!
+//! Every store call spawns git or waits on a lock another process may hold,
+//! so none runs on the loop: polls, opening and acknowledgments are jobs on
+//! blocking threads, and the loop applies what they found.
 use std::{
-    collections::BTreeMap,
-    path::PathBuf,
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use nth_protocol::{
-    CurioDelivery,
-    nth_curios::{self as core, Curio, Host},
+    CurioDelivery, Polled,
+    nth_curios::{self as core, Batch, Curio, Host},
 };
 use nth_session::Session;
 use ratatui::{
@@ -17,6 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use tokio::task::JoinError;
 
 use super::{App, input::Input, keys::Action};
 use crate::{
@@ -31,7 +37,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(10);
 pub(super) struct Opened {
     pub(super) owner: String,
     pub(super) id: String,
-    host: Host,
+    /// `None` when the host already serving it was checked and kept.
+    pub(super) host: Option<Host>,
     pub(super) how: How,
 }
 
@@ -46,9 +53,113 @@ pub(super) enum How {
     Running,
 }
 
+/// One store handle per session id for this run: building one spawns git
+/// and takes the lock, which a poll every second must not repeat. Locked
+/// only on blocking threads, and never while a store is built.
+#[derive(Clone, Default)]
+struct Stores(Arc<Mutex<BTreeMap<String, core::Store>>>);
+
+impl Stores {
+    fn get(&self, root: &Path, session: &str) -> core::Result<core::Store> {
+        if let Some(store) = self.0.lock().expect("stores lock poisoned").get(session) {
+            return Ok(store.clone());
+        }
+        let store = core::Store::new(root, session)?;
+        self.0
+            .lock()
+            .expect("stores lock poisoned")
+            .insert(session.to_owned(), store.clone());
+        Ok(store)
+    }
+}
+
+/// What one poll found, read on a blocking thread for the loop to apply.
+pub(super) struct Tick {
+    /// Handed back, since it remembers what it read before.
+    discovery: core::Discovery,
+    /// Newest first.
+    items: Vec<Curio>,
+    /// The curios with feedback queued, as session and curio id.
+    queued: BTreeSet<(String, String)>,
+    claim: Claim,
+    feedback: Feedback,
+}
+
+/// How a poll's try for the delivery lease went.
+enum Claim {
+    /// Not this tick: one is held, the retry time has not come, or this
+    /// session never published.
+    NotTried,
+    /// This session's store could not be built.
+    Failed,
+    /// Another process delivers this session's feedback; the store's root.
+    Refused(PathBuf),
+    Lease(CurioDelivery),
+}
+
+/// What the delivery store's pending batches read as.
+enum Feedback {
+    /// No lease, so nothing was read.
+    Unowned,
+    /// Another held the store's lock; the next tick reads it.
+    Busy,
+    Pending(Vec<Batch>),
+    Unreadable,
+}
+
+/// What a poll is started with: plain values, so the job owns them.
+struct Poll {
+    root: PathBuf,
+    me: String,
+    claim: bool,
+    delivering: Option<core::Store>,
+    stores: Stores,
+}
+
+impl Poll {
+    fn run(self, mut discovery: core::Discovery) -> Tick {
+        let mut items = discovery.refresh(&self.root).unwrap_or_default();
+        items.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+        let queued = discovery.queued();
+        // Feedback exists only once this session published, so its folder
+        // is waited for rather than made.
+        let claim = if self.claim && self.root.join(".nth/curios").join(&self.me).is_dir() {
+            match self.stores.get(&self.root, &self.me) {
+                Ok(store) => {
+                    let root = store.repo_root().to_path_buf();
+                    CurioDelivery::claim(store).map_or(Claim::Refused(root), Claim::Lease)
+                }
+                Err(_) => Claim::Failed,
+            }
+        } else {
+            Claim::NotTried
+        };
+        let delivering = match &claim {
+            Claim::Lease(lease) => Some(lease.store().clone()),
+            _ => self.delivering,
+        };
+        let feedback = match delivering.map(|store| store.try_batches(true)) {
+            None => Feedback::Unowned,
+            Some(Ok(Some(batches))) => Feedback::Pending(batches),
+            Some(Ok(None)) => Feedback::Busy,
+            Some(Err(_)) => Feedback::Unreadable,
+        };
+        Tick {
+            discovery,
+            items,
+            queued,
+            claim,
+            feedback,
+        }
+    }
+}
+
 pub(super) struct Curios {
     root: Option<PathBuf>,
+    /// From the last poll, as are `queued` and `skipped`.
     items: Vec<Curio>,
+    queued: BTreeSet<(String, String)>,
+    /// Away in the poll while one runs.
     discovery: core::Discovery,
     /// How many folders the last refresh skipped, so the hint shows once
     /// per change rather than every tick.
@@ -62,12 +173,23 @@ pub(super) struct Curios {
     next_claim: Instant,
     /// Whether the hint said another process owns delivery.
     told_owned: bool,
+    /// When a catch-up acknowledgment may run again: one that failed
+    /// builds a store each time, and would fail every tick the same way.
+    next_acknowledge: Instant,
+    /// The last acknowledgment failure the hint showed, so each shows once.
+    told_unacknowledged: Option<String>,
     /// Whether the session's receipts are saved, so its feedback may be
     /// acknowledged: false after a save that failed, until the next works.
     pub(super) saved: bool,
+    stores: Stores,
+    pub(super) polling: super::Job<Tick>,
+    pub(super) acknowledging: super::Job<core::Result<()>>,
     hosts: BTreeMap<(String, String), Host>,
     pub(super) opening: super::Job<core::Result<Opened>>,
     opening_revision: Option<u64>,
+    /// Whether the opening job checks a host already serving, so a failure
+    /// is the revision's rather than the host's.
+    opening_reused: bool,
     last: Option<(String, String)>,
 }
 
@@ -79,16 +201,23 @@ impl Curios {
                 .clone()
                 .or_else(|| nth_protocol::Curios::repository_root(&session.state_root()).ok()),
             items: Vec::new(),
+            queued: BTreeSet::new(),
             discovery: core::Discovery::default(),
             skipped: 0,
             busy: false,
             delivery: None,
             next_claim: Instant::now(),
             told_owned: false,
+            next_acknowledge: Instant::now(),
+            told_unacknowledged: None,
             saved: true,
+            stores: Stores::default(),
+            polling: Default::default(),
+            acknowledging: Default::default(),
             hosts: BTreeMap::new(),
             opening: Default::default(),
             opening_revision: None,
+            opening_reused: false,
             last: None,
         }
     }
@@ -96,6 +225,9 @@ impl Curios {
         self.hosts.clear();
         self.opening = Default::default();
         self.opening_revision = None;
+        // A poll running holds the discovery and may bring back a lease.
+        self.polling = Default::default();
+        self.discovery = core::Discovery::default();
         self.delivery = None;
     }
 }
@@ -118,6 +250,14 @@ impl Picker {
             .collect();
         self.shown = self.filter.rank(names.iter().map(String::as_str));
         self.selected = 0;
+    }
+    /// Marks the curios `queued` names, from the latest poll.
+    fn mark(&mut self, queued: &BTreeSet<(String, String)>) {
+        self.pending = self
+            .items
+            .iter()
+            .map(|c| queued.contains(&(c.session_id.clone(), c.id.clone())))
+            .collect();
     }
     pub fn draw(&self, frame: &mut Frame, area: Rect, owner: uuid::Uuid) {
         let mut lines = vec![
@@ -173,18 +313,64 @@ impl App {
         if matches!(self.input, Input::Curios(_)) {
             self.input = Input::Prompt;
         }
-        self.poll_curios();
+        self.request_curio_poll();
     }
 
+    /// The one-second tick: a poll still running is left to finish, so a
+    /// slow one never stacks.
     pub(super) fn poll_curios(&mut self) {
-        let Some(root) = &self.curios.root else {
+        if !self.curios.polling.is_running() {
+            self.request_curio_poll();
+        }
+    }
+
+    /// Starts a poll, or while one runs, another once it is done: something
+    /// changed since it started.
+    fn request_curio_poll(&mut self) {
+        let Some(root) = self.curios.root.clone() else {
             return;
         };
-        self.curios.items = self.curios.discovery.refresh(root).unwrap_or_default();
-        self.curios
-            .items
-            .sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        let skipped = self.curios.discovery.skipped.len();
+        let poll = Poll {
+            root,
+            me: self.session_id.to_string(),
+            claim: self.curios.delivery.is_none()
+                && Instant::now() >= self.curios.next_claim
+                && self.session.is_some(),
+            delivering: self.curios.delivery.as_ref().map(|d| d.store().clone()),
+            stores: self.curios.stores.clone(),
+        };
+        let curios = &mut self.curios;
+        curios.polling.start_or_queue(|_| {
+            let discovery = std::mem::take(&mut curios.discovery);
+            tokio::task::spawn_blocking(move || poll.run(discovery))
+        });
+    }
+
+    pub(super) fn curio_polled(&mut self, tick: Result<Tick, JoinError>) {
+        match tick {
+            Ok(tick) => self.apply_curio_tick(tick),
+            Err(_) => self.hint = Some("could not read Curios".into()),
+        }
+        if self.curios.polling.take_again() {
+            self.request_curio_poll();
+        }
+    }
+
+    fn apply_curio_tick(&mut self, tick: Tick) {
+        let Tick {
+            discovery,
+            items,
+            queued,
+            claim,
+            feedback,
+        } = tick;
+        let skipped = discovery.skipped.len();
+        self.curios.discovery = discovery;
+        self.curios.items = items;
+        self.curios.queued = queued;
+        if let Input::Curios(picker) = &mut self.input {
+            picker.mark(&self.curios.queued);
+        }
         if skipped != self.curios.skipped {
             self.curios.skipped = skipped;
             if skipped > 0 {
@@ -194,32 +380,42 @@ impl App {
         if self.curios.items.is_empty() {
             self.areas.forget(&crate::app::mouse::Target::Curio);
         }
-        // Feedback exists only once this session published, so its folder
-        // is waited for rather than made.
-        if self.curios.delivery.is_none()
-            && Instant::now() >= self.curios.next_claim
-            && let Some(session) = &mut self.session
-            && root
-                .join(".nth/curios")
-                .join(session.id.to_string())
-                .is_dir()
-        {
-            self.curios.next_claim = Instant::now() + CLAIM_RETRY;
-            if session.prepare_curios().is_ok() {
-                match session.curios().claim_delivery() {
-                    Ok(delivery) => self.curios.delivery = Some(delivery),
-                    Err(_) if !self.curios.told_owned => {
-                        self.curios.told_owned = true;
-                        self.hint = Some("Curios delivery is owned by another process".into())
-                    }
-                    Err(_) => {}
+        match claim {
+            Claim::NotTried => {}
+            Claim::Failed => self.curios.next_claim = Instant::now() + CLAIM_RETRY,
+            Claim::Refused(root) => {
+                self.curios.next_claim = Instant::now() + CLAIM_RETRY;
+                if let Some(session) = &mut self.session {
+                    session.curio_root = Some(root);
+                }
+                if !self.curios.told_owned {
+                    self.curios.told_owned = true;
+                    self.hint = Some("Curios delivery is owned by another process".into());
                 }
             }
+            Claim::Lease(lease) => {
+                self.curios.next_claim = Instant::now() + CLAIM_RETRY;
+                self.curios.delivery = Some(lease);
+            }
         }
-        self.curios.busy = false;
-        let Some(delivery) = &self.curios.delivery else {
-            return;
-        };
+        // Acknowledging reads the root from the session, which a turn that
+        // started after the claim had away.
+        if let (Some(session), Some(lease)) = (&mut self.session, &self.curios.delivery)
+            && session.curio_root.is_none()
+        {
+            session.curio_root = Some(lease.store().repo_root().to_path_buf());
+        }
+        self.curios.busy = matches!(feedback, Feedback::Busy);
+        match feedback {
+            Feedback::Unowned | Feedback::Busy => {}
+            Feedback::Unreadable => {
+                self.hint = Some("could not read queued Curios feedback".into())
+            }
+            Feedback::Pending(batches) => self.deliver_curio_feedback(batches),
+        }
+    }
+
+    fn deliver_curio_feedback(&mut self, batches: Vec<Batch>) {
         // While a turn runs the session is away; its turn hands over what
         // the inbox holds and its receipts come back with it.
         let recorded = self
@@ -227,71 +423,96 @@ impl App {
             .as_ref()
             .map(|s| s.curio_receipts.clone())
             .unwrap_or_default();
-        match delivery.poll(&self.inbox, &recorded) {
-            Ok(polled) => {
-                self.curios.busy = polled.busy;
-                // A batch posted while a turn ran that the turn recorded
-                // anyway would otherwise wake the model with nothing.
-                if self.session.is_some() {
-                    for notice in self.inbox.take_curios(&self.session_id.to_string()) {
-                        if !recorded.contains(&notice.batch.id) {
-                            self.inbox.post_curio(notice);
-                        }
-                    }
-                }
-                if polled.posted > 0 {
-                    self.arm_notices();
-                }
-                // An acknowledgment that failed after a save is caught up
-                // here, so the viewer stops saying the feedback is on its way.
-                if polled.unacknowledged
-                    && self.curios.saved
-                    && self.store.is_some()
-                    && let Some(session) = &self.session
-                {
-                    let _ = session.acknowledge_curios();
+        let polled = Polled::deliver(batches, &self.inbox, &recorded);
+        // A batch posted while a turn ran that the turn recorded anyway
+        // would otherwise wake the model with nothing.
+        if self.session.is_some() {
+            for notice in self.inbox.take_curios(&self.session_id.to_string()) {
+                if !recorded.contains(&notice.batch.id) {
+                    self.inbox.post_curio(notice);
                 }
             }
-            Err(_) => self.hint = Some("could not read queued Curios feedback".into()),
+        }
+        if polled.posted > 0 {
+            self.arm_notices();
+        }
+        // An acknowledgment that failed after a save is caught up here, so
+        // the viewer stops saying the feedback is on its way.
+        if polled.unacknowledged
+            && self.curios.saved
+            && self.store.is_some()
+            && !self.curios.acknowledging.is_running()
+            && Instant::now() >= self.curios.next_acknowledge
+            && let Some(session) = &self.session
+        {
+            let acknowledge = session.acknowledge_curios();
+            self.curios
+                .acknowledging
+                .start(|_| tokio::spawn(acknowledge));
         }
     }
 
-    /// [`Self::poll_curios`] until it reads the store: a child another test
-    /// forks shares the store's lock until it execs.
+    pub(super) fn curio_acknowledged(&mut self, acknowledged: Result<core::Result<()>, JoinError>) {
+        let error = match acknowledged {
+            Ok(Ok(())) => {
+                self.curios.told_unacknowledged = None;
+                return;
+            }
+            Ok(Err(error)) => error.to_string(),
+            Err(error) => error.to_string(),
+        };
+        self.curios.next_acknowledge = Instant::now() + CLAIM_RETRY;
+        if self.curios.told_unacknowledged.as_ref() != Some(&error) {
+            self.hint = Some(format!("curios: could not acknowledge feedback: {error}").into());
+            self.curios.told_unacknowledged = Some(error);
+        }
+    }
+
+    /// Drives polls to the end until one reads the store: a child another
+    /// test forks shares the store's lock until it execs. A poll started
+    /// before the caller's change is finished first, since it may have read
+    /// too early.
     #[cfg(test)]
-    pub(super) fn poll_curios_through(&mut self) {
+    pub(super) async fn poll_curios_through(&mut self) {
+        self.settle_curio_polls().await;
         for _ in 0..50 {
-            self.poll_curios();
+            self.request_curio_poll();
+            self.settle_curio_polls().await;
+            if self.curios.acknowledging.is_running() {
+                let acknowledged = self.curios.acknowledging.join().await;
+                self.curio_acknowledged(acknowledged);
+            }
             if !self.curios.busy {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the Curios store stayed locked");
     }
 
+    #[cfg(test)]
+    async fn settle_curio_polls(&mut self) {
+        while self.curios.polling.is_running() {
+            let tick = self.curios.polling.join().await;
+            self.curio_polled(tick);
+        }
+    }
+
     pub(super) fn open_curios_picker(&mut self) {
+        // The picker shows the last poll at once; one running marks it
+        // again when it lands.
         self.poll_curios();
         self.completion = None;
         let items = self.curios.items.clone();
-        let pending = items
-            .iter()
-            .map(|c| {
-                self.curios
-                    .root
-                    .as_ref()
-                    .and_then(|r| core::Store::new(r, &c.session_id).ok())
-                    .and_then(|s| s.batches(true).ok())
-                    .is_some_and(|bs| bs.iter().any(|b| b.curio_id == c.id))
-            })
-            .collect();
-        self.input = Input::Curios(Picker {
+        let mut picker = Picker {
             shown: (0..items.len()).collect(),
             items,
-            pending,
+            pending: Vec::new(),
             filter: Filter::default(),
             selected: 0,
-        });
+        };
+        picker.mark(&self.curios.queued);
+        self.input = Input::Curios(picker);
     }
 
     pub(super) fn key_curios(&mut self, action: Action) {
@@ -359,41 +580,27 @@ impl App {
     /// session is running elsewhere stays there.
     pub(super) fn open_curio(&mut self, owner: String, id: String, revision: Option<u64>) {
         let me = self.session_id.to_string();
-        let key = (owner.clone(), id.clone());
         let Some(root) = self.curios.root.clone() else {
             self.hint = Some("Curios requires a Git repository".into());
             return;
         };
-        if owner == me && self.curios.hosts.contains_key(&key) {
-            if core::Store::new(&root, &owner)
-                .and_then(|store| store.snapshot(&id, revision))
-                .is_err()
-            {
-                self.hint = Some("could not open Curio revision".into());
-                return;
-            }
-            self.curios.last = Some(key);
-            self.present_curio(revision, How::Own);
-            return;
-        }
+        let reused = owner == me && self.curios.hosts.contains_key(&(owner.clone(), id.clone()));
         self.curios.opening_revision = revision;
-        self.curios.opening.start(|_| {
+        self.curios.opening_reused = reused;
+        let stores = self.curios.stores.clone();
+        self.curios.opening.start(|cancel| {
             tokio::spawn(async move {
-                let (store, how) = if owner == me {
-                    (core::Store::new(&root, &owner)?, How::Own)
-                } else {
-                    let store = core::Store::new(&root, &me)?;
-                    match store.adopt(&owner, &id) {
-                        Ok(_) => (store, How::Adopted(owner)),
-                        Err(core::Error::Conflict(_)) => {
-                            (core::Store::new(&root, &owner)?, How::Running)
-                        }
-                        Err(error) => return Err(error),
-                    }
-                };
-                store.snapshot(&id, revision)?;
+                let (store, how, id) = core::offload(move || {
+                    let (store, how) = resolve(&stores, &root, &me, owner, &id, &cancel)?;
+                    store.snapshot(&id, revision)?;
+                    Ok((store, how, id))
+                })
+                .await?;
                 let owner = store.session_id().to_string();
-                let host = Host::start(store, &id).await?;
+                let host = match reused {
+                    true => None,
+                    false => Some(Host::start(store, &id).await?),
+                };
                 Ok(Opened {
                     owner,
                     id,
@@ -406,6 +613,7 @@ impl App {
 
     pub(super) fn curio_opened(&mut self, opened: core::Result<Opened>) {
         let revision = self.curios.opening_revision.take();
+        let reused = std::mem::take(&mut self.curios.opening_reused);
         match opened {
             Ok(Opened {
                 owner,
@@ -416,15 +624,29 @@ impl App {
                 if let How::Adopted(from) = &how {
                     // Its old host serves a store that no longer has it.
                     self.curios.hosts.remove(&(from.clone(), id.clone()));
+                    // Listed under its new owner at once, as the poll below
+                    // will, so opening the latest finds it meanwhile.
+                    for curio in self
+                        .curios
+                        .items
+                        .iter_mut()
+                        .filter(|c| &c.session_id == from && c.id == id)
+                    {
+                        curio.session_id = owner.clone();
+                        curio.adopted_from = Some(from.clone());
+                    }
                     // Its feedback comes here now, so delivery is needed.
                     self.curios.next_claim = Instant::now();
-                    self.poll_curios();
+                    self.request_curio_poll();
                 }
                 let key = (owner, id);
-                self.curios.hosts.insert(key.clone(), host);
+                if let Some(host) = host {
+                    self.curios.hosts.insert(key.clone(), host);
+                }
                 self.curios.last = Some(key);
                 self.present_curio(revision, how);
             }
+            Err(_) if reused => self.hint = Some("could not open Curio revision".into()),
             Err(_) => self.hint = Some("could not host Curio".into()),
         }
     }
@@ -475,6 +697,33 @@ impl App {
     }
 }
 
+/// Whose store serves `owner`'s curio `id` for session `me`: its own, this
+/// one's after adopting it from an idle session, or a running session's,
+/// which keeps it. Builds stores, so it runs on a blocking thread.
+fn resolve(
+    stores: &Stores,
+    root: &Path,
+    me: &str,
+    owner: String,
+    id: &str,
+    cancel: &nth_session::CancellationToken,
+) -> core::Result<(core::Store, How)> {
+    let store = stores.get(root, me)?;
+    if owner == me {
+        return Ok((store, How::Own));
+    }
+    // Building the store took a while: a `/clear` or a newer open since
+    // must not adopt the curio into the session left behind.
+    if cancel.is_cancelled() {
+        return Err(core::Error::Invalid("Curio opening cancelled".into()));
+    }
+    match store.adopt(&owner, id) {
+        Ok(_) => Ok((store, How::Adopted(owner))),
+        Err(core::Error::Conflict(_)) => Ok((stores.get(root, &owner)?, How::Running)),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -487,8 +736,8 @@ mod tests {
     };
     use crate::app::tests::{Reply, Scripted, rows_of};
 
-    #[test]
-    fn polling_makes_no_curios_folder_for_a_session_that_never_published() {
+    #[tokio::test]
+    async fn polling_makes_no_curios_folder_for_a_session_that_never_published() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
             std::process::Command::new("git")
@@ -500,12 +749,51 @@ mod tests {
         );
         let session = Session::new("glm", dir.path().to_path_buf());
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
-        app.poll_curios();
-        app.poll_curios();
+        app.poll_curios_through().await;
+        app.poll_curios_through().await;
         assert!(!dir.path().join(".nth/curios").exists());
     }
 
-    fn fixture() -> (tempfile::TempDir, App, core::Store, Curio) {
+    #[tokio::test]
+    async fn the_tick_starts_no_second_poll_while_one_runs() {
+        let (_dir, mut app, _store, _c) = fixture().await;
+        app.poll_curios();
+        let first = app.curios.polling.abort_handle().expect("a poll runs");
+        let token = app.curios.polling.token().expect("a poll runs");
+        app.poll_curios();
+        assert!(app.curios.polling.is_running());
+        let still = app.curios.polling.abort_handle().expect("a poll runs");
+        assert_eq!(first.id(), still.id(), "the tick left the running poll");
+        assert!(!token.is_cancelled());
+        assert!(
+            !app.curios.polling.take_again(),
+            "a tick does not queue another"
+        );
+        let tick = app.curios.polling.join().await;
+        app.curio_polled(tick);
+        assert!(!app.curios.polling.is_running());
+    }
+
+    #[tokio::test]
+    async fn the_picker_marks_queued_from_the_last_tick() {
+        let (_dir, mut app, store, c) = fixture().await;
+        send(&store, &c);
+        // A poll the picker started has not landed yet, and the picker
+        // reads no store of its own, so the feedback is not marked.
+        app.open_curios_picker();
+        let Input::Curios(p) = &app.input else {
+            panic!("picker")
+        };
+        assert!(!p.pending[0]);
+        assert!(app.curios.polling.is_running());
+        app.poll_curios_through().await;
+        let Input::Curios(p) = &app.input else {
+            panic!("picker")
+        };
+        assert!(p.pending[0], "the next tick marks it");
+    }
+
+    async fn fixture() -> (tempfile::TempDir, App, core::Store, Curio) {
         let dir = tempfile::tempdir().unwrap();
         assert!(
             std::process::Command::new("git")
@@ -529,7 +817,7 @@ mod tests {
             .curio;
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.opener = |_| Ok(());
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         (dir, app, store, c)
     }
 
@@ -564,10 +852,10 @@ mod tests {
 
     #[tokio::test]
     async fn durable_send_records_once_without_command_parsing() {
-        let (_dir, mut app, store, c) = fixture();
+        let (_dir, mut app, store, c) = fixture().await;
         assert!(!app.inbox.wakes());
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.notices_due.is_some());
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
@@ -580,15 +868,15 @@ mod tests {
             1,
             "no save means no acknowledgment"
         );
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(!app.inbox.wakes());
     }
 
     #[tokio::test]
     async fn an_unacknowledged_receipt_is_caught_up_without_waking() {
-        let (dir, mut app, store, c) = fixture();
+        let (dir, mut app, store, c) = fixture().await;
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
         // Without a store nothing is saved, so nothing is acknowledged.
@@ -597,10 +885,56 @@ mod tests {
         app.store = Some(Arc::new(nth_session::Store::at(
             dir.path().join("sessions"),
         )));
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.notices_due.is_none());
         assert!(!app.inbox.wakes());
         assert!(store.batches(true).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failing_acknowledgment_is_told_once_and_waits_to_retry() {
+        let (dir, mut app, store, c) = fixture().await;
+        send(&store, &c);
+        app.poll_curios_through().await;
+        app.notices_due();
+        let ended = app.turn.join().await.unwrap();
+        app.end_turn(ended);
+        app.store = Some(Arc::new(nth_session::Store::at(
+            dir.path().join("sessions"),
+        )));
+        // A rule exposing the session's state makes a fresh store refuse,
+        // while the poll's handle, built before, still reads the batches.
+        let ignore = dir.path().join(".nth/curios/.gitignore");
+        std::fs::write(
+            &ignore,
+            format!("*\n!{0}/\n!{0}/state.json\n", app.session_id),
+        )
+        .unwrap();
+        app.poll_curios_through().await;
+        assert!(
+            app.hint
+                .as_deref()
+                .unwrap()
+                .starts_with("curios: could not acknowledge feedback: ")
+        );
+        assert_eq!(store.batches(true).unwrap().len(), 1);
+        app.hint = None;
+        let retry = app.curios.next_acknowledge;
+        app.poll_curios_through().await;
+        assert_eq!(
+            app.curios.next_acknowledge, retry,
+            "no retry before CLAIM_RETRY"
+        );
+        assert!(app.hint.is_none());
+        // The same failure again is not told again.
+        app.curios.next_acknowledge = Instant::now();
+        app.poll_curios_through().await;
+        assert!(app.hint.is_none());
+        std::fs::write(&ignore, "*\n").unwrap();
+        app.curios.next_acknowledge = Instant::now();
+        app.poll_curios_through().await;
+        assert!(store.batches(true).unwrap().is_empty());
+        assert!(app.curios.told_unacknowledged.is_none());
     }
 
     #[tokio::test]
@@ -618,27 +952,27 @@ mod tests {
         session.prepare_curios().unwrap();
         let other = session.curios().claim_delivery().unwrap();
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.curios.delivery.is_none());
         assert!(app.hint.as_deref().unwrap().contains("another process"));
         drop(other);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.curios.delivery.is_none(), "retries wait a while");
         // A child another test forks shares the lock until it execs.
         for _ in 0..50 {
             app.curios.next_claim = Instant::now();
-            app.poll_curios_through();
+            app.poll_curios_through().await;
             if app.curios.delivery.is_some() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(app.curios.delivery.is_some());
     }
 
     #[tokio::test]
     async fn feedback_on_an_adopted_curio_reaches_this_session() {
-        let (dir, mut app, store, _) = fixture();
+        let (dir, mut app, store, _) = fixture().await;
         let old = core::Store::new(dir.path(), "old-owner").unwrap();
         let c = old
             .publish(Publish {
@@ -655,7 +989,7 @@ mod tests {
         app.curio_opened(opened);
         // The viewer now writes to this session's store.
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.notices_due.is_some());
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
@@ -666,10 +1000,10 @@ mod tests {
 
     #[tokio::test]
     async fn held_and_busy_feedback_does_not_preempt() {
-        let (_dir, mut app, store, c) = fixture();
+        let (_dir, mut app, store, c) = fixture().await;
         app.hold_notices = true;
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         app.notices_due();
         assert!(!app.is_busy());
         assert!(app.inbox.wakes());
@@ -678,7 +1012,7 @@ mod tests {
         app.provider = provider.clone();
         app.start_turn("work".into());
         provider.asked.notified().await;
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         app.notices_due();
         assert!(app.inbox.prompts_waiting().is_none());
         assert!(app.is_busy());
@@ -689,7 +1023,7 @@ mod tests {
 
     #[tokio::test]
     async fn requested_revision_is_opened_and_validated_with_new_and_reused_hosts() {
-        let (_dir, mut app, store, c) = fixture();
+        let (_dir, mut app, store, c) = fixture().await;
         store
             .publish(Publish {
                 request_id: "publish-2".into(),
@@ -720,11 +1054,19 @@ mod tests {
         assert!(!app.hint.as_deref().unwrap().contains("127.0.0.1"));
 
         app.open_curio(c.session_id.clone(), c.id.clone(), Some(1));
-        assert!(!app.curios.opening.is_running());
+        let opened = app.curios.opening.join().await.unwrap();
+        assert!(
+            opened.as_ref().unwrap().host.is_none(),
+            "the host is reused"
+        );
+        app.curio_opened(opened);
+        assert_eq!(app.curios.hosts.len(), 1);
         assert!(!app.hint.as_deref().unwrap().contains("127.0.0.1"));
         app.opener = |_| panic!("invalid revision must not reach the reused host opener");
         for revision in [0, 99] {
             app.open_curio(c.session_id.clone(), c.id.clone(), Some(revision));
+            let opened = app.curios.opening.join().await.unwrap();
+            app.curio_opened(opened);
             assert_eq!(app.hint.as_deref(), Some("could not open Curio revision"));
         }
         app.opener = |url| {
@@ -732,12 +1074,14 @@ mod tests {
             Ok(())
         };
         app.open_curio(c.session_id, c.id, None);
+        let opened = app.curios.opening.join().await.unwrap();
+        app.curio_opened(opened);
         assert!(app.hint.as_deref().unwrap().starts_with("opened Curio"));
     }
 
     #[tokio::test]
     async fn status_click_opener_failure_clipping_and_session_invalidation() {
-        let (_dir, mut app, _store, _c) = fixture();
+        let (_dir, mut app, _store, _c) = fixture().await;
         app.place = "repo".into();
         let rows = rows_of(&mut app, 100);
         assert!(crate::app::tests::status_row(&rows, 1).contains(nth_icons::icons().curio));
@@ -773,10 +1117,10 @@ mod tests {
 
     #[tokio::test]
     async fn other_owner_is_discovered_but_never_delivers_here() {
-        let (_dir, mut app, store, c) = fixture();
+        let (_dir, mut app, store, c) = fixture().await;
         app.resume(Session::new("glm", app.cwd.clone()));
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         assert!(app.has_curios());
         assert!(!app.inbox.wakes());
         app.open_curios_picker();
@@ -789,7 +1133,7 @@ mod tests {
 
     #[tokio::test]
     async fn pr_and_curio_hit_areas_are_independent() {
-        let (_dir, mut app, _store, _c) = fixture();
+        let (_dir, mut app, _store, _c) = fixture().await;
         app.place = "repo".into();
         app.git = Some(crate::git::GitStatus {
             branch: Some("main".into()),
@@ -840,11 +1184,11 @@ mod tests {
 
     #[tokio::test]
     async fn successful_session_save_acknowledges_receipt() {
-        let (dir, mut app, store, c) = fixture();
+        let (dir, mut app, store, c) = fixture().await;
         let saved = nth_session::Store::at(dir.path().join("sessions"));
         app = app.with_store(saved);
         send(&store, &c);
-        app.poll_curios_through();
+        app.poll_curios_through().await;
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
         app.end_turn(ended);

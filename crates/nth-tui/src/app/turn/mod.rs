@@ -69,7 +69,7 @@ async fn ended(
     };
     // Only a saved session may tell the store its feedback is recorded.
     let acknowledged = match (&store, &saved) {
-        (Some(_), Ok(())) => session.acknowledge_curios(),
+        (Some(_), Ok(())) => session.acknowledge_curios().await,
         _ => Ok(()),
     };
     Ended {

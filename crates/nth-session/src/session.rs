@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
@@ -160,6 +160,24 @@ pub struct Session {
     watch: Watch,
 }
 
+/// [`Session::acknowledge_curios`]'s work, on a blocking thread.
+fn acknowledge(root: &Path, session: &str, receipts: &[String]) -> nth_curios::Result<()> {
+    // Saved history remains usable when its repository has gone away.
+    // Only repository absence is optional; state and write errors still fail.
+    match root.try_exists() {
+        Ok(false) => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(true) => {}
+    }
+    match nth_curios::repository_root(root) {
+        Err(nth_curios::Error::RepoRequired) => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(found) if found != root.canonicalize()? => return Ok(()),
+        Ok(_) => {}
+    }
+    nth_curios::Store::new(root, session)?.acknowledge_recorded(receipts)
+}
+
 impl Session {
     /// Trusted handle for tools or an active front-end delivery owner.
     pub fn curios(&self) -> nth_protocol::Curios {
@@ -205,9 +223,7 @@ impl Session {
                 .await
                 .map_err(Error::State)?;
         }
-        if let Ok(store) = self.curios().store() {
-            self.curio_root = Some(store.repo_root().to_path_buf());
-        }
+        self.ready_curios().await;
         let Some(notices) = self.take_curios(front_end, events, cancel).await else {
             return Ok(());
         };
@@ -244,31 +260,35 @@ impl Session {
         (!notices.is_empty()).then(|| notices.join("\n"))
     }
 
+    /// Readies this session's Curios store and keeps its root. Building one
+    /// spawns git and waits on the store's lock, so it runs off the runtime.
+    async fn ready_curios(&mut self) {
+        let curios = self.curios();
+        if let Ok(root) =
+            nth_curios::offload(move || Ok(curios.store()?.repo_root().to_path_buf())).await
+        {
+            self.curio_root = Some(root);
+        }
+    }
+
     /// Marks the Curios feedback this session recorded as recorded in its
     /// store too. Call once the session is saved; one missed is caught up by
-    /// the next, since it covers every receipt.
-    pub fn acknowledge_curios(&self) -> nth_curios::Result<()> {
-        if self.curio_receipts.is_empty() {
-            return Ok(());
+    /// the next, since it covers every receipt. The future owns what it
+    /// reads, so a front-end can run it as a task of its own.
+    pub fn acknowledge_curios(
+        &self,
+    ) -> impl Future<Output = nth_curios::Result<()>> + Send + 'static {
+        let receipts: Vec<_> = self.curio_receipts.iter().cloned().collect();
+        let root = self.curio_root.clone();
+        let id = self.id.to_string();
+        async move {
+            match root {
+                Some(root) if !receipts.is_empty() => {
+                    nth_curios::offload(move || acknowledge(&root, &id, &receipts)).await
+                }
+                _ => Ok(()),
+            }
         }
-        let Some(root) = &self.curio_root else {
-            return Ok(());
-        };
-        // Saved history remains usable when its repository has gone away.
-        // Only repository absence is optional; state and write errors still fail.
-        match root.try_exists() {
-            Ok(false) => return Ok(()),
-            Err(error) => return Err(error.into()),
-            Ok(true) => {}
-        }
-        match nth_curios::repository_root(root) {
-            Err(nth_curios::Error::RepoRequired) => return Ok(()),
-            Err(error) => return Err(error),
-            Ok(found) if found != root.canonicalize()? => return Ok(()),
-            Ok(_) => {}
-        }
-        nth_curios::Store::new(root, &self.id.to_string())?
-            .acknowledge_recorded(&self.curio_receipts.iter().cloned().collect::<Vec<_>>())
     }
 
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
@@ -509,11 +529,8 @@ impl Session {
         // Plan mode names the source folder the model may write review
         // documents in, so it is made ready; otherwise Curios waits for its
         // tools.
-        if !self.subagent
-            && self.tools_mode() == Mode::Plan
-            && let Ok(store) = self.curios().store()
-        {
-            self.curio_root = Some(store.repo_root().to_path_buf());
+        if !self.subagent && self.tools_mode() == Mode::Plan {
+            self.ready_curios().await;
         }
         // `@explore …` tells the model to delegate to that agent; a subagent
         // has no task tool to do so with.
@@ -864,7 +881,6 @@ fn default_tool_timeout() -> Option<Duration> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::path::Path;
 
     use nth_protocol::{AssistantMessage, INTERRUPTED, StreamEvent, ToolCall, Usage, failed};
 

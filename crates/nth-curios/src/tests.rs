@@ -1202,3 +1202,18 @@ fn try_batches_returns_none_while_another_holds_the_lock() {
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].id, batch.id);
 }
+
+#[test]
+fn discovery_knows_which_curios_have_feedback_queued() {
+    let (dir, store) = setup();
+    let (cid, batch) = reviewed(&store);
+    let quiet = store.publish(publication("quiet")).unwrap().curio.id;
+    let mut discovery = Discovery::default();
+    discovery.refresh(dir.path()).unwrap();
+    let queued = discovery.queued();
+    assert!(queued.contains(&("session-one".into(), cid.clone())));
+    assert!(!queued.contains(&("session-one".into(), quiet)));
+    store.acknowledge_recorded(&[batch.id]).unwrap();
+    discovery.refresh(dir.path()).unwrap();
+    assert!(discovery.queued().is_empty(), "read again once it changed");
+}

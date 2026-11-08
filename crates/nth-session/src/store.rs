@@ -653,7 +653,7 @@ mod tests {
             format!("*\n!{0}/\n!{0}/state.json\n", session.id),
         )
         .expect("writes");
-        assert!(session.acknowledge_curios().is_err());
+        assert!(session.acknowledge_curios().await.is_err());
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());
 

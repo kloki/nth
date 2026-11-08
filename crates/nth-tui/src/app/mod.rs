@@ -407,6 +407,8 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
 
 enum Step {
     CurioOpened(Result<nth_protocol::nth_curios::Result<curios::Opened>, JoinError>),
+    CurioPolled(Result<curios::Tick, JoinError>),
+    CurioAcknowledged(Result<nth_protocol::nth_curios::Result<()>, JoinError>),
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),
@@ -681,6 +683,8 @@ impl App {
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 opened = self.curios.opening.join() => Step::CurioOpened(opened),
+                tick = self.curios.polling.join() => Step::CurioPolled(tick),
+                acknowledged = self.curios.acknowledging.join() => Step::CurioAcknowledged(acknowledged),
                 ended = self.editor.join() => Step::EditorClosed(ended),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
@@ -725,6 +729,8 @@ impl App {
                         "host unavailable".into(),
                     ))
                 })),
+                Step::CurioPolled(tick) => self.curio_polled(tick),
+                Step::CurioAcknowledged(acknowledged) => self.curio_acknowledged(acknowledged),
                 Step::Terminal(None) => break,
                 Step::Terminal(Some(event)) => {
                     self.on_terminal(event.context("reading terminal input")?)

@@ -236,7 +236,7 @@ async fn work(
     match saved {
         Err(e) => eprintln!("{} session not saved: {e}", icons().warn.yellow().bold()),
         Ok(()) => {
-            if let Err(e) = session.acknowledge_curios() {
+            if let Err(e) = session.acknowledge_curios().await {
                 eprintln!(
                     "{} Curios feedback not acknowledged: {e}",
                     icons().warn.yellow().bold()

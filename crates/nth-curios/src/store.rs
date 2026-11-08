@@ -591,9 +591,20 @@ impl Store {
         Ok(result)
     }
     pub fn list(&self) -> Result<Vec<Curio>> {
+        self.listing().map(|(curios, _)| curios)
+    }
+    /// [`Self::list`] with the ids of the curios that have feedback queued,
+    /// read under one lock.
+    fn listing(&self) -> Result<(Vec<Curio>, BTreeSet<String>)> {
         let _lock = self.lock()?;
         let state = self.load()?;
-        Ok(state
+        let queued = state
+            .batches
+            .iter()
+            .filter(|b| !b.recorded)
+            .map(|b| b.curio_id.clone())
+            .collect();
+        let curios = state
             .curios
             .into_values()
             .filter(|e| !state.moved.contains_key(&e.curio.id))
@@ -602,7 +613,8 @@ impl Store {
                 curio.updated_at = self.updated_at(&curio);
                 curio
             })
-            .collect())
+            .collect();
+        Ok((curios, queued))
     }
     /// When the current revision was written: publishing never rewrites a
     /// revision, so its file's time is the publish time, except for an
@@ -1212,10 +1224,19 @@ pub fn discover(repo_root: &Path) -> Result<Vec<Curio>> {
 /// read again only once its state changed.
 #[derive(Debug, Default)]
 pub struct Discovery {
-    seen: BTreeMap<String, (Option<Stamp>, Vec<Curio>)>,
+    seen: BTreeMap<String, Seen>,
     /// The folders the last refresh could not read, by name: one stray
     /// folder leaves the others listed.
     pub skipped: Vec<(String, Error)>,
+}
+
+/// What a session's state held when [`Discovery`] last read it.
+#[derive(Debug)]
+struct Seen {
+    stamp: Option<Stamp>,
+    curios: Vec<Curio>,
+    /// The ids of its curios with feedback queued.
+    queued: BTreeSet<String>,
 }
 
 impl Discovery {
@@ -1248,19 +1269,45 @@ impl Discovery {
                 session,
             };
             let stamp = store.stamp();
-            let curios = match self.seen.remove(&store.session) {
-                Some((before, curios)) if before == stamp => curios,
-                _ => match store.list() {
-                    Ok(curios) => curios,
+            let (curios, queued) = match self.seen.remove(&store.session) {
+                Some(before) if before.stamp == stamp => (before.curios, before.queued),
+                _ => match store.listing() {
+                    Ok(listing) => listing,
                     Err(error) => {
                         self.skipped.push((store.session, error));
                         continue;
                     }
                 },
             };
-            seen.insert(store.session, (stamp, curios));
+            seen.insert(
+                store.session,
+                Seen {
+                    stamp,
+                    curios,
+                    queued,
+                },
+            );
         }
         self.seen = seen;
-        Ok(self.seen.values().flat_map(|(_, c)| c.clone()).collect())
+        Ok(self.seen.values().flat_map(|s| s.curios.clone()).collect())
     }
+
+    /// The curios the last refresh found feedback queued for, as session
+    /// and curio id: read with their lists, so asking costs no store.
+    pub fn queued(&self) -> BTreeSet<(String, String)> {
+        self.seen
+            .iter()
+            .flat_map(|(session, seen)| seen.queued.iter().map(|id| (session.clone(), id.clone())))
+            .collect()
+    }
+}
+
+/// Runs a store call on a blocking thread: one may wait on another
+/// process's lock or spawn git, which would stall an async worker.
+pub async fn offload<T: std::marker::Send + 'static>(
+    f: impl FnOnce() -> Result<T> + std::marker::Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|_| Error::Invalid("curios worker failed".into()))?
 }
