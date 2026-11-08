@@ -178,6 +178,7 @@ async fn rejects_untrusted_scope_agent_and_owner_arguments() {
     ctx.agent.as_mut().unwrap().tools = Some(vec!["show_user".into()]);
     assert!(
         crate::curios::store(&ctx, "show_user")
+            .await
             .unwrap_err()
             .starts_with("curios.permission:")
     );
@@ -185,6 +186,7 @@ async fn rejects_untrusted_scope_agent_and_owner_arguments() {
     ctx.agent.as_mut().unwrap().denied = vec!["curio_reply".into()];
     assert!(
         crate::curios::store(&ctx, "curio_reply")
+            .await
             .unwrap_err()
             .starts_with("curios.permission:")
     );

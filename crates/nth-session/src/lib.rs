@@ -1,6 +1,7 @@
 mod agent_loop;
 mod compaction;
 pub mod context_preview;
+pub mod curios;
 #[cfg(test)]
 mod curios_tests;
 #[cfg(test)]

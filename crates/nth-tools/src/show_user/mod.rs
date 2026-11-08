@@ -55,7 +55,7 @@ impl Tool for ShowUser {
             }
             let Args { file_path, curio } = nth_protocol::parse_args(args)?;
             if let Some(target) = curio {
-                let store = crate::curios::store(ctx, "show_user")?;
+                let store = crate::curios::store(ctx, "show_user").await?;
                 let snapshot = store.snapshot(&target.curio_id, target.revision).map_err(crate::curios::failure)?;
                 if ctx.screen.show_curio(store.session_id().into(), snapshot.curio.id.clone(), target.revision).await {
                     return Ok(format!("Curio {} revision {} was sent to the front-end for opening.", snapshot.curio.id, snapshot.revision.number));

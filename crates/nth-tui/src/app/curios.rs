@@ -2,19 +2,21 @@
 //!
 //! Every store call spawns git or waits on a lock another process may hold,
 //! so none runs on the loop: polls, opening and acknowledgments are jobs on
-//! blocking threads, and the loop applies what they found.
+//! blocking threads, and the loop applies what they found. The rules they
+//! follow, delivery and whose store an opened curio is on, live in
+//! `nth_session::curios`; this file wires them to the picker, the hints and
+//! the browser hosts.
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    path::PathBuf,
+    time::Instant,
 };
 
-use nth_protocol::{
-    CurioDelivery, Polled,
-    nth_curios::{self as core, Batch, Curio, Host},
+use nth_protocol::nth_curios::{self as core, Curio, Host};
+use nth_session::{
+    Session,
+    curios::{Claim, Delivery, How, Poll, Polled, Read, Stores},
 };
-use nth_session::Session;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -30,9 +32,6 @@ use crate::{
     theme::{dim, panel_row, panel_title},
 };
 
-/// How long after a refused claim the delivery lease is tried again.
-const CLAIM_RETRY: Duration = Duration::from_secs(10);
-
 /// A curio the opening job hosts.
 pub(super) struct Opened {
     pub(super) owner: String,
@@ -40,37 +39,6 @@ pub(super) struct Opened {
     /// `None` when the host already serving it was checked and kept.
     pub(super) host: Option<Host>,
     pub(super) how: How,
-}
-
-/// Whose a curio was when it was opened.
-#[derive(Debug, PartialEq)]
-pub(super) enum How {
-    /// This session's.
-    Own,
-    /// Another session's, adopted from it.
-    Adopted(String),
-    /// Another session's that is running, so it stays there.
-    Running,
-}
-
-/// One store handle per session id for this run: building one spawns git
-/// and takes the lock, which a poll every second must not repeat. Locked
-/// only on blocking threads, and never while a store is built.
-#[derive(Clone, Default)]
-struct Stores(Arc<Mutex<BTreeMap<String, core::Store>>>);
-
-impl Stores {
-    fn get(&self, root: &Path, session: &str) -> core::Result<core::Store> {
-        if let Some(store) = self.0.lock().expect("stores lock poisoned").get(session) {
-            return Ok(store.clone());
-        }
-        let store = core::Store::new(root, session)?;
-        self.0
-            .lock()
-            .expect("stores lock poisoned")
-            .insert(session.to_owned(), store.clone());
-        Ok(store)
-    }
 }
 
 /// What one poll found, read on a blocking thread for the loop to apply.
@@ -81,76 +49,20 @@ pub(super) struct Tick {
     items: Vec<Curio>,
     /// The curios with feedback queued, as session and curio id.
     queued: BTreeSet<(String, String)>,
-    claim: Claim,
-    feedback: Feedback,
+    read: Read,
 }
 
-/// How a poll's try for the delivery lease went.
-enum Claim {
-    /// Not this tick: one is held, the retry time has not come, or this
-    /// session never published.
-    NotTried,
-    /// This session's store could not be built.
-    Failed,
-    /// Another process delivers this session's feedback; the store's root.
-    Refused(PathBuf),
-    Lease(CurioDelivery),
-}
-
-/// What the delivery store's pending batches read as.
-enum Feedback {
-    /// No lease, so nothing was read.
-    Unowned,
-    /// Another held the store's lock; the next tick reads it.
-    Busy,
-    Pending(Vec<Batch>),
-    Unreadable,
-}
-
-/// What a poll is started with: plain values, so the job owns them.
-struct Poll {
-    root: PathBuf,
-    me: String,
-    claim: bool,
-    delivering: Option<core::Store>,
-    stores: Stores,
-}
-
-impl Poll {
-    fn run(self, mut discovery: core::Discovery) -> Tick {
-        let mut items = discovery.refresh(&self.root).unwrap_or_default();
-        items.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        let queued = discovery.queued();
-        // Feedback exists only once this session published, so its folder
-        // is waited for rather than made.
-        let claim = if self.claim && self.root.join(".nth/curios").join(&self.me).is_dir() {
-            match self.stores.get(&self.root, &self.me) {
-                Ok(store) => {
-                    let root = store.repo_root().to_path_buf();
-                    CurioDelivery::claim(store).map_or(Claim::Refused(root), Claim::Lease)
-                }
-                Err(_) => Claim::Failed,
-            }
-        } else {
-            Claim::NotTried
-        };
-        let delivering = match &claim {
-            Claim::Lease(lease) => Some(lease.store().clone()),
-            _ => self.delivering,
-        };
-        let feedback = match delivering.map(|store| store.try_batches(true)) {
-            None => Feedback::Unowned,
-            Some(Ok(Some(batches))) => Feedback::Pending(batches),
-            Some(Ok(None)) => Feedback::Busy,
-            Some(Err(_)) => Feedback::Unreadable,
-        };
-        Tick {
-            discovery,
-            items,
-            queued,
-            claim,
-            feedback,
-        }
+/// Lists the curios under `root` and runs `poll`: plain values, so the job
+/// owns them.
+fn read(root: PathBuf, mut discovery: core::Discovery, poll: Poll) -> Tick {
+    let mut items = discovery.refresh(&root).unwrap_or_default();
+    items.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+    let queued = discovery.queued();
+    Tick {
+        discovery,
+        items,
+        queued,
+        read: poll.run(),
     }
 }
 
@@ -167,21 +79,14 @@ pub(super) struct Curios {
     /// Whether the last poll found the store locked and read nothing; the
     /// next tick reads it.
     busy: bool,
-    delivery: Option<CurioDelivery>,
-    /// When to try for the delivery lease again: another process that holds
-    /// it may exit.
-    next_claim: Instant,
-    /// Whether the hint said another process owns delivery.
-    told_owned: bool,
-    /// When a catch-up acknowledgment may run again: one that failed
-    /// builds a store each time, and would fail every tick the same way.
-    next_acknowledge: Instant,
-    /// The last acknowledgment failure the hint showed, so each shows once.
-    told_unacknowledged: Option<String>,
+    delivery: Delivery,
     /// Whether the session's receipts are saved, so its feedback may be
     /// acknowledged: false after a save that failed, until the next works.
     pub(super) saved: bool,
     stores: Stores,
+    /// How many acknowledging jobs started, so a test sees the back-off.
+    #[cfg(test)]
+    acknowledgments: usize,
     pub(super) polling: super::Job<Tick>,
     pub(super) acknowledging: super::Job<core::Result<()>>,
     hosts: BTreeMap<(String, String), Host>,
@@ -205,13 +110,11 @@ impl Curios {
             discovery: core::Discovery::default(),
             skipped: 0,
             busy: false,
-            delivery: None,
-            next_claim: Instant::now(),
-            told_owned: false,
-            next_acknowledge: Instant::now(),
-            told_unacknowledged: None,
+            delivery: Delivery::new(Instant::now()),
             saved: true,
             stores: Stores::default(),
+            #[cfg(test)]
+            acknowledgments: 0,
             polling: Default::default(),
             acknowledging: Default::default(),
             hosts: BTreeMap::new(),
@@ -228,7 +131,7 @@ impl Curios {
         // A poll running holds the discovery and may bring back a lease.
         self.polling = Default::default();
         self.discovery = core::Discovery::default();
-        self.delivery = None;
+        self.delivery.release();
     }
 }
 
@@ -330,19 +233,21 @@ impl App {
         let Some(root) = self.curios.root.clone() else {
             return;
         };
-        let poll = Poll {
-            root,
-            me: self.session_id.to_string(),
-            claim: self.curios.delivery.is_none()
-                && Instant::now() >= self.curios.next_claim
-                && self.session.is_some(),
-            delivering: self.curios.delivery.as_ref().map(|d| d.store().clone()),
-            stores: self.curios.stores.clone(),
-        };
+        let mut poll = self.curios.delivery.poll(
+            root.clone(),
+            self.session_id.to_string(),
+            self.curios.stores.clone(),
+            Instant::now(),
+        );
+        // While a turn runs the session is away, and with it the root a
+        // refused claim would keep: the claim waits for it.
+        if self.session.is_none() {
+            poll = poll.without_claim();
+        }
         let curios = &mut self.curios;
         curios.polling.start_or_queue(|_| {
             let discovery = std::mem::take(&mut curios.discovery);
-            tokio::task::spawn_blocking(move || poll.run(discovery))
+            tokio::task::spawn_blocking(move || read(root, discovery, poll))
         });
     }
 
@@ -361,8 +266,7 @@ impl App {
             discovery,
             items,
             queued,
-            claim,
-            feedback,
+            read,
         } = tick;
         let skipped = discovery.skipped.len();
         self.curios.discovery = discovery;
@@ -380,42 +284,6 @@ impl App {
         if self.curios.items.is_empty() {
             self.areas.forget(&crate::app::mouse::Target::Curio);
         }
-        match claim {
-            Claim::NotTried => {}
-            Claim::Failed => self.curios.next_claim = Instant::now() + CLAIM_RETRY,
-            Claim::Refused(root) => {
-                self.curios.next_claim = Instant::now() + CLAIM_RETRY;
-                if let Some(session) = &mut self.session {
-                    session.curio_root = Some(root);
-                }
-                if !self.curios.told_owned {
-                    self.curios.told_owned = true;
-                    self.hint = Some("Curios delivery is owned by another process".into());
-                }
-            }
-            Claim::Lease(lease) => {
-                self.curios.next_claim = Instant::now() + CLAIM_RETRY;
-                self.curios.delivery = Some(lease);
-            }
-        }
-        // Acknowledging reads the root from the session, which a turn that
-        // started after the claim had away.
-        if let (Some(session), Some(lease)) = (&mut self.session, &self.curios.delivery)
-            && session.curio_root.is_none()
-        {
-            session.curio_root = Some(lease.store().repo_root().to_path_buf());
-        }
-        self.curios.busy = matches!(feedback, Feedback::Busy);
-        match feedback {
-            Feedback::Unowned | Feedback::Busy => {}
-            Feedback::Unreadable => {
-                self.hint = Some("could not read queued Curios feedback".into())
-            }
-            Feedback::Pending(batches) => self.deliver_curio_feedback(batches),
-        }
-    }
-
-    fn deliver_curio_feedback(&mut self, batches: Vec<Batch>) {
         // While a turn runs the session is away; its turn hands over what
         // the inbox holds and its receipts come back with it.
         let recorded = self
@@ -423,7 +291,34 @@ impl App {
             .as_ref()
             .map(|s| s.curio_receipts.clone())
             .unwrap_or_default();
-        let polled = Polled::deliver(batches, &self.inbox, &recorded);
+        let polled = self.curios.delivery.apply(read, &recorded, Instant::now());
+        if polled.claim == (Claim::Owned { first: true }) {
+            self.hint = Some("Curios delivery is owned by another process".into());
+        }
+        if let Some(session) = &mut self.session {
+            match (&polled.root, self.curios.delivery.store()) {
+                (Some(root), _) => session.curio_root = Some(root.clone()),
+                // Acknowledging reads the root from the session, which a
+                // turn that started after the claim had away.
+                (None, Some(store)) if session.curio_root.is_none() => {
+                    session.curio_root = Some(store.repo_root().to_path_buf())
+                }
+                _ => {}
+            }
+        }
+        self.curios.busy = polled.busy;
+        if polled.unreadable {
+            self.hint = Some("could not read queued Curios feedback".into());
+        }
+        self.deliver_curio_feedback(polled, &recorded);
+    }
+
+    fn deliver_curio_feedback(&mut self, polled: Polled, recorded: &BTreeSet<String>) {
+        let posted = polled
+            .post
+            .into_iter()
+            .filter(|notice| self.inbox.post_curio(notice.clone()))
+            .count();
         // A batch posted while a turn ran that the turn recorded anyway
         // would otherwise wake the model with nothing.
         if self.session.is_some() {
@@ -433,7 +328,7 @@ impl App {
                 }
             }
         }
-        if polled.posted > 0 {
+        if posted > 0 {
             self.arm_notices();
         }
         // An acknowledgment that failed after a save is caught up here, so
@@ -442,29 +337,27 @@ impl App {
             && self.curios.saved
             && self.store.is_some()
             && !self.curios.acknowledging.is_running()
-            && Instant::now() >= self.curios.next_acknowledge
+            && self.curios.delivery.acknowledge_due(Instant::now())
             && let Some(session) = &self.session
         {
             let acknowledge = session.acknowledge_curios();
             self.curios
                 .acknowledging
                 .start(|_| tokio::spawn(acknowledge));
+            #[cfg(test)]
+            {
+                self.curios.acknowledgments += 1;
+            }
         }
     }
 
     pub(super) fn curio_acknowledged(&mut self, acknowledged: Result<core::Result<()>, JoinError>) {
-        let error = match acknowledged {
-            Ok(Ok(())) => {
-                self.curios.told_unacknowledged = None;
-                return;
-            }
-            Ok(Err(error)) => error.to_string(),
-            Err(error) => error.to_string(),
+        let result = match acknowledged {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
         };
-        self.curios.next_acknowledge = Instant::now() + CLAIM_RETRY;
-        if self.curios.told_unacknowledged.as_ref() != Some(&error) {
+        if let Some(error) = self.curios.delivery.acknowledged(result, Instant::now()) {
             self.hint = Some(format!("curios: could not acknowledge feedback: {error}").into());
-            self.curios.told_unacknowledged = Some(error);
         }
     }
 
@@ -485,7 +378,7 @@ impl App {
             if !self.curios.busy {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the Curios store stayed locked");
     }
@@ -591,8 +484,9 @@ impl App {
         self.curios.opening.start(|cancel| {
             tokio::spawn(async move {
                 let (store, how, id) = core::offload(move || {
-                    let (store, how) = resolve(&stores, &root, &me, owner, &id, &cancel)?;
-                    store.snapshot(&id, revision)?;
+                    let (store, how) = nth_session::curios::resolve(
+                        &stores, &root, &me, &owner, &id, revision, &cancel,
+                    )?;
                     Ok((store, how, id))
                 })
                 .await?;
@@ -636,7 +530,7 @@ impl App {
                         curio.adopted_from = Some(from.clone());
                     }
                     // Its feedback comes here now, so delivery is needed.
-                    self.curios.next_claim = Instant::now();
+                    self.curios.delivery.claim_now(Instant::now());
                     self.request_curio_poll();
                 }
                 let key = (owner, id);
@@ -694,33 +588,6 @@ impl App {
             }
             .into(),
         );
-    }
-}
-
-/// Whose store serves `owner`'s curio `id` for session `me`: its own, this
-/// one's after adopting it from an idle session, or a running session's,
-/// which keeps it. Builds stores, so it runs on a blocking thread.
-fn resolve(
-    stores: &Stores,
-    root: &Path,
-    me: &str,
-    owner: String,
-    id: &str,
-    cancel: &nth_session::CancellationToken,
-) -> core::Result<(core::Store, How)> {
-    let store = stores.get(root, me)?;
-    if owner == me {
-        return Ok((store, How::Own));
-    }
-    // Building the store took a while: a `/clear` or a newer open since
-    // must not adopt the curio into the session left behind.
-    if cancel.is_cancelled() {
-        return Err(core::Error::Invalid("Curio opening cancelled".into()));
-    }
-    match store.adopt(&owner, id) {
-        Ok(_) => Ok((store, How::Adopted(owner))),
-        Err(core::Error::Conflict(_)) => Ok((stores.get(root, &owner)?, How::Running)),
-        Err(error) => Err(error),
     }
 }
 
@@ -873,26 +740,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unacknowledged_receipt_is_caught_up_without_waking() {
-        let (dir, mut app, store, c) = fixture().await;
-        send(&store, &c);
-        app.poll_curios_through().await;
-        app.notices_due();
-        let ended = app.turn.join().await.unwrap();
-        // Without a store nothing is saved, so nothing is acknowledged.
-        app.end_turn(ended);
-        assert_eq!(store.batches(true).unwrap().len(), 1);
-        app.store = Some(Arc::new(nth_session::Store::at(
-            dir.path().join("sessions"),
-        )));
-        app.poll_curios_through().await;
-        assert!(app.notices_due.is_none());
-        assert!(!app.inbox.wakes());
-        assert!(store.batches(true).unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_failing_acknowledgment_is_told_once_and_waits_to_retry() {
+    async fn a_failing_acknowledgment_is_told_as_a_hint() {
         let (dir, mut app, store, c) = fixture().await;
         send(&store, &c);
         app.poll_curios_through().await;
@@ -918,27 +766,33 @@ mod tests {
                 .starts_with("curios: could not acknowledge feedback: ")
         );
         assert_eq!(store.batches(true).unwrap().len(), 1);
-        app.hint = None;
-        let retry = app.curios.next_acknowledge;
+        // The retry waits, so the next poll starts none.
+        let started = app.curios.acknowledgments;
         app.poll_curios_through().await;
-        assert_eq!(
-            app.curios.next_acknowledge, retry,
-            "no retry before CLAIM_RETRY"
-        );
-        assert!(app.hint.is_none());
-        // The same failure again is not told again.
-        app.curios.next_acknowledge = Instant::now();
-        app.poll_curios_through().await;
-        assert!(app.hint.is_none());
-        std::fs::write(&ignore, "*\n").unwrap();
-        app.curios.next_acknowledge = Instant::now();
-        app.poll_curios_through().await;
-        assert!(store.batches(true).unwrap().is_empty());
-        assert!(app.curios.told_unacknowledged.is_none());
+        assert_eq!(app.curios.acknowledgments, started);
     }
 
     #[tokio::test]
-    async fn delivery_is_claimed_once_another_owner_lets_go() {
+    async fn an_unacknowledged_receipt_is_caught_up_without_waking() {
+        let (dir, mut app, store, c) = fixture().await;
+        send(&store, &c);
+        app.poll_curios_through().await;
+        app.notices_due();
+        let ended = app.turn.join().await.unwrap();
+        // Without a store nothing is saved, so nothing is acknowledged.
+        app.end_turn(ended);
+        assert_eq!(store.batches(true).unwrap().len(), 1);
+        app.store = Some(Arc::new(nth_session::Store::at(
+            dir.path().join("sessions"),
+        )));
+        app.poll_curios_through().await;
+        assert!(app.notices_due.is_none());
+        assert!(!app.inbox.wakes());
+        assert!(store.batches(true).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn another_process_delivering_is_told_once() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
             std::process::Command::new("git")
@@ -950,52 +804,19 @@ mod tests {
         );
         let mut session = Session::new("glm", dir.path().to_path_buf());
         session.prepare_curios().unwrap();
-        let other = session.curios().claim_delivery().unwrap();
+        let _other = session.curios().claim_delivery().unwrap();
         let mut app = App::new(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.poll_curios_through().await;
-        assert!(app.curios.delivery.is_none());
-        assert!(app.hint.as_deref().unwrap().contains("another process"));
-        drop(other);
+        assert!(app.curios.delivery.store().is_none());
+        assert_eq!(
+            app.hint.as_deref(),
+            Some("Curios delivery is owned by another process")
+        );
+        app.hint = None;
+        app.curios.delivery.claim_now(Instant::now());
         app.poll_curios_through().await;
-        assert!(app.curios.delivery.is_none(), "retries wait a while");
-        // A child another test forks shares the lock until it execs.
-        for _ in 0..50 {
-            app.curios.next_claim = Instant::now();
-            app.poll_curios_through().await;
-            if app.curios.delivery.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(app.curios.delivery.is_some());
-    }
-
-    #[tokio::test]
-    async fn feedback_on_an_adopted_curio_reaches_this_session() {
-        let (dir, mut app, store, _) = fixture().await;
-        let old = core::Store::new(dir.path(), "old-owner").unwrap();
-        let c = old
-            .publish(Publish {
-                request_id: "old".into(),
-                curio_id: None,
-                expected_revision: None,
-                title: Some("Old".into()),
-                html: "<h1 id=title>Old</h1>".into(),
-            })
-            .unwrap()
-            .curio;
-        app.open_curio(c.session_id.clone(), c.id.clone(), None);
-        let opened = app.curios.opening.join().await.unwrap();
-        app.curio_opened(opened);
-        // The viewer now writes to this session's store.
-        send(&store, &c);
-        app.poll_curios_through().await;
-        assert!(app.notices_due.is_some());
-        app.notices_due();
-        let ended = app.turn.join().await.unwrap();
-        app.end_turn(ended);
-        assert_eq!(app.session.as_ref().unwrap().curio_receipts.len(), 1);
-        assert!(old.batches(true).unwrap().is_empty());
+        assert!(app.curios.delivery.store().is_none());
+        assert!(app.hint.is_none(), "told once");
     }
 
     #[tokio::test]
@@ -1113,22 +934,6 @@ mod tests {
         app.start_fresh_session();
         assert!(app.curios.hosts.is_empty());
         assert!(app.curios.last.is_none());
-    }
-
-    #[tokio::test]
-    async fn other_owner_is_discovered_but_never_delivers_here() {
-        let (_dir, mut app, store, c) = fixture().await;
-        app.resume(Session::new("glm", app.cwd.clone()));
-        send(&store, &c);
-        app.poll_curios_through().await;
-        assert!(app.has_curios());
-        assert!(!app.inbox.wakes());
-        app.open_curios_picker();
-        let Input::Curios(p) = &app.input else {
-            panic!("picker")
-        };
-        assert!(p.pending[0]);
-        assert_ne!(p.items[0].session_id, app.session_id.to_string());
     }
 
     #[tokio::test]

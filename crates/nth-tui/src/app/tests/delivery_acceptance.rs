@@ -287,7 +287,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     assert_eq!(adopted.owner, first.session_id, "adopted by this session");
     assert_eq!(
         adopted.how,
-        crate::app::curios::How::Adopted("second-owner".into())
+        nth_session::curios::How::Adopted("second-owner".into())
     );
     app.curio_opened(opened);
     assert!(app.hint.as_deref().unwrap().starts_with("adopted Curio"));
@@ -308,7 +308,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let opened = app.curios.opening.join().await.unwrap();
     let kept = opened.as_ref().unwrap();
     assert_eq!(kept.owner, "third-owner");
-    assert_eq!(kept.how, crate::app::curios::How::Running);
+    assert_eq!(kept.how, nth_session::curios::How::Running);
     app.curio_opened(opened);
     assert!(app.hint.as_deref().unwrap().contains("runs elsewhere"));
     drop(running);

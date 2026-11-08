@@ -30,7 +30,10 @@ pub(crate) fn failure(error: core::Error) -> String {
     )
 }
 
-pub(crate) fn store(ctx: &ToolContext, name: &str) -> Result<core::Store, String> {
+/// This session's store, built on a blocking thread: building one spawns git
+/// and may wait on another process's lock, which would stall the turn's
+/// runtime worker.
+pub(crate) async fn store(ctx: &ToolContext, name: &str) -> Result<core::Store, String> {
     if ctx.is_subagent
         || ctx.agent.as_ref().is_some_and(|agent| {
             !agent.allows(name) || (name == "show_user" && !agent.allows("curio_read"))
@@ -38,7 +41,10 @@ pub(crate) fn store(ctx: &ToolContext, name: &str) -> Result<core::Store, String
     {
         return Err("curios.permission: this agent cannot use this operation. Recovery: ask the owning primary session to perform it.".into());
     }
-    let store = ctx.curios.store().map_err(failure)?;
+    let curios = ctx.curios.clone();
+    let store = core::offload(move || curios.store())
+        .await
+        .map_err(failure)?;
     if ctx.session.is_empty() || store.session_id() != ctx.session {
         return Err("curios.permission: trusted scope does not match the active session. Recovery: prepare Curios for the active session.".into());
     }
@@ -200,7 +206,7 @@ impl Tool for CurioPublish {
     fn call<'a>(&'a self, value: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
             let a: PublishArgs = args(value)?;
-            let store = store(ctx, "curio_publish")?;
+            let store = store(ctx, "curio_publish").await?;
             if a.curio_id.is_some() != a.expected_revision.is_some() {
                 return Err("curios.invalid: updates require both curio_id and expected_revision. Recovery: read the current revision first.".into());
             }
@@ -250,8 +256,9 @@ impl Tool for CurioRead {
     fn call<'a>(&'a self, value: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
             let a: ReadArgs = args(value)?;
-            let store = store(ctx, "curio_read")?;
-            let mut meta = json!({"source_path":store.source_dir(),"template_path":store.prepare_template().map_err(failure)?});
+            let store = store(ctx, "curio_read").await?;
+            // `store` prepared the template when it was built.
+            let mut meta = json!({"source_path":store.source_dir(),"template_path":store.template_path()});
             let items = match a.action.as_str() {
                 "list" => store.list().map_err(failure)?.iter().map(|c| curio(&store, c)).collect(),
                 "batches" | "batch" => {
@@ -312,7 +319,7 @@ impl Tool for CurioReply {
     fn call<'a>(&'a self, value: Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
             let a: ReplyArgs = args(value)?;
-            let store = store(ctx, "curio_reply")?;
+            let store = store(ctx, "curio_reply").await?;
             let t = store.reply(&a.curio_id, &a.thread_id, core::Reply { request_id:a.request_id, expected_version:a.expected_version, body:a.body, mark_addressed:a.mark_addressed, revision:a.revision }, core::Author::Agent).map_err(failure)?;
             Ok(json!({"curio_id":a.curio_id,"thread_id":t.id,"version":t.version,"status":t.status,"message_id":t.messages.last().map(|m| &m.id)}).to_string())
         }.boxed()

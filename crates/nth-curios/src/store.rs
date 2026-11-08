@@ -449,11 +449,15 @@ impl Store {
             .join("adopted")
             .join(format!("{curio_id}.html"))
     }
+    /// Where [`Self::prepare_template`] writes the template.
+    pub fn template_path(&self) -> PathBuf {
+        self.source_dir().join("templates").join("quiet-folio.html")
+    }
     pub fn prepare_template(&self) -> Result<PathBuf> {
+        let path = self.template_path();
         let dir = self.source_dir().join("templates");
         no_symlinks(&dir)?;
         fs::create_dir_all(&dir)?;
-        let path = dir.join("quiet-folio.html");
         no_symlinks(&path)?;
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {

@@ -40,22 +40,25 @@ impl Curios {
     }
 
     /// Resolves the repository only when Curios is used. No screen required.
+    /// Builds a store, which spawns git and may wait on another process's
+    /// lock: an async caller runs it under [`nth_curios::offload`].
     pub fn store(&self) -> nth_curios::Result<nth_curios::Store> {
-        let mut scope = self
-            .0
-            .as_ref()
-            .ok_or_else(|| {
-                nth_curios::Error::Invalid("Curios is unavailable to this session".into())
-            })?
-            .lock()
-            .expect("curios lock poisoned");
-        let root = match &scope.root {
-            Some(root) => root.clone(),
-            None => Self::repository_root(&scope.cwd)?,
+        let scope = self.0.as_ref().ok_or_else(|| {
+            nth_curios::Error::Invalid("Curios is unavailable to this session".into())
+        })?;
+        // Copied out so the build holds no lock: a call recording a notice
+        // for this session must not wait on git or another process.
+        let (cwd, session, root) = {
+            let scope = scope.lock().expect("curios lock poisoned");
+            (scope.cwd.clone(), scope.session.clone(), scope.root.clone())
         };
-        let store = nth_curios::Store::new(&root, &scope.session)?;
+        let root = match root {
+            Some(root) => root,
+            None => Self::repository_root(&cwd)?,
+        };
+        let store = nth_curios::Store::new(&root, &session)?;
         store.prepare_template()?;
-        scope.root = Some(store.repo_root().to_path_buf());
+        scope.lock().expect("curios lock poisoned").root = Some(store.repo_root().to_path_buf());
         Ok(store)
     }
 
@@ -94,19 +97,6 @@ pub struct CurioDelivery {
     _lease: std::fs::File,
 }
 
-/// What one [`CurioDelivery::poll`] found.
-#[derive(Debug, Default, PartialEq)]
-pub struct Polled {
-    /// Batches newly put in the inbox.
-    pub posted: usize,
-    /// Pending batches the session already recorded: its acknowledgment
-    /// did not reach the store yet.
-    pub unacknowledged: bool,
-    /// Another held the store's lock, so nothing was read: the next poll
-    /// tries again rather than wait out its write.
-    pub busy: bool,
-}
-
 impl CurioDelivery {
     /// Takes `store`'s delivery lease; refused while another holds it.
     pub fn claim(store: nth_curios::Store) -> nth_curios::Result<Self> {
@@ -122,39 +112,12 @@ impl CurioDelivery {
         &self.store
     }
 
-    /// Polling/enqueueing never acknowledges a batch. Repeated polls dedup in
-    /// Inbox, and a batch in `recorded` is never posted again.
-    pub fn poll(
-        &self,
-        inbox: &crate::Inbox,
-        recorded: &BTreeSet<String>,
-    ) -> nth_curios::Result<Polled> {
-        Ok(match self.store.try_batches(true)? {
-            Some(batches) => Polled::deliver(batches, inbox, recorded),
-            None => Polled {
-                busy: true,
-                ..Polled::default()
-            },
-        })
-    }
-}
-
-impl Polled {
-    /// Posts the pending `batches` the session has not recorded yet.
-    pub fn deliver(
-        batches: Vec<nth_curios::Batch>,
-        inbox: &crate::Inbox,
-        recorded: &BTreeSet<String>,
-    ) -> Self {
-        let mut polled = Self::default();
-        for batch in batches {
-            if recorded.contains(&batch.id) {
-                polled.unacknowledged = true;
-            } else if inbox.post_curio(CurioNotice { batch }) {
-                polled.posted += 1;
-            }
-        }
-        polled
+    /// The pending batches, or `None` while another holds the store's lock:
+    /// the next poll tries again rather than wait out its write. Reading
+    /// never acknowledges a batch, and leaves out none the session already
+    /// recorded; that is the caller's to decide.
+    pub fn poll(&self) -> nth_curios::Result<Option<Vec<nth_curios::Batch>>> {
+        self.store.try_batches(true)
     }
 }
 
