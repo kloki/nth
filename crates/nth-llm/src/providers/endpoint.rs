@@ -228,7 +228,7 @@ impl Endpoint {
         let auth = self
             .auth()
             .await
-            .map_err(|e| stream::boxed(super::auth_error(e)))?;
+            .map_err(|e| stream::boxed(stream::Error::Auth(e)))?;
         let catalog = catalog.get().await;
         let catalog = catalog.as_deref();
         let (wire, known) = self.wire(catalog, request.model);
