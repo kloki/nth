@@ -279,6 +279,8 @@ pub struct App {
     /// The configured step limit, which every session the app moves on to
     /// keeps; a loaded one would otherwise fall back to the default.
     max_steps: usize,
+    /// The configured tool ceiling, kept the same way as `max_steps`.
+    tool_timeout: Option<Duration>,
     /// The configured `[context]` policy, which every session the app moves
     /// on to takes, as it does `max_steps`: a session never saves it.
     compaction: Compaction,
@@ -544,6 +546,7 @@ impl App {
             runtime_loader: None,
             context: session.context().clone(),
             max_steps: session.max_steps,
+            tool_timeout: session.tool_timeout,
             compaction: session.compaction,
             session_listing: Job::default(),
             session_loading: Job::default(),
@@ -1304,6 +1307,7 @@ impl App {
         session.mode = self.mode;
         session.set_agent(self.agent.clone());
         session.max_steps = self.max_steps;
+        session.tool_timeout = self.tool_timeout;
         session.compaction = self.compaction;
         session.set_extra_dirs(self.extra_dirs.clone());
         let plan_path = session.plan_path();

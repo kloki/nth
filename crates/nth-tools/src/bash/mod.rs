@@ -22,6 +22,21 @@ use crate::{
 /// pointers rtk leaves in what it cut.
 const RTK_NOTE: &str = "\n# rtk\n- Common commands (git, cargo, test runners, linters and more) run through rtk, which compresses their output; the result then ends with the command that actually ran. Where rtk points to the full output with `rtk recall <id>`, run that to see it.\n";
 
+/// How long before the session's tool ceiling a command is stopped: time
+/// for the rtk rewrite (up to 2 s) that runs before bash's clock starts,
+/// and to kill the command and hand over its output before the ceiling
+/// drops the call.
+const BEFORE_CEILING: Duration = Duration::from_secs(5);
+
+/// How long a command may run.
+#[derive(Debug, PartialEq)]
+struct Limit {
+    ms: u64,
+    /// The session's tool ceiling set it, not the timeout asked for: a
+    /// larger one would be cut the same.
+    ceiling: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BashConfig {
@@ -63,6 +78,30 @@ impl Bash {
             config,
             untimed: false,
             rtk,
+        }
+    }
+
+    /// How long a command may run: what the model asked for within the
+    /// configured bounds, and over before the session's tool ceiling, so
+    /// this clock stops the command and the model keeps what it printed.
+    fn limit(&self, asked: Option<u64>, ceiling: Option<Duration>) -> Limit {
+        // The configured default is the user's to set as low as they like;
+        // the model's `0` would kill the command before it ran.
+        let ms = asked
+            .map(|t| t.max(MIN_TIMEOUT_MS))
+            .unwrap_or(self.config.default_timeout_ms)
+            .min(self.config.max_timeout_ms);
+        let before = ceiling.map(|ceiling| {
+            u64::try_from(ceiling.saturating_sub(BEFORE_CEILING).as_millis())
+                .unwrap_or(u64::MAX)
+                .max(MIN_TIMEOUT_MS)
+        });
+        match before {
+            Some(before) if before < ms => Limit {
+                ms: before,
+                ceiling: true,
+            },
+            _ => Limit { ms, ceiling: false },
         }
     }
 
@@ -122,13 +161,7 @@ impl Tool for Bash {
         async move {
             crate::process::reject_old_timeout(&args)?;
             let args: Args = nth_protocol::parse_args(args)?;
-            // The configured default is the user's to set as low as they
-            // like; the model's `0` would kill the command before it ran.
-            let timeout_ms = args
-                .timeout_ms
-                .map(|t| t.max(MIN_TIMEOUT_MS))
-                .unwrap_or(self.config.default_timeout_ms)
-                .min(self.config.max_timeout_ms);
+            let limit = self.limit(args.timeout_ms, ctx.tool_timeout);
             let max_chars = self.config.max_output_chars;
             // `exec 2>&1` interleaves stderr into stdout in the order the
             // command wrote them, which two separate pipes cannot preserve.
@@ -152,7 +185,7 @@ impl Tool for Bash {
             let run = if self.untimed {
                 Ok(exit.await)
             } else {
-                tokio::time::timeout(Duration::from_millis(timeout_ms), exit).await
+                tokio::time::timeout(Duration::from_millis(limit.ms), exit).await
             };
             abandoned.0 = None;
             let status = match run {
@@ -161,9 +194,15 @@ impl Tool for Bash {
                     kill_group(&child);
                     streamed.rest(&buf).await;
                     let mut out = tail(&command_output::clean(&buf), max_chars);
-                    out.push_str(&format!(
-                        "\n\ncommand terminated after exceeding timeout {timeout_ms} ms. If it is expected to take longer and is not waiting for input, retry with a larger timeout."
-                    ));
+                    let ms = limit.ms;
+                    out.push_str(&match limit.ceiling {
+                        true => format!(
+                            "\n\ncommand terminated after {ms} ms, before the session's time limit for one tool call; a larger timeout would be cut the same. If it is expected to take longer, run it in the background with the monitor tool where you have it, or split it into shorter commands."
+                        ),
+                        false => format!(
+                            "\n\ncommand terminated after exceeding timeout {ms} ms. If it is expected to take longer and is not waiting for input, retry with a larger timeout."
+                        ),
+                    });
                     return Err(out);
                 }
             };
@@ -455,6 +494,51 @@ mod tests {
             .call(json!({ "command": "sleep 5", "description": "t" }), &ctx)
             .await;
         assert!(out.is_err_and(|e| e.contains("timeout 50 ms")));
+    }
+
+    #[test]
+    fn the_timeout_ends_before_the_tool_ceiling() {
+        let bash = Bash::new(BashConfig {
+            max_timeout_ms: 3_600_000,
+            rtk: false,
+            ..BashConfig::default()
+        });
+        let ceiling = Some(Duration::from_secs(900));
+
+        let limit = |ms, ceiling| Limit { ms, ceiling };
+
+        assert_eq!(bash.limit(Some(1_800_000), ceiling), limit(895_000, true));
+        assert_eq!(bash.limit(Some(60_000), ceiling), limit(60_000, false));
+        assert_eq!(bash.limit(Some(1_800_000), None), limit(1_800_000, false));
+        // Never under the minimum, however low the ceiling.
+        let low = Some(Duration::from_secs(2));
+        assert_eq!(bash.limit(Some(60_000), low), limit(MIN_TIMEOUT_MS, true));
+    }
+
+    #[tokio::test]
+    async fn a_command_past_the_tool_ceiling_times_out_with_its_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext {
+            tool_timeout: Some(BEFORE_CEILING + Duration::from_secs(1)),
+            ..ToolContext::new(dir.path().to_path_buf())
+        };
+        let bash = Bash::new(BashConfig {
+            rtk: false,
+            ..BashConfig::default()
+        });
+
+        let out = bash
+            .call(
+                json!({ "command": "echo early; sleep 30", "timeout_ms": 60_000, "description": "t" }),
+                &ctx,
+            )
+            .await;
+
+        let out = out.expect_err("the command was stopped");
+        assert!(out.starts_with("early\n"), "{out}");
+        assert!(out.contains("terminated after 1000 ms"), "{out}");
+        assert!(out.contains("the monitor tool"), "{out}");
+        assert!(!out.contains("retry with a larger timeout"), "{out}");
     }
 
     #[tokio::test]

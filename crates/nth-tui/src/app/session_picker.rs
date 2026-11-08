@@ -132,6 +132,7 @@ impl App {
         self.tools = model_tools;
         self.shell = Some(shell);
         self.max_steps = session.max_steps;
+        self.tool_timeout = session.tool_timeout;
         self.compaction = session.compaction;
         self.mode_llms = mode_llms;
         self.profiles = profiles;
@@ -165,6 +166,7 @@ impl App {
         }
         self.search_jump = None;
         session.max_steps = self.max_steps;
+        session.tool_timeout = self.tool_timeout;
         session.compaction = self.compaction;
         self.context = session.context().clone();
         self.session_since = session.created_at;
@@ -308,6 +310,7 @@ mod tests {
                     return Err(anyhow::anyhow!("invalid key").context("bad repository config"));
                 }
                 session.max_steps = 17;
+                session.tool_timeout = None;
                 session.compaction.auto = false;
                 session.set_extra_dirs(vec!["/configured".into()]);
                 Ok(crate::PreparedRuntime {
@@ -353,12 +356,14 @@ mod tests {
         assert_eq!(app.model, "saved-model");
         assert!(!Arc::ptr_eq(&app.provider, &old_provider));
         assert_eq!(app.max_steps, 17);
+        assert_eq!(app.tool_timeout, None);
         assert!(!app.compaction.auto);
         assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/configured")]);
         assert!(!app.checkers.as_ref().unwrap().rtk);
         app.start_fresh_session();
         let fresh = app.session.as_ref().unwrap();
         assert_eq!(fresh.max_steps, 17);
+        assert_eq!(fresh.tool_timeout, None);
         assert_eq!(fresh.extra_dirs, [std::path::PathBuf::from("/configured")]);
     }
 

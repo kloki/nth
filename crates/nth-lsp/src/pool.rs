@@ -34,7 +34,10 @@ pub struct ServerStatus {
 pub enum ServerState {
     Starting,
     Connected,
-    /// It failed to start or died, and is not tried again.
+    /// It failed to start, and is not tried again; died, and is tried
+    /// again once stopped for idling, when `[lsp] idle_secs` is set; or
+    /// stopped reading what it is sent, and was killed, to be started again
+    /// on the next touch.
     Broken(String),
 }
 
@@ -99,6 +102,9 @@ struct Entry {
 struct Busy {
     inner: Arc<Inner>,
     key: Key,
+    /// Which entry it counts in: one evicted while busy may have been
+    /// replaced under the same key, whose count is not this touch's.
+    slot: Slot,
     caller: Option<Caller>,
 }
 
@@ -109,7 +115,10 @@ impl Drop for Busy {
             .clients
             .lock()
             .expect("lsp client map lock poisoned");
-        if let Some(entry) = clients.get_mut(&self.key) {
+        if let Some(entry) = clients
+            .get_mut(&self.key)
+            .filter(|entry| entry.slot.ptr_eq(&self.slot))
+        {
             entry.busy -= 1;
             entry.touched = Instant::now();
             entry.usage.active -= 1;
@@ -240,8 +249,13 @@ impl Lsp {
                 Ok(version) if wait => client.wait_for_diagnostics(&path, version, after).await,
                 Ok(_) => {}
                 Err(Error::Closed) => {
-                    let reason = client.stderr().explain("exited");
-                    self.set_state(client.id(), client.root(), ServerState::Broken(reason));
+                    self.broken(client, client.stderr().explain("exited"), false);
+                    return false;
+                }
+                // Not reading what it is sent, so it never will: the next
+                // touch starts it again rather than wait on it once more.
+                Err(e @ Error::Timeout(_)) => {
+                    self.broken(client, client.stderr().explain(&e.to_string()), true);
                     return false;
                 }
                 // The file vanished or is not text: nothing to report.
@@ -380,6 +394,7 @@ impl Lsp {
         let busy = Busy {
             inner: Arc::clone(&self.inner),
             key,
+            slot: slot.clone(),
             caller,
         };
         (busy, slot.await)
@@ -425,6 +440,37 @@ impl Lsp {
         }
     }
 
+    /// Marks `client`'s server broken for `reason`. With `evict`, also
+    /// drops it from the pool and kills it, so the next touch starts the
+    /// server again; the status says why until then. Nothing changes once
+    /// another start has taken the client's place.
+    fn broken(&self, client: &Arc<Client>, reason: String, evict: bool) {
+        let key = (client.id().to_string(), client.root().to_path_buf());
+        let mut clients = self
+            .inner
+            .clients
+            .lock()
+            .expect("lsp client map lock poisoned");
+        let Some(entry) = clients.get_mut(&key).filter(
+            |entry| matches!(entry.slot.peek(), Some(Some(held)) if Arc::ptr_eq(held, client)),
+        ) else {
+            return;
+        };
+        if evict {
+            clients.remove(&key);
+        } else {
+            entry.usage.state = ServerState::Broken(reason.clone());
+        }
+        self.inner.publish(&clients);
+        // Under the lock, as when stopped for idling, so a start that
+        // follows cannot have its status overwritten.
+        self.set_status(&key.0, &key.1, ServerState::Broken(reason));
+        // Still under the lock, so no touch can reach it in between.
+        if evict {
+            client.kill();
+        }
+    }
+
     /// Only a change wakes the watchers: a broken server is reported again
     /// on every touch, and the front-end need not redraw for that.
     fn set_state(&self, id: &str, root: &Path, state: ServerState) {
@@ -439,6 +485,10 @@ impl Lsp {
             }
             self.inner.publish(&clients);
         }
+        self.set_status(id, root, state);
+    }
+
+    fn set_status(&self, id: &str, root: &Path, state: ServerState) {
         self.inner.status.send_if_modified(|all| {
             match all.iter_mut().find(|s| s.id == id && s.root == root) {
                 Some(status) if status.state == state => false,
@@ -622,8 +672,9 @@ mod tests {
 
     /// A language server as a shell script: it answers `initialize`, and
     /// on every `didOpen` publishes one error for that file, versioned.
-    /// With `die` as its argument it exits right after publishing. What it
-    /// writes to stderr on start shows up in the broken-state text.
+    /// With `die` as its argument it exits right after publishing; with
+    /// `deaf` it reads nothing more once it has answered `initialize`. What
+    /// it writes to stderr on start shows up in the broken-state text.
     const SCRIPTED_SERVER: &str = r##"#!/bin/sh
 echo "scripted server here" >&2
 message() {
@@ -647,6 +698,7 @@ while message; do
         *'"method":"initialize"'*)
             id=$(printf '%s' "$body" | sed 's/.*"id":\([0-9]*\).*/\1/')
             send "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}"
+            [ "$1" = deaf ] && exec sleep 600
             ;;
         *'"method":"textDocument/didOpen"'*)
             uri=$(printf '%s' "$body" | sed 's/.*"uri":"\([^"]*\)".*/\1/')
@@ -780,6 +832,72 @@ done
             other => panic!("{other:?}"),
         }
         assert!(lsp.touch(&file, true).await.is_empty());
+    }
+
+    /// The pid of the one client the pool holds.
+    fn pid_of(lsp: &Lsp) -> Option<u32> {
+        let clients = lsp.inner.clients.lock().unwrap();
+        clients.values().next().and_then(|entry| entry.usage.pid)
+    }
+
+    /// Whether `pid` is gone or only waits to be reaped.
+    fn exited(pid: u32) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        stat.trim().is_empty() || stat.trim_start().starts_with('Z')
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_acknowledge_a_touch_is_broken() {
+        let (tmp, file, lsp) = scripted(&["deaf"]);
+        // Started on the real clock: the handshake talks to a real process.
+        assert!(lsp.touch(&file, false).await.is_empty());
+        assert_eq!(
+            state_of(&lsp.status().borrow()),
+            Some(ServerState::Connected)
+        );
+        let deaf = pid_of(&lsp).expect("the server runs");
+        // More text than a pipe holds, so writing it blocks for good.
+        let big = tmp.path().join("big.nthtest");
+        std::fs::write(&big, "x".repeat(4 << 20)).unwrap();
+
+        // Waits out the touch timeout without taking that long.
+        tokio::time::pause();
+        let touched =
+            tokio::time::timeout(crate::client::TOUCH_TIMEOUT * 2, lsp.touch(&big, false))
+                .await
+                .expect("the touch gave up on the server");
+        tokio::time::resume();
+
+        assert!(touched.is_empty(), "{touched:?}");
+        // What follows the reason is the server's stderr, which may not have
+        // been read before the clock paused.
+        match state_of(&lsp.status().borrow()) {
+            Some(ServerState::Broken(why)) => {
+                assert!(why.starts_with("touch timed out"), "{why}")
+            }
+            other => panic!("not broken: {other:?}"),
+        }
+        // Killed, though its task was stuck writing to it.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !exited(deaf) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the stuck server was killed");
+        // The next touch starts it again rather than wait on it once more.
+        tokio::time::timeout(crate::client::TOUCH_TIMEOUT / 2, lsp.touch(&file, false))
+            .await
+            .expect("the next touch did not wait on the stuck server");
+        assert_eq!(
+            state_of(&lsp.status().borrow()),
+            Some(ServerState::Connected)
+        );
+        assert_ne!(pid_of(&lsp), Some(deaf));
     }
 
     #[tokio::test]

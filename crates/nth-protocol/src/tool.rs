@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use futures::future::BoxFuture;
@@ -91,6 +92,9 @@ pub struct ToolContext {
     /// shows images refuses without one, rather than leave them where
     /// another user could read or swap them.
     pub images: Option<PathBuf>,
+    /// How long a call may run before the session loop stops it, for a
+    /// tool not in `tool_names::UNTIMED`; `None` lets every call run.
+    pub tool_timeout: Option<Duration>,
 }
 
 /// How tools reach the person at the front-end: to ask them questions, to
@@ -139,6 +143,7 @@ impl ToolContext {
             attachments: Attachments::default(),
             takes_images: true,
             images: None,
+            tool_timeout: None,
         }
     }
 
@@ -174,6 +179,7 @@ impl ToolContext {
             attachments: Attachments::default(),
             takes_images: self.takes_images,
             images: self.images.clone(),
+            tool_timeout: self.tool_timeout,
         }
     }
 }
@@ -222,6 +228,12 @@ pub fn reject_old_timeout(args: &serde_json::Value) -> Result<(), String> {
 
 /// Why a tool the user cut short failed; the model reads it after `Error: `.
 pub const INTERRUPTED: &str = "interrupted by the user";
+
+/// Why a tool the session loop stopped after `ceiling` failed; the model
+/// reads it after `Error: `.
+pub fn timed_out(ceiling: Duration) -> String {
+    format!("timed out after {ceiling:?}; the tool was stopped")
+}
 
 /// The text the model reads, and the session saves, before why a call failed.
 const FAILED: &str = "Error: ";

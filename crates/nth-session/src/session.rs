@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use nth_context::{Agent, Context, instructions::Watch};
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Compaction, DEFAULT_MAX_STEPS, Error, Ledger, Route, Spend, Turn,
+    Compaction, DEFAULT_MAX_STEPS, DEFAULT_TOOL_TIMEOUT, Error, Ledger, Route, Spend, Turn,
     agent_loop::{emit, run_call},
     memory,
     plan::{self, Approver},
@@ -113,6 +113,10 @@ pub struct Session {
     /// config, not the save, so a resumed session follows today's config.
     #[serde(skip, default = "default_max_steps")]
     pub max_steps: usize,
+    /// How long one tool call may run before the loop stops it; `None`
+    /// never. Comes from the config, as `max_steps` does.
+    #[serde(skip, default = "default_tool_timeout")]
+    pub tool_timeout: Option<Duration>,
     /// Whether the model takes images, as the listing says; the front-end
     /// sets it with the limits. Unknown counts as yes: the providers still
     /// turn an image into a note for a model that takes none.
@@ -305,6 +309,7 @@ impl Session {
             context_window: None,
             max_output: None,
             max_steps: DEFAULT_MAX_STEPS,
+            tool_timeout: Some(DEFAULT_TOOL_TIMEOUT),
             takes_images: true,
             cost: None,
             images: None,
@@ -699,6 +704,7 @@ impl Session {
             session: self.id.to_string(),
             takes_images: self.takes_images,
             images: self.images.clone(),
+            tool_timeout: self.tool_timeout,
             ..ToolContext::new(self.cwd.clone())
         }
     }
@@ -830,6 +836,8 @@ impl Session {
             ..AssistantMessage::default()
         }));
         self.updated_at = SystemTime::now();
+        // No tool ceiling: you watch your own command and stop it yourself,
+        // so a long build is never cut off.
         let ctx = ToolContext::new(self.cwd.clone());
         let answer = run_call(Some(shell), &ctx, &call, events, cancel).await;
         self.messages.push(answer);
@@ -846,6 +854,10 @@ fn yes() -> bool {
 
 fn default_max_steps() -> usize {
     DEFAULT_MAX_STEPS
+}
+
+fn default_tool_timeout() -> Option<Duration> {
+    Some(DEFAULT_TOOL_TIMEOUT)
 }
 
 #[cfg(test)]
@@ -1730,6 +1742,9 @@ pub(crate) mod tests {
                 if command == "hang" {
                     std::future::pending::<()>().await;
                 }
+                if command == "slow" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
                 ctx.output.send(command.clone()).await;
                 Ok(format!("ran {command}"))
             }
@@ -1767,6 +1782,23 @@ pub(crate) mod tests {
         assert!(matches!(rx.recv().await, Some(Event::ToolStarted(_))));
         assert!(matches!(rx.recv().await, Some(Event::ToolOutput { .. })));
         assert!(matches!(rx.recv().await, Some(Event::ToolFinished { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_shell_command_outlasts_the_tool_ceiling() {
+        let mut session = Session::new("glm-5.3", ".".into());
+        session.tool_timeout = Some(Duration::from_millis(10));
+        let (events, _rx) = mpsc::channel(16);
+
+        let result = session
+            .shell("slow", &Shell, &events, &CancellationToken::new())
+            .await;
+
+        assert!(result.is_ok());
+        assert!(matches!(
+            session.messages.last(),
+            Some(Message::ToolResult { content, .. }) if content == "ran slow"
+        ));
     }
 
     #[tokio::test]

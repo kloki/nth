@@ -69,6 +69,11 @@ model = ""
 [session]
 # Stop a turn after this many model requests without a final answer.
 max_steps = 100
+# Stop a tool call that has not returned after this many seconds, and tell
+# the model it timed out. Tools that wait for you or for a subagent are
+# never timed, nor are the commands you run with `!`. 0 turns the ceiling
+# off.
+tool_timeout_secs = 900
 
 [context]
 # Compact the session on its own when the last reply fills the model's
@@ -179,7 +184,9 @@ max_bytes = 51200
 [tools.bash]
 # Timeout when the model gives none, in milliseconds.
 default_timeout_ms = 120000
-# Cap on the timeout the model may ask for, in milliseconds.
+# Cap on the timeout the model may ask for, in milliseconds. A command
+# is stopped a few seconds before [session] tool_timeout_secs regardless,
+# so the model still gets its output.
 max_timeout_ms = 600000
 # Longer output keeps only its last this-many characters.
 max_output_chars = 30000
