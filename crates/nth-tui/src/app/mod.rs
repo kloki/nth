@@ -390,9 +390,9 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
 }
 
 enum Step {
-    CurioOpened(Result<nth_protocol::nth_curios::Result<curios::Opened>, JoinError>),
+    CurioOpened(Result<nth_curios::Result<curios::Opened>, JoinError>),
     CurioPolled(Result<curios::Tick, JoinError>),
-    CurioAcknowledged(Result<nth_protocol::nth_curios::Result<()>, JoinError>),
+    CurioAcknowledged(Result<nth_curios::Result<()>, JoinError>),
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),
@@ -780,9 +780,7 @@ impl App {
             };
             match step {
                 Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
-                    Err(nth_protocol::nth_curios::Error::Invalid(
-                        "host unavailable".into(),
-                    ))
+                    Err(nth_curios::Error::Invalid("host unavailable".into()))
                 })),
                 Step::CurioPolled(tick) => self.curio_polled(tick),
                 Step::CurioAcknowledged(acknowledged) => self.curio_acknowledged(acknowledged),

@@ -1,6 +1,6 @@
-use std::{collections::BTreeSet, process::Command};
+use std::process::Command;
 
-use nth_protocol::{Curios, Screen, Show};
+use nth_protocol::{Screen, Show};
 
 use super::*;
 
@@ -16,7 +16,7 @@ fn context() -> (tempfile::TempDir, ToolContext) {
     );
     let mut ctx = ToolContext::new(dir.path().to_path_buf());
     ctx.session = "owner".into();
-    ctx.curios = Curios::new(ctx.cwd.clone(), ctx.session.clone(), None, BTreeSet::new());
+    ctx.state_root = Some(ctx.cwd.clone());
     (dir, ctx)
 }
 
@@ -92,7 +92,7 @@ async fn headless_publish_update_and_reply_are_idempotent_and_conflict_checked()
             .unwrap_err()
             .starts_with("curios.conflict:")
     );
-    let store = ctx.curios.store().unwrap();
+    let store = core::Store::open(&ctx.cwd, &ctx.session).unwrap();
     let thread = comment(&store, cid, "comment", "Please revise".into());
     let reply = json!({"curio_id":cid,"thread_id":thread.id,"expected_version":thread.version,"request_id":"reply","body":"Revised","mark_addressed":true,"revision":2});
     let result = CurioReply.call(reply.clone(), &ctx).await.unwrap();
@@ -129,7 +129,7 @@ async fn headless_publish_update_and_reply_are_idempotent_and_conflict_checked()
 #[tokio::test]
 async fn rejects_untrusted_scope_agent_and_owner_arguments() {
     let (_dir, mut ctx) = context();
-    ctx.session = "different".into();
+    ctx.session = String::new();
     assert!(
         CurioRead
             .call(json!({}), &ctx)
@@ -138,6 +138,15 @@ async fn rejects_untrusted_scope_agent_and_owner_arguments() {
             .starts_with("curios.permission:")
     );
     ctx.session = "owner".into();
+    ctx.state_root = None;
+    assert!(
+        CurioRead
+            .call(json!({}), &ctx)
+            .await
+            .unwrap_err()
+            .starts_with("curios.invalid:")
+    );
+    ctx.state_root = Some(ctx.cwd.clone());
     ctx.is_subagent = true;
     assert!(
         CurioRead
@@ -197,7 +206,7 @@ async fn read_pages_large_threads_and_immutable_batches_without_dumping_state() 
     let (_dir, ctx) = context();
     let first = publish(&ctx).await;
     let cid = first["curio"]["id"].as_str().unwrap();
-    let store = ctx.curios.store().unwrap();
+    let store = core::Store::open(&ctx.cwd, &ctx.session).unwrap();
     let mut ids = Vec::new();
     for n in 0..18 {
         let t = comment(&store, cid, &format!("comment-{n}"), "é".repeat(8000));
@@ -247,7 +256,7 @@ async fn lossless_body_continuation() {
     let (_dir, ctx) = context();
     let published = publish(&ctx).await;
     let cid = published["curio"]["id"].as_str().unwrap();
-    let store = ctx.curios.store().unwrap();
+    let store = core::Store::open(&ctx.cwd, &ctx.session).unwrap();
     let bodies = [
         format!("{}TAIL_REQUIRED_ACTION", "x".repeat(3001)),
         "é".repeat(8000),
@@ -314,7 +323,7 @@ async fn batch_reviewed_revision_preserves_historical_and_unknown_context() {
     let (_dir, ctx) = context();
     let published = publish(&ctx).await;
     let cid = published["curio"]["id"].as_str().unwrap();
-    let store = ctx.curios.store().unwrap();
+    let store = core::Store::open(&ctx.cwd, &ctx.session).unwrap();
     let old = comment(&store, cid, "old", "Historical".into());
     store
         .publish(core::Publish {
@@ -394,7 +403,7 @@ async fn source_scope_and_symlinks_cannot_publish_outside_workspace() {
     );
     #[cfg(unix)]
     {
-        let store = ctx.curios.store().unwrap();
+        let store = core::Store::open(&ctx.cwd, &ctx.session).unwrap();
         let link = store.source_dir().join("link.html");
         std::os::unix::fs::symlink(&outside, &link).unwrap();
         assert!(
@@ -445,5 +454,19 @@ async fn show_user_validates_selection_and_sends_only_scoped_ids() {
             .call(json!({"curio":{"curio_id":cid,"revision":99}}), &ctx)
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn the_store_is_in_the_state_root_wherever_the_session_works() {
+    let (dir, mut ctx) = context();
+    let elsewhere = tempfile::tempdir().unwrap();
+    ctx.cwd = elsewhere.path().to_path_buf();
+    let paths: Value =
+        serde_json::from_str(&CurioRead.call(json!({}), &ctx).await.unwrap()).unwrap();
+    let source = std::path::Path::new(paths["source_path"].as_str().unwrap());
+    assert!(
+        source.starts_with(dir.path().canonicalize().unwrap()),
+        "{source:?}"
     );
 }

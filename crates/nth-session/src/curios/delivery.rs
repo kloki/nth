@@ -9,15 +9,46 @@ use std::{
 
 use nth_curios::{Batch, Store};
 use nth_directories::Directories;
-use nth_protocol::{CurioDelivery, CurioNotice};
 
-use super::Stores;
+use super::{CurioNotice, Stores};
 
 /// How long after a refused or failed claim the lease is tried again, and
 /// after a failed acknowledgment the next: another process that holds the
 /// lease may exit, and a failure that builds a store would otherwise repeat
 /// every poll.
 pub(crate) const CLAIM_RETRY: Duration = Duration::from_secs(10);
+
+/// A session's delivery lease on its store: while held, no other process
+/// delivers the session's feedback.
+#[derive(Debug)]
+pub struct CurioDelivery {
+    store: Store,
+    _lease: std::fs::File,
+}
+
+impl CurioDelivery {
+    /// Takes `store`'s delivery lease; refused while another holds it.
+    pub fn claim(store: Store) -> nth_curios::Result<Self> {
+        let lease = store.claim_delivery()?;
+        Ok(Self {
+            store,
+            _lease: lease,
+        })
+    }
+
+    /// The store the lease is on, for a poll that reads it elsewhere.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// The pending batches, or `None` while another holds the store's lock:
+    /// the next poll tries again rather than wait out its write. Reading
+    /// never acknowledges a batch, and leaves out none the session already
+    /// recorded; that is the caller's to decide.
+    pub fn poll(&self) -> nth_curios::Result<Option<Vec<Batch>>> {
+        self.store.try_batches(true)
+    }
+}
 
 /// A session's delivery as its front-end's loop keeps it: the lease while
 /// held, and when to try again for what failed. Time comes in as `now`, so
@@ -347,7 +378,7 @@ mod tests {
     #[test]
     fn claim_waits_claim_retry_after_a_refusal() {
         let (_repo, session, _store, _) = published();
-        let _other = session.curios().claim_delivery().unwrap();
+        let _other = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
         let stores = Stores::default();
         let now = Instant::now();
         let mut delivery = Delivery::new(now);
@@ -371,7 +402,7 @@ mod tests {
     #[test]
     fn delivery_is_claimed_once_another_owner_lets_go() {
         let (_repo, session, _store, _) = published();
-        let other = session.curios().claim_delivery().unwrap();
+        let other = crate::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
         let stores = Stores::default();
         let mut now = Instant::now();
         let mut delivery = Delivery::new(now);

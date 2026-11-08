@@ -6,10 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
+use nth_curios::{self as core, Author, Comment, Publish, Reply, Send, Status, Target, TargetKind};
 use nth_icons::icons;
-use nth_protocol::nth_curios::{
-    self as core, Author, Comment, Publish, Reply, Send, Status, Target, TargetKind,
-};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -137,9 +135,7 @@ enum Command {
 }
 
 pub async fn run(args: Args) -> Result<()> {
-    let root = nth_protocol::Curios::repository_root(
-        &std::env::current_dir().context("no working directory")?,
-    )?;
+    let root = core::owner_root(&std::env::current_dir().context("no working directory")?)?;
     let json_output = args.json || !io::stdout().is_terminal();
     let value = execute(args, &root).await?;
     print(&value, json_output)
@@ -552,15 +548,10 @@ mod tests {
             worktree.to_str().unwrap(),
         ]);
         let root = dir.path().canonicalize().unwrap();
-        let scope = nth_protocol::Curios::new(
-            worktree.clone(),
-            "shared-owner".into(),
-            None,
-            Default::default(),
-        );
-        let store = scope.store().unwrap();
+        let mut owner = nth_session::Session::new("fake", worktree.clone());
+        let store = owner.prepare_curios().unwrap();
         assert_eq!(store.repo_root(), root);
-        assert_eq!(scope.root().as_deref(), Some(root.as_path()));
+        assert_eq!(owner.curio_root.as_deref(), Some(root.as_path()));
         store
             .publish(Publish {
                 request_id: "first".into(),
@@ -570,19 +561,15 @@ mod tests {
                 html: "<p>Shared</p>".into(),
             })
             .unwrap();
-        let cli_root = nth_protocol::Curios::repository_root(&worktree).unwrap();
+        let cli_root = core::owner_root(&worktree).unwrap();
         assert_eq!(
             execute(args(&["list"]), &cli_root).await.unwrap()["total"],
             1
         );
-        let saved = nth_protocol::Curios::new(
-            worktree.clone(),
-            "old-owner".into(),
-            Some(worktree.clone()),
-            Default::default(),
-        );
-        assert_eq!(saved.store().unwrap().repo_root(), worktree);
-        assert_eq!(saved.root().as_deref(), Some(worktree.as_path()));
+        let mut saved = nth_session::Session::new("fake", worktree.clone());
+        saved.curio_root = Some(worktree.clone());
+        assert_eq!(saved.prepare_curios().unwrap().repo_root(), worktree);
+        assert_eq!(saved.curio_root.as_deref(), Some(worktree.as_path()));
     }
 
     #[test]

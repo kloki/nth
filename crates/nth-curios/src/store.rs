@@ -169,6 +169,15 @@ pub fn repository_root(cwd: &Path) -> Result<PathBuf> {
         String::from_utf8_lossy(&output.stdout).trim(),
     ))
 }
+
+/// The main checkout for `cwd`, after validating the repository: a linked
+/// worktree's curios live with its main checkout, so every worktree of a
+/// session finds the same store. Canonical, as [`Store::repo_root`] is.
+pub fn owner_root(cwd: &Path) -> Result<PathBuf> {
+    let root = repository_root(cwd)?;
+    let main = nth_directories::main_project_root(&root).unwrap_or(root);
+    Ok(main.canonicalize()?)
+}
 fn component(id: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 160
@@ -430,6 +439,12 @@ impl Store {
         }
         store.prepare_template()?;
         Ok(store)
+    }
+    /// `session`'s store in the main checkout of `state_root`, its template
+    /// prepared. Spawns git and may wait on another process's lock, so an
+    /// async caller runs it under [`offload`].
+    pub fn open(state_root: &Path, session: &str) -> Result<Self> {
+        Self::new(owner_root(state_root)?, session)
     }
     pub fn repo_root(&self) -> &Path {
         &self.root
@@ -1314,4 +1329,64 @@ pub async fn offload<T: std::marker::Send + 'static>(
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|_| Error::Invalid("curios worker failed".into()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn owner_root_of_a_linked_worktree_is_the_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "--quiet"]);
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let linked = dir.path().join("linked");
+        git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let main = dir.path().canonicalize().unwrap();
+        assert_eq!(owner_root(&linked).unwrap(), main);
+        assert_eq!(owner_root(&linked.join(".")).unwrap(), main);
+        let store = Store::open(&linked, "owner").unwrap();
+        assert_eq!(store.repo_root(), main);
+        assert!(store.template_path().is_file());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            owner_root(outside.path()),
+            Err(Error::RepoRequired)
+        ));
+    }
 }

@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-use nth_protocol::nth_curios::{self as core, Curio, Host};
+use nth_curios::{self as core, Curio, Host};
 use nth_session::{
     Session,
     curios::{Claim, Delivery, How, Poll, Polled, Read, Stores},
@@ -104,7 +104,7 @@ impl Curios {
             root: session
                 .curio_root
                 .clone()
-                .or_else(|| nth_protocol::Curios::repository_root(&session.state_root()).ok()),
+                .or_else(|| core::owner_root(&session.state_root()).ok()),
             items: Vec::new(),
             queued: BTreeSet::new(),
             discovery: core::Discovery::default(),
@@ -805,7 +805,8 @@ mod tests {
         );
         let mut session = Session::new("glm", dir.path().to_path_buf());
         session.prepare_curios().unwrap();
-        let _other = session.curios().claim_delivery().unwrap();
+        let _other =
+            nth_session::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
         let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.poll_curios_through().await;
         assert!(app.curios.delivery.store().is_none());

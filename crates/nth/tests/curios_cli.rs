@@ -4,10 +4,8 @@ use std::{
     process::{Command, Stdio},
 };
 
-use nth_protocol::{
-    Message,
-    nth_curios::{self as core, Author, Comment, Publish, Reply, Target, TargetKind},
-};
+use nth_curios::{self as core, Author, Comment, Publish, Reply, Target, TargetKind};
+use nth_protocol::Message;
 use nth_session::{Session, Store};
 use serde_json::Value;
 

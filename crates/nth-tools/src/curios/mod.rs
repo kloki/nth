@@ -1,6 +1,7 @@
 //! Native, owner-scoped Curios operations. Presentation never owns mutations.
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, nth_curios as core};
+use nth_curios as core;
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -30,9 +31,9 @@ pub(crate) fn failure(error: core::Error) -> String {
     )
 }
 
-/// This session's store, built on a blocking thread: building one spawns git
-/// and may wait on another process's lock, which would stall the turn's
-/// runtime worker.
+/// This session's store, in the main checkout of its state root, built on a
+/// blocking thread: building one spawns git and may wait on another
+/// process's lock, which would stall the turn's runtime worker.
 pub(crate) async fn store(ctx: &ToolContext, name: &str) -> Result<core::Store, String> {
     if ctx.is_subagent
         || ctx.agent.as_ref().is_some_and(|agent| {
@@ -41,14 +42,18 @@ pub(crate) async fn store(ctx: &ToolContext, name: &str) -> Result<core::Store, 
     {
         return Err("curios.permission: this agent cannot use this operation. Recovery: ask the owning primary session to perform it.".into());
     }
-    let curios = ctx.curios.clone();
-    let store = core::offload(move || curios.store())
-        .await
-        .map_err(failure)?;
-    if ctx.session.is_empty() || store.session_id() != ctx.session {
+    if ctx.session.is_empty() {
         return Err("curios.permission: trusted scope does not match the active session. Recovery: prepare Curios for the active session.".into());
     }
-    Ok(store)
+    let Some(state_root) = ctx.state_root.clone() else {
+        return Err(failure(core::Error::Invalid(
+            "Curios is unavailable to this session".into(),
+        )));
+    };
+    let session = ctx.session.clone();
+    core::offload(move || core::Store::open(&state_root, &session))
+        .await
+        .map_err(failure)
 }
 
 fn args<T: DeserializeOwned>(value: Value) -> Result<T, String> {

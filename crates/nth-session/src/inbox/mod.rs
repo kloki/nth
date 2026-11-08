@@ -16,9 +16,10 @@ use std::{
 pub(crate) use notice::quiet_text;
 use notice::{NOTICE_LINE_CHARS, NOTICE_LINES};
 pub use notice::{NoticeSummary, instructions_notice, split_notices};
-use nth_protocol::{CurioNotice, MonitorEnd, MonitorId};
+use nth_protocol::{MonitorEnd, MonitorId};
 
 use crate::{
+    curios::CurioNotice,
     subagent::{TaskNotice, TaskStall},
     work::{WorkNotice, WorkState},
 };

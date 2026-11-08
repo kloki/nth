@@ -173,8 +173,7 @@ async fn persisted_root_survives_managed_move_and_distinguishes_separate_checkou
     assert_eq!(resumed.curio_source_dir().unwrap(), source);
     assert_eq!(
         resumed
-            .curios()
-            .store()
+            .curio_store()
             .unwrap()
             .snapshot(&published.curio.id, None)
             .unwrap()
@@ -189,13 +188,12 @@ async fn persisted_root_survives_managed_move_and_distinguishes_separate_checkou
     );
     assert!(
         independent
-            .curios()
-            .store()
+            .curio_store()
             .unwrap()
             .snapshot(&published.curio.id, None)
             .is_err()
     );
-    assert!(resumed.clone().as_subagent(None).curios().store().is_err());
+    assert!(resumed.clone().as_subagent(None).curio_store().is_err());
 }
 
 #[cfg(unix)]
