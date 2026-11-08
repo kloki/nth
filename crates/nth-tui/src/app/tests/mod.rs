@@ -778,6 +778,46 @@ async fn clear_command_starts_a_fresh_session() {
 }
 
 #[tokio::test]
+async fn a_fresh_session_leaves_the_old_models_listing_behind() {
+    // Only the config's share of the env goes from session to session: the
+    // old one's listed price and image support are its model's, which a
+    // listing sizes again.
+    let mut session = Session::new("glm", "/repo".into());
+    session.env.takes_images = false;
+    session.env.cost = Some(nth_protocol::Cost {
+        input: 1.0,
+        output: 2.0,
+        cache_read: None,
+        cache_write: None,
+    });
+    session.env.max_steps = 9;
+    let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+
+    app.prompt.insert_str("/clear");
+    app.submit();
+
+    let fresh = &app.session.as_ref().expect("idle").env;
+    assert_eq!(fresh.max_steps, 9, "the config's share is kept");
+    assert!(fresh.takes_images, "unknown until listed");
+    assert_eq!(fresh.cost, None, "unknown until listed");
+}
+
+#[test]
+fn adopting_the_llm_hands_over_the_images_folder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Arc::new(nth_session::Store::at(dir.path()));
+    let mut app = app();
+    let mut session = Session::new("glm", "/repo".into());
+
+    app.adopt_llm(&mut session);
+    assert_eq!(session.env.images, None, "no store, no folder");
+
+    app.store = Some(store.clone());
+    app.adopt_llm(&mut session);
+    assert_eq!(session.env.images, Some(store.images_dir(session.id)));
+}
+
+#[tokio::test]
 async fn a_fresh_session_takes_the_configured_compaction() {
     let configured = nth_protocol::Compaction {
         auto: false,
@@ -785,14 +825,14 @@ async fn a_fresh_session_takes_the_configured_compaction() {
         preserve: 500,
     };
     let mut session = Session::new("glm", "/repo".into());
-    session.compaction = configured;
+    session.env.compaction = configured;
     let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
 
     app.prompt.insert_str("/clear");
     app.submit();
 
     assert_eq!(
-        app.session.as_ref().expect("idle").compaction,
+        app.session.as_ref().expect("idle").env.compaction,
         configured,
         "the new session follows [context], not the defaults"
     );

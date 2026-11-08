@@ -100,7 +100,7 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpo
     // A window of 10k less 2k reserved: exactly 8k fills its usable part,
     // which must fire.
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 100;
+    session.env.compaction.preserve = 100;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -188,7 +188,7 @@ fn overflow_then() -> Scripted {
 async fn an_overflowing_request_compacts_and_goes_on_from_the_checkpoint() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -294,7 +294,7 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
     let store = Store::at(dir.path().join("sessions"));
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("first question".into()),
         assistant(&"x".repeat(400)),
@@ -328,7 +328,7 @@ async fn a_compacted_session_resumes_at_its_marker_with_the_limits_and_usage_kep
         "the usage a later reply reported survives"
     );
     assert_eq!(
-        resumed.compaction,
+        resumed.env.compaction,
         Compaction::default(),
         "the policy is not saved: the front-end applies today's config"
     );
@@ -379,7 +379,7 @@ async fn a_save_from_before_compaction_still_loads_and_runs() {
 
     let mut session = store.load(old.id).await.expect("loads");
     assert_eq!(
-        session.compaction,
+        session.env.compaction,
         Compaction::default(),
         "the defaults, as before"
     );
@@ -447,7 +447,7 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
     // before them: the kept part moves back to the calls, never starting on
     // a result.
     let result = |content: String| compaction::text_tokens(&format!("[Tool result]: {content}"));
-    session.compaction.preserve = result("one".repeat(200))
+    session.env.compaction.preserve = result("one".repeat(200))
         + result("two".repeat(200))
         + result("three".repeat(200))
         + compaction::text_tokens("[Assistant]: done");
@@ -502,11 +502,16 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
 async fn a_child_session_inherits_the_limits_and_compacts_on_its_own() {
     let ctx = ToolContext {
         session: uuid::Uuid::new_v4().to_string(),
-        context_window: Some(10_000),
-        max_output: Some(2_000),
-        llm: Llm {
-            model: "glm-5.3".into(),
-            ..Llm::default()
+        child: nth_protocol::ChildLlm {
+            own: nth_protocol::ModelSettings {
+                context_window: Some(10_000),
+                max_output: Some(2_000),
+                ..nth_protocol::ModelSettings::bare(Llm {
+                    model: "glm-5.3".into(),
+                    ..Llm::default()
+                })
+            },
+            ..nth_protocol::ChildLlm::default()
         },
         ..ToolContext::new("/repo".into())
     };
@@ -521,7 +526,7 @@ async fn a_child_session_inherits_the_limits_and_compacts_on_its_own() {
         (Some(10_000), Some(2_000)),
         "the parent's limits"
     );
-    child.compaction.preserve = 100;
+    child.env.compaction.preserve = 100;
     child.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -572,7 +577,7 @@ async fn a_manual_compaction_of_only_the_system_prompt_does_nothing() {
 #[tokio::test]
 async fn a_second_compaction_folds_in_the_first_and_reads_nothing_before_it() {
     let mut session = Session::new("glm-5.3", "/repo".into());
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -661,8 +666,8 @@ async fn a_second_compaction_folds_in_the_first_and_reads_nothing_before_it() {
 async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.auto = false;
-    session.compaction.preserve = 40;
+    session.env.compaction.auto = false;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -716,7 +721,7 @@ async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
 async fn a_summary_request_that_overflows_stops_as_too_big_to_compact() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -762,8 +767,8 @@ async fn an_overflow_with_nothing_but_the_prompt_to_summarize_gives_up_too() {
 async fn the_last_allowed_step_still_asks_the_model_after_compacting() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
-    session.max_steps = 2;
+    session.env.compaction.preserve = 40;
+    session.env.max_steps = 2;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -816,9 +821,9 @@ async fn a_turn_whose_own_tool_result_overflows_goes_on_with_it_cut() {
     }
 
     let mut session = Session::new("glm-5.3", "/repo".into());
-    session.compaction.auto = false;
-    session.compaction.preserve = 20_000;
-    session.max_steps = 6;
+    session.env.compaction.auto = false;
+    session.env.compaction.preserve = 20_000;
+    session.env.max_steps = 6;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(100_000)),
@@ -863,7 +868,7 @@ async fn a_turn_whose_own_tool_result_overflows_goes_on_with_it_cut() {
 async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 100;
+    session.env.compaction.preserve = 100;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -942,8 +947,8 @@ async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
 async fn a_resumed_session_over_the_window_compacts_before_its_first_request() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
-    session.max_steps = 1;
+    session.env.compaction.preserve = 40;
+    session.env.max_steps = 1;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -1019,7 +1024,7 @@ async fn last_usage_holds_the_last_replys_usage_not_the_turn_sum() {
 #[tokio::test]
 async fn a_manual_compaction_clears_the_last_usage() {
     let mut session = Session::new("glm-5.3", "/repo".into());
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -1046,7 +1051,7 @@ async fn a_manual_compaction_clears_the_last_usage() {
 async fn the_summary_request_carries_no_tools() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.preserve = 40;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),
@@ -1084,8 +1089,8 @@ async fn the_summary_request_carries_no_tools() {
 async fn a_configured_reserved_buffer_sizes_the_trigger() {
     let mut session = Session::new("glm-5.3", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
-    session.compaction.reserved = 3_000;
-    session.compaction.preserve = 40;
+    session.env.compaction.reserved = 3_000;
+    session.env.compaction.preserve = 40;
     session.messages.extend([
         Message::User("old question".into()),
         assistant(&"x".repeat(400)),

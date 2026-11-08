@@ -8,8 +8,8 @@ use std::{
 };
 
 use nth_notify::Event;
-use nth_protocol::{Asker, Screen, SubagentLlm};
-use nth_session::{FrontEnd, Session, Store, Subagents, plan, store};
+use nth_protocol::{Asker, Llm, ModelSettings, Screen};
+use nth_session::{FrontEnd, Session, Store, Subagents, TurnEnv, plan, store};
 use tokio::task::JoinError;
 
 use super::{App, TabState};
@@ -333,11 +333,6 @@ impl App {
         };
         self.notices_due = None;
         self.adopt_llm(&mut session);
-        // The read tool keeps images beside the save, so deleting the
-        // session deletes them; without a store the read tool shows none.
-        if let Some(store) = &self.store {
-            session.images = Some(store.images_dir(session.id));
-        }
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
         if session.extra_dirs != self.extra_dirs {
@@ -427,8 +422,9 @@ impl App {
         }
     }
 
-    /// The model, effort and limits the next request runs with, and what
-    /// its subagents and its clerk run on: the picker
+    /// The model, effort and limits the next request runs with, and the
+    /// rest of the session's env: the config's share, where the read tool
+    /// keeps images and what its subagents and its clerk run on. The picker
     /// may have changed them since the last turn, maybe mid-turn, and the
     /// session is in its task while one runs, so a turn and a compaction
     /// both take them from the app here, as the idle context preview does.
@@ -440,23 +436,34 @@ impl App {
     pub(super) fn adopt_llm(&self, session: &mut Session) {
         let current = self.selection.current();
         // Picked in the model picker since the last turn, maybe mid-turn.
-        if session.model != current.model {
+        let switched = session.model != current.model;
+        // What the listing said of the model the session ran on, kept until
+        // the listing sizes it again.
+        let (mut takes_images, mut cost) = (session.env.takes_images, session.env.cost);
+        if switched {
             session.set_model(current.model.clone());
             // Without a listing (`/connect` drops it) nothing sizes the new
             // model below, and the old one's price would land on its spends.
             session.set_limits(None, None);
-            session.takes_images = true;
-            session.cost = None;
+            (takes_images, cost) = (true, None);
         }
         session.effort = current.effort;
         // Unsized until the listing is in, which sizes them with the model.
-        let bare = |llm| SubagentLlm {
-            llm,
-            ..SubagentLlm::default()
-        };
+        let bare = |llm: &Llm| ModelSettings::bare(llm.clone());
         let slots = self.selection.slots();
-        session.subagent_llm = slots.subagent.clone().map(bare);
-        session.clerk_llm = slots.clerk.clone().map(bare);
+        session.env = TurnEnv {
+            takes_images,
+            cost,
+            // The read tool keeps images beside the save, so deleting the
+            // session deletes them; without a store the read tool shows none.
+            images: self
+                .store
+                .as_ref()
+                .map(|store| store.images_dir(session.id)),
+            subagent: slots.subagent.as_ref().map(bare),
+            clerk: slots.clerk.as_ref().map(bare),
+            ..self.env.clone()
+        };
         if let Some(llms) = &self.llms {
             session.size_to(llms);
         }

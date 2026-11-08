@@ -51,7 +51,7 @@ impl Session {
             agent: self.agent.as_deref(),
             context_window: self.context_window,
             max_output: self.max_output,
-            policy: self.compaction,
+            policy: self.env.compaction,
             last_usage: self.last_usage,
             pending,
             phase: Phase::Idle,
@@ -452,7 +452,7 @@ mod tests {
             }
         }
         let mut session = Session::new("model", ".".into());
-        session.max_steps = 2;
+        session.env.max_steps = 2;
         let provider = Scripted::new(vec![
             vec![StreamEvent::ToolCall(call("id", "inspect", "{}"))],
             vec![StreamEvent::TextDelta("done".into())],

@@ -52,31 +52,52 @@ pub struct Llm {
     pub effort: Effort,
 }
 
-/// What subagents run on when the front-end picked it apart from the
-/// parent's model, with that model's limits for their compaction trigger.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SubagentLlm {
+/// A model with what the front-end's listing says of it: the limits that
+/// size a compaction trigger, whether it takes images and what it costs.
+/// What a session, its subagents and its clerk each run on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSettings {
     pub llm: Llm,
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
-    /// Whether its model takes images; `None` when the listing does not say.
-    pub takes_images: Option<bool>,
+    /// Unknown counts as yes: the providers still turn an image into a note
+    /// for a model that takes none.
+    pub takes_images: bool,
     /// What its model costs, when the listing says; `None` prices it by the
     /// front-end's live listing at display time.
     pub cost: Option<Cost>,
 }
 
-impl SubagentLlm {
+impl Default for ModelSettings {
+    fn default() -> Self {
+        Self::bare(Llm::default())
+    }
+}
+
+impl ModelSettings {
+    /// `llm` before a listing has said anything of its model.
+    pub fn bare(llm: Llm) -> ModelSettings {
+        ModelSettings {
+            llm,
+            context_window: None,
+            max_output: None,
+            takes_images: true,
+            cost: None,
+        }
+    }
+
     /// `llm` with what `listing` says of its model; a model it does not
-    /// name stays unsized, since a window borrowed from elsewhere would
-    /// fire its compaction at the wrong point.
-    pub fn sized(llm: Llm, listing: &Listing) -> SubagentLlm {
-        let info = listing.get(&llm.model);
-        SubagentLlm {
-            context_window: info.and_then(|info| info.context),
-            max_output: info.and_then(|info| info.output),
-            takes_images: info.and_then(|info| info.takes_images),
-            cost: info.and_then(|info| info.cost),
+    /// name stays bare, since a window borrowed from elsewhere would fire
+    /// its compaction at the wrong point.
+    pub fn sized(llm: Llm, listing: &Listing) -> ModelSettings {
+        let Some(info) = listing.get(&llm.model) else {
+            return ModelSettings::bare(llm);
+        };
+        ModelSettings {
+            context_window: info.context,
+            max_output: info.output,
+            takes_images: info.takes_images.unwrap_or(true),
+            cost: info.cost,
             llm,
         }
     }
@@ -585,25 +606,20 @@ mod tests {
             effort: Effort::High,
         };
 
-        let listed = SubagentLlm::sized(llm("zen/a"), &listing);
+        let listed = ModelSettings::sized(llm("zen/a"), &listing);
         assert_eq!(
             listed,
-            SubagentLlm {
+            ModelSettings {
                 llm: llm("zen/a"),
                 context_window: Some(200_000),
                 max_output: Some(64_000),
-                takes_images: Some(false),
+                takes_images: false,
                 cost: Some(cost),
             }
         );
 
-        let unlisted = SubagentLlm::sized(llm("zen/b"), &listing);
-        assert_eq!(
-            unlisted,
-            SubagentLlm {
-                llm: llm("zen/b"),
-                ..SubagentLlm::default()
-            }
-        );
+        let unlisted = ModelSettings::sized(llm("zen/b"), &listing);
+        assert_eq!(unlisted, ModelSettings::bare(llm("zen/b")));
+        assert!(unlisted.takes_images, "unknown counts as taking images");
     }
 }

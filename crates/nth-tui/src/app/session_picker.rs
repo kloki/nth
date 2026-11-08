@@ -121,9 +121,7 @@ impl App {
         // next turn.
         self.list_llms();
         // `resume` hands these to every session from here on.
-        self.max_steps = session.max_steps;
-        self.tool_timeout = session.tool_timeout;
-        self.compaction = session.compaction;
+        self.env = super::configured(&session.env);
         self.resume(session);
         self.chat.warn(&warnings);
         if self.content.active() == super::Tab::Diagnostics {
@@ -138,9 +136,7 @@ impl App {
             self.input = Input::Prompt;
         }
         self.search_jump = None;
-        session.max_steps = self.max_steps;
-        session.tool_timeout = self.tool_timeout;
-        session.compaction = self.compaction;
+        session.env = self.env.clone();
         self.context = session.context().clone();
         self.session_since = session.created_at;
         self.session_id = session.id;
@@ -213,7 +209,7 @@ mod tests {
             auto: false,
             ..nth_protocol::Compaction::default()
         };
-        app.compaction = configured;
+        app.env.compaction = configured;
 
         app.prompt.insert_str("/resume");
         app.apply(Action::Submit);
@@ -230,7 +226,7 @@ mod tests {
         assert_eq!(app.place, "/elsewhere");
         assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/added")]);
         assert_eq!(
-            app.session.as_ref().expect("idle").compaction,
+            app.session.as_ref().expect("idle").env.compaction,
             configured,
             "the resumed session follows today's [context]"
         );
@@ -280,9 +276,9 @@ mod tests {
                 if fail {
                     return Err(anyhow::anyhow!("invalid key").context("bad repository config"));
                 }
-                session.max_steps = 17;
-                session.tool_timeout = None;
-                session.compaction.auto = false;
+                session.env.max_steps = 17;
+                session.env.tool_timeout = None;
+                session.env.compaction.auto = false;
                 session.set_extra_dirs(vec!["/configured".into()]);
                 Ok(crate::PreparedRuntime {
                     selection: nth_config::Selection::same(nth_protocol::Llm {
@@ -314,15 +310,15 @@ mod tests {
         assert_eq!(app.session_id, saved.id);
         assert_eq!(app.selection.current().model, "saved-model");
         assert!(!Arc::ptr_eq(&app.provider, &old_provider));
-        assert_eq!(app.max_steps, 17);
-        assert_eq!(app.tool_timeout, None);
-        assert!(!app.compaction.auto);
+        assert_eq!(app.env.max_steps, 17);
+        assert_eq!(app.env.tool_timeout, None);
+        assert!(!app.env.compaction.auto);
         assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/configured")]);
         assert!(!app.checkers.as_ref().unwrap().rtk);
         app.start_fresh_session();
         let fresh = app.session.as_ref().unwrap();
-        assert_eq!(fresh.max_steps, 17);
-        assert_eq!(fresh.tool_timeout, None);
+        assert_eq!(fresh.env.max_steps, 17);
+        assert_eq!(fresh.env.tool_timeout, None);
         assert_eq!(fresh.extra_dirs, [std::path::PathBuf::from("/configured")]);
     }
 

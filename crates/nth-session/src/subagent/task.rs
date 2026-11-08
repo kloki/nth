@@ -134,7 +134,7 @@ impl Tool for Task {
     ) -> BoxFuture<'a, ToolResult> {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
-            if ctx.llm.model.is_empty() {
+            if ctx.child.own.llm.model.is_empty() {
                 return Err("this session has no model to run a subagent on".into());
             }
             let agent = find_agent(ctx, &args.subagent_type)?;
@@ -283,9 +283,12 @@ mod tests {
     fn ctx() -> ToolContext {
         ToolContext {
             context: context(),
-            llm: Llm {
-                model: "glm-5.3".into(),
-                ..Llm::default()
+            child: nth_protocol::ChildLlm {
+                own: nth_protocol::ModelSettings::bare(Llm {
+                    model: "glm-5.3".into(),
+                    ..Llm::default()
+                }),
+                ..nth_protocol::ChildLlm::default()
             },
             ..ToolContext::new("/repo".into())
         }
