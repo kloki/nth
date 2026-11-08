@@ -4,7 +4,7 @@ use super::*;
 
 /// Has a new monitor print `line`, as its task would, and lets the app
 /// hear of it.
-async fn monitor_says(app: &mut App, line: &str) {
+pub(super) async fn monitor_says(app: &mut App, line: &str) {
     let m = app
         .monitors
         .register("ci", "watch")

@@ -581,7 +581,7 @@ Which tool is asked is decided by where `origin` points: `gh pr view` on a GitHu
 
 A hint, a word on what the last key or click did or did not do (`copied`, `no plan to approve`), in yellow. It comes in as a wave so it catches the eye: over 640ms (eight ticks) a reversed head, black on yellow and two cells wide, runs left to right, the cells ahead of it still blank and those behind it plain, so the hint is typed in. It goes at the next key, at once, or after a second, when the same head runs across again and wipes it out behind it.
 
-Otherwise, while prompts wait — queued behind the turn, or on their way into it — `> N queued · ` and the first line of the next one, in white. Blank otherwise.
+Otherwise, while prompts wait — queued behind the turn, on their way into it, or waiting for a save — `> N queued · ` and the first line of the next one, in white. Blank otherwise.
 
 **Widget area: bottom right**
 

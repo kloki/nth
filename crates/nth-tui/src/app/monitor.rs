@@ -58,6 +58,10 @@ impl App {
     /// resume: they were watching for that conversation. Their tabs close
     /// as each process stops, as they always do.
     pub(super) fn left_session(&mut self) {
+        // A turn held for a save, and prompts still in the inbox, were sent
+        // to the session left: they go back to the prompt before the inbox
+        // is cleared.
+        self.unqueue();
         self.areas.forget(&crate::app::mouse::Target::PullRequest);
         self.reset_curios();
         self.left_subagents();

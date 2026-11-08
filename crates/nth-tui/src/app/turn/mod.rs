@@ -108,6 +108,11 @@ impl Queued {
             Queued::PlanEdits { .. } => "plan edits".into(),
         }
     }
+
+    /// A turn for the notices alone, which nobody sent.
+    pub(crate) fn is_wake(&self) -> bool {
+        matches!(self, Queued::Prompt(text) if text.is_empty())
+    }
 }
 
 impl App {
@@ -189,7 +194,12 @@ impl App {
         }
     }
 
-    fn start(&mut self, next: Queued) {
+    pub(super) fn start(&mut self, next: Queued) {
+        // Held as sent, so the status bar names an approval or plan edits
+        // rather than what the model gets for them.
+        if self.session_saving.is_running() {
+            return self.after_save(next);
+        }
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
@@ -211,6 +221,9 @@ impl App {
                 .push_error("no shell to run commands with".into());
             return;
         };
+        if self.session_saving.is_running() {
+            return self.after_save(Queued::Shell(command));
+        }
         let Some(mut session) = self.session.take() else {
             return;
         };
@@ -246,6 +259,9 @@ impl App {
     /// send meanwhile waits for it. The transcript shows the divider when
     /// the summary lands; nothing answers.
     pub(super) fn start_compact(&mut self) {
+        if self.session_saving.is_running() {
+            return self.after_save(Queued::Compact);
+        }
         let Some(mut session) = self.session.take() else {
             return;
         };
@@ -278,6 +294,9 @@ impl App {
     pub(super) fn start_turn(&mut self, text: String) {
         if self.session.is_none() || (text.is_empty() && !self.inbox.wakes()) {
             return;
+        }
+        if self.session_saving.is_running() {
+            return self.after_save(Queued::Prompt(text));
         }
         let Some(mut session) = self.session.take() else {
             return;
@@ -372,6 +391,21 @@ impl App {
         });
     }
 
+    /// Holds `next` until the save between turns in flight ends, when
+    /// `session_saved` starts it: that save is of an older clone of the
+    /// session, and landing after the turn's own save it would roll the
+    /// file back. What starts meanwhile queues behind it, as behind a
+    /// running turn. A wake for notices alone, `Prompt("")`, gives way to
+    /// anything else: a turn hands the notices over, and the end of any
+    /// run wakes the model with what is left.
+    fn after_save(&mut self, next: Queued) {
+        match &self.turn_after_save {
+            Some(_) if next.is_wake() => {}
+            Some(held) if !held.is_wake() => self.queue.push_back(next),
+            _ => self.turn_after_save = Some(next),
+        }
+    }
+
     /// The handles the session's tools reach the app through.
     fn front_end(&self) -> FrontEnd {
         FrontEnd {
@@ -428,6 +462,20 @@ impl App {
             self.interrupted = true;
         }
         self.turn.cancel();
+        // Nothing runs yet, but Esc still means stop, as on a running
+        // turn: what you sent goes back, and the notices wait for your next
+        // prompt. A wake for notices alone was nobody's to stop, so they
+        // still wake the model on their own.
+        if !self.is_busy()
+            && let Some(held) = &self.turn_after_save
+        {
+            let sent = !held.is_wake() || self.inbox.prompts_waiting().is_some();
+            self.unqueue();
+            match sent {
+                true => self.hold_notices = true,
+                false => self.arm_notices(),
+            }
+        }
     }
 
     pub(super) fn end_turn(
@@ -589,15 +637,18 @@ impl App {
     /// the prompt ahead of what is typed: sent prompts were written for a
     /// turn that went well, so they wait to be looked at again. An
     /// approval, a compaction or plan edits are dropped, and the status bar
-    /// says so. An approval's instructions also return to the prompt.
-    fn unqueue(&mut self) {
+    /// says so. An approval's instructions also return to the prompt. So
+    /// does a turn held for a save, ahead of what queued behind it, when
+    /// you stop it or leave the session.
+    pub(super) fn unqueue(&mut self) {
         let mut parts = Vec::new();
         let mut dropped = Vec::new();
         // Prompts on their way into the turn were typed before what queued.
         if let Some(prompts) = self.inbox.take_prompts() {
             parts.push(prompts);
         }
-        for next in self.queue.drain(..) {
+        let held = self.turn_after_save.take().filter(|held| !held.is_wake());
+        for next in held.into_iter().chain(self.queue.drain(..)) {
             match next {
                 Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
                 Queued::Approve(ref instructions) if !instructions.is_empty() => {

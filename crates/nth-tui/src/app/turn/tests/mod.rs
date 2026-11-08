@@ -22,6 +22,7 @@ use crate::{
 mod compact;
 mod moved;
 mod notices;
+mod save;
 mod shell;
 mod steer;
 
