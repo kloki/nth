@@ -17,13 +17,15 @@ The global file applies everywhere:
 - `--config <path>` or `NTH_CONFIG` names another file instead.
 
 An optional `.nth/config` overlays it for a project. In Git this is the main
-checkout's file, shared by linked worktrees. Outside Git the nearest ancestor
-with that file is used. The project's root is the base for its relative paths.
+checkout's file, shared by linked worktrees. Outside Git the nearest one from
+the working directory up to the home directory is used, or only the working
+directory's own when it is not under home. The folder holding `.nth/` is the
+base for its relative paths.
 
 Project config accepts `model`, `profiles`, `mode`, `session`, `task`, `work`,
-`context`, `memory`, `skills`, `directories`, `format`, `lsp`, `tools.read`
-and `tools.bash`. Provider, notification, chat, layout and websearch settings
-are global only.
+`context`, `memory`, `skills` and `directories`. Provider, formatter, language
+server, tool, notification, chat and layout settings are global only, since a
+repository should not choose the commands nth runs.
 
 ## How it loads
 

@@ -94,10 +94,8 @@ fn nested_repo_merges_global_and_project_and_cli_wins() {
     f.git(&["init", "--quiet"]);
     let nested = f.root.join("src/deep");
     fs::create_dir_all(&nested).unwrap();
-    fs::write(&f.global, "model = 'global/model'\n[context]\nauto = true\nreserved = 1234\npreserve = 5678\n[tools.bash]\ndefault_timeout_ms = 123456\n").unwrap();
-    let repo = f.repo_config(
-        "model = 'repo/model'\n[context]\nauto = false\nreserved = 0\n[tools.bash]\nrtk = false\n",
-    );
+    fs::write(&f.global, "model = 'global/model'\n[context]\nauto = true\nreserved = 1234\npreserve = 5678\n[tools.bash]\ndefault_timeout_ms = 123456\nrtk = false\n").unwrap();
+    let repo = f.repo_config("model = 'repo/model'\n[context]\nauto = false\nreserved = 0\n");
     let (config, sources) = f.config(&nested, &["config"]);
     assert_eq!(config["model"].as_str(), Some("repo/model"));
     assert_eq!(config["context"]["auto"].as_bool(), Some(false));
@@ -126,7 +124,16 @@ fn forbidden_and_invalid_repo_keys_are_reported_with_source() {
         ("[notify]\nenabled = false\n", "notify"),
         ("[chat]\nshow_thinking = false\n", "chat"),
         ("[layout]\nsplit_width = 120\n", "layout"),
-        ("[tools.websearch]\nenabled = false\n", "websearch"),
+        ("[tools.websearch]\nenabled = false\n", "tools"),
+        ("[tools.bash]\nrtk = false\n", "tools"),
+        (
+            "[format.x]\ncommand = ['fmt']\nextensions = ['.x']\n",
+            "format",
+        ),
+        (
+            "[lsp.x]\ncommand = ['server']\nextensions = ['.x']\n",
+            "lsp",
+        ),
         ("[context]\nunknown_key = true\n", "unknown_key"),
         ("[context]\nauto = 'not a boolean'\n", "auto"),
     ] {

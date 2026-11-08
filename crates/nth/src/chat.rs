@@ -47,6 +47,7 @@ async fn run(
     let paths = config.paths();
     let mode = config.mode.default;
     let (mut session, provider) = if let Some(mut session) = saved {
+        resumed_config(&mut config, &session);
         let provider = crate::providers(&config)?;
         let context = context(session.cwd.clone(), &paths).await;
         session.set_context(context);
@@ -83,10 +84,9 @@ async fn run(
     }
     let post_write = post_write(&config);
     // From the same servers the tools use, so the status bar shows what
-    // checks the writes.
-    let lsp = post_write.lsp().clone();
+    // checks the writes. The chat shuts them down when it ends.
     let checkers = nth_tui::Checkers {
-        lsp: lsp.clone(),
+        lsp: post_write.lsp().clone(),
         formatters: post_write.formatters().clone(),
         rtk: config.tools.bash.rtk,
     };
@@ -100,7 +100,7 @@ async fn run(
         model,
         subagents: subagents.clone(),
     });
-    let result = nth_tui::run_with_loader(
+    nth_tui::run(
         session,
         provider.clone(),
         nth_tui::Tools {
@@ -130,14 +130,18 @@ async fn run(
             },
             split_width: config.layout.split_width,
             chatgpt,
+            loader: Some(loader),
         },
-        Some(loader),
     )
-    .await;
-    // After the terminal is back: the servers get a moment to leave on
-    // their own before the process ends and kills them.
-    lsp.shutdown().await;
-    result
+    .await
+}
+
+/// A resumed session runs on its own model, so a config that names none
+/// takes it as the default the other mode, subagents and clerk start on.
+fn resumed_config(config: &mut Config, session: &nth_session::Session) {
+    if config.needs_model() {
+        config.model = session.model.clone();
+    }
 }
 
 struct Loader {
@@ -154,11 +158,12 @@ impl nth_tui::RuntimeLoader for Loader {
         Box<dyn std::future::Future<Output = Result<nth_tui::PreparedRuntime>> + Send + '_>,
     > {
         Box::pin(async move {
-            let config = crate::load_for(
+            let mut config = crate::load_for(
                 self.config_path.as_deref(),
                 self.model.clone(),
                 &session.cwd,
             )?;
+            resumed_config(&mut config, &session);
             let provider = Arc::new(crate::providers(&config)?);
             let paths = config.paths();
             session.set_context(context(session.cwd.clone(), &paths).await);
@@ -265,5 +270,60 @@ mod tests {
             api_key_env: "ZEN_API_KEY".into(),
         };
         assert_eq!(why_unavailable(error), "ZEN_API_KEY is not set");
+    }
+
+    /// Without a runtime, so `Providers` starts no catalogue fetch.
+    fn zen() -> nth_llm::Providers {
+        nth_llm::Providers::new(
+            vec![nth_llm::EndpointConfig {
+                id: "zen".into(),
+                name: "Zen".into(),
+                base_url: "http://127.0.0.1".into(),
+                credentials: nth_llm::Credentials::Key("unused".into()),
+                models: Vec::new(),
+            }],
+            Vec::new(),
+            "zen/a",
+        )
+        .expect("providers")
+    }
+
+    #[test]
+    fn a_resumed_session_fills_the_missing_model_for_every_slot() {
+        let session = nth_session::Session::new("zen/a", PathBuf::from("/repo"));
+        let a = || Llm {
+            model: "zen/a".into(),
+            effort: Effort::default(),
+        };
+        for text in ["", "[[profiles]]\nname = \"p\"\n"] {
+            let mut config: Config = toml::from_str(text).expect("config");
+            assert!(config.needs_model());
+
+            resumed_config(&mut config, &session);
+            let (mode_llms, profiles) = model_settings(&config, &zen());
+
+            // Subagents and the clerk name no model of their own, so they
+            // run on their parent's: `zen/a` too.
+            let expected = ModeLlms {
+                plan: a(),
+                act: a(),
+                subagent: None,
+                clerk: None,
+            };
+            assert_eq!(mode_llms, expected, "{text:?}");
+            for profile in profiles {
+                assert_eq!(profile.llms, expected, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_configured_model_is_kept_on_resume() {
+        let session = nth_session::Session::new("zen/a", PathBuf::from("/repo"));
+        let mut config: Config = toml::from_str("model = \"zen/b\"").expect("config");
+
+        resumed_config(&mut config, &session);
+
+        assert_eq!(config.model, "zen/b");
     }
 }

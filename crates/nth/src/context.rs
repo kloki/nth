@@ -17,9 +17,6 @@ use serde_json::json;
 
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
-#[cfg(test)]
-use crate::config::Config;
-
 pub async fn run(
     id: Option<String>,
     json: bool,
@@ -247,6 +244,7 @@ mod tests {
     use nth_protocol::{AssistantMessage, Image, ToolCall};
 
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn text_and_json_show_complete_preview_without_image_bytes() {
@@ -329,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn normal_tools_are_included_in_text_and_json() {
-        let config = Config::load(None).unwrap();
+        let config = Config::default();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let tools = crate::tools(
             &config,

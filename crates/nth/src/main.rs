@@ -648,7 +648,7 @@ mod tests {
             "#,
         )
         .expect("writes");
-        let config = Config::load(Some(&path)).expect("parses");
+        let config = Config::load_for(Some(&path), dir.path()).expect("parses");
         let provider = Listed(vec![listed("zen/a", Some(200_000), Some(64_000))]);
         let mut session = Session::new("zen/a", "/repo".into());
 

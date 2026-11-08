@@ -141,7 +141,10 @@ impl App {
         self.servers = lsp.borrow_and_update().clone();
         self.lsp = Some(lsp);
         self.lsp_usage = None;
-        self.checkers = Some(checkers);
+        // The servers of the runtime being left get to leave on their own.
+        if let Some(old) = self.checkers.replace(checkers) {
+            tokio::spawn(async move { old.lsp.shutdown().await });
+        }
         self.servers_lookup = Default::default();
         self.formatters_lookup = Default::default();
         self.diagnostics = Default::default();

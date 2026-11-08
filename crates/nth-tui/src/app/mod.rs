@@ -190,7 +190,7 @@ pub struct App {
     tools_lookup: Job<Result<Vec<(String, ToolUse)>, store::Error>>,
     /// What checks the tools' writes, for the diagnostics tab to look up;
     /// `None` when nothing does.
-    checkers: Option<Checkers>,
+    pub(crate) checkers: Option<Checkers>,
     servers_lookup: Job<Vec<ServerInfo>>,
     formatters_lookup: Job<Vec<FormatterStatus>>,
     rtk_lookup: Job<Option<PathBuf>>,

@@ -116,6 +116,15 @@ mod tests {
     }
 
     #[test]
+    fn a_tilde_needs_a_home_and_names_it_only_alone_or_before_a_slash() {
+        let cwd = Path::new("/repo");
+        let home = Some(Path::new("/home/me"));
+        assert_eq!(expand(cwd, home, "~"), PathBuf::from("/home/me"));
+        assert_eq!(expand(cwd, None, "~"), PathBuf::from("/repo/~"));
+        assert_eq!(expand(cwd, home, "~other"), PathBuf::from("/repo/~other"));
+    }
+
+    #[test]
     fn merges_without_losing_saved_and_reports_invalid_paths() {
         let root = tempfile::tempdir().unwrap();
         let repo = root.path().join("repo");
