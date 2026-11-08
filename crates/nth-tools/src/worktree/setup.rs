@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use nth_directories::Directories;
+use nth_directories::{Directories, NTH};
 
 use crate::{
     output,
@@ -36,11 +36,8 @@ async fn run_for(root: &Path, worktree: &Path, session: &str, timeout: Duration)
         return None;
     }
     // The result names it relative to the project, as the user wrote it.
-    let name = path
-        .strip_prefix(root)
-        .unwrap_or(&path)
-        .display()
-        .to_string();
+    let name = Path::new(NTH).join("worktree-setup");
+    let name = name.display();
     // Run through bash so the script needs no executable bit, and named
     // through the variable so no path needs quoting.
     let command = format!("exec 2>&1\nexec bash \"$NTH_WORKTREE_BASE/{name}\"");

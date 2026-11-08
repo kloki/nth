@@ -1,12 +1,12 @@
 //! Repository discovery, the locations of project-local nth state, and how
 //! a path the user types is read.
 
+use std::path::{Component, Path, PathBuf};
+
 pub mod added;
 
 /// The folder nth keeps a project's own state in, in its main checkout.
 pub const NTH: &str = ".nth";
-
-use std::path::{Component, Path, PathBuf};
 
 /// `path` in `home` when it is exactly `~` or starts with `~/`, as a shell
 /// reads it; `None` for any other path, which the caller resolves as it
@@ -139,12 +139,23 @@ impl Directories {
     pub fn curio_owner(&self, session: &str) -> PathBuf {
         self.curios().join(session)
     }
+    /// One curio of an owner session.
+    pub fn curio(&self, session: &str, curio: &str) -> PathBuf {
+        self.curio_owner(session).join(curio)
+    }
+    /// The published revisions of a curio.
+    pub fn curio_revisions(&self, session: &str, curio: &str) -> PathBuf {
+        Self::revisions_in(&self.curio(session, curio))
+    }
     /// One published revision of a curio.
     pub fn curio_revision(&self, session: &str, curio: &str, revision: u64) -> PathBuf {
-        self.curio_owner(session)
-            .join(curio)
-            .join("revisions")
+        self.curio_revisions(session, curio)
             .join(revision.to_string())
+    }
+    /// The revisions folder of the curio folder `curio`, wherever that is:
+    /// a copy staged elsewhere is laid out as the curio it becomes.
+    pub fn revisions_in(curio: &Path) -> PathBuf {
+        curio.join("revisions")
     }
     /// The editable source directory for an owner session.
     pub fn curio_source(&self, session: &str) -> PathBuf {
@@ -227,6 +238,11 @@ mod tests {
         let dirs = Directories::from_root(&root);
         assert_eq!(dirs.config(), root.join(".nth/config"));
         assert_eq!(dirs.worktree_setup(), root.join(".nth/worktree-setup"));
+        assert_eq!(dirs.curio("abc", "page"), root.join(".nth/curios/abc/page"));
+        assert_eq!(
+            dirs.curio_revisions("abc", "page"),
+            root.join(".nth/curios/abc/page/revisions")
+        );
         assert_eq!(
             dirs.curio_revision("abc", "page", 3),
             root.join(".nth/curios/abc/page/revisions/3")
