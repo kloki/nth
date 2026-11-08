@@ -1,6 +1,6 @@
 //! Fake language servers and the helpers the pool's tests share.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use super::{Lsp, ServerState, ServerStatus};
 use crate::{
@@ -28,7 +28,8 @@ pub fn config_with(id: &str, command: &[&str], extensions: &[&str]) -> LspConfig
 /// A language server as a shell script: it answers `initialize`, and
 /// on every `didOpen` publishes one error for that file, versioned.
 /// With `die` as its argument it exits right after publishing; with
-/// `deaf` it reads nothing more once it has answered `initialize`. What
+/// `deaf` it reads nothing more once it has answered `initialize`; with
+/// `huge` it answers `didOpen` with a header past the message cap. What
 /// it writes to stderr on start shows up in the broken-state text.
 const SCRIPTED_SERVER: &str = r##"#!/bin/sh
 echo "scripted server here" >&2
@@ -56,6 +57,10 @@ while message; do
             [ "$1" = deaf ] && exec sleep 600
             ;;
         *'"method":"textDocument/didOpen"'*)
+            if [ "$1" = huge ]; then
+                printf 'Content-Length: 99999999999\r\n\r\n'
+                exec sleep 600
+            fi
             uri=$(printf '%s' "$body" | sed 's/.*"uri":"\([^"]*\)".*/\1/')
             range='{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}'
             item="{\"range\":$range,\"severity\":1,\"message\":\"boom\"}"
@@ -109,4 +114,22 @@ pub fn exited(pid: u32) -> bool {
         .unwrap();
     let stat = String::from_utf8_lossy(&out.stdout);
     stat.trim().is_empty() || stat.trim_start().starts_with('Z')
+}
+
+/// Waits until the one client the pool holds has lost its connection, so
+/// the next touch finds it gone rather than racing its exit.
+pub async fn closed(lsp: &Lsp) {
+    let client: Arc<_> = {
+        let clients = lsp.inner.clients.lock().unwrap();
+        let entry = clients.values().next().expect("the pool holds a client");
+        entry
+            .slot
+            .peek()
+            .cloned()
+            .flatten()
+            .expect("the client started")
+    };
+    tokio::time::timeout(Duration::from_secs(5), client.closed())
+        .await
+        .expect("the connection closed");
 }

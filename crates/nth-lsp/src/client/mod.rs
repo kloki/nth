@@ -13,7 +13,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -73,6 +76,9 @@ pub(crate) struct Store {
     quiescent: Option<bool>,
     /// When the server last turned quiescent.
     quiesced_at: Option<Instant>,
+    /// Set as the task stops on a message it could not read, which ends
+    /// the connection as surely as the server exiting, but says more.
+    failure: Option<String>,
 }
 
 impl Store {
@@ -131,18 +137,38 @@ enum Command {
 /// chatty server never blocks on a full pipe.
 const STDERR_LINES: usize = 5;
 
+/// How long the reason for a server that went waits for the rest of its
+/// stderr. Its stdout closing can beat the last lines it wrote, the very
+/// ones that say why; a process it left behind holding the pipe is the only
+/// way to wait this long.
+const STDERR_DRAIN: Duration = Duration::from_millis(1_000);
+
 /// The first lines a server wrote to stderr, for the broken-state text.
 #[derive(Debug, Clone, Default)]
-pub struct Stderr(Arc<Mutex<Vec<String>>>);
+pub struct Stderr(Arc<Captured>);
+
+#[derive(Debug, Default)]
+struct Captured {
+    kept: Mutex<Vec<String>>,
+    /// Set once the pipe is being read, so an `explain_ended` without one
+    /// does not wait for nothing.
+    reading: AtomicBool,
+    /// Cancelled when the pipe reached its end, or its reader stopped.
+    ended: CancellationToken,
+}
 
 impl Stderr {
     fn capture(&self, stream: impl AsyncRead + Unpin + Send + 'static) {
-        let kept = Arc::clone(&self.0);
+        let captured = Arc::clone(&self.0);
+        captured.reading.store(true, Ordering::Release);
+        // Ends at the pipe's end, which the server's death (it is killed
+        // with its client task) brings.
         tokio::spawn(async move {
+            let _ended = captured.ended.clone().drop_guard();
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 // Poisoned only if a holder panicked; then nothing is kept.
-                let Ok(mut kept) = kept.lock() else {
+                let Ok(mut kept) = captured.kept.lock() else {
                     return;
                 };
                 if kept.len() < STDERR_LINES && !line.trim().is_empty() {
@@ -157,6 +183,7 @@ impl Stderr {
     pub fn explain(&self, reason: &str) -> String {
         let lines = self
             .0
+            .kept
             .lock()
             .map(|kept| kept.join(" | "))
             .unwrap_or_default();
@@ -164,6 +191,15 @@ impl Stderr {
             true => reason.to_string(),
             false => format!("{reason}: {lines}"),
         }
+    }
+
+    /// [`Stderr::explain`] for a server that is gone or going, once its
+    /// stderr has been read to the end (for [`STDERR_DRAIN`] at most).
+    pub async fn explain_ended(&self, reason: &str) -> String {
+        if self.0.reading.load(Ordering::Acquire) {
+            let _ = tokio::time::timeout(STDERR_DRAIN, self.0.ended.cancelled()).await;
+        }
+        self.explain(reason)
     }
 }
 
@@ -328,8 +364,14 @@ impl Client {
         self.commands.is_closed()
     }
 
+    /// Why the connection broke, when it was not the server going: what it
+    /// sent could not be read.
+    pub fn failure(&self) -> Option<String> {
+        self.store.borrow().failure.clone()
+    }
+
     /// Resolves once the task is gone.
-    async fn closed(&self) {
+    pub(crate) async fn closed(&self) {
         let mut store = self.store.clone();
         while store.changed().await.is_ok() {}
     }

@@ -1,7 +1,7 @@
 //! The task behind a [`Client`](super::Client): the only place that writes
 //! to the server, reads from it, or changes the [`Store`].
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, io, path::PathBuf};
 
 use futures::{Stream, StreamExt};
 use serde::Deserialize;
@@ -67,11 +67,15 @@ pub(super) struct Task<W> {
 }
 
 /// The server's messages as a stream, so a read in progress survives the
-/// other `select!` branches winning.
-fn messages<R: AsyncRead + Unpin>(reader: R) -> impl Stream<Item = Vec<u8>> {
-    futures::stream::unfold(BufReader::new(reader), |mut reader| async move {
-        let body = read_message(&mut reader).await.ok()??;
-        Some((body, reader))
+/// other `select!` branches winning. A read that fails is its last item.
+fn messages<R: AsyncRead + Unpin>(reader: R) -> impl Stream<Item = io::Result<Vec<u8>>> {
+    futures::stream::unfold(Some(BufReader::new(reader)), |reader| async move {
+        let mut reader = reader?;
+        match read_message(&mut reader).await {
+            Ok(Some(body)) => Some((Ok(body), Some(reader))),
+            Ok(None) => None,
+            Err(e) => Some((Err(e), None)),
+        }
     })
 }
 
@@ -111,7 +115,17 @@ impl<W: AsyncWrite + Unpin> Task<W> {
                         None => Err(Error::Closed),
                     },
                     body = incoming.next() => match body {
-                        Some(body) => self.incoming(&body).await,
+                        Some(Ok(body)) => self.incoming(&body).await,
+                        // Cut off mid-message is the server going, which
+                        // says it well enough; anything else is worth
+                        // naming over the exit it leads to.
+                        Some(Err(e)) => {
+                            if e.kind() != io::ErrorKind::UnexpectedEof {
+                                let failure = format!("unreadable message: {e}");
+                                self.store.send_modify(|store| store.failure = Some(failure));
+                            }
+                            Err(Error::Closed)
+                        }
                         None => Err(Error::Closed),
                     },
                 }
