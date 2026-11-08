@@ -98,6 +98,10 @@ pub struct Curio {
     /// The session this curio was adopted from, when one was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted_from: Option<String>,
+    /// When the current revision was published, in seconds since the epoch;
+    /// filled by [`crate::Store::list`], never saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -107,6 +107,9 @@ pub struct Polled {
     /// Pending batches the session already recorded: its acknowledgment
     /// did not reach the store yet.
     pub unacknowledged: bool,
+    /// Another held the store's lock, so nothing was read: the next poll
+    /// tries again rather than wait out its write.
+    pub busy: bool,
 }
 
 impl CurioDelivery {
@@ -118,7 +121,11 @@ impl CurioDelivery {
         recorded: &BTreeSet<String>,
     ) -> nth_curios::Result<Polled> {
         let mut polled = Polled::default();
-        for batch in self.store.batches(true)? {
+        let Some(batches) = self.store.try_batches(true)? else {
+            polled.busy = true;
+            return Ok(polled);
+        };
+        for batch in batches {
             if recorded.contains(&batch.id) {
                 polled.unacknowledged = true;
             } else if inbox.post_curio(CurioNotice { batch }) {
