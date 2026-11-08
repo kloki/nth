@@ -31,7 +31,8 @@ pub struct Runtime {
     config_path: Option<PathBuf>,
     model: Option<String>,
     /// The home, config and data directories, read from the environment
-    /// once; tests point them at a temporary one.
+    /// once: where the global config, a session's global files and the
+    /// login are. Tests point them at a temporary one.
     env: Paths,
     /// Built on first use, so a command that never signs in (`nth init`,
     /// `nth curio`) runs without a data directory.
@@ -96,7 +97,7 @@ impl Runtime {
 
     /// The config for `cwd`, with the model override applied over it.
     pub fn load(&self, cwd: &Path) -> Result<Config> {
-        let mut config = Config::load_for(self.config_path.as_deref(), cwd)?;
+        let mut config = Config::load_in(self.config_path.as_deref(), cwd, &self.env)?;
         if let Some(model) = &self.model {
             config.set_model(model.clone());
         }
@@ -551,7 +552,9 @@ pub(crate) mod tests {
     fn one_login_is_shared_by_providers_connect_and_reload() {
         // Off a Tokio runtime, so building providers fetches no catalogue.
         // The login in the test's data directory is not connected, so the
-        // providers need a key: one from a variable cargo always sets.
+        // providers need a key. `reload` is `resume` then `prepare` on a
+        // blocking thread; its closure hands back only a `dyn Provider`, so
+        // `resume` is where the reload's login is seen.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -561,6 +564,8 @@ pub(crate) mod tests {
 
             [provider.zen]
             base_url = "http://127.0.0.1"
+            # Cargo sets it when it runs the tests; the test binary run
+            # by hand fails here on a key that is not set.
             api_key_env = "CARGO_PKG_NAME"
 
             [notify]

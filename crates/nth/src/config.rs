@@ -409,28 +409,24 @@ impl Config {
         paths
     }
 
-    /// Resolve the global config and project overlay for a session's cwd.
-    pub fn load_for(path: Option<&Path>, cwd: &Path) -> Result<Self> {
-        Self::load_for_with_sources(path, cwd).map(|(config, _)| config)
+    /// Resolve the global config and project overlay for a session's cwd:
+    /// `path`, else the config in `paths`' config directory, and the
+    /// repository's, whose walk stops at `paths`' home.
+    pub fn load_in(path: Option<&Path>, cwd: &Path, paths: &Paths) -> Result<Self> {
+        Self::load_layers(path, cwd, paths).map(|(config, _)| config)
     }
 
-    /// As `load_for`, also returning the files actually read, global first.
-    pub fn load_for_with_sources(path: Option<&Path>, cwd: &Path) -> Result<(Self, Vec<PathBuf>)> {
-        Self::load_layers(path, cwd, Paths::from_env().home.as_deref())
-    }
-
-    /// As `load_for_with_sources`, with the home directory given.
-    fn load_layers(
-        path: Option<&Path>,
-        cwd: &Path,
-        home: Option<&Path>,
-    ) -> Result<(Self, Vec<PathBuf>)> {
+    /// As `load_in`, also returning the files actually read, global first.
+    fn load_layers(path: Option<&Path>, cwd: &Path, paths: &Paths) -> Result<(Self, Vec<PathBuf>)> {
+        let home = paths.home.as_deref();
         let cwd = if cwd.is_absolute() {
             cwd.to_path_buf()
         } else {
             std::env::current_dir()?.join(cwd)
         };
-        let global = path.map(Path::to_path_buf).or_else(Self::default_path);
+        let global = path
+            .map(Path::to_path_buf)
+            .or_else(|| Some(paths.config_dir()?.join("config.toml")));
         let mut sources = Vec::new();
         let mut value = toml::Value::Table(Default::default());
         if let Some(global) = global.as_deref().filter(|p| path.is_some() || p.exists()) {
@@ -786,7 +782,7 @@ mod tests {
         std::fs::write(&global, "model = 'global'\n[skills]\npaths = ['../shared']\n[directories]\npaths = ['../docs']\n[format.mine]\ncommand = ['fmt']\nextensions = ['txt']\nenv = { A = 'a' }\n[lsp.mine]\ncommand = ['server']\nextensions = ['x']\n").unwrap();
         std::fs::write(root.join(".nth/config"), "model = ''\n[context]\nauto = false\nreserved = 0\n[skills]\npaths = ['shared', './shared']\n[directories]\npaths = ['docs', 'other']\n").unwrap();
         let (mut config, sources) =
-            Config::load_for_with_sources(Some(&global), &root.join("sub")).unwrap();
+            Config::load_layers(Some(&global), &root.join("sub"), &Paths::default()).unwrap();
         assert_eq!(sources, [global, root.join(".nth/config")]);
         assert_eq!(config.model, "");
         assert!(!config.context.auto);
@@ -825,7 +821,7 @@ mod tests {
         ] {
             std::fs::write(&global, "").unwrap();
             std::fs::write(&repo, text).unwrap();
-            let err = Config::load_for(Some(&global), root).unwrap_err();
+            let err = Config::load_in(Some(&global), root, &Paths::default()).unwrap_err();
             assert!(
                 format!("{err:#}").contains(&repo.display().to_string()),
                 "{text}: {err:#}"
@@ -833,7 +829,7 @@ mod tests {
         }
         std::fs::write(&global, "[session]\nmax_steps = 'bad'").unwrap();
         std::fs::write(&repo, "[session]\nmax_steps = 5").unwrap();
-        let err = Config::load_for(Some(&global), root).unwrap_err();
+        let err = Config::load_in(Some(&global), root, &Paths::default()).unwrap_err();
         assert!(format!("{err:#}").contains(&global.display().to_string()));
     }
 
@@ -868,7 +864,7 @@ mod tests {
                 "missing/../dangling",
             ] {
                 std::fs::write(&repo, format!("[{section}]\npaths = ['{entry}']")).unwrap();
-                let err = Config::load_for(Some(&global), &root).unwrap_err();
+                let err = Config::load_in(Some(&global), &root, &Paths::default()).unwrap_err();
                 let message = format!("{err:#}");
                 assert!(
                     message.starts_with(&format!("invalid config {}: ", repo.display())),
@@ -892,7 +888,7 @@ mod tests {
                 format!("[{section}]\npaths = ['docs', '.nth/worktrees/w', 'sub/../x']"),
             )
             .unwrap();
-            Config::load_for(Some(&global), &root).unwrap();
+            Config::load_in(Some(&global), &root, &Paths::default()).unwrap();
             // The global config may name any path.
             std::fs::write(&repo, "").unwrap();
             std::fs::write(
@@ -900,14 +896,14 @@ mod tests {
                 format!("[{section}]\npaths = ['{}']", sibling.display()),
             )
             .unwrap();
-            Config::load_for(Some(&global), &root).unwrap();
+            Config::load_in(Some(&global), &root, &Paths::default()).unwrap();
             std::fs::write(&global, "").unwrap();
         }
         // A symlink loop is refused rather than kept as written, in a
         // project config only.
         for entry in ["loop-a", "loop-a/x", "missing/../loop-b"] {
             std::fs::write(&repo, format!("[directories]\npaths = ['{entry}']")).unwrap();
-            let err = Config::load_for(Some(&global), &root).unwrap_err();
+            let err = Config::load_in(Some(&global), &root, &Paths::default()).unwrap_err();
             let message = format!("{err:#}");
             assert!(
                 message.starts_with(&format!(
@@ -927,20 +923,20 @@ mod tests {
             ),
         )
         .unwrap();
-        Config::load_for(Some(&global), &root).unwrap();
+        Config::load_in(Some(&global), &root, &Paths::default()).unwrap();
         std::fs::write(&global, "").unwrap();
         // Outside Git the root is the folder holding `.nth`.
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(plain.join(".nth")).unwrap();
         std::fs::create_dir_all(plain.join("docs")).unwrap();
         std::fs::write(plain.join(".nth/config"), "[directories]\npaths = ['docs']").unwrap();
-        Config::load_layers(Some(&global), &plain, None).unwrap();
+        Config::load_layers(Some(&global), &plain, &Paths::default()).unwrap();
         std::fs::write(
             plain.join(".nth/config"),
             "[directories]\npaths = ['../sibling']",
         )
         .unwrap();
-        let err = Config::load_layers(Some(&global), &plain, None).unwrap_err();
+        let err = Config::load_layers(Some(&global), &plain, &Paths::default()).unwrap_err();
         assert!(
             format!("{err:#}").contains("is outside the repository"),
             "{err:#}"
@@ -959,7 +955,11 @@ mod tests {
         let global = root.join("global");
         std::fs::write(&global, "").unwrap();
         let model = |cwd: &Path, home: Option<&Path>| {
-            Config::load_layers(Some(&global), cwd, home)
+            let paths = Paths {
+                home: home.map(Path::to_path_buf),
+                ..Paths::default()
+            };
+            Config::load_layers(Some(&global), cwd, &paths)
                 .unwrap()
                 .0
                 .model
@@ -1003,7 +1003,7 @@ mod tests {
         std::fs::write(worktree.join(".nth/config"), "model = 'worktree'").unwrap();
         let global = tmp.path().join("global");
         std::fs::write(&global, "").unwrap();
-        let config = Config::load_for(Some(&global), &worktree).unwrap();
+        let config = Config::load_in(Some(&global), &worktree, &Paths::default()).unwrap();
         assert_eq!(config.model, "main");
         assert_eq!(config.skills.paths, [root.join("skills").to_string_lossy()]);
     }
@@ -1053,7 +1053,7 @@ mod tests {
         write_template(&path, false).expect("writes");
 
         assert_eq!(
-            Config::load_for(Some(&path), dir.path()).expect("loads"),
+            Config::load_in(Some(&path), dir.path(), &Paths::default()).expect("loads"),
             Config::default()
         );
     }
@@ -1575,11 +1575,12 @@ mod tests {
     fn explicit_path_must_exist() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("config.toml");
-        let err = Config::load_for(Some(&missing), dir.path()).expect_err("missing file");
+        let err = Config::load_in(Some(&missing), dir.path(), &Paths::default())
+            .expect_err("missing file");
         assert!(format!("{err:#}").contains("not found"), "{err:#}");
 
         std::fs::write(&missing, "[session]\nmax_steps = 3\n").expect("write");
-        let config = Config::load_for(Some(&missing), dir.path()).expect("loads");
+        let config = Config::load_in(Some(&missing), dir.path(), &Paths::default()).expect("loads");
         assert_eq!(config.session.max_steps, 3);
     }
 
@@ -1608,7 +1609,7 @@ mod tests {
             "[format.custom]\ncommand = []\nextensions = ['.x']\n",
         )
         .unwrap();
-        let error = Config::load_for(Some(&global), dir.path()).unwrap_err();
+        let error = Config::load_in(Some(&global), dir.path(), &Paths::default()).unwrap_err();
         assert!(
             format!("{error:#}").contains("command is empty"),
             "{error:#}"
