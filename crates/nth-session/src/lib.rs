@@ -5,6 +5,7 @@ pub mod context_preview;
 mod curios_tests;
 #[cfg(test)]
 mod delivery_acceptance;
+pub mod directories;
 mod memory;
 pub mod plan;
 mod primary;

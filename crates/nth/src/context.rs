@@ -2,6 +2,7 @@
 
 use std::{
     io::{self, IsTerminal, Write},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -14,13 +15,17 @@ use nth_session::{
 };
 use serde_json::json;
 
-use crate::config::Config;
-
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
-pub async fn run(id: Option<String>, json: bool, config: Config) -> Result<()> {
+pub async fn run(
+    id: Option<String>,
+    json: bool,
+    config_path: Option<PathBuf>,
+    model: Option<String>,
+) -> Result<()> {
     let store = Store::open()?;
     let mut session = crate::session::pick(&store, id.as_deref()).await?;
+    let config = crate::load_for(config_path.as_deref(), model, &session.cwd)?;
     // Agent definitions are needed for offered-tool filtering. set_context also
     // rewrites the system prompt, so retain exactly the messages that were saved.
     let messages = session.messages.clone();
@@ -239,6 +244,7 @@ mod tests {
     use nth_protocol::{AssistantMessage, Image, ToolCall};
 
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn text_and_json_show_complete_preview_without_image_bytes() {
@@ -321,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn normal_tools_are_included_in_text_and_json() {
-        let config = Config::load(None).unwrap();
+        let config = Config::default();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let tools = crate::tools(
             &config,

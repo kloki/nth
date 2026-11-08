@@ -6,21 +6,6 @@ use std::path::{Path, PathBuf};
 
 use crate::mention;
 
-/// `arg` as the directory it names: `~` or `~/` for home, an absolute
-/// path as it is, anything else against `cwd`.
-pub fn expand(cwd: &Path, home: Option<&str>, arg: &str) -> PathBuf {
-    let home = home.filter(|home| !home.is_empty()).map(Path::new);
-    if let Some(path) = nth_context::expand_home(arg, home) {
-        return path;
-    }
-    let path = Path::new(arg);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    }
-}
-
 /// What [`candidates`] lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Entries {
@@ -73,7 +58,7 @@ fn parts<'a>(cwd: &Path, home: Option<&str>, arg: &'a str) -> (PathBuf, String, 
             let dir = if arg.starts_with('/') {
                 Path::new("/").join(spelled)
             } else {
-                expand(cwd, home, spelled)
+                nth_session::directories::expand(cwd, home.map(Path::new), spelled)
             };
             (dir, format!("{spelled}/"), &name[1..])
         }
@@ -93,30 +78,6 @@ mod tests {
         let dir = base.join(name);
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
-    }
-
-    #[test]
-    fn expands_home_absolute_and_relative_arguments() {
-        let cwd = Path::new("/repo");
-
-        assert_eq!(expand(cwd, Some("/home/k"), "~"), PathBuf::from("/home/k"));
-        assert_eq!(
-            expand(cwd, Some("/home/k"), "~/other"),
-            PathBuf::from("/home/k/other")
-        );
-        assert_eq!(expand(cwd, None, "~"), PathBuf::from("/repo/~"));
-        assert_eq!(expand(cwd, Some("/home/k"), "other"), cwd.join("other"));
-        assert_eq!(expand(cwd, Some("/home/k"), "/abs"), PathBuf::from("/abs"));
-    }
-
-    #[test]
-    fn a_tilde_before_a_name_is_part_of_the_name() {
-        let cwd = Path::new("/repo");
-
-        assert_eq!(
-            expand(cwd, Some("/home/k"), "~other"),
-            PathBuf::from("/repo/~other")
-        );
     }
 
     #[test]

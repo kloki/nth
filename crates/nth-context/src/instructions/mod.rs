@@ -17,7 +17,7 @@ use std::{
 
 pub use watch::{Change, ChangeKind, Watch};
 
-use crate::{Paths, main_checkout, project_root};
+use crate::{Paths, main_checkout, project_root, search_dirs};
 
 /// Tried in order in every directory.
 const NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
@@ -104,17 +104,7 @@ struct Project {
 /// under a home with an `AGENTS.md` keeps its files.
 fn project(cwd: &Path, home: Option<&Path>) -> Project {
     let root = project_root(cwd);
-    let stop = match home {
-        Some(home) if cwd.starts_with(home) => Some(home),
-        _ => root.as_deref(),
-    };
-    let dirs: Vec<&Path> = match stop {
-        Some(stop) => cwd
-            .ancestors()
-            .take_while(|dir| dir.starts_with(stop))
-            .collect(),
-        None => vec![cwd],
-    };
+    let dirs = search_dirs(cwd, home);
     let inside = match &root {
         Some(root) => dirs.iter().take_while(|dir| dir.starts_with(root)).count(),
         None => 1,

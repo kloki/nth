@@ -45,6 +45,7 @@ pub struct Config {
     pub layout: LayoutConfig,
     pub tools: nth_tools::ToolsConfig,
     pub skills: SkillsConfig,
+    pub directories: DirectoriesConfig,
     pub format: nth_format::FormatConfig,
     pub lsp: nth_lsp::LspConfig,
     pub notify: nth_notify::NotifyConfig,
@@ -284,6 +285,13 @@ pub struct SkillsConfig {
     pub paths: Vec<String>,
 }
 
+/// Additional directories available to a session.
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DirectoriesConfig {
+    pub paths: Vec<String>,
+}
+
 impl Config {
     /// `$XDG_CONFIG_HOME/nth/config.toml`, else `~/.config/nth/config.toml`.
     /// The design puts nth's files under `~/.config/nth` on every platform,
@@ -381,24 +389,54 @@ impl Config {
         paths
     }
 
-    /// Loads `path`, which must exist, or else the default path, which may
-    /// be missing and then gives the defaults.
-    pub fn load(path: Option<&Path>) -> Result<Self> {
-        if let Some(path) = path {
-            return Self::load_file(path);
-        }
-        match Self::default_path() {
-            Some(path) if path.exists() => Self::load_file(&path),
-            _ => Ok(Self::default()),
-        }
+    /// Resolve the global config and project overlay for a session's cwd.
+    pub fn load_for(path: Option<&Path>, cwd: &Path) -> Result<Self> {
+        Self::load_for_with_sources(path, cwd).map(|(config, _)| config)
     }
 
-    fn load_file(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| match e.kind() {
-            ErrorKind::NotFound => anyhow::anyhow!("config file {} not found", path.display()),
-            _ => anyhow::Error::new(e).context(format!("cannot read {}", path.display())),
+    /// As `load_for`, also returning the files actually read, global first.
+    pub fn load_for_with_sources(path: Option<&Path>, cwd: &Path) -> Result<(Self, Vec<PathBuf>)> {
+        Self::load_layers(path, cwd, Paths::from_env().home.as_deref())
+    }
+
+    /// As `load_for_with_sources`, with the home directory given.
+    fn load_layers(
+        path: Option<&Path>,
+        cwd: &Path,
+        home: Option<&Path>,
+    ) -> Result<(Self, Vec<PathBuf>)> {
+        let cwd = if cwd.is_absolute() {
+            cwd.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(cwd)
+        };
+        let global = path.map(Path::to_path_buf).or_else(Self::default_path);
+        let mut sources = Vec::new();
+        let mut value = toml::Value::Table(Default::default());
+        if let Some(global) = global.filter(|p| path.is_some() || p.exists()) {
+            let mut layer = read_layer(&global, false)?;
+            normalize_paths(&mut layer, &cwd, home);
+            merge(&mut value, layer, "");
+            sources.push(global);
+        }
+        if let Some((root, file)) = repo_config(&cwd, home) {
+            let mut layer = read_layer(&file, true)?;
+            normalize_paths(&mut layer, &root, home);
+            merge(&mut value, layer, "");
+            sources.push(file);
+        }
+        let text = toml::to_string(&value)?;
+        let config = Self::parse(&text).with_context(|| {
+            format!(
+                "invalid merged config from {}",
+                sources
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         })?;
-        Self::parse(&text).with_context(|| format!("invalid config {}", path.display()))
+        Ok((config, sources))
     }
 
     fn parse(text: &str) -> Result<Self> {
@@ -414,6 +452,139 @@ impl Config {
 
     pub fn to_toml(&self) -> Result<String> {
         Ok(toml::to_string(self)?)
+    }
+}
+
+/// The one project config for `cwd` and the directory its paths are
+/// relative to: the main checkout's in a Git repository, else the nearest
+/// among the directories instructions are read from (up to home when under
+/// it, else `cwd` alone).
+fn repo_config(cwd: &Path, home: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    if let Some(root) = nth_context::main_project_root(cwd) {
+        let file = root.join(".nth/config");
+        return file.exists().then_some((root, file));
+    }
+    nth_context::search_dirs(cwd, home)
+        .into_iter()
+        .find_map(|root| {
+            let file = root.join(".nth/config");
+            file.exists().then(|| (root.to_path_buf(), file))
+        })
+}
+
+fn read_layer(path: &Path, repo: bool) -> Result<toml::Value> {
+    let result = || -> Result<toml::Value> {
+        let text = std::fs::read_to_string(path).map_err(|e| match e.kind() {
+            ErrorKind::NotFound => anyhow::anyhow!("config file {} not found", path.display()),
+            _ => anyhow::Error::new(e).context(format!("cannot read {}", path.display())),
+        })?;
+        let value: toml::Value = toml::from_str(&text)?;
+        let table = value.as_table().expect("TOML document is a table");
+        if repo {
+            for key in table.keys() {
+                if ![
+                    "model",
+                    "profiles",
+                    "mode",
+                    "session",
+                    "task",
+                    "work",
+                    "context",
+                    "memory",
+                    "skills",
+                    "directories",
+                ]
+                .contains(&key.as_str())
+                {
+                    bail!("project config key `{key}` is not allowed");
+                }
+            }
+        }
+        let mut parsed: Config = value.clone().try_into()?;
+        for (id, provider) in &mut parsed.provider {
+            provider.complete(id)?;
+        }
+        for (index, profile) in parsed.profiles.iter().enumerate() {
+            profile.complete(index)?;
+        }
+        Ok(value)
+    };
+    result().with_context(|| format!("invalid config {}", path.display()))
+}
+
+fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
+    for section in ["skills", "directories"] {
+        let Some(paths) = value.get_mut(section).and_then(|v| v.get_mut("paths")) else {
+            continue;
+        };
+        let paths = paths.as_array_mut().expect("validated paths");
+        let mut seen = std::collections::HashSet::new();
+        paths.retain_mut(|value| {
+            let path = value.as_str().expect("validated path");
+            let path = skill_path(path, home);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                base.join(path)
+            };
+            let path = canonicalize_existing_prefix(&path);
+            *value = toml::Value::String(path.to_string_lossy().into_owned());
+            seen.insert(path)
+        });
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                result.pop();
+            }
+            part => result.push(part.as_os_str()),
+        }
+    }
+    result
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    for prefix in path.ancestors() {
+        if let Ok(canonical) = std::fs::canonicalize(prefix) {
+            return normalize_path(&canonical.join(path.strip_prefix(prefix).expect("ancestor")));
+        }
+    }
+    normalize_path(path)
+}
+
+fn merge(base: &mut toml::Value, overlay: toml::Value, key: &str) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (name, value) in overlay {
+                let path = if key.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{key}.{name}")
+                };
+                match base.get_mut(&name) {
+                    Some(existing) => merge(existing, value, &path),
+                    None => {
+                        base.insert(name, value);
+                    }
+                }
+            }
+        }
+        (toml::Value::Array(base), toml::Value::Array(overlay))
+            if key == "skills.paths" || key == "directories.paths" =>
+        {
+            for item in overlay {
+                if !base.contains(&item) {
+                    base.push(item);
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
     }
 }
 
@@ -436,6 +607,10 @@ pub fn show(explicit: Option<PathBuf>, config: &Config) -> Result<()> {
             icons().to.cyan().bold(),
             "no home dir, using defaults".dimmed()
         ),
+    }
+    let cwd = std::env::current_dir()?;
+    if let Some((_, path)) = repo_config(&cwd, Paths::from_env().home.as_deref()) {
+        eprintln!("{} {}", icons().ok.green().bold(), path.display().dimmed());
     }
     print!("{}", config.to_toml()?);
     Ok(())
@@ -490,6 +665,129 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_layers_merge_and_resolve_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".nth")).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let global = root.join("global.toml");
+        std::fs::write(&global, "model = 'global'\n[skills]\npaths = ['../shared']\n[directories]\npaths = ['../docs']\n[format.mine]\ncommand = ['fmt']\nextensions = ['txt']\nenv = { A = 'a' }\n[lsp.mine]\ncommand = ['server']\nextensions = ['x']\n").unwrap();
+        std::fs::write(root.join(".nth/config"), "model = ''\n[context]\nauto = false\nreserved = 0\n[skills]\npaths = ['shared', './shared']\n[directories]\npaths = ['docs', 'other']\n").unwrap();
+        let (mut config, sources) =
+            Config::load_for_with_sources(Some(&global), &root.join("sub")).unwrap();
+        assert_eq!(sources, [global, root.join(".nth/config")]);
+        assert_eq!(config.model, "");
+        assert!(!config.context.auto);
+        assert_eq!(config.context.reserved, 0);
+        assert_eq!(config.skills.paths, [root.join("shared").to_string_lossy()]);
+        assert_eq!(config.directories.paths.len(), 2);
+        assert_eq!(config.format.formatters["mine"].env.len(), 1);
+        assert_eq!(
+            config.format.formatters["mine"]
+                .extensions
+                .as_ref()
+                .unwrap(),
+            &[".txt"]
+        );
+        assert_eq!(config.lsp.servers["mine"].command, ["server"]);
+        config.set_model("cli".into());
+        assert_eq!(config.model, "cli");
+    }
+
+    #[test]
+    fn layers_reject_hidden_invalid_and_forbidden_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".nth")).unwrap();
+        let global = root.join("global");
+        let repo = root.join(".nth/config");
+        for text in [
+            "[tools.websearch]\nurl = 'x'",
+            "[provider.x]\nbase_url = 'x'",
+            "[session]\nmax_step = 2",
+            "[format.mine]\ncommand = 3",
+            "[format.x]\ncommand = ['fmt']\nextensions = ['.x']",
+            "[lsp.x]\ncommand = ['server']\nextensions = ['.x']",
+            "[tools.bash]\nrtk = false",
+            "[tools.read]\nmax_lines = 10",
+        ] {
+            std::fs::write(&global, "").unwrap();
+            std::fs::write(&repo, text).unwrap();
+            let err = Config::load_for(Some(&global), root).unwrap_err();
+            assert!(
+                format!("{err:#}").contains(&repo.display().to_string()),
+                "{text}: {err:#}"
+            );
+        }
+        std::fs::write(&global, "[session]\nmax_steps = 'bad'").unwrap();
+        std::fs::write(&repo, "[session]\nmax_steps = 5").unwrap();
+        let err = Config::load_for(Some(&global), root).unwrap_err();
+        assert!(format!("{err:#}").contains(&global.display().to_string()));
+    }
+
+    #[test]
+    fn nearest_non_git_config_and_git_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".nth")).unwrap();
+        std::fs::write(root.join(".nth/config"), "model = 'outer'").unwrap();
+        std::fs::create_dir_all(root.join("nested/.nth")).unwrap();
+        std::fs::write(root.join("nested/.nth/config"), "model = 'inner'").unwrap();
+        std::fs::create_dir_all(root.join("nested/deeper")).unwrap();
+        let global = root.join("global");
+        std::fs::write(&global, "").unwrap();
+        let model = |cwd: &Path, home: Option<&Path>| {
+            Config::load_layers(Some(&global), cwd, home)
+                .unwrap()
+                .0
+                .model
+        };
+        assert_eq!(model(&root.join("nested/deeper"), Some(root)), "inner");
+        std::fs::remove_file(root.join("nested/.nth/config")).unwrap();
+        // Under home the walk goes up to and including home.
+        assert_eq!(model(&root.join("nested/deeper"), Some(root)), "outer");
+        // A config above home is ignored.
+        assert_eq!(
+            model(&root.join("nested/deeper"), Some(&root.join("nested"))),
+            ""
+        );
+        // Outside home only cwd's own config counts.
+        let home = root.join("home");
+        assert_eq!(model(&root.join("nested/deeper"), Some(&home)), "");
+        assert_eq!(model(root, Some(&home)), "outer");
+        // A repository stops the walk at its root.
+        std::fs::create_dir_all(root.join("nested/.git")).unwrap();
+        assert_eq!(model(&root.join("nested"), Some(root)), "");
+    }
+
+    #[test]
+    fn linked_worktree_uses_main_checkout_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("main");
+        let worktree = tmp.path().join("worktree");
+        std::fs::create_dir_all(root.join(".git/worktrees/w")).unwrap();
+        std::fs::create_dir_all(root.join(".nth")).unwrap();
+        std::fs::create_dir_all(worktree.join(".nth")).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}", root.join(".git/worktrees/w").display()),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".nth/config"),
+            "model = 'main'\n[skills]\npaths = ['skills']",
+        )
+        .unwrap();
+        std::fs::write(worktree.join(".nth/config"), "model = 'worktree'").unwrap();
+        let global = tmp.path().join("global");
+        std::fs::write(&global, "").unwrap();
+        let config = Config::load_for(Some(&global), &worktree).unwrap();
+        assert_eq!(config.model, "main");
+        assert_eq!(config.skills.paths, [root.join("skills").to_string_lossy()]);
+    }
+
+    #[test]
     fn empty_file_gives_defaults() {
         assert_eq!(Config::parse("").expect("parses"), Config::default());
     }
@@ -533,7 +831,10 @@ mod tests {
 
         write_template(&path, false).expect("writes");
 
-        assert_eq!(Config::load(Some(&path)).expect("loads"), Config::default());
+        assert_eq!(
+            Config::load_for(Some(&path), dir.path()).expect("loads"),
+            Config::default()
+        );
     }
 
     #[test]
@@ -1053,11 +1354,44 @@ mod tests {
     fn explicit_path_must_exist() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("config.toml");
-        let err = Config::load(Some(&missing)).expect_err("missing file");
+        let err = Config::load_for(Some(&missing), dir.path()).expect_err("missing file");
         assert!(format!("{err:#}").contains("not found"), "{err:#}");
 
         std::fs::write(&missing, "[session]\nmax_steps = 3\n").expect("write");
-        let config = Config::load(Some(&missing)).expect("loads");
+        let config = Config::load_for(Some(&missing), dir.path()).expect("loads");
         assert_eq!(config.session.max_steps, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_resolution_follows_symlinks_before_parent_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let shared = dir.path().join("shared");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(shared.join("team")).unwrap();
+        std::fs::create_dir_all(shared.join("docs")).unwrap();
+        std::os::unix::fs::symlink(shared.join("team"), repo.join("link")).unwrap();
+        assert_eq!(
+            canonicalize_existing_prefix(&repo.join("link/../docs")),
+            shared.join("docs").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_empty_global_formatter_command_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        std::fs::write(
+            &global,
+            "[format.custom]\ncommand = []\nextensions = ['.x']\n",
+        )
+        .unwrap();
+        let error = Config::load_for(Some(&global), dir.path()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("command is empty"),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains(&global.display().to_string()));
     }
 }
