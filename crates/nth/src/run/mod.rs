@@ -43,7 +43,7 @@ pub async fn run(
     let subagents = Subagents::default();
     let prepared = runtime::prepare(
         &mut config,
-        providers.clone(),
+        providers,
         Start::Fresh { cwd, mode },
         subagents.clone(),
     )
@@ -71,7 +71,7 @@ pub async fn run(
         };
         // Its own model, else act's, which prepare picked as the mode is act.
         if let Some(model) = agent.model.clone() {
-            session.set_model(providers.qualify(&model));
+            session.set_model(provider.qualify(&model));
         }
         session.set_agent(Some(name));
     }

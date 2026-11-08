@@ -189,6 +189,10 @@ impl Provider for Providers {
             .or_else(|| stream::retry::<messages::Provider>(error))
             .or_else(|| stream::retry::<responses::Provider>(error))
     }
+
+    fn qualify(&self, model: &str) -> String {
+        Providers::qualify(self, model)
+    }
 }
 
 #[cfg(test)]

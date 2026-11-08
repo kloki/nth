@@ -130,7 +130,9 @@ impl App {
     }
 
     /// What the primary agent `name` runs with: what it ran on last in this
-    /// run, else its own model at act's effort, else act's.
+    /// run, else its own model at act's effort, else act's. Its own model
+    /// is qualified, as its frontmatter may name it bare and the prompt and
+    /// picker show listed ids.
     fn agent_llm(&self, name: &str) -> Llm {
         if let Some(llm) = self.agent_llms.get(name) {
             return llm.clone();
@@ -143,7 +145,7 @@ impl App {
             .and_then(|a| a.model.clone())
         {
             Some(model) => Llm {
-                model,
+                model: self.provider.qualify(&model),
                 effort: act.effort,
             },
             None => act,
@@ -219,7 +221,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Effort;
+    use std::sync::Arc;
+
+    use futures::{future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{BoxError, Effort, Listing, Provider, Request, StreamEvent};
 
     use super::*;
     use crate::app::{
@@ -302,6 +307,56 @@ mod tests {
         app.set_agent("review".into());
         assert_eq!(app.model, "qwen", "the agent's pick holds for the run");
         assert_eq!(app.runs_as().1.as_deref(), Some("review"));
+    }
+
+    /// A provider that names every model as Zen's, as `Providers` does a
+    /// bare id when Zen is the default.
+    struct Zen;
+
+    impl Provider for Zen {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            Box::pin(async { Ok(Listing::default()) })
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            Box::pin(async { Err("unused".into()) })
+        }
+
+        fn qualify(&self, model: &str) -> String {
+            format!("zen/{model}")
+        }
+    }
+
+    #[test]
+    fn an_agents_model_is_qualified_by_the_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agents = dir.path().join(".nth/agents");
+        std::fs::create_dir_all(&agents).expect("dir");
+        std::fs::write(
+            agents.join("review.md"),
+            "---\ndescription: Reviews\nmode: primary\nmodel: glm\n---\nYou review.\n",
+        )
+        .expect("writes");
+        let session = nth_session::Session::new("zen/kimi", "/repo".into());
+        let mut app = App::new(crate::app::tests::runtime(
+            session,
+            std::sync::Arc::new(Zen),
+        ));
+        app.context = Arc::new(nth_context::Context::discover(
+            dir.path(),
+            &nth_context::Paths::default(),
+        ));
+
+        app.set_agent("review".into());
+
+        assert_eq!(
+            app.model, "zen/glm",
+            "named as the picker and the listing name it"
+        );
     }
 
     #[test]
