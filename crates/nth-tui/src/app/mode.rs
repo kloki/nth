@@ -342,10 +342,7 @@ mod tests {
         )
         .expect("writes");
         let session = nth_session::Session::new("zen/kimi", "/repo".into());
-        let mut app = App::new(crate::app::tests::runtime(
-            session,
-            std::sync::Arc::new(Zen),
-        ));
+        let mut app = App::new(crate::app::tests::runtime(session, Arc::new(Zen)));
         app.context = Arc::new(nth_context::Context::discover(
             dir.path(),
             &nth_context::Paths::default(),

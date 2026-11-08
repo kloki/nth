@@ -272,6 +272,9 @@ mod tests {
         assert_eq!(providers.qualify("deepseek"), "opencode/deepseek");
         assert_eq!(providers.qualify("opencode/deepseek"), "opencode/deepseek");
         assert_eq!(providers.qualify("lyceum/glm"), "lyceum/glm");
+        // What the front-ends hold, which must route as well.
+        let provider: &dyn Provider = &providers;
+        assert_eq!(provider.qualify("deepseek"), "opencode/deepseek");
     }
 
     #[test]
