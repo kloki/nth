@@ -6,6 +6,7 @@ use super::*;
 async fn a_turn_that_moved_the_session_moves_the_app() {
     let mut app = crate::app::tests::app();
     let mut session = app.session.take().expect("idle");
+    let original_plan = session.plan_path();
     let worktree = app.cwd.join(".nth/worktrees/x");
     session.set_cwd(worktree.clone(), Some(app.cwd.clone()));
 
@@ -20,7 +21,7 @@ async fn a_turn_that_moved_the_session_moves_the_app() {
     assert_eq!(app.cwd, worktree);
     assert!(app.place.ends_with(".nth/worktrees/x"), "{}", app.place);
     let plan = app.session.as_ref().expect("back").plan_path();
-    assert!(plan.starts_with(&worktree), "{}", plan.display());
+    assert_eq!(plan, original_plan);
     assert_eq!(app.plan.path(), plan);
 }
 

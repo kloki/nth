@@ -42,11 +42,10 @@ impl Tool for EnterWorktree {
         async move {
             let Args { name } = nth_protocol::parse_args(args)?;
             refuse_in_plan_mode(ctx)?;
-            // From one worktree into another, the new one still goes in the
-            // main checkout.
             let origin = ctx.workdir.origin().unwrap_or_else(|| ctx.cwd.clone());
-            let root = nth_worktree::toplevel(&origin).await?;
-            let worktree = nth_worktree::open(&root, &name).await?;
+            let source = nth_worktree::toplevel(&ctx.cwd).await?;
+            let root = nth_context::main_project_root(&source).unwrap_or_else(|| source.clone());
+            let worktree = nth_worktree::open(&source, &name).await?;
             let created = match worktree.created {
                 None => "",
                 Some(Created::NewBranch) => "Created it on a new branch from HEAD. ",
@@ -109,8 +108,7 @@ impl Tool for ExitWorktree {
     }
 }
 
-/// The plan file lives under the working directory, so moving would lose
-/// it.
+/// Keep the checkout fixed while a plan is being prepared.
 fn refuse_in_plan_mode(ctx: &ToolContext) -> Result<(), String> {
     match ctx.writable {
         Writable::Plan { .. } => Err(
@@ -214,6 +212,73 @@ mod tests {
 
         assert_eq!(ctx.workdir.moved_to(), Some(root.join(".nth/worktrees/b")));
         assert_eq!(ctx.workdir.origin(), Some(root));
+    }
+
+    #[tokio::test]
+    async fn linked_launch_uses_main_setup_current_head_and_returns_to_original_directory() {
+        let (_dir, root) = repo();
+        let linked = root.join("linked");
+        run(
+            &root,
+            &["worktree", "add", "-b", "source", linked.to_str().unwrap()],
+        );
+        std::fs::write(linked.join("a.txt"), "changed").unwrap();
+        run(
+            &linked,
+            &[
+                "-c",
+                "user.name=nth",
+                "-c",
+                "user.email=nth@example.com",
+                "commit",
+                "-qam",
+                "source",
+            ],
+        );
+        setup_script(&root, "echo \"$NTH_WORKTREE_BASE\" > ran\n");
+        let original = linked.join("nested");
+        std::fs::create_dir(&original).unwrap();
+        let ctx = ToolContext::new(original.clone());
+
+        enter(&ctx, "first").await.unwrap();
+        let first = root.join(".nth/worktrees/first");
+        assert_eq!(ctx.workdir.moved_to(), Some(first.clone()));
+        assert_eq!(
+            run(&first, &["rev-parse", "HEAD"]),
+            run(&linked, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(
+            std::fs::read_to_string(first.join("ran")).unwrap().trim(),
+            root.to_str().unwrap()
+        );
+
+        std::fs::write(first.join("a.txt"), "first").unwrap();
+        run(
+            &first,
+            &[
+                "-c",
+                "user.name=nth",
+                "-c",
+                "user.email=nth@example.com",
+                "commit",
+                "-qam",
+                "first",
+            ],
+        );
+        let next = ToolContext {
+            cwd: first.clone(),
+            workdir: ctx.workdir.clone(),
+            ..ToolContext::new(first.clone())
+        };
+        enter(&next, "second").await.unwrap();
+        let second = root.join(".nth/worktrees/second");
+        assert_eq!(
+            run(&second, &["rev-parse", "HEAD"]),
+            run(&first, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(next.workdir.origin(), Some(original.clone()));
+        ExitWorktree.call(json!({}), &next).await.unwrap();
+        assert_eq!(next.workdir.moved_to(), Some(original));
     }
 
     #[tokio::test]

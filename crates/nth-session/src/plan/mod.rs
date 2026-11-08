@@ -27,7 +27,7 @@ const GITIGNORE: &str = "# nth's plan and work files.\nplans/\nwork/\n.gitignore
 
 /// Where the session `id` keeps its plan: `<cwd>/.nth/plans/<id>.md`.
 pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
-    cwd.join(".nth").join("plans").join(format!("{id}.md"))
+    nth_directories::Directories::from_root(cwd.to_path_buf()).plan(&id.to_string())
 }
 
 /// Creates `<cwd>/.nth` and, unless one is already there, the
@@ -37,7 +37,13 @@ pub fn plan_path(cwd: &Path, id: &Uuid) -> PathBuf {
 ///
 /// A `.gitignore` already there is left alone: the user's rules win.
 pub async fn ensure_dir(cwd: &Path) -> io::Result<()> {
-    let dir = cwd.join(".nth");
+    if !tokio::fs::metadata(cwd).await?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "state root is not a directory",
+        ));
+    }
+    let dir = nth_directories::Directories::from_root(cwd.to_path_buf()).nth();
     tokio::fs::create_dir_all(&dir).await?;
     let gitignore = dir.join(".gitignore");
     if !tokio::fs::try_exists(&gitignore).await.unwrap_or(false) {

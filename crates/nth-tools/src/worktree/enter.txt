@@ -1,4 +1,4 @@
-Move the session into a git worktree, to work on a branch without touching the main checkout. The worktree is `.nth/worktrees/<name>` in the main checkout, on the branch `<name>`; the first call creates it (the branch from HEAD, or the existing branch if there is one), later calls just enter it. `.nth/worktrees` is ignored by git.
+Move the session into a git worktree, to work on a branch without touching the main checkout. The worktree is `.nth/worktrees/<name>` in the main checkout, on the branch `<name>`; the first call creates it (the branch from the current checkout's HEAD, or the existing branch if there is one), later calls just enter it. `.nth/worktrees` is ignored by git.
 
 Usage notes:
 - From your next step on, the working directory is the worktree: relative paths, glob, grep and bash run there. Tools called in the same step as this one still run in the old directory, so call it on its own.

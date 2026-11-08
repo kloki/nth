@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+nth-directories.workspace = true
 ignore.workspace = true
 serde_norway.workspace = true
 tokio.workspace = true

@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{frontmatter, main_checkout, project_root};
+use crate::frontmatter;
 
 /// The index, in the memory folder.
 pub const INDEX: &str = "MEMORY.md";
@@ -72,11 +72,7 @@ pub struct Entry {
 /// checkout when `cwd` is in a worktree of it, else in the project root,
 /// else in `cwd`.
 pub fn dir(cwd: &Path) -> PathBuf {
-    let root = project_root(cwd);
-    let main = root.as_deref().and_then(main_checkout);
-    main.or(root)
-        .unwrap_or_else(|| cwd.to_path_buf())
-        .join(".nth/memory")
+    nth_directories::Directories::discover(cwd).memory()
 }
 
 /// The memory of the project at `cwd`, its index cut to fit.

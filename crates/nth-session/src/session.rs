@@ -48,6 +48,9 @@ pub struct Session {
     /// `exit_worktree` goes back to; `None` outside one.
     #[serde(default)]
     pub origin: Option<PathBuf>,
+    /// The checkout owning this session's generated state, even if cwd disappears.
+    #[serde(default)]
+    pub state_root: Option<PathBuf>,
     /// Working directories added with `/add-dir`, which the tools may read
     /// and edit like `cwd` itself.
     #[serde(default)]
@@ -160,7 +163,7 @@ impl Session {
             return nth_protocol::Curios::default();
         }
         nth_protocol::Curios::new(
-            self.origin.as_ref().unwrap_or(&self.cwd).clone(),
+            self.state_root(),
             self.id.to_string(),
             self.curio_root.clone(),
             self.curio_receipts.clone(),
@@ -169,9 +172,7 @@ impl Session {
 
     pub fn curio_source_dir(&self) -> Option<PathBuf> {
         self.curio_root.as_ref().map(|r| {
-            r.join(".nth/curios")
-                .join(self.id.to_string())
-                .join("source")
+            nth_directories::Directories::from_root(r.clone()).curio_source(&self.id.to_string())
         })
     }
 
@@ -262,6 +263,7 @@ impl Session {
 
     pub fn new(model: impl Into<String>, cwd: PathBuf) -> Self {
         let model = model.into();
+        let state_root = Some(nth_context::main_project_root(&cwd).unwrap_or_else(|| cwd.clone()));
         let context = Arc::<Context>::default();
         let id = Uuid::new_v4();
         let messages = vec![Message::System(system_prompt(
@@ -279,6 +281,7 @@ impl Session {
             curio_receipts: BTreeSet::new(),
             cwd,
             origin: None,
+            state_root,
             extra_dirs: Vec::new(),
             model,
             effort: Effort::default(),
@@ -407,14 +410,21 @@ impl Session {
 
     /// Where plan mode writes this session's plan.
     pub fn plan_path(&self) -> PathBuf {
-        plan::plan_path(&self.cwd, &self.id)
+        plan::plan_path(&self.state_root(), &self.id)
+    }
+
+    /// Resolve old saves without a recorded state root from their original directory.
+    pub fn state_root(&self) -> PathBuf {
+        self.state_root.clone().unwrap_or_else(|| {
+            let start = self.origin.as_ref().unwrap_or(&self.cwd);
+            nth_context::main_project_root(start).unwrap_or_else(|| start.clone())
+        })
     }
 
     /// Where this session's orchestration keeps its work items: under the
     /// main checkout, wherever a worktree tool moved the session.
     pub fn work_dir(&self) -> PathBuf {
-        let root = work::root(self.origin.as_deref(), &self.cwd);
-        work::work_dir(&root, &self.id.to_string())
+        work::work_dir(&self.state_root(), &self.id.to_string())
     }
 
     /// Later turns go to `model`. The history is kept; only the system
@@ -533,7 +543,9 @@ impl Session {
         if self.tools_mode() == Mode::Plan {
             // The `.nth` directory, with the `.gitignore` that keeps plan
             // files out of git, is ready before the model writes the plan.
-            let _ = plan::ensure_dir(&self.cwd).await;
+            plan::ensure_dir(&self.state_root())
+                .await
+                .map_err(Error::State)?;
         }
         if let Some(dir) = self.memory_dir() {
             // Kept out of git before the model first saves to it.
@@ -677,6 +689,7 @@ impl Session {
             max_output: self.max_output,
             compaction: self.compaction,
             workdir: Workdir::new(self.origin.clone()),
+            state_root: Some(self.state_root()),
             session: self.id.to_string(),
             takes_images: self.takes_images,
             images: self.images.clone(),

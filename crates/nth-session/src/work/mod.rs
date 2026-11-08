@@ -13,12 +13,7 @@ mod status;
 pub mod store;
 mod todo;
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 pub use assign::Assigned;
 use assign::WorkAssign;
@@ -127,17 +122,18 @@ impl Work {
         if ctx.session.is_empty() {
             return Err("this call runs outside a session, which has no work plan".into());
         }
-        let root = root(ctx.workdir.origin().as_deref(), &ctx.cwd);
+        let root = root(ctx);
         Ok(Store::new(work_dir(&root, &ctx.session)))
     }
 }
 
-/// Where a session in `cwd` that left `origin` for a worktree keeps its
-/// work: the main checkout, even after a worktree tool moved the session,
-/// so the plan stays one plan and the subagents still on it keep writing
-/// where the model reads.
-pub(crate) fn root(origin: Option<&Path>, cwd: &Path) -> PathBuf {
-    origin.unwrap_or(cwd).to_path_buf()
+/// Where this session keeps its work, even after changing checkout.
+pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
+    ctx.state_root.clone().unwrap_or_else(|| {
+        let origin = ctx.workdir.origin();
+        let cwd = origin.as_deref().unwrap_or(&ctx.cwd);
+        nth_context::main_project_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    })
 }
 
 /// The plan, with every item a gone run of nth left running settled as

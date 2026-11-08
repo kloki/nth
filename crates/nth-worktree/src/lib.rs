@@ -38,14 +38,14 @@ impl Changes {
     }
 }
 
-/// The top of the checkout `cwd` is in, where its worktrees go.
+/// The top of the checkout `cwd` is in.
 pub async fn toplevel(cwd: &Path) -> Result<PathBuf, String> {
     git::toplevel(cwd).await
 }
 
-/// Where the worktrees of the checkout at `root` live.
+/// Where the worktrees of the checkout at `root` live, shared with its main checkout.
 pub fn dir(root: &Path) -> PathBuf {
-    root.join(".nth").join("worktrees")
+    nth_directories::Directories::discover(root).worktrees()
 }
 
 /// Whether `name` is taken, as a worktree or as a branch.
@@ -54,7 +54,7 @@ pub async fn taken(root: &Path, name: &str) -> bool {
 }
 
 /// The worktree `name` of the checkout at `root`, on the branch `name`:
-/// made on first use, from the branch if it exists and from HEAD if not.
+/// made on first use, from the branch if it exists and from this checkout's HEAD if not.
 pub async fn open(root: &Path, name: &str) -> Result<Worktree, String> {
     if !git::valid_branch(root, name).await {
         return Err(format!("{name:?} is not a valid branch name"));
@@ -183,6 +183,33 @@ mod tests {
         assert_eq!(worktree.created, None);
         assert!(taken(&root, "x").await);
         assert!(!taken(&root, "y").await);
+    }
+
+    #[tokio::test]
+    async fn linked_checkout_shares_placement_and_bases_new_branch_on_its_head() {
+        let (_dir, root) = repo();
+        let linked = root.join("linked");
+        run(
+            &root,
+            &["worktree", "add", "-b", "source", linked.to_str().unwrap()],
+        );
+        std::fs::write(linked.join("a.txt"), "linked").unwrap();
+        commit(&linked);
+
+        let worktree = open(&linked, "feature").await.expect("opened");
+        assert_eq!(worktree.path, root.join(".nth/worktrees/feature"));
+        assert_eq!(
+            head(&worktree).await.unwrap(),
+            run(&linked, &["rev-parse", "HEAD"])
+        );
+        assert_ne!(
+            head(&worktree).await.unwrap(),
+            run(&root, &["rev-parse", "HEAD"])
+        );
+        assert!(taken(&linked, "feature").await);
+        assert_eq!(open(&root, "feature").await.unwrap().created, None);
+        remove(&linked, &worktree).await.unwrap();
+        assert!(!taken(&root, "feature").await);
     }
 
     #[tokio::test]

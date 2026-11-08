@@ -71,7 +71,7 @@ impl Curios {
             root: session
                 .curio_root
                 .clone()
-                .or_else(|| core::repository_root(&session.cwd).ok()),
+                .or_else(|| nth_protocol::Curios::repository_root(&session.state_root()).ok()),
             items: Vec::new(),
             discovery: core::Discovery::default(),
             delivery: None,

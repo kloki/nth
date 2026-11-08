@@ -1859,6 +1859,7 @@ name = "nth-context"
 version = "1.6.2"
 dependencies = [
  "ignore",
+ "nth-directories",
  "serde_norway",
  "tempfile",
  "tokio",
@@ -1884,6 +1885,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "nth-directories"
+version = "1.6.2"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -1970,6 +1978,7 @@ dependencies = [
  "jiff",
  "nth-context",
  "nth-curios",
+ "nth-directories",
  "nth-protocol",
  "serde",
  "serde_json",
@@ -2041,6 +2050,7 @@ dependencies = [
 name = "nth-worktree"
 version = "1.6.2"
 dependencies = [
+ "nth-directories",
  "tempfile",
  "tokio",
 ]

@@ -66,6 +66,8 @@ pub enum Error {
     /// started.
     #[error("could not run the skill: {0}")]
     Skill(String),
+    #[error("could not prepare session state: {0}")]
+    State(#[source] std::io::Error),
     /// The conversation cannot be shrunk below the window: the summary
     /// request was refused as too long even with its oldest exchanges
     /// dropped, a step overflowed again right after a compaction, or

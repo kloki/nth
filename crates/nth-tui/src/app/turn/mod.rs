@@ -492,7 +492,7 @@ impl App {
         self.index_files();
         self.load_git();
         self.load_pr();
-        // The plan lives under the working directory, so a move moves it.
+        // Reload the session's plan; it stays in the shared state directory.
         match plan_path != self.plan.path() {
             true => self.plan.for_session(plan_path),
             false => self.plan.read(),

@@ -127,7 +127,7 @@ impl Tool for WorkItem {
                 result: before.and_then(|b| b.result.clone()),
                 ..Item::pending(at.clone(), &args.title, &args.instruction, todos)
             };
-            let _ = plan::ensure_dir(&super::root(ctx.workdir.origin().as_deref(), &ctx.cwd)).await;
+            plan::ensure_dir(&super::root(ctx)).await.map_err(|e| format!("preparing work directory failed: {e}"))?;
             store
                 .write(&item)
                 .await
