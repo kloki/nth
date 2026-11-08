@@ -3,11 +3,12 @@
 
 use std::path::Path;
 
-use nth_protocol::{BoxError, Cost, Effort, Listing};
+use nth_config::Target;
+use nth_protocol::{BoxError, Cost, Effort, Listing, Llm};
 use nth_session::Price;
 
-use super::{App, Llm, input::Input, keys::Action};
-use crate::llm_picker::{LlmPicker, Target};
+use super::{App, input::Input, keys::Action};
+use crate::llm_picker::LlmPicker;
 
 impl App {
     /// A key while the model picker is open.
@@ -39,11 +40,12 @@ impl App {
     /// first time, and again while a provider is missing from the list.
     pub(super) fn open_llm_picker(&mut self) {
         self.completion = None;
-        let target = match self.agent {
+        let target = match self.selection.agent {
             Some(_) => Target::Agent,
-            None => Target::of(self.mode),
+            None => Target::of(self.selection.mode),
         };
-        let mut picker = LlmPicker::new(target, &self.model, self.effort);
+        let current = self.selection.current();
+        let mut picker = LlmPicker::new(target, &current.model, current.effort);
         // The answer fills this picker when it comes, over what it shows.
         if let Some(llms) = &self.llms {
             picker.load(Ok(llms.clone()));
@@ -66,7 +68,7 @@ impl App {
 
     /// The context window of the model in use, when the provider says.
     pub fn context_window(&self) -> Option<u64> {
-        self.context_window_of(&self.model)
+        self.context_window_of(&self.selection.current().model)
     }
 
     /// The context window of `model`, when the provider says.
@@ -150,7 +152,7 @@ impl App {
             false => picker.target().next(agent),
             true => picker.target().prev(agent),
         };
-        let llm = self.llm_of(target);
+        let llm = self.selection.llm(target);
         if let Input::LlmPicker(picker) = &mut self.input {
             picker.retarget(target, &llm.model, llm.effort);
         }
@@ -168,7 +170,7 @@ impl App {
             let target = picker.target();
             picker.mark(&model, effort);
             self.hint = Some(set_hint(target, &model, effort).into());
-            self.set_llm(target, Llm { model, effort });
+            self.selection.set(target, Llm { model, effort });
         }
     }
 }
@@ -269,7 +271,13 @@ mod tests {
         app.apply(Action::Interrupt);
 
         assert!(matches!(app.input, Input::Prompt));
-        assert_eq!((app.model.as_str(), app.effort), ("glm", Effort::Medium));
+        assert_eq!(
+            (
+                app.selection.current().model.as_str(),
+                app.selection.current().effort
+            ),
+            ("glm", Effort::Medium)
+        );
         let shown = rows(&mut app);
         assert_eq!(
             crate::app::tests::prompt_row(&shown, 0).trim_end(),
@@ -283,7 +291,13 @@ mod tests {
         app.apply(Action::LlmPicker);
         app.apply(Action::SelectNext);
         app.apply(Action::Submit);
-        assert_eq!((app.model.as_str(), app.effort), ("plain", Effort::Default));
+        assert_eq!(
+            (
+                app.selection.current().model.as_str(),
+                app.selection.current().effort
+            ),
+            ("plain", Effort::Default)
+        );
     }
 
     #[test]
@@ -305,7 +319,7 @@ mod tests {
 
         app.apply(Action::Insert('p'));
         app.apply(Action::Submit);
-        assert_eq!(app.model, "plain");
+        assert_eq!(app.selection.current().model, "plain");
         assert!(matches!(app.input, Input::LlmPicker(_)));
         let shown = crate::app::tests::rows(&mut app);
         assert!(
@@ -343,7 +357,7 @@ mod tests {
         app.apply(Action::Interrupt);
 
         assert!(matches!(app.input, Input::Prompt));
-        assert_eq!(app.model, "glm");
+        assert_eq!(app.selection.current().model, "glm");
         assert!(!app.quit);
     }
 
@@ -378,7 +392,7 @@ mod tests {
             .as_mut()
             .expect("idle")
             .set_limits(Some(10_000), Some(2_000));
-        app.model = "unlisted".into();
+        app.pick_model("unlisted");
 
         app.prompt.insert_str("go");
         app.submit();
@@ -411,7 +425,7 @@ mod tests {
         assert!(session.cost.is_some() && !session.takes_images, "listed");
 
         app.llms = None;
-        app.model = "other".into();
+        app.pick_model("other");
         app.prompt.insert_str("again");
         app.submit();
         let ended = app.turn.join().await.expect("turn task finished");
@@ -493,10 +507,18 @@ mod tests {
         );
         app.apply(Action::SelectNext);
         app.apply(Action::Submit);
-        assert_eq!(app.model, "glm", "the mode keeps its model");
-        assert_eq!(app.subagent_llm().model, "plain");
+        assert_eq!(
+            app.selection.current().model,
+            "glm",
+            "the mode keeps its model"
+        );
+        assert_eq!(app.selection.llm(Target::Subagent).model, "plain");
         assert_eq!(app.hint.as_deref(), Some("Subagents set to plain"));
-        assert_eq!(app.mode, Mode::Act, "Tab in the picker leaves the mode be");
+        assert_eq!(
+            app.selection.mode,
+            Mode::Act,
+            "Tab in the picker leaves the mode be"
+        );
 
         app.apply(Action::NextTab);
         assert_eq!(
@@ -516,8 +538,8 @@ mod tests {
         assert_eq!(picker(&app).target(), Target::Plan);
         app.apply(Action::SelectNext);
         app.apply(Action::Submit);
-        assert_eq!(app.llm(Mode::Plan).model, "plain");
-        assert_eq!(app.model, "glm", "act is untouched");
+        assert_eq!(app.selection.llm(Target::Plan).model, "plain");
+        assert_eq!(app.selection.current().model, "glm", "act is untouched");
         assert_eq!(app.hint.as_deref(), Some("Plan set to plain"));
 
         app.apply(Action::Interrupt);
@@ -540,8 +562,12 @@ mod tests {
             model: "glm".into(),
             effort: Effort::Low,
         };
-        assert_eq!(app.llm_of(Target::Clerk), low);
-        assert_eq!(app.llm_of(Target::Subagent).model, "plain", "untouched");
+        assert_eq!(app.selection.llm(Target::Clerk), low);
+        assert_eq!(
+            app.selection.llm(Target::Subagent).model,
+            "plain",
+            "untouched"
+        );
         assert_eq!(app.hint.as_deref(), Some("Clerk set to glm · low"));
     }
 
@@ -555,7 +581,7 @@ mod tests {
         let session = app.session.as_ref().expect("idle");
         assert_eq!(session.subagent_llm, None, "the parent's unless picked");
 
-        app.set_llm(
+        app.selection.set(
             Target::Subagent,
             Llm {
                 model: "plain".into(),

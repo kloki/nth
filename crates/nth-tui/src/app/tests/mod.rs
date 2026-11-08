@@ -18,7 +18,7 @@ use nth_session::Session;
 pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
-use super::{App, ModeLlms, Panes, Queued, Tab, input::Input, keys::Action};
+use super::{App, Panes, Queued, Tab, input::Input, keys::Action};
 use crate::{PreparedRuntime, llm_picker::tests::model};
 
 /// An idle app whose provider must never be asked for anything.
@@ -47,8 +47,7 @@ pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> Prepared
             formatters: Arc::new(nth_format::Formatters::new(&Default::default())),
             rtk: false,
         },
-        mode_llms: ModeLlms::same(llm),
-        profiles: Vec::new(),
+        selection: nth_config::Selection::same(llm),
         warnings: Vec::new(),
         config: nth_config::Config {
             layout: nth_config::LayoutConfig { split_width: 0 },
@@ -58,6 +57,18 @@ pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> Prepared
             },
             ..Default::default()
         },
+    }
+}
+
+impl App {
+    /// Puts what runs next on `model`, at the effort it ran at, as a pick
+    /// in the model picker does.
+    pub(crate) fn pick_model(&mut self, model: &str) {
+        let effort = self.selection.current().effort;
+        self.selection.set_current(nth_protocol::Llm {
+            model: model.into(),
+            effort,
+        });
     }
 }
 
@@ -232,8 +243,8 @@ async fn context_projects_idle_session_and_live_snapshots() {
 fn context_refresh_uses_selected_settings_without_mutating_session() {
     let mut app = app();
     app.run_command(crate::command::Command::Context);
-    app.model = "chosen-model".into();
-    app.mode = nth_protocol::Mode::Plan;
+    app.selection.mode = nth_protocol::Mode::Plan;
+    app.pick_model("chosen-model");
     app.prompt.insert_str("unsent secret");
     app.refresh_context();
     let rendered = rows(&mut app).join("\n");
@@ -378,8 +389,10 @@ fn prompt_and_status_rows_never_move() {
 #[test]
 fn the_prompt_shows_the_model_with_its_provider_and_effort_coloured() {
     let mut app = app();
-    app.model = "opencode/glm-5.3".into();
-    app.effort = Effort::High;
+    app.selection.set_current(nth_protocol::Llm {
+        model: "opencode/glm-5.3".into(),
+        effort: Effort::High,
+    });
     let buffer = buffer(&mut app);
     let row: String = (0..buffer.area.width)
         .map(|x| {

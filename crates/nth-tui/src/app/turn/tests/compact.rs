@@ -45,7 +45,7 @@ async fn a_compaction_after_a_model_pick_asks_the_picked_model_and_limits() {
     session.messages.push(Message::User("old history".into()));
     let mut app = App::bare(session, provider.clone(), Arc::new(Vec::new()));
     app.llms = Some(Listing::from(vec![listed("new", 3_000, 1_000)]));
-    app.model = "new".into();
+    app.pick_model("new");
 
     send(&mut app, "/compact");
     end(&mut app).await;

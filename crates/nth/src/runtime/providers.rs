@@ -82,10 +82,13 @@ pub(super) fn providers(config: &Config, chatgpt: &nth_auth::ChatGpt) -> Result<
     let providers = Providers::new(endpoints, unavailable, &config.model)
         .with_context(|| format!("model {} cannot run", config.model))?;
     for mode in [Mode::Plan, Mode::Act] {
-        let (model, _) = config.llm_for(mode);
-        let what = match config.profiles.first() {
-            Some(profile) => format!("{mode:?} in profile {}", profile.name),
-            None => format!("{mode:?} mode"),
+        // What the chat starts on: the first profile's, else the model above.
+        let (model, what) = match config.profiles.first() {
+            Some(profile) => (
+                config.profile_llm(profile, mode).0,
+                format!("{mode:?} in profile {}", profile.name),
+            ),
+            None => (config.model.clone(), format!("{mode:?} mode")),
         };
         providers
             .check(&model)

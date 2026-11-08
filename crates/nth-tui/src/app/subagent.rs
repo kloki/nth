@@ -370,7 +370,7 @@ mod tests {
         );
         app.apply(Action::NextTab);
         assert_eq!(
-            app.mode,
+            app.selection.mode,
             nth_protocol::Mode::Act,
             "Tab does not switch the mode here"
         );

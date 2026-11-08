@@ -343,12 +343,13 @@ impl App {
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
-        self.llm_usage.count(&self.model);
+        let model = self.selection.current().model;
+        self.llm_usage.count(&model);
+        self.spent.turn_started(&model);
         self.save_llm_usage();
-        self.spent.turn_started(&self.model);
-        session.mode = self.mode;
-        if session.agent != self.agent {
-            session.set_agent(self.agent.clone());
+        session.mode = self.selection.mode;
+        if session.agent != self.selection.agent {
+            session.set_agent(self.selection.agent.clone());
         }
         self.steerable = Some(self.runs_as());
         if let Some(notices) = &notices {
@@ -437,23 +438,25 @@ impl App {
     /// limits still fire its compaction — and a switch to a model it does
     /// not name drops them rather than size against the old one's window.
     pub(super) fn adopt_llm(&self, session: &mut Session) {
+        let current = self.selection.current();
         // Picked in the model picker since the last turn, maybe mid-turn.
-        if session.model != self.model {
-            session.set_model(self.model.clone());
+        if session.model != current.model {
+            session.set_model(current.model.clone());
             // Without a listing (`/connect` drops it) nothing sizes the new
             // model below, and the old one's price would land on its spends.
             session.set_limits(None, None);
             session.takes_images = true;
             session.cost = None;
         }
-        session.effort = self.effort;
+        session.effort = current.effort;
         // Unsized until the listing is in, which sizes them with the model.
         let bare = |llm| SubagentLlm {
             llm,
             ..SubagentLlm::default()
         };
-        session.subagent_llm = self.mode_llms.subagent.clone().map(bare);
-        session.clerk_llm = self.mode_llms.clerk.clone().map(bare);
+        let slots = self.selection.slots();
+        session.subagent_llm = slots.subagent.clone().map(bare);
+        session.clerk_llm = slots.clerk.clone().map(bare);
         if let Some(llms) = &self.llms {
             session.size_to(llms);
         }
@@ -520,7 +523,7 @@ impl App {
             // compaction pushed does for it; neither had the model answer.
             Ok(()) if !ran.answered() => {}
             result => {
-                // The session's model ran the turn; `self.model` may have
+                // The session's model ran the turn; the selection may have
                 // been switched since.
                 transcript.finish_turn(result.map_err(|e| e.to_string()), &session.model, elapsed)
             }

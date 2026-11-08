@@ -8,73 +8,11 @@ mod view;
 
 use std::collections::BTreeSet;
 
-use nth_protocol::{Effort, Failed, Listing, Mode, ModelInfo};
+pub use nth_config::Target;
+use nth_protocol::{Effort, Failed, Listing, ModelInfo};
 pub use view::draw;
 
 use crate::fuzzy::Filter;
-
-/// What a picked LLM goes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    Plan,
-    Act,
-    /// The primary agent running in place of the mode; offered only while
-    /// one does.
-    Agent,
-    Subagent,
-    /// The built-in clerk.
-    Clerk,
-}
-
-impl Target {
-    pub const ALL: [Target; 5] = [
-        Target::Plan,
-        Target::Act,
-        Target::Agent,
-        Target::Subagent,
-        Target::Clerk,
-    ];
-
-    /// The ones offered: the agent's only while one runs.
-    pub fn offered(agent: bool) -> Vec<Target> {
-        Self::ALL
-            .into_iter()
-            .filter(|&t| agent || t != Target::Agent)
-            .collect()
-    }
-
-    /// The one for what `mode` runs with.
-    pub fn of(mode: Mode) -> Self {
-        match mode {
-            Mode::Plan => Target::Plan,
-            Mode::Act => Target::Act,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Target::Plan => "plan",
-            Target::Act => "act",
-            Target::Agent => "agent",
-            Target::Subagent => "subagent",
-            Target::Clerk => "clerk",
-        }
-    }
-
-    /// The next one offered, wrapping, as Tab moves.
-    pub fn next(self, agent: bool) -> Self {
-        let offered = Self::offered(agent);
-        let i = offered.iter().position(|&t| t == self).unwrap_or(0);
-        offered[(i + 1) % offered.len()]
-    }
-
-    /// The previous one offered, wrapping, as shift+Tab moves.
-    pub fn prev(self, agent: bool) -> Self {
-        let offered = Self::offered(agent);
-        let i = offered.iter().position(|&t| t == self).unwrap_or(0);
-        offered[(i + offered.len() - 1) % offered.len()]
-    }
-}
 
 #[derive(Debug)]
 pub struct LlmPicker {
@@ -432,17 +370,6 @@ pub(crate) mod tests {
             Some("plain".into()),
             "back on the model in use"
         );
-    }
-
-    #[test]
-    fn tab_cycles_the_targets_and_wraps() {
-        assert_eq!(Target::of(Mode::Plan).next(false), Target::Act);
-        assert_eq!(Target::Act.next(false), Target::Subagent);
-        assert_eq!(Target::Subagent.next(false), Target::Clerk);
-        assert_eq!(Target::Clerk.next(false), Target::Plan);
-        assert_eq!(Target::Plan.prev(false), Target::Clerk);
-        assert_eq!(Target::Act.next(true), Target::Agent, "while one runs");
-        assert_eq!(Target::Agent.next(true), Target::Subagent);
     }
 
     #[test]

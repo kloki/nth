@@ -321,7 +321,7 @@ mod tests {
         app.apply(Action::Submit);
 
         assert_eq!(app.content.active(), Tab::Chat, "acting shows in the chat");
-        assert_eq!(app.mode, Mode::Act);
+        assert_eq!(app.selection.mode, Mode::Act);
         assert_eq!(app.tab_label(Tab::Plan), "plan");
         assert_eq!(tab_colour(&mut app, "≡ plan"), Color::Green, "approved");
         assert!(app.is_busy());

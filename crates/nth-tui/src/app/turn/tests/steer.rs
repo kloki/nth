@@ -124,7 +124,7 @@ async fn a_prompt_after_a_model_pick_waits_for_its_own_turn() {
     let session = Session::new("glm", "/repo".into());
     let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
     send(&mut app, "go");
-    app.model = "kimi".into();
+    app.pick_model("kimi");
     send(&mut app, "you now");
 
     assert_eq!(app.queue, [Queued::Prompt("you now".into())]);
