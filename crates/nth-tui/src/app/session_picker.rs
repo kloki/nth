@@ -116,6 +116,10 @@ impl App {
 
     fn install_runtime(&mut self, runtime: super::PreparedRuntime) {
         let (session, warnings) = self.install(runtime);
+        // `install` dropped the old provider's listing; until the new one
+        // lists, the status bar has no window to show and nothing sizes the
+        // next turn.
+        self.list_llms();
         // `resume` hands these to every session from here on.
         self.max_steps = session.max_steps;
         self.tool_timeout = session.tool_timeout;
@@ -184,8 +188,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use futures::FutureExt;
-    use nth_protocol::{AssistantMessage, Message};
+    use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+    use nth_protocol::{
+        AssistantMessage, BoxError, Listing, Message, Provider, Request, StreamEvent,
+    };
     use nth_session::Store;
 
     use super::*;
@@ -325,6 +331,52 @@ mod tests {
         assert_eq!(fresh.max_steps, 17);
         assert_eq!(fresh.tool_timeout, None);
         assert_eq!(fresh.extra_dirs, [std::path::PathBuf::from("/configured")]);
+    }
+
+    /// A provider listing only `model`, to tell its listing from another's.
+    struct Lists(&'static str);
+
+    impl Provider for Lists {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            let listing = Listing::from(vec![crate::llm_picker::tests::model(self.0, false)]);
+            async move { Ok(listing) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            async { Err("unused".into()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn resuming_into_another_runtime_lists_its_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut saved = Session::new("new/model", dir.path().into());
+        saved.messages.push(Message::User("hello".into()));
+        store.save(&saved).await.unwrap();
+        let reload: crate::Reload = Arc::new(|session: Session| {
+            async move { Ok(runtime(session, Arc::new(Lists("new/model")))) }.boxed()
+        });
+        let session = Session::new("glm", "/repo".into());
+        let mut app = App::new(runtime(session, Arc::new(Lists("old/model"))))
+            .with_store(store)
+            .with_reload(Some(reload));
+        app.list_llms();
+        app.open_session_picker();
+        let listed = app.session_listing.join().await.unwrap();
+        app.sessions_listed(listed);
+        app.choose_session();
+        let loaded = app.session_loading.join().await.unwrap();
+        app.session_loaded(loaded);
+
+        assert!(app.llm_listing.is_running(), "listed again at once");
+        let listing = app.llm_listing.join().await.unwrap().unwrap();
+        let names: Vec<_> = listing.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(names, ["new/model"], "by the new provider");
     }
 
     #[test]
