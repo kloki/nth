@@ -29,13 +29,16 @@ async fn non_repository_session_runs_and_foreign_feedback_stays_queued() {
 
 use crate::{Session, Store};
 
-/// A poll that read the store: a child another test forks shares the store's
-/// lock until it execs, and a poll that finds it held reads nothing.
-fn poll(lease: &nth_protocol::CurioDelivery, inbox: &Inbox) -> nth_protocol::Polled {
+/// Posts the batches a poll read that `inbox` does not hold yet: a child
+/// another test forks shares the store's lock until it execs, and a poll
+/// that finds it held reads nothing.
+fn poll(lease: &nth_protocol::CurioDelivery, inbox: &Inbox) -> usize {
     for _ in 0..50 {
-        let polled = lease.poll(inbox, &Default::default()).unwrap();
-        if !polled.busy {
-            return polled;
+        if let Some(batches) = lease.poll().unwrap() {
+            return crate::curios::fresh(batches, &Default::default())
+                .into_iter()
+                .filter(|notice| inbox.post_curio(notice.clone()))
+                .count();
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -112,8 +115,8 @@ async fn receipts_follow_saved_history_and_resume_reconciles() {
         .unwrap();
     let inbox = Inbox::new();
     let lease = session.curios().claim_delivery().unwrap();
-    assert_eq!(poll(&lease, &inbox).posted, 1);
-    assert_eq!(poll(&lease, &inbox).posted, 0);
+    assert_eq!(poll(&lease, &inbox), 1);
+    assert_eq!(poll(&lease, &inbox), 0);
     assert!(inbox.take_prompts().is_none());
     assert!(inbox.take_notices().is_none());
     let provider =
@@ -283,7 +286,7 @@ fn waiting(count: usize) -> (tempfile::TempDir, Session, Inbox) {
     }
     let inbox = Inbox::new();
     let lease = session.curios().claim_delivery().unwrap();
-    assert_eq!(poll(&lease, &inbox).posted, count);
+    assert_eq!(poll(&lease, &inbox), count);
     (repo, session, inbox)
 }
 
