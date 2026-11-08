@@ -19,13 +19,22 @@ impl Transcript {
         for message in messages {
             match message {
                 Message::System(_) => {}
-                // A command you ran shows as its bash row alone, as it did live.
-                Message::User(text) if text == SHELL_PROMPT => {}
-                // A skill run as `/name args` shows as typed, as it did live.
-                Message::User(text) => match text.split_once("\n\n<skill_content ") {
-                    Some((command, _)) => t.push_user(command.to_string()),
-                    None => t.push_user(text.clone()),
-                },
+                Message::User(text) => {
+                    // A command you ran shows as its bash row alone, as it
+                    // did live; one after a failed turn joined that turn's
+                    // prompt, which shows as it did.
+                    let text = text
+                        .strip_suffix(SHELL_PROMPT)
+                        .map_or(text.as_str(), str::trim_end);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    // A skill run as `/name args` shows as typed, as it did live.
+                    match text.split_once("\n\n<skill_content ") {
+                        Some((command, _)) => t.push_user(command.to_string()),
+                        None => t.push_user(text.to_string()),
+                    }
+                }
                 Message::Compaction { summary, .. } => {
                     t.push(Entry::Compacted(summary.clone()));
                 }

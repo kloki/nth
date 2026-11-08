@@ -369,6 +369,35 @@ fn replays_a_command_you_ran_as_its_bash_row() {
 }
 
 #[test]
+fn replays_a_command_after_a_failed_turn_after_its_prompt() {
+    let bash = tool("1", "bash", r#"{"command":"ls"}"#);
+    let messages = [
+        Message::User(format!("first\n\n{SHELL_PROMPT}")),
+        Message::Assistant(nth_protocol::AssistantMessage {
+            tool_calls: vec![bash],
+            ..Default::default()
+        }),
+        Message::ToolResult {
+            call_id: "1".into(),
+            content: "a.rs".into(),
+            images: Vec::new(),
+        },
+    ];
+
+    let t = Transcript::replay(PathBuf::from("/repo"), &messages);
+
+    let entries: Vec<_> = t.entries().collect();
+    assert!(
+        matches!(
+            &entries[..],
+            [Entry::User(prompt), Entry::Tool { call, .. }]
+                if prompt == "first" && call.name == "bash"
+        ),
+        "{entries:?}"
+    );
+}
+
+#[test]
 fn replay_shows_a_compaction_as_a_divider() {
     let messages = [
         Message::User("go".into()),
