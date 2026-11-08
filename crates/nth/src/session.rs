@@ -56,7 +56,7 @@ pub async fn run(command: SessionCommand) -> Result<()> {
         }
         SessionCommand::Delete { session } => {
             let session = pick(&store, Some(&session)).await?;
-            let removed = store.delete_session(&session).await?;
+            let deleted = store.delete_session(&session).await?;
             let mut out = io::stdout().lock();
             let title = session.title().unwrap_or_default();
             writeln!(
@@ -66,10 +66,22 @@ pub async fn run(command: SessionCommand) -> Result<()> {
                 title.bold(),
                 session.id.to_string().dimmed()
             )?;
-            for path in removed {
+            for path in &deleted.removed {
                 writeln!(out, "  {}", path.display().dimmed())?;
             }
-            Ok(())
+            // The save is gone, so a retry cannot find what stayed: name it
+            // for removing by hand.
+            for (path, error) in &deleted.failed {
+                eprintln!(
+                    "{} could not remove {}: {error}",
+                    icons().fail.red().bold(),
+                    path.display()
+                );
+            }
+            match deleted.failed.len() {
+                0 => Ok(()),
+                n => bail!("{n} of what the session kept could not be removed"),
+            }
         }
     }
 }
