@@ -426,25 +426,25 @@ impl Config {
             std::env::current_dir()?.join(cwd)
         };
         let global = path.map(Path::to_path_buf).or_else(Self::default_path);
-        // Where a refused project path belongs, named even when that file
-        // does not exist yet.
-        let global_name = global.as_ref().map_or_else(
-            || "the global config".to_string(),
-            |p| p.display().to_string(),
-        );
         let mut sources = Vec::new();
         let mut value = toml::Value::Table(Default::default());
-        if let Some(global) = global.filter(|p| path.is_some() || p.exists()) {
-            let mut layer = read_layer(&global, false)?;
-            normalize_paths(&mut layer, &cwd, home);
+        if let Some(global) = global.as_deref().filter(|p| path.is_some() || p.exists()) {
+            let mut layer = read_layer(global, false)?;
+            normalize_paths(&mut layer, &cwd, home, false)?;
             merge(&mut value, layer, "");
-            sources.push(global);
+            sources.push(global.to_path_buf());
         }
         if let Some((root, file)) = repo_config(&cwd, home) {
+            let invalid = || format!("invalid config {}", file.display());
+            // Where a refused path belongs, named even when that file does
+            // not exist yet.
+            let global = global.as_ref().map_or_else(
+                || "the global config".to_string(),
+                |p| p.display().to_string(),
+            );
             let mut layer = read_layer(&file, true)?;
-            normalize_paths(&mut layer, &root, home);
-            paths_inside(&layer, &root, &global_name)
-                .with_context(|| format!("invalid config {}", file.display()))?;
+            normalize_paths(&mut layer, &root, home, true).with_context(invalid)?;
+            paths_inside(&layer, &root, &global).with_context(invalid)?;
             merge(&mut value, layer, "");
             sources.push(file);
         }
@@ -535,26 +535,45 @@ fn read_layer(path: &Path, repo: bool) -> Result<toml::Value> {
     result().with_context(|| format!("invalid config {}", path.display()))
 }
 
-fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
+/// Resolves every `skills.paths` and `directories.paths` entry against
+/// `base`, dropping duplicates. A path that cannot be resolved (a symlink
+/// loop) refuses a project layer, whose paths must be checked, and stays as
+/// written in the global one, where a broken entry only warns later.
+fn normalize_paths(
+    value: &mut toml::Value,
+    base: &Path,
+    home: Option<&Path>,
+    project: bool,
+) -> Result<()> {
     for section in ["skills", "directories"] {
         let Some(paths) = value.get_mut(section).and_then(|v| v.get_mut("paths")) else {
             continue;
         };
         let paths = paths.as_array_mut().expect("validated paths");
         let mut seen = std::collections::HashSet::new();
-        paths.retain_mut(|value| {
-            let path = value.as_str().expect("validated path");
-            let path = skill_path(path, home);
+        let mut kept = Vec::with_capacity(paths.len());
+        for value in paths.iter() {
+            let written = value.as_str().expect("validated path");
+            let path = skill_path(written, home);
             let path = if path.is_absolute() {
                 path
             } else {
                 base.join(path)
             };
-            let path = resolve_path(&path);
-            *value = toml::Value::String(path.to_string_lossy().into_owned());
-            seen.insert(path)
-        });
+            let path = match resolve_path(&path) {
+                Ok(path) => path,
+                Err(error) if project => {
+                    return Err(error.context(format!("{section}.paths entry {written}")));
+                }
+                Err(_) => path,
+            };
+            if seen.insert(path.clone()) {
+                kept.push(toml::Value::String(path.to_string_lossy().into_owned()));
+            }
+        }
+        *paths = kept;
     }
+    Ok(())
 }
 
 /// Refuses a project layer's normalized `skills.paths` or `directories.paths`
@@ -563,12 +582,11 @@ fn normalize_paths(value: &mut toml::Value, base: &Path, home: Option<&Path>) {
 /// `normalize_paths` resolved every existing component through `resolve_path`,
 /// so a prefix check sees where a symlink really points.
 ///
-/// The check holds only at load: a path missing then (or a dangling symlink)
-/// can become an outward symlink before the session uses it, say after a
-/// branch switch. Outside Git a `~/.nth/config` is a project config whose root
+/// The check holds only at load: a path missing then can become an outward
+/// symlink before the session uses it, say after a branch switch. Outside Git a `~/.nth/config` is a project config whose root
 /// is home, so it may name anything under home; that file is the user's own.
 fn paths_inside(value: &toml::Value, root: &Path, global: &str) -> Result<()> {
-    let root = resolve_path(root);
+    let root = resolve_path(root)?;
     for section in ["skills", "directories"] {
         let Some(paths) = value
             .get(section)
@@ -586,28 +604,64 @@ fn paths_inside(value: &toml::Value, root: &Path, global: &str) -> Result<()> {
     Ok(())
 }
 
+/// Symlinks `resolve_path` follows by hand before calling it a loop, as
+/// Linux's own limit.
+const SYMLINK_HOPS: usize = 40;
+
 /// `path` made absolute and free of `.` and `..`, each existing prefix
 /// canonicalized as it is reached, so a symlink is followed before a later
 /// `..` and wherever it sits, even after a missing folder (`missing/../link`).
-/// Components that do not exist are kept as written.
-fn resolve_path(path: &Path) -> PathBuf {
+/// A symlink that does not canonicalize (dangling, or in a loop) is followed
+/// through its target as text, so the result names where it points even
+/// before that exists; past `SYMLINK_HOPS` it is a loop and an error. Other
+/// components that do not exist are kept as written.
+fn resolve_path(path: &Path) -> Result<PathBuf> {
     use std::path::Component;
+    // Components still to walk, the next one last, so a symlink's target
+    // can be pushed in front of what followed it.
+    let mut pending: Vec<PathBuf> = path
+        .components()
+        .rev()
+        .map(|part| PathBuf::from(part.as_os_str()))
+        .collect();
     let mut resolved = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
+    let mut hops = 0;
+    while let Some(part) = pending.pop() {
+        match part.components().next() {
+            None | Some(Component::CurDir) => {}
+            Some(Component::ParentDir) => {
                 resolved.pop();
             }
-            part => {
-                resolved.push(part.as_os_str());
+            Some(_) => {
+                resolved.push(&part);
                 if let Ok(canonical) = std::fs::canonicalize(&resolved) {
                     resolved = canonical;
+                    continue;
                 }
+                let dangling = std::fs::symlink_metadata(&resolved)
+                    .is_ok_and(|meta| meta.file_type().is_symlink());
+                if !dangling {
+                    continue;
+                }
+                hops += 1;
+                if hops > SYMLINK_HOPS {
+                    bail!("{} is a symlink loop", path.display());
+                }
+                let target = std::fs::read_link(&resolved)
+                    .with_context(|| format!("cannot read symlink {}", resolved.display()))?;
+                // A relative target is from the link's folder; an absolute
+                // one starts over at its root when pushed.
+                resolved.pop();
+                pending.extend(
+                    target
+                        .components()
+                        .rev()
+                        .map(|part| PathBuf::from(part.as_os_str())),
+                );
             }
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 fn merge(base: &mut toml::Value, overlay: toml::Value, key: &str) {
@@ -788,6 +842,10 @@ mod tests {
         std::fs::create_dir_all(root.join(".nth/worktrees/w")).unwrap();
         std::fs::create_dir_all(&sibling).unwrap();
         std::os::unix::fs::symlink(&sibling, root.join("link")).unwrap();
+        // Points outside at something that does not exist yet.
+        std::os::unix::fs::symlink(sibling.join("later"), root.join("dangling")).unwrap();
+        std::os::unix::fs::symlink("loop-b", root.join("loop-a")).unwrap();
+        std::os::unix::fs::symlink("loop-a", root.join("loop-b")).unwrap();
         let global = tmp.path().join("global.toml");
         let repo = root.join(".nth/config");
         std::fs::write(&global, "").unwrap();
@@ -800,6 +858,9 @@ mod tests {
                 "link/x",
                 "missing/../link",
                 "missing/../link/x",
+                "dangling",
+                "dangling/x",
+                "missing/../dangling",
             ] {
                 std::fs::write(&repo, format!("[{section}]\npaths = ['{entry}']")).unwrap();
                 let err = Config::load_for(Some(&global), &root).unwrap_err();
@@ -837,6 +898,32 @@ mod tests {
             Config::load_for(Some(&global), &root).unwrap();
             std::fs::write(&global, "").unwrap();
         }
+        // A symlink loop is refused rather than kept as written, in a
+        // project config only.
+        for entry in ["loop-a", "loop-a/x", "missing/../loop-b"] {
+            std::fs::write(&repo, format!("[directories]\npaths = ['{entry}']")).unwrap();
+            let err = Config::load_for(Some(&global), &root).unwrap_err();
+            let message = format!("{err:#}");
+            assert!(
+                message.starts_with(&format!(
+                    "invalid config {}: directories.paths entry {entry}: ",
+                    repo.display()
+                )),
+                "{entry}: {message}"
+            );
+            assert!(message.ends_with("is a symlink loop"), "{entry}: {message}");
+        }
+        std::fs::write(&repo, "").unwrap();
+        std::fs::write(
+            &global,
+            format!(
+                "[directories]\npaths = ['{}']",
+                root.join("loop-a").display()
+            ),
+        )
+        .unwrap();
+        Config::load_for(Some(&global), &root).unwrap();
+        std::fs::write(&global, "").unwrap();
         // Outside Git the root is the folder holding `.nth`.
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(plain.join(".nth")).unwrap();
@@ -1502,7 +1589,7 @@ mod tests {
         std::fs::create_dir_all(shared.join("docs")).unwrap();
         std::os::unix::fs::symlink(shared.join("team"), repo.join("link")).unwrap();
         assert_eq!(
-            resolve_path(&repo.join("link/../docs")),
+            resolve_path(&repo.join("link/../docs")).unwrap(),
             shared.join("docs").canonicalize().unwrap()
         );
     }
