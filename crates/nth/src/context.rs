@@ -13,7 +13,7 @@ use nth_session::{Session, Store, Subagents};
 use owo_colors::OwoColorize;
 use serde_json::json;
 
-use crate::runtime::{self, Runtime, Start};
+use crate::runtime::{Runtime, Start};
 
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
@@ -48,8 +48,9 @@ async fn reconstruct(
     let start = Start::Saved(Box::new(session));
     let mut config = runtime.config_for(&start)?;
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let prepared =
-        runtime::prepare(&mut config, offline_provider()?, start, Subagents::new(tx)).await?;
+    let prepared = runtime
+        .prepare(&mut config, offline_provider()?, start, Subagents::new(tx))
+        .await?;
     let mut session = prepared.session;
     session.model = model;
     session.messages = messages;
@@ -246,7 +247,7 @@ mod tests {
     use nth_protocol::{AssistantMessage, Image, ToolCall};
 
     use super::*;
-    use crate::config::Config;
+    use crate::{config::Config, runtime::tests::runtime};
 
     #[test]
     fn text_and_json_show_complete_preview_without_image_bytes() {
@@ -336,7 +337,7 @@ mod tests {
         saved.messages[0] = Message::System("saved system".into());
         saved.messages.push(Message::User("hello".into()));
 
-        let (session, tools, _) = reconstruct(saved.clone(), &Runtime::new(Some(path), None))
+        let (session, tools, _) = reconstruct(saved.clone(), &runtime(dir.path(), Some(path)))
             .await
             .expect("reconstructs");
 
@@ -349,9 +350,9 @@ mod tests {
     async fn normal_tools_are_included_in_text_and_json() {
         let config = Config::default();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let tools = runtime::tools(
+        let tools = crate::runtime::tools(
             &config,
-            runtime::post_write(&config),
+            crate::runtime::post_write(&config),
             offline_provider().unwrap(),
             Subagents::new(tx),
         );

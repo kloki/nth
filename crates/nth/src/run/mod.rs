@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::Config,
-    runtime::{self, Runtime, Start},
+    runtime::{Runtime, Start},
 };
 
 /// How long an interrupted run waits for its subagents' turns to end, so
@@ -42,13 +42,14 @@ pub async fn run(
     // Without a front-end, a subagent's answer has nothing to wake the
     // model, so the task tool waits for it.
     let subagents = Subagents::default();
-    let prepared = runtime::prepare(
-        &mut config,
-        providers.clone(),
-        Start::Fresh { cwd, mode },
-        subagents.clone(),
-    )
-    .await?;
+    let prepared = runtime
+        .prepare(
+            &mut config,
+            providers.clone(),
+            Start::Fresh { cwd, mode },
+            subagents.clone(),
+        )
+        .await?;
     let PreparedRuntime {
         mut session,
         provider,

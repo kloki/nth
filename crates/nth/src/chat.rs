@@ -7,7 +7,7 @@ use nth_session::{Store, Subagents};
 
 use crate::{
     config::Config,
-    runtime::{self, Runtime, Start},
+    runtime::{Runtime, Start},
 };
 
 /// A new chat starts in the config's default mode. With `resume`, the last
@@ -39,7 +39,9 @@ pub async fn start(
     // whichever runtime `/resume` swaps in.
     let (subagent_tx, subagent_rx) = tokio::sync::mpsc::channel(256);
     let subagents = Subagents::new(subagent_tx);
-    let prepared = runtime::prepare(&mut config, providers, start, subagents.clone()).await?;
+    let prepared = runtime
+        .prepare(&mut config, providers, start, subagents.clone())
+        .await?;
     let settings = settings(&config, runtime, subagents.clone())?;
     nth_tui::run(prepared, subagents, subagent_rx, store, settings).await
 }

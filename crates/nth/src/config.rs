@@ -393,7 +393,12 @@ impl Config {
     /// Where nth looks for files about a project, with the configured skill
     /// folders added and the memory read when it is on.
     pub fn paths(&self) -> Paths {
-        let mut paths = Paths::from_env();
+        self.paths_over(Paths::from_env())
+    }
+
+    /// As `paths`, over the global directories in `paths` rather than the
+    /// environment's.
+    pub fn paths_over(&self, mut paths: Paths) -> Paths {
         paths.skill_paths = self
             .skills
             .paths
