@@ -113,6 +113,13 @@ impl Providers {
         });
     }
 
+    /// The login the built-in ChatGPT endpoint signs with. Public for other
+    /// crates' tests, which check that it is the process's one handle.
+    #[doc(hidden)]
+    pub fn chatgpt(&self) -> Option<&nth_auth::ChatGpt> {
+        self.endpoints.iter().find_map(Endpoint::chatgpt)
+    }
+
     /// `model` as `provider/model`, so a bare id shows and compares like the
     /// listed ones. An id this cannot route is returned as it is.
     pub fn qualify(&self, model: &str) -> String {

@@ -38,12 +38,12 @@ fn pick(mut listing: Listing) -> Result<String> {
     Ok(listing.models.swap_remove(picked).id)
 }
 
-/// The configured providers whose keys are set, and ChatGPT, which runs
-/// once you connect, even mid-run. Neither a key set nor ChatGPT connected
-/// is an error naming every variable; so is a model, the config's or a
-/// mode's, on a provider whose key is not set or that is not connected.
-pub(crate) fn providers(config: &Config) -> Result<Providers> {
-    let chatgpt = chatgpt(&config.paths())?;
+/// The configured providers whose keys are set, and ChatGPT through
+/// `chatgpt`, which runs once you connect, even mid-run. Neither a key set
+/// nor ChatGPT connected is an error naming every variable; so is a model,
+/// the config's or a mode's, on a provider whose key is not set or that is
+/// not connected.
+pub(super) fn providers(config: &Config, chatgpt: &nth_auth::ChatGpt) -> Result<Providers> {
     let mut endpoints = Vec::new();
     let mut unavailable = Vec::new();
     for (id, provider) in &config.provider {
@@ -79,7 +79,7 @@ pub(crate) fn providers(config: &Config) -> Result<Providers> {
         );
     }
     // Last, so a bare model goes to a configured provider first.
-    endpoints.push(EndpointConfig::chatgpt(chatgpt));
+    endpoints.push(EndpointConfig::chatgpt(chatgpt.clone()));
     let providers = Providers::new(endpoints, unavailable, &config.model)
         .with_context(|| format!("model {} cannot run", config.model))?;
     for mode in [Mode::Plan, Mode::Act] {
@@ -95,8 +95,11 @@ pub(crate) fn providers(config: &Config) -> Result<Providers> {
     Ok(providers)
 }
 
-/// The ChatGPT login, kept in nth's `auth.json`.
-pub(crate) fn chatgpt(paths: &Paths) -> Result<nth_auth::ChatGpt> {
+/// The ChatGPT login, kept in nth's `auth.json`. Built once per process,
+/// by `Runtime::chatgpt`: each handle refreshes under its own lock, and two
+/// refreshing one token back to back would spend its refresh token twice,
+/// which OpenAI answers by asking to sign in again.
+pub(super) fn chatgpt(paths: &Paths) -> Result<nth_auth::ChatGpt> {
     let dir = paths
         .nth_data()
         .context("neither XDG_DATA_HOME nor HOME is set, so nth has nowhere to keep credentials")?;

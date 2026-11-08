@@ -98,6 +98,14 @@ impl Endpoint {
         }
     }
 
+    /// The ChatGPT login it signs with, if it is the built-in endpoint.
+    pub(crate) fn chatgpt(&self) -> Option<&nth_auth::ChatGpt> {
+        match &self.kind {
+            Kind::ChatGpt { login, .. } => Some(login),
+            Kind::Configured { .. } => None,
+        }
+    }
+
     /// Whether its models can run now: ChatGPT's only while connected,
     /// asked each time, so connecting mid-run needs nothing rebuilt.
     pub(crate) fn available(&self) -> Result<(), Error> {

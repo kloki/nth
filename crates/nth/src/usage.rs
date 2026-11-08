@@ -20,7 +20,7 @@ use nth_session::{
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
-use crate::{config::Config, runtime::providers};
+use crate::{config::Config, runtime::Runtime};
 
 /// How long a price waits for the model listing.
 const LISTING_WAIT: Duration = Duration::from_secs(3);
@@ -34,10 +34,16 @@ pub async fn listing(provider: &dyn Provider) -> Option<Listing> {
         .ok()
 }
 
-pub async fn run(session: Option<String>, all: bool, json: bool, config: Config) -> Result<()> {
+pub async fn run(
+    session: Option<String>,
+    all: bool,
+    json: bool,
+    config: Config,
+    runtime: &Runtime,
+) -> Result<()> {
     let store = Store::open()?;
     // No provider configured costs the prices, not the command.
-    let listing = match providers(&config) {
+    let listing = match runtime.providers(&config) {
         Ok(providers) => listing(&providers).await,
         Err(_) => None,
     };

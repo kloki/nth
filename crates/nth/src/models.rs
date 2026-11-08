@@ -9,10 +9,10 @@ use nth_icons::icons;
 use nth_protocol::Provider;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, runtime::providers};
+use crate::{config::Config, runtime::Runtime};
 
-pub async fn run(json: bool, config: Config) -> Result<()> {
-    let providers = providers(&config)?;
+pub async fn run(json: bool, config: Config, runtime: &Runtime) -> Result<()> {
+    let providers = runtime.providers(&config)?;
     let listing = providers.models().await.map_err(|e| anyhow!(e))?;
     for failed in &listing.failed {
         eprintln!(
