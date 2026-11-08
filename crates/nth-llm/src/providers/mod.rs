@@ -339,7 +339,8 @@ mod tests {
         .expect("two providers");
         let wire = async |model| {
             let (i, model) = providers.route(model).expect("routes");
-            let (wire, known) = providers.endpoints[i].wire(providers.catalog.get().await, model);
+            let catalog = providers.catalog.get().await;
+            let (wire, known) = providers.endpoints[i].wire(catalog.as_deref(), model);
             (wire, known.and_then(|m| m.limit.as_ref()?.output))
         };
 

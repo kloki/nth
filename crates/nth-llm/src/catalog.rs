@@ -1,16 +1,25 @@
 //! The models.dev catalogue: what is known about every provider's models,
-//! their protocol and their limits. Fetched once and shared: the listing
-//! reads names and limits from it, and a request the protocol to speak.
+//! their protocol and their limits. Fetched until it loads, with backoff
+//! between failures, then shared: the listing reads names and limits from
+//! it, and a request the protocol to speak.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use nth_protocol::{Cost, Effort};
 use serde::Deserialize;
-use tokio::sync::OnceCell;
+use tokio::time::Instant;
 
 const URL: &str = "https://models.dev/api.json";
 /// The catalogue only refines a listing, so a stall must not hold it up.
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// How long after a failed fetch the next may run, doubling with each
+/// failure up to `RETRY_MAX`.
+const RETRY_INITIAL: Duration = Duration::from_secs(5);
+const RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// Providers by their models.dev id.
 pub(crate) type Catalog = HashMap<String, Provider>;
@@ -191,37 +200,108 @@ impl Provider {
 }
 
 /// The catalogue, fetched by whichever needs it first and then kept for
-/// the life of the process. A failed fetch is kept too, as no catalogue:
-/// every model then speaks chat completions, as with an unknown endpoint.
+/// the life of the process. A failed fetch leaves no catalogue, under which
+/// every model speaks chat completions as with an unknown endpoint, and is
+/// tried again by the first caller after `backoff`: a blip at start-up must
+/// not route Claude over the wrong protocol for the whole run.
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     http: reqwest::Client,
-    url: String,
-    catalog: Arc<OnceCell<Option<Catalog>>>,
+    /// Where it is fetched from; none for one that never fetches.
+    url: Option<String>,
+    state: Arc<Mutex<State>>,
+    /// Held while a fetch runs, so callers that find none wait on that one
+    /// rather than start their own.
+    fetching: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Default)]
+struct State {
+    catalog: Option<Arc<Catalog>>,
+    /// When the last fetch failed, on tokio's clock so tests can move it.
+    failed_at: Option<Instant>,
+    /// Failed fetches since the last success.
+    attempts: u32,
+}
+
+impl State {
+    /// Whether another fetch may run: none has failed yet, or the backoff
+    /// for the failures so far has passed.
+    fn due(&self) -> bool {
+        self.failed_at
+            .is_none_or(|at| at.elapsed() >= backoff(self.attempts))
+    }
+}
+
+/// How long to wait after `attempts` failed fetches before the next:
+/// `RETRY_INITIAL`, doubling, at most `RETRY_MAX`.
+fn backoff(attempts: u32) -> Duration {
+    let doublings = attempts.saturating_sub(1).min(31);
+    RETRY_INITIAL.saturating_mul(1 << doublings).min(RETRY_MAX)
 }
 
 impl Snapshot {
     pub(crate) fn new(http: reqwest::Client) -> Self {
         Self {
             http,
-            url: URL.into(),
-            catalog: Arc::new(OnceCell::new()),
+            url: Some(URL.into()),
+            state: Arc::default(),
+            fetching: Arc::default(),
         }
     }
 
-    /// The catalogue, waiting for the fetch if it is still under way.
-    pub(crate) async fn get(&self) -> Option<&Catalog> {
-        self.catalog
-            .get_or_init(|| async { fetch(&self.http, &self.url).await.ok() })
-            .await
-            .as_ref()
+    /// The catalogue: at once when loaded; else a fetch when one is due,
+    /// waiting for one already under way; else none, without waiting.
+    pub(crate) async fn get(&self) -> Option<Arc<Catalog>> {
+        let url = self.url.as_deref()?;
+        if let Some(found) = self.settled() {
+            return found;
+        }
+        let _one = self.fetching.lock().await;
+        // The fetch this waited on may have loaded one, or failed and so
+        // put the next off.
+        if let Some(found) = self.settled() {
+            return found;
+        }
+        let fetched = fetch(&self.http, url).await;
+        let mut state = self.state();
+        match fetched {
+            Ok(catalog) => {
+                let catalog = Arc::new(catalog);
+                *state = State {
+                    catalog: Some(catalog.clone()),
+                    ..State::default()
+                };
+                Some(catalog)
+            }
+            Err(_) => {
+                state.failed_at = Some(Instant::now());
+                state.attempts = state.attempts.saturating_add(1);
+                None
+            }
+        }
     }
 
-    /// None at all, settled, so nothing ever fetches one: every model
-    /// speaks chat completions, as after a failed fetch.
+    /// The answer without a fetch, when there is one: the loaded catalogue,
+    /// or none while the backoff runs.
+    fn settled(&self) -> Option<Option<Arc<Catalog>>> {
+        let state = self.state();
+        match &state.catalog {
+            Some(catalog) => Some(Some(catalog.clone())),
+            None if !state.due() => Some(None),
+            None => None,
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().expect("catalogue state lock poisoned")
+    }
+
+    /// None at all, and nothing ever fetches one: every model speaks chat
+    /// completions, as after a failed fetch.
     pub(crate) fn none(http: reqwest::Client) -> Self {
         Self {
-            catalog: Arc::new(OnceCell::new_with(Some(None))),
+            url: None,
             ..Self::new(http)
         }
     }
@@ -229,7 +309,10 @@ impl Snapshot {
     #[cfg(test)]
     pub(crate) fn of(catalog: Catalog) -> Self {
         Self {
-            catalog: Arc::new(OnceCell::new_with(Some(Some(catalog)))),
+            state: Arc::new(Mutex::new(State {
+                catalog: Some(Arc::new(catalog)),
+                ..State::default()
+            })),
             ..Self::new(reqwest::Client::new())
         }
     }
@@ -238,7 +321,7 @@ impl Snapshot {
     #[cfg(test)]
     pub(crate) fn at(url: String) -> Self {
         Self {
-            url,
+            url: Some(url),
             ..Self::new(reqwest::Client::new())
         }
     }
@@ -311,8 +394,76 @@ pub(crate) fn borrowed<'a>(catalog: &'a Catalog, model: &str) -> Option<&'a Mode
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/models_dev.json");
+
+    #[test]
+    fn the_backoff_doubles_up_to_its_cap() {
+        let secs = |attempts| backoff(attempts).as_secs();
+        assert_eq!(secs(1), 5);
+        assert_eq!(secs(2), 10);
+        assert_eq!(secs(3), 20);
+        assert_eq!(secs(7), 300, "320 is capped");
+        assert_eq!(secs(u32::MAX), 300);
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_is_tried_again_after_the_backoff() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let (url, answered) =
+            testing::serve_many(vec![(500, b"{}"), (500, b"{}"), (200, FIXTURE.as_bytes())]).await;
+        let snapshot = Snapshot::at(url);
+
+        assert!(snapshot.get().await.is_none(), "the fetch failed");
+        assert_eq!(answered.load(SeqCst), 1);
+
+        // The clock stands still while nothing goes over the network, and
+        // runs while a fetch does, so a slow one cannot fire its timeout.
+        tokio::time::pause();
+        tokio::time::advance(RETRY_INITIAL - Duration::from_secs(1)).await;
+        assert!(snapshot.get().await.is_none(), "still backing off");
+        assert_eq!(answered.load(SeqCst), 1, "without a fetch");
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::time::resume();
+        assert!(snapshot.get().await.is_none(), "the second fetch failed");
+        assert_eq!(answered.load(SeqCst), 2);
+
+        tokio::time::pause();
+        tokio::time::advance(RETRY_INITIAL).await;
+        assert!(snapshot.get().await.is_none(), "the wait doubled");
+        assert_eq!(answered.load(SeqCst), 2);
+
+        tokio::time::advance(RETRY_INITIAL).await;
+        tokio::time::resume();
+        let catalog = snapshot.get().await.expect("the third fetch loaded it");
+        assert!(catalog.contains_key("opencode-go"));
+        assert_eq!(answered.load(SeqCst), 3);
+
+        assert!(snapshot.get().await.is_some(), "kept");
+        assert_eq!(answered.load(SeqCst), 3, "without another fetch");
+    }
+
+    #[tokio::test]
+    async fn callers_during_a_fetch_wait_on_it_rather_than_start_their_own() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let (url, answered) = testing::serve_many(vec![(500, b"{}")]).await;
+        let snapshot = Snapshot::at(url);
+        let (a, b) = futures::join!(snapshot.get(), snapshot.get());
+        assert!(a.is_none() && b.is_none());
+        assert_eq!(answered.load(SeqCst), 1, "one fetch for both");
+    }
+
+    #[tokio::test]
+    async fn an_offline_snapshot_never_fetches() {
+        // No server at all: a fetch would fail, and `get` would wait on it.
+        let snapshot = Snapshot::none(reqwest::Client::new());
+        assert!(snapshot.get().await.is_none());
+        assert!(snapshot.state().failed_at.is_none(), "nothing was tried");
+    }
 
     #[test]
     fn the_sdk_picks_the_wire() {
