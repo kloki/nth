@@ -17,7 +17,7 @@ use futures::FutureExt;
 use nth_config::Config;
 use nth_context::Paths;
 use nth_llm::Providers;
-use nth_protocol::{Effort, Llm, Mode, Provider, SubagentLlm};
+use nth_protocol::{Llm, Mode, Provider, SubagentLlm};
 use nth_session::{Session, Subagents};
 use nth_tui::PreparedRuntime;
 pub(crate) use tools::{post_write, tools};
@@ -181,22 +181,20 @@ impl Runtime {
         let paths = self.paths(&config);
         let context =
             Arc::new(nth_context::Context::load(start.cwd().to_path_buf(), paths.clone()).await);
+        let mut selection = llms::selection(&config, &providers);
         let mut session = match start {
             Start::Fresh { cwd, mode } => {
-                let (model, effort) = config.llm_for(mode);
-                let mut session =
-                    Session::new(providers.qualify(&model), cwd).with_context(context);
+                selection.mode = mode;
+                let Llm { model, effort } = selection.current().clone();
+                let mut session = Session::new(model, cwd).with_context(context);
                 session.mode = mode;
                 session.effort = effort;
-                let picked = |(model, effort): (String, Effort)| SubagentLlm {
-                    llm: Llm {
-                        model: providers.qualify(&model),
-                        effort,
-                    },
+                let picked = |llm: &Llm| SubagentLlm {
+                    llm: llm.clone(),
                     ..SubagentLlm::default()
                 };
-                session.subagent_llm = config.subagent_for().map(picked);
-                session.clerk_llm = config.clerk_for().map(picked);
+                session.subagent_llm = selection.slots().subagent.as_ref().map(picked);
+                session.clerk_llm = selection.slots().clerk.as_ref().map(picked);
                 session
             }
             Start::Saved(mut session) => {
@@ -207,6 +205,16 @@ impl Runtime {
                 if model != session.model {
                     session.set_model(model);
                 }
+                // A saved session keeps its model, for its mode or for the
+                // agent it runs as; the other slots start on the config's.
+                selection.resume(
+                    session.mode,
+                    session.primary().map(|agent| agent.name.clone()),
+                    Llm {
+                        model: session.model.clone(),
+                        effort: session.effort,
+                    },
+                );
                 *session
             }
         };
@@ -217,19 +225,6 @@ impl Runtime {
         // the model is final, so preparing waits on no endpoint. A saved
         // session keeps the limits it saved until then.
         session.compaction = config.context;
-        let (mut mode_llms, profiles) = llms::model_settings(&config, &providers);
-        // A saved session keeps its model; the other mode starts on the
-        // config's. One running as an agent keeps it for the agent, which the
-        // chat takes from the session.
-        let current = Llm {
-            model: session.model.clone(),
-            effort: session.effort,
-        };
-        match (session.primary(), session.mode) {
-            (Some(_), _) => {}
-            (None, Mode::Plan) => mode_llms.plan = current,
-            (None, Mode::Act) => mode_llms.act = current,
-        }
         let post_write = post_write(&config);
         let checkers = tools::checkers(&post_write, &config);
         let provider: Arc<dyn Provider> = providers;
@@ -242,8 +237,7 @@ impl Runtime {
             // You watch what you run and stop it yourself.
             shell: Arc::new(nth_tools::Bash::untimed(config.tools.bash.clone())),
             checkers,
-            mode_llms,
-            profiles,
+            selection,
             warnings,
             config,
         })
@@ -292,8 +286,9 @@ fn apply_directories(session: &mut Session, config: &Config) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use nth_config::Slots;
     use nth_llm::{Credentials, EndpointConfig};
-    use nth_tui::ModeLlms;
+    use nth_protocol::Effort;
 
     use super::*;
 
@@ -359,7 +354,7 @@ pub(crate) mod tests {
             .expect("prepares");
 
         assert_eq!(prepared.session.model, "zen/a");
-        assert_eq!(prepared.mode_llms.act.model, "zen/a");
+        assert_eq!(prepared.selection.slots().act.model, "zen/a");
     }
 
     #[tokio::test]
@@ -418,8 +413,8 @@ pub(crate) mod tests {
         let clerk = session.clerk_llm.as_ref().expect("clerk llm");
         assert_eq!(clerk.llm, llm("zen/d", Effort::Minimal));
         assert_eq!(
-            prepared.mode_llms,
-            ModeLlms {
+            prepared.selection.slots(),
+            &Slots {
                 plan: llm("zen/a", Effort::High),
                 act: llm("zen/b", Effort::Default),
                 subagent: Some(llm("zen/c", Effort::Low)),
@@ -444,8 +439,11 @@ pub(crate) mod tests {
             .await
             .expect("prepares");
 
-        assert_eq!(prepared.mode_llms.plan, llm("zen/a", Effort::High));
-        assert_eq!(prepared.mode_llms.act, llm("zen/b", Effort::Default));
+        assert_eq!(prepared.selection.slots().plan, llm("zen/a", Effort::High));
+        assert_eq!(
+            prepared.selection.slots().act,
+            llm("zen/b", Effort::Default)
+        );
     }
 
     #[tokio::test]
@@ -489,35 +487,6 @@ pub(crate) mod tests {
         assert_eq!(session.compaction.reserved, 30_000);
         assert_eq!(session.context_window, Some(200_000));
         assert_eq!(session.max_output, Some(64_000));
-    }
-
-    #[tokio::test]
-    async fn a_resumed_session_fills_the_missing_model_for_every_slot() {
-        let a = || llm("zen/a", Effort::default());
-        for text in ["", "[[profiles]]\nname = \"p\"\n"] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let saved = Session::new("zen/a", dir.path().into());
-            let config = config(text);
-            assert!(config.needs_model());
-
-            let prepared = runtime(dir.path(), None)
-                .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
-                .await
-                .expect("prepares");
-
-            // Subagents and the clerk name no model of their own, so they
-            // run on their parent's: `zen/a` too.
-            let expected = ModeLlms {
-                plan: a(),
-                act: a(),
-                subagent: None,
-                clerk: None,
-            };
-            assert_eq!(prepared.mode_llms, expected, "{text:?}");
-            for profile in prepared.profiles {
-                assert_eq!(profile.llms, expected, "{text:?}");
-            }
-        }
     }
 
     #[test]

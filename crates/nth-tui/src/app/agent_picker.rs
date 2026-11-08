@@ -26,9 +26,9 @@ impl App {
     /// Opens the picker on what runs now.
     pub(super) fn open_agent_picker(&mut self) {
         self.completion = None;
-        let current = match &self.agent {
+        let current = match &self.selection.agent {
             Some(name) => Choice::Agent(name.clone()),
-            None => Choice::Mode(self.mode),
+            None => Choice::Mode(self.selection.mode),
         };
         self.input = Input::AgentPicker(AgentPicker::new(&self.context.agents, current));
     }
@@ -79,7 +79,10 @@ mod tests {
         assert_eq!(app.prompt.text(), "/ag");
         assert_eq!(app.prompt.cursor(), cursor);
         assert!(app.completion.is_none());
-        assert_eq!((app.mode, app.agent.as_deref()), (Mode::Act, None));
+        assert_eq!(
+            (app.selection.mode, app.selection.agent.as_deref()),
+            (Mode::Act, None)
+        );
     }
 
     #[test]
@@ -95,15 +98,18 @@ mod tests {
             app.apply(Action::Insert(c));
         }
         app.apply(Action::Submit);
-        assert_eq!(app.agent.as_deref(), Some("review"));
+        assert_eq!(app.selection.agent.as_deref(), Some("review"));
         app.apply(Action::NextTab);
-        assert_eq!((app.mode, app.agent.as_deref()), (Mode::Plan, None));
+        assert_eq!(
+            (app.selection.mode, app.selection.agent.as_deref()),
+            (Mode::Plan, None)
+        );
     }
 
     #[test]
     fn picking_an_agent_runs_it_until_tab_goes_back_to_the_mode() {
         let mut app = app();
-        app.mode = Mode::Plan;
+        app.selection.mode = Mode::Plan;
         app.run_command(crate::command::Command::Agents);
         assert!(matches!(app.input, Input::AgentPicker(_)));
         let shown = rows(&mut app).join("\n");
@@ -112,11 +118,14 @@ mod tests {
         // plan, act, then no primary agents in a bare app: down to act.
         app.apply(Action::SelectNext);
         app.apply(Action::Submit);
-        assert_eq!((app.mode, app.agent.as_deref()), (Mode::Act, None));
+        assert_eq!(
+            (app.selection.mode, app.selection.agent.as_deref()),
+            (Mode::Act, None)
+        );
         assert!(matches!(app.input, Input::Prompt));
 
         app.set_agent("review".into());
-        assert_eq!(app.agent.as_deref(), Some("review"));
+        assert_eq!(app.selection.agent.as_deref(), Some("review"));
         let label = rows(&mut app)
             .into_iter()
             .find(|row| row.contains("▎ review"))
@@ -125,11 +134,15 @@ mod tests {
 
         app.apply(Action::NextTab);
         assert_eq!(
-            (app.mode, app.agent.as_deref()),
+            (app.selection.mode, app.selection.agent.as_deref()),
             (Mode::Act, None),
             "Tab leaves the agent for the mode it left"
         );
         app.apply(Action::NextTab);
-        assert_eq!(app.mode, Mode::Plan, "then switches modes as ever");
+        assert_eq!(
+            app.selection.mode,
+            Mode::Plan,
+            "then switches modes as ever"
+        );
     }
 }

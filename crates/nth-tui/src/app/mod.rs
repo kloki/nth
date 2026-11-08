@@ -62,21 +62,20 @@ use futures::StreamExt;
 use input::Input;
 use job::Job;
 use mode::Steerable;
-pub use mode::{Llm, ModeLlms};
 use monitor::due;
+use nth_config::{Selection, Target};
 use nth_context::{Context as ProjectContext, Paths};
 use nth_format::FormatterStatus;
 use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
-    Ask, BoxError, Compaction, ContextSnapshot, Effort, Event, Inbox, Listing, Mode, MonitorEvent,
+    Ask, BoxError, Compaction, ContextSnapshot, Event, Inbox, Listing, Llm, Mode, MonitorEvent,
     MonitorId, Monitors, Provider, Show, Tool, Usage, monitor_log_dir, tool_names,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, ToolUse, store,
     subagent::{SubagentEvent, SubagentId},
 };
-pub use profiles::Profile;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Position, Rect},
@@ -130,22 +129,10 @@ fn next_minute() -> tokio::time::Instant {
 pub struct App {
     pub chat: Chat,
     pub prompt: Prompt,
-    /// The mode the next turn runs in, unless `agent` runs in its place.
-    pub mode: Mode,
-    /// The primary agent the next turn runs as, in place of `mode`.
-    pub agent: Option<String>,
-    /// What each primary agent runs with, once it ran or was picked a
-    /// model for in this run.
-    agent_llms: std::collections::BTreeMap<String, Llm>,
-    /// The model and effort each mode runs with; the current mode's are
-    /// `model` and `effort`, which it is synced with on a switch.
-    mode_llms: ModeLlms,
-    /// The profiles ctrl+p cycles, in config order; empty when the config
-    /// lists none.
-    profiles: Vec<Profile>,
-    /// The profile ctrl+p is on. A model picked by hand hides its name
-    /// from the label until the next ctrl+p puts the profile back.
-    profile: Option<usize>,
+    /// What the next turn runs as, the mode or an agent in its place, and
+    /// what it, its subagents and its clerk run on, with the profiles
+    /// ctrl+p cycles.
+    pub selection: Selection,
     /// Prompts sent before, recalled with Up and Down.
     history: History,
     /// Each save writes the whole history; one asked for mid-save runs
@@ -209,9 +196,6 @@ pub struct App {
     /// The row Enter chose in search, waiting for the source to be shown
     /// with its final width.
     search_jump: Option<search::Jump>,
-    /// The model and effort the next turn runs with.
-    pub model: String,
-    pub effort: Effort,
     pub cwd: PathBuf,
     /// The working directory as shown in the status bar, `~` for home.
     pub place: String,
@@ -496,27 +480,7 @@ impl App {
         Self {
             chat,
             prompt: Prompt::default(),
-            mode: session.mode,
-            // A session saved running as an agent goes on as it, on its
-            // model; one whose agent is gone runs in its mode.
-            agent: session.primary().map(|agent| agent.name.clone()),
-            agent_llms: session
-                .primary()
-                .map(|agent| {
-                    let llm = Llm {
-                        model: session.model.clone(),
-                        effort: session.effort,
-                    };
-                    (agent.name.clone(), llm)
-                })
-                .into_iter()
-                .collect(),
-            mode_llms: ModeLlms::same(Llm {
-                model: session.model.clone(),
-                effort: session.effort,
-            }),
-            profiles: Vec::new(),
-            profile: None,
+            selection: mode::of_session(Selection::same(Llm::default()), session),
             history: History::default(),
             history_saving: Job::default(),
             llm_usage: LlmUsage::default(),
@@ -546,8 +510,6 @@ impl App {
             gh_lookup: Job::default(),
             input: Input::Prompt,
             search_jump: None,
-            model: session.model.clone(),
-            effort: session.effort,
             cwd: session.cwd.clone(),
             place: status::place(&session.cwd, home.as_deref()),
             home,
@@ -641,8 +603,7 @@ impl App {
             model_tools,
             shell,
             checkers,
-            mode_llms,
-            profiles,
+            selection,
             warnings,
             config,
         } = runtime;
@@ -654,9 +615,8 @@ impl App {
         self.llm_listing = Default::default();
         self.tools = model_tools;
         self.shell = Some(shell);
-        self.mode_llms = mode_llms;
-        self.profiles = profiles;
-        self.profile = (!self.profiles.is_empty()).then_some(0);
+        // Whatever prepared it, it runs as and on what the session does.
+        self.selection = mode::of_session(selection, &session);
         let mut lsp = checkers.lsp.status();
         self.servers = lsp.borrow_and_update().clone();
         self.lsp = Some(lsp);
@@ -1007,13 +967,13 @@ impl App {
                     frame,
                     input,
                     &self.prompt,
-                    self.mode,
+                    self.selection.mode,
                     prompt::Runs {
                         spinner,
                         target,
-                        agent: self.agent.as_deref(),
-                        llm: &self.current_llm(),
-                        profile: self.profile_name(),
+                        agent: self.selection.agent.as_deref(),
+                        llm: self.selection.current(),
+                        profile: self.selection.profile_name(),
                     },
                 );
                 // Last, so it pops over the content panel; it sits right
@@ -1095,29 +1055,30 @@ impl App {
                 }
             }
             Tab::Diagnostics => {
-                let row = |label, llm: Llm, current, inherits| crate::diagnostics::ModeModel {
+                let selection = &self.selection;
+                let row = |label, llm: &Llm, current, inherits| crate::diagnostics::ModeModel {
                     label,
                     effort: llm.effort.wire(),
                     context_window: self.context_window_of(&llm.model),
-                    model: llm.model,
+                    model: llm.model.clone(),
                     current,
                     inherits,
                 };
                 let [plan, act] = Mode::ALL.map(|mode| {
-                    let current = mode == self.mode && self.agent.is_none();
-                    row(mode.label(), self.llm(mode), current, None)
+                    let current = mode == selection.mode && selection.agent.is_none();
+                    row(mode.label(), selection.slots().mode(mode), current, None)
                 });
                 let subagent = row(
                     "subagent",
-                    self.subagent_llm(),
+                    selection.llm(Target::Subagent),
                     false,
-                    self.mode_llms.subagent.is_none().then_some("the mode"),
+                    selection.slots().subagent.is_none().then_some("the mode"),
                 );
                 let clerk = row(
                     "clerk",
-                    self.clerk_llm(),
+                    selection.llm(Target::Clerk),
                     false,
-                    self.mode_llms.clerk.is_none().then_some("subagent"),
+                    selection.slots().clerk.is_none().then_some("subagent"),
                 );
                 let usage = self
                     .lsp_usage
@@ -1126,7 +1087,8 @@ impl App {
                     .unwrap_or_default();
                 let agent_label = |caller: &nth_lsp::Caller| {
                     if caller.session == self.session_id.to_string() {
-                        self.agent
+                        self.selection
+                            .agent
                             .as_ref()
                             .map_or_else(|| "main session".into(), |name| format!("main @{name}"))
                     } else if let Some((id, agent)) =
@@ -1208,10 +1170,7 @@ impl App {
 
     fn on_terminal(&mut self, event: TermEvent) {
         let before = (
-            self.model.clone(),
-            self.effort,
-            self.mode,
-            self.agent.clone(),
+            self.runs_as(),
             self.extra_dirs.clone(),
             self.content.panes(self.wide),
         );
@@ -1238,10 +1197,7 @@ impl App {
             _ => {}
         }
         let after = (
-            self.model.clone(),
-            self.effort,
-            self.mode,
-            self.agent.clone(),
+            self.runs_as(),
             self.extra_dirs.clone(),
             self.content.panes(self.wide),
         );
@@ -1269,7 +1225,7 @@ impl App {
             }
             Event::Usage(usage) => {
                 self.usage = Some(*usage);
-                self.spent.usage(&self.model, *usage);
+                self.spent.usage(&self.selection.current().model, *usage);
             }
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
@@ -1361,12 +1317,12 @@ impl App {
     /// and mode picked. The directories added with `/add-dir` are kept too.
     /// The chat is the caller's to clear or keep.
     fn start_fresh_session(&mut self) {
-        let mut session =
-            Session::new(self.model.clone(), self.cwd.clone()).with_context(self.context.clone());
+        let Llm { model, effort } = self.selection.current().clone();
+        let mut session = Session::new(model, self.cwd.clone()).with_context(self.context.clone());
         session.curio_root = self.session.as_ref().and_then(|s| s.curio_root.clone());
-        session.effort = self.effort;
-        session.mode = self.mode;
-        session.set_agent(self.agent.clone());
+        session.effort = effort;
+        session.mode = self.selection.mode;
+        session.set_agent(self.selection.agent.clone());
         session.max_steps = self.max_steps;
         session.tool_timeout = self.tool_timeout;
         session.compaction = self.compaction;

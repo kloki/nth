@@ -91,9 +91,9 @@ impl App {
             return;
         };
         self.adopt_llm(&mut session);
-        session.mode = self.mode;
-        if session.agent != self.agent {
-            session.set_agent(self.agent.clone());
+        session.mode = self.selection.mode;
+        if session.agent != self.selection.agent {
+            session.set_agent(self.selection.agent.clone());
         }
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());

@@ -124,9 +124,6 @@ impl App {
         self.max_steps = session.max_steps;
         self.tool_timeout = session.tool_timeout;
         self.compaction = session.compaction;
-        // What agents ran on belongs to the runtime being left; `resume`
-        // keeps the session's own.
-        self.agent_llms.clear();
         self.resume(session);
         self.chat.warn(&warnings);
         if self.content.active() == super::Tab::Diagnostics {
@@ -150,16 +147,12 @@ impl App {
         // The session's model and effort are its mode's or its agent's now;
         // the rest keep what they had. An agent no longer found leaves the
         // session in its mode.
-        self.mode = session.mode;
-        self.agent = session.primary().map(|agent| agent.name.clone());
+        super::mode::follow(&mut self.selection, &session);
         let gone = session
             .agent
             .as_ref()
-            .filter(|_| self.agent.is_none())
-            .map(|gone| format!("agent {gone} is gone, back to {}", self.mode));
-        self.model = session.model.clone();
-        self.effort = session.effort;
-        self.save_llm();
+            .filter(|_| self.selection.agent.is_none())
+            .map(|gone| format!("agent {gone} is gone, back to {}", self.selection.mode));
         self.cwd = session.cwd.clone();
         let home = std::env::var("HOME").ok();
         self.place = status::place(&self.cwd, home.as_deref());
@@ -232,7 +225,7 @@ mod tests {
 
         assert!(matches!(app.input, Input::Prompt));
         assert_eq!(app.session_id, saved.id);
-        assert_eq!(app.model, "kimi");
+        assert_eq!(app.selection.current().model, "kimi");
         assert_eq!(app.cwd, std::path::Path::new("/elsewhere"));
         assert_eq!(app.place, "/elsewhere");
         assert_eq!(app.extra_dirs, [std::path::PathBuf::from("/added")]);
@@ -292,7 +285,7 @@ mod tests {
                 session.compaction.auto = false;
                 session.set_extra_dirs(vec!["/configured".into()]);
                 Ok(crate::PreparedRuntime {
-                    mode_llms: super::super::ModeLlms::same(nth_protocol::Llm {
+                    selection: nth_config::Selection::same(nth_protocol::Llm {
                         model: "new-default".into(),
                         effort: Default::default(),
                     }),
@@ -319,7 +312,7 @@ mod tests {
         let loaded = app.session_loading.join().await.unwrap();
         app.session_loaded(loaded);
         assert_eq!(app.session_id, saved.id);
-        assert_eq!(app.model, "saved-model");
+        assert_eq!(app.selection.current().model, "saved-model");
         assert!(!Arc::ptr_eq(&app.provider, &old_provider));
         assert_eq!(app.max_steps, 17);
         assert_eq!(app.tool_timeout, None);
@@ -412,7 +405,7 @@ mod tests {
         let loaded = app.session_loading.join().await.unwrap();
         app.session_loaded(loaded);
         assert_eq!(app.session_id, original);
-        assert_eq!(app.model, "glm");
+        assert_eq!(app.selection.current().model, "glm");
         assert!(
             app.chat
                 .transcript

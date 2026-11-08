@@ -1,62 +1,22 @@
 //! What each mode, the subagents and the clerk run on, and the profiles
 //! ctrl+p cycles.
 
-use nth_config::Config;
+use nth_config::{Config, Selection};
 use nth_llm::{Providers, providers::Error};
-use nth_protocol::{Effort, Mode};
-use nth_tui::{Llm, ModeLlms, Profile};
 
-pub(super) fn model_settings(config: &Config, provider: &Providers) -> (ModeLlms, Vec<Profile>) {
-    let llm = |(model, effort): (String, Effort)| Llm {
-        model: provider.qualify(&model),
-        effort,
-    };
-    // One per `[[profiles]]`, with why it cannot run when its provider
-    // has no key set: the chat skips those when cycling. Whether ChatGPT
-    // is connected is left to the chat, which asks on every cycle, since
-    // `/connect` changes it mid-run. The first is what the chat starts
-    // on; with none, `mode_llms` are the config's.
-    let profiles: Vec<Profile> = config
-        .profiles
-        .iter()
-        .map(|profile| {
-            let llms = ModeLlms {
-                plan: llm(config.profile_llm(profile, Mode::Plan)),
-                act: llm(config.profile_llm(profile, Mode::Act)),
-                subagent: config.profile_subagent(profile).map(llm),
-                clerk: config.profile_clerk(profile).map(llm),
-            };
-            let runs: Vec<&Llm> = [&llms.plan, &llms.act]
-                .into_iter()
-                .chain(&llms.subagent)
-                .chain(&llms.clerk)
-                .collect();
-            let unavailable = runs
-                .iter()
-                .find_map(|llm| match provider.check(&llm.model) {
-                    Err(Error::Auth(nth_auth::Error::NotConnected)) | Ok(()) => None,
-                    Err(error) => Some(why_unavailable(error)),
-                });
-            let on_chatgpt = |llm: &&Llm| {
-                llm.model
-                    .split_once('/')
-                    .is_some_and(|(id, _)| id == nth_auth::ChatGpt::ID)
-            };
-            Profile {
-                name: profile.name.clone(),
-                needs_chatgpt: runs.iter().any(on_chatgpt),
-                llms,
-                unavailable,
-            }
-        })
-        .collect();
-    let mode_llms = ModeLlms {
-        plan: llm(config.llm_for(Mode::Plan)),
-        act: llm(config.llm_for(Mode::Act)),
-        subagent: config.subagent_for().map(llm),
-        clerk: config.clerk_for().map(llm),
-    };
-    (mode_llms, profiles)
+/// What `config` starts a chat on, its ids named as `provider` lists them,
+/// and each profile whose provider has no key set marked so cycling skips
+/// it. A ChatGPT login missing is not such a mark: the chat asks on every
+/// cycle, since `/connect` changes it mid-run.
+pub(super) fn selection(config: &Config, provider: &Providers) -> Selection {
+    Selection::from_config(
+        config,
+        &|model| provider.qualify(model),
+        &|model| match provider.check(model) {
+            Err(Error::Auth(nth_auth::Error::NotConnected)) | Ok(()) => None,
+            Err(error) => Some(why_unavailable(error)),
+        },
+    )
 }
 
 /// Why a profile cannot run, short, for the status bar hint that says it

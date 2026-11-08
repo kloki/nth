@@ -1,142 +1,44 @@
-//! Profiles: named presets of what plan, act and subagents run with. ctrl+p cycles
-//! through them; a model picked by hand in the model picker leaves the
-//! profile, and the next ctrl+p puts it back.
+//! Profiles: named presets of what plan, act, subagents and the clerk run
+//! with. ctrl+p cycles through them; a model picked by hand in the model
+//! picker leaves the profile, and the next ctrl+p puts it back. Which
+//! profile comes next is `Selection::next_profile`'s; this says it.
 
 use nth_auth::ChatGpt;
-use nth_protocol::Mode;
+use nth_config::Cycled;
 
-use super::{App, Llm, ModeLlms};
-
-/// A named preset, from a `[[profiles]]` entry in the config.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Profile {
-    /// What the prompt's label and the cycling hint call it.
-    pub name: String,
-    /// What plan, act and subagents run with on this profile.
-    pub llms: ModeLlms,
-    /// Why it cannot run, when its provider has no key set: cycling skips
-    /// it and says this. `None` means it runs.
-    pub unavailable: Option<String>,
-    /// Runs a `chatgpt/` model, so it runs only while ChatGPT is
-    /// connected; asked on every cycle, so a `/connect` mid-run counts.
-    pub needs_chatgpt: bool,
-}
-
-/// What `profile` runs with in `mode`.
-fn llm(profile: &Profile, mode: Mode) -> &Llm {
-    match mode {
-        Mode::Plan => &profile.llms.plan,
-        Mode::Act => &profile.llms.act,
-    }
-}
+use super::App;
 
 impl App {
-    /// The profiles ctrl+p cycles, in config order; the first is the one
-    /// the chat started on. Empty when the config lists none.
-    #[cfg(test)]
-    pub fn with_profiles(mut self, profiles: Vec<Profile>) -> Self {
-        self.profile = (!profiles.is_empty()).then_some(0);
-        self.profiles = profiles;
-        self
-    }
-
-    /// The active profile's name, while both modes still run its llms. A
-    /// model picked by hand — or a resumed session's own — leaves the
-    /// profile for both, and ctrl+p puts it, name and all, back.
-    pub(super) fn profile_name(&self) -> Option<&str> {
-        let profile = self.profiles.get(self.profile?)?;
-        self.runs(profile).then_some(profile.name.as_str())
-    }
-
-    /// Whether both modes, the subagents and the clerk still run `profile`'s llms.
-    fn runs(&self, profile: &Profile) -> bool {
-        Mode::ALL
-            .iter()
-            .all(|&mode| self.llm(mode) == *llm(profile, mode))
-            && self.mode_llms.subagent == profile.llms.subagent
-            && self.mode_llms.clerk == profile.llms.clerk
-    }
-
-    /// ctrl+p: to the next profile, both modes on its llms. A model
-    /// picked by hand since the profile was applied means both modes no
-    /// longer run it: the first ctrl+p puts the profile back, the next
-    /// moves on. Profiles that cannot run are skipped, and one left
-    /// behind is said on the status bar.
+    /// ctrl+p: to the next profile that can run, saying on the status bar
+    /// where it went and what it skipped.
     pub(super) fn next_profile(&mut self) {
-        if self.profiles.is_empty() {
-            self.hint = Some("no profiles configured".into());
-            return;
-        }
-        let len = self.profiles.len();
-        // Back where the profile was left, before moving on.
-        if let Some(i) = self.profile
-            && !self.runs(&self.profiles[i])
-        {
-            self.apply_profile(i);
-            return;
-        }
-        // The other profiles, past the active one; from `None`, which is
-        // before the first, the first itself is due.
-        let steps = if self.profile.is_some() { len - 1 } else { len };
-        let mut skipped = Vec::new();
-        for step in 0..steps {
-            let i = match self.profile {
-                Some(i) => (i + 1 + step) % len,
-                None => step,
-            };
-            match self.why_unavailable(&self.profiles[i]) {
-                None => {
-                    self.apply_profile(i);
-                    if !skipped.is_empty() {
-                        self.hint = Some(
-                            format!(
-                                "Profile set to {} · skipped {}",
-                                self.profiles[i].name,
-                                skipped.join(", ")
-                            )
-                            .into(),
-                        );
-                    }
-                    return;
+        let connected = self.chatgpt.as_ref().is_some_and(ChatGpt::connected);
+        let hint = match self.selection.next_profile(connected) {
+            Cycled::Applied { name, skipped } => {
+                // Its models may be of a provider that could not list,
+                // whose limits only another listing brings.
+                if self.llms_partial() {
+                    self.list_llms();
                 }
-                Some(reason) => {
-                    skipped.push(format!("{} ({reason})", self.profiles[i].name));
+                match skipped.is_empty() {
+                    true => format!("Profile set to {name}"),
+                    false => format!("Profile set to {name} · skipped {}", skipped.join(", ")),
                 }
             }
-        }
-        self.hint = Some(if skipped.is_empty() {
-            "only one profile".into()
-        } else {
-            format!("no other profile can run: {}", skipped.join(", ")).into()
-        });
-    }
-
-    /// Why `profile` cannot run now; `None` when it can.
-    fn why_unavailable(&self, profile: &Profile) -> Option<String> {
-        if let Some(reason) = &profile.unavailable {
-            return Some(reason.clone());
-        }
-        let connected = self.chatgpt.as_ref().is_some_and(ChatGpt::connected);
-        (profile.needs_chatgpt && !connected).then(|| "ChatGPT is not connected".into())
-    }
-
-    /// Both modes on `profile`'s llms, the current mode's model and
-    /// effort with them, and the status bar says so.
-    fn apply_profile(&mut self, i: usize) {
-        self.set_mode_llms(self.profiles[i].llms.clone());
-        self.profile = Some(i);
-        self.hint = Some(format!("Profile set to {}", self.profiles[i].name).into());
-        // Its models may be of a provider that could not list, whose
-        // limits only another listing brings.
-        if self.llms_partial() {
-            self.list_llms();
-        }
+            Cycled::NoProfiles => "no profiles configured".into(),
+            Cycled::Stayed(skipped) if skipped.is_empty() => "only one profile".into(),
+            Cycled::Stayed(skipped) => {
+                format!("no other profile can run: {}", skipped.join(", "))
+            }
+        };
+        self.hint = Some(hint.into());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Effort;
+    use nth_config::{Profile, Selection, Slots};
+    use nth_protocol::{Effort, Llm, Mode};
 
     use super::*;
     use crate::app::{
@@ -154,7 +56,7 @@ mod tests {
     fn profile(name: &str, model: &str) -> Profile {
         Profile {
             name: name.into(),
-            llms: ModeLlms {
+            slots: Slots {
                 plan: llm(&format!("{model}-plan")),
                 act: llm(&format!("{model}-act")),
                 subagent: Some(llm(&format!("{model}-subagent"))),
@@ -167,8 +69,7 @@ mod tests {
 
     /// An app whose chat started on `profiles[0]`, as `chat.rs` starts one.
     fn profiled_with(profiles: Vec<Profile>) -> App {
-        let first = profiles[0].llms.clone();
-        app().with_mode_llms(first).with_profiles(profiles)
+        app().with_selection(Selection::same(llm("unused")).with_profiles(profiles))
     }
 
     fn profiled() -> App {
@@ -184,22 +85,26 @@ mod tests {
         );
 
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "zen-act");
+        assert_eq!(app.selection.current().model, "zen-act");
         assert_eq!(
             crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
             " ▎ act  · zen-act · zen"
         );
 
         app.apply(Action::NextTab);
-        assert_eq!(app.mode, Mode::Plan);
-        assert_eq!(app.model, "zen-plan");
+        assert_eq!(app.selection.mode, Mode::Plan);
+        assert_eq!(app.selection.current().model, "zen-plan");
         assert_eq!(
             crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
             " ▎ plan · zen-plan · zen"
         );
 
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "go-plan", "wraps to the first");
+        assert_eq!(
+            app.selection.current().model,
+            "go-plan",
+            "wraps to the first"
+        );
         assert_eq!(app.hint.as_deref(), Some("Profile set to go"));
         assert_eq!(
             crate::app::tests::prompt_row(&rows(&mut app), 0).trim_end(),
@@ -230,65 +135,13 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_model_leaves_the_profile_and_ctrl_p_puts_it_back() {
-        let mut app = profiled();
-        app.model = "picked".into();
-
-        assert_eq!(app.profile_name(), None, "the profile is left");
-        app.apply(Action::NextTab);
-        assert_eq!(app.mode, Mode::Plan);
-        assert_eq!(app.profile_name(), None, "left for plan too");
-        app.apply(Action::NextTab);
-
-        app.apply(Action::NextProfile);
-        assert_eq!(app.model, "go-act", "the same profile comes back");
-        assert_eq!(app.profile_name(), Some("go"));
-        assert_eq!(app.hint.as_deref(), Some("Profile set to go"));
-
-        app.apply(Action::NextTab);
-        assert_eq!(
-            (app.mode, app.model.as_str()),
-            (Mode::Plan, "go-plan"),
-            "both modes are the profile's again"
-        );
-        assert_eq!(app.profile_name(), Some("go"));
-        app.apply(Action::NextProfile);
-        assert_eq!(app.model, "zen-plan", "then cycling moves on");
-    }
-
-    #[test]
-    fn a_picked_subagent_model_leaves_the_profile() {
-        let mut app = profiled();
-        assert_eq!(app.subagent_llm().model, "go-subagent");
-        app.set_llm(crate::llm_picker::Target::Subagent, llm("picked"));
-        assert_eq!(app.profile_name(), None);
-
-        app.apply(Action::NextProfile);
-        assert_eq!(app.subagent_llm().model, "go-subagent", "put back");
-        assert_eq!(app.profile_name(), Some("go"));
-    }
-
-    #[test]
-    fn a_picked_clerk_model_leaves_the_profile() {
-        let mut app = profiled();
-        assert_eq!(app.clerk_llm().model, "go-clerk");
-        app.set_llm(crate::llm_picker::Target::Clerk, llm("picked"));
-        assert_eq!(app.clerk_llm().model, "picked");
-        assert_eq!(app.profile_name(), None);
-
-        app.apply(Action::NextProfile);
-        assert_eq!(app.clerk_llm().model, "go-clerk", "put back");
-        assert_eq!(app.profile_name(), Some("go"));
-    }
-
-    #[test]
     fn a_profile_that_cannot_run_is_skipped_and_said() {
         let mut zen = profile("zen", "zen");
         zen.unavailable = Some("ZEN_API_KEY is not set".into());
         let mut app = profiled_with(vec![profile("go", "go"), zen, profile("lyceum", "ly")]);
 
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "ly-act");
+        assert_eq!(app.selection.current().model, "ly-act");
         assert_eq!(
             app.hint.as_deref(),
             Some("Profile set to lyceum · skipped zen (ZEN_API_KEY is not set)")
@@ -302,7 +155,7 @@ mod tests {
         let mut app = profiled_with(vec![profile("go", "go"), zen]);
 
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "go-act", "stays where it is");
+        assert_eq!(app.selection.current().model, "go-act", "stays where it is");
         assert_eq!(
             app.hint.as_deref(),
             Some("no other profile can run: zen (ZEN_API_KEY is not set)")
@@ -319,7 +172,7 @@ mod tests {
             .with_chatgpt(ChatGpt::new(store.clone()).expect("client"));
 
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "go-act");
+        assert_eq!(app.selection.current().model, "go-act");
         assert_eq!(
             app.hint.as_deref(),
             Some("no other profile can run: codex (ChatGPT is not connected)")
@@ -337,7 +190,7 @@ mod tests {
         };
         store.save(ChatGpt::ID, &oauth).await.expect("saves");
         app.apply(Action::NextProfile);
-        assert_eq!(app.model, "chatgpt/gpt-5.5-act");
+        assert_eq!(app.selection.current().model, "chatgpt/gpt-5.5-act");
     }
 
     #[test]
@@ -346,6 +199,6 @@ mod tests {
         app.apply(Action::NextProfile);
 
         assert_eq!(app.hint.as_deref(), Some("no profiles configured"));
-        assert_eq!(app.model, "glm");
+        assert_eq!(app.selection.current().model, "glm");
     }
 }

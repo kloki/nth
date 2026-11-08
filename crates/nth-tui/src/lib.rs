@@ -42,7 +42,6 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-pub use app::{Llm, ModeLlms, Profile};
 use crossterm::style::Stylize;
 use futures::future::BoxFuture;
 use nth_context::Paths;
@@ -67,9 +66,9 @@ pub struct Checkers {
 
 /// Everything a session runs with in its repository: the session, where
 /// nth looks for project files, its provider, the model's tools and the
-/// shell for `!` commands, what checks the writes, the llms each mode runs
-/// on, the profiles ctrl+p cycles, what is worth telling you about how it
-/// was prepared, and the config it was prepared from. The chat starts on
+/// shell for `!` commands, what checks the writes, what each kind of turn
+/// runs on with the profiles ctrl+p cycles, what is worth telling you about
+/// how it was prepared, and the config it was prepared from. The chat starts on
 /// one and `/resume` swaps in another.
 pub struct PreparedRuntime {
     pub session: Session,
@@ -78,8 +77,7 @@ pub struct PreparedRuntime {
     pub model_tools: Arc<Vec<Box<dyn Tool>>>,
     pub shell: Arc<dyn Tool>,
     pub checkers: Checkers,
-    pub mode_llms: ModeLlms,
-    pub profiles: Vec<Profile>,
+    pub selection: nth_config::Selection,
     pub warnings: Vec<String>,
     /// Where the chat reads its own sections from: `[chat]`, `[layout]`
     /// and `[notify]`.

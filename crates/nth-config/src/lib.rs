@@ -1,9 +1,11 @@
 //! nth's configuration: `Config` and its sections, what `config.toml` and a
-//! repository's `.nth/config` hold, the template `nth init` writes, and the
-//! layering of the two files (`layers`). Every front-end reads its settings
-//! from here rather than from copies of its own.
+//! repository's `.nth/config` hold, the template `nth init` writes, the
+//! layering of the two files (`layers`) and what every kind of turn runs on
+//! (`selection`). Every front-end reads its settings from here rather than
+//! from copies of its own.
 
 mod layers;
+mod selection;
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -12,6 +14,7 @@ pub use layers::repo_config;
 use layers::skill_path;
 use nth_context::Paths;
 use nth_protocol::{Effort, Mode};
+pub use selection::{Cycled, Profile, Selection, Slots, Target};
 use serde::{Deserialize, Serialize};
 
 /// Everything in `config.toml`. Every key is optional: a missing key keeps

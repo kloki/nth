@@ -42,7 +42,7 @@ impl App {
             None if self.background_waiting() => {}
             // Whether there is a plan is known once the read `end_turn`
             // started is back; `plan_read` sends it then.
-            None if self.last_turn == TabState::Done && self.mode == Mode::Plan => {
+            None if self.last_turn == TabState::Done && self.selection.mode == Mode::Plan => {
                 self.plan.notice = Some(cx)
             }
             None if self.last_turn == TabState::Done => self.notify(Event::Done, &cx),

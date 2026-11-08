@@ -407,7 +407,7 @@ fn tab_keeps_command_mode() {
     app.apply(Action::NextTab);
     assert!(app.prompt.shell());
     assert_eq!(
-        app.mode,
+        app.selection.mode,
         nth_protocol::Mode::Plan,
         "a command has no mode to switch"
     );
