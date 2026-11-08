@@ -98,7 +98,8 @@ struct Inner {
     /// the sampler clears it when it stops for want of watchers.
     sampling: AtomicBool,
     /// The sampler's task, so the pool going stops it at once rather than
-    /// at its next tick.
+    /// at its next tick. It may be one that already stopped for want of
+    /// watchers, until the next subscriber replaces it.
     sampler: Mutex<Option<JoinHandle<()>>>,
     cancel: CancellationToken,
     idle: Option<Duration>,
@@ -135,7 +136,10 @@ impl Lsp {
         }
     }
 
-    /// Every client nth has tried to start, as it changes.
+    /// Every client nth has tried to start, as it changes. Clone the list
+    /// and release the watch borrow before awaiting or calling into the
+    /// pool: a status change waits for it, some while holding the clients
+    /// lock.
     pub fn status(&self) -> watch::Receiver<Vec<ServerStatus>> {
         self.inner.status.subscribe()
     }

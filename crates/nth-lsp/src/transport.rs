@@ -117,9 +117,9 @@ mod tests {
         let error = read_message(&mut read).await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
 
-        let at_cap = format!("Content-Length: {MAX_MESSAGE_BYTES}\r\n\r\n{{}}");
-        let mut read = BufReader::new(at_cap.as_bytes());
+        let past_cap = format!("Content-Length: {}\r\n\r\n{{}}", MAX_MESSAGE_BYTES + 1);
+        let mut read = BufReader::new(past_cap.as_bytes());
         let error = read_message(&mut read).await.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
 }

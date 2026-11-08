@@ -164,18 +164,22 @@ impl Lsp {
     /// a touch, or otherwise calling into the pool: publishing needs its write lock.
     pub fn usage(&self) -> watch::Receiver<Vec<ProcessUsage>> {
         let receiver = self.inner.usage.subscribe();
+        // Held from the swap to the store, so two subscribers store their
+        // samplers in the order they started them: otherwise the later
+        // could find the earlier's stale handle replacing its live one.
+        let mut sampler = self
+            .inner
+            .sampler
+            .lock()
+            .expect("lsp sampler lock poisoned");
         if !self.inner.sampling.swap(true, Ordering::AcqRel) {
             let task = tokio::spawn(sample_usage(Arc::downgrade(&self.inner)));
             // A sampler this replaces has cleared `sampling` and is leaving.
-            let mut sampler = self
-                .inner
-                .sampler
-                .lock()
-                .expect("lsp sampler lock poisoned");
             if let Some(old) = sampler.replace(task) {
                 old.abort();
             }
         }
+        drop(sampler);
         receiver
     }
 }
@@ -282,7 +286,7 @@ mod tests {
         let held = usage.borrow();
         let touch = tokio::spawn({
             let (lsp, file) = (lsp.clone(), file.clone());
-            async move { lsp.touch(&file, true).await }
+            async move { lsp.touch(&file, false).await }
         });
         // The touch counts itself in under the lock and then publishes,
         // which waits for `held`. Seeing its count with the lock free means
