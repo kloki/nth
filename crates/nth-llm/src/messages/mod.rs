@@ -106,6 +106,8 @@ pub(crate) struct State {
     calls: BTreeMap<usize, ToolCall>,
     usage: event::Usage,
     stop_reason: Option<String>,
+    /// Whether any text went out, which a cut reply's note follows.
+    text: bool,
 }
 
 impl Protocol for State {
@@ -137,6 +139,7 @@ impl Protocol for State {
             }
             event::Event::ContentBlockDelta { index, delta } => match delta {
                 event::Delta::Text { text } if !text.is_empty() => {
+                    self.text = true;
                     out.push_back(Ok(StreamEvent::TextDelta(text)));
                 }
                 event::Delta::Thinking { thinking } if !thinking.is_empty() => {
@@ -179,13 +182,11 @@ impl Protocol for State {
     }
 
     fn finish(&mut self, out: &mut Out<Provider>) {
-        // Tool calls cut off at the token limit have partial JSON input and
-        // must not run.
+        let calls = std::mem::take(&mut self.calls);
         if self.stop_reason.as_deref() == Some("max_tokens") {
-            out.push_back(Err(Error::Truncated));
+            stream::cut(self.text, !calls.is_empty(), out);
             return;
         }
-        let calls = std::mem::take(&mut self.calls);
         out.extend(calls.into_values().map(|mut call| {
             // A call without parameters streams no input at all.
             if call.arguments.is_empty() {
@@ -202,7 +203,9 @@ mod tests {
     use nth_protocol::{ContextOverflow, Retry};
 
     use super::*;
-    use crate::testing::{chunks, runs_no_tools, serve_status, until};
+    use crate::testing::{
+        chunks, reports_output, runs_no_tools, serve_status, text, until, without_text,
+    };
 
     fn retry(error: &BoxError) -> Option<Retry> {
         stream::retry::<Provider>(error)
@@ -338,16 +341,48 @@ mod tests {
         assert!(runs_no_tools(&events));
     }
 
+    const CUT: &[u8] = include_bytes!("../../tests/fixtures/zen_messages_cut.sse");
+
     #[tokio::test]
-    async fn max_tokens_stop_is_an_error_and_runs_no_tools() {
-        let text = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let input = text.replace(
+    async fn a_reply_cut_at_the_limit_keeps_its_text() {
+        let events = replay_bytes(CUT, CUT.len()).await;
+        assert!(runs_no_tools(&events));
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(
+            text(events),
+            [
+                "The essay so far".to_string(),
+                " runs lo".into(),
+                format!("\n\n{}", stream::CUT_NOTE)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_before_any_text_is_the_note_alone() {
+        let input = without_text(CUT);
+        let events = replay_bytes(input.as_bytes(), input.len()).await;
+        assert!(reports_output(&events, 200), "{events:?}");
+        assert_eq!(text(events), [stream::CUT_NOTE]);
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_with_tool_calls_says_they_were_dropped() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture.replace(
             "\"stop_reason\":\"tool_use\"",
             "\"stop_reason\":\"max_tokens\"",
         );
         let events = replay_bytes(input.as_bytes(), input.len()).await;
-        assert!(matches!(events.last(), Some(Err(Error::Truncated))));
         assert!(runs_no_tools(&events));
+        assert_eq!(
+            text(events),
+            [
+                "Reading wörld".to_string(),
+                " files.".into(),
+                format!("\n\n{}", stream::CUT_NOTE_WITH_CALLS)
+            ]
+        );
     }
 
     #[tokio::test]

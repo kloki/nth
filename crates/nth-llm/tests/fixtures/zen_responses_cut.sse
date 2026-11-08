@@ -1,0 +1,15 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_cut","object":"response","status":"in_progress","model":"gpt-5.4-nano","output":[],"usage":null,"error":null,"incomplete_details":null}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_cut","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":2,"output_index":0,"content_index":0,"item_id":"msg_cut","delta":"The essay so far","logprobs":[]}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"output_index":0,"content_index":0,"item_id":"msg_cut","delta":" runs lo","logprobs":[]}
+
+event: response.incomplete
+data: {"type":"response.incomplete","sequence_number":4,"response":{"id":"resp_cut","object":"response","status":"incomplete","model":"gpt-5.4-nano","error":null,"incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":{"input_tokens":14,"output_tokens":200,"total_tokens":214,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}
+

@@ -75,8 +75,6 @@ pub(crate) enum Error<P: Payload> {
     Stalled,
     #[error("no response within {}s", RESPONSE_TIMEOUT.as_secs())]
     Unanswered,
-    #[error("response hit the output token limit")]
-    Truncated,
 }
 
 /// One endpoint's route for protocol `P`. Each protocol's `stream` signs
@@ -207,6 +205,31 @@ pub(crate) fn retry<P: Payload>(error: &BoxError) -> Option<Retry> {
 
 /// What a protocol hands on while it reads its events.
 pub(crate) type Out<P> = VecDeque<Result<StreamEvent, Error<P>>>;
+
+/// Ends a reply cut at the model's output limit. Its text is an answer that
+/// ran long, so it is kept and the turn ends as answered; its tool calls
+/// have partial arguments and must not run, so the caller drops them. The
+/// note tells the model and the user why the reply stops where it does, and
+/// a model whose calls were dropped why nothing ran. It is set apart from
+/// the reply's text, but a reply with none is the note alone, never one
+/// that starts with blank lines.
+pub(crate) fn cut<P: Payload>(after_text: bool, calls_dropped: bool, out: &mut Out<P>) {
+    let note = if calls_dropped {
+        CUT_NOTE_WITH_CALLS
+    } else {
+        CUT_NOTE
+    };
+    let note = if after_text {
+        format!("\n\n{note}")
+    } else {
+        note.to_string()
+    };
+    out.push_back(Ok(StreamEvent::TextDelta(note)));
+}
+
+pub(crate) const CUT_NOTE: &str = "[reply cut at the output token limit]";
+pub(crate) const CUT_NOTE_WITH_CALLS: &str =
+    "[reply cut at the output token limit; its tool calls were dropped]";
 
 /// Whether the protocol's closing event arrived and it emitted the end.
 pub(crate) enum Flow {
@@ -601,7 +624,6 @@ mod tests {
             retry(&boxed(Error::Unanswered)),
             Some(Retry { after: None })
         );
-        assert_eq!(retry(&boxed(Error::Truncated)), None);
 
         let bad_url = reqwest::Client::new()
             .get("not a url")

@@ -27,6 +27,9 @@ pub enum Event {
     /// A summary comes in parts, each its own paragraph.
     #[serde(rename = "response.reasoning_summary_part.added")]
     SummaryPart { summary_index: usize },
+    /// An output item begun; only whether it is a tool call is read.
+    #[serde(rename = "response.output_item.added")]
+    ItemAdded { item: AddedItem },
     /// A finished output item; a tool call arrives whole in one.
     #[serde(rename = "response.output_item.done")]
     ItemDone { output_index: usize, item: Item },
@@ -51,6 +54,15 @@ pub enum Item {
         name: String,
         arguments: String,
     },
+    #[serde(other)]
+    Other,
+}
+
+/// An output item as it begins, its fields still empty.
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AddedItem {
+    FunctionCall,
     #[serde(other)]
     Other,
 }
