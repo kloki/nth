@@ -1818,6 +1818,7 @@ dependencies = [
  "futures",
  "jiff",
  "nth-auth",
+ "nth-config",
  "nth-context",
  "nth-format",
  "nth-icons",
@@ -1852,6 +1853,24 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "nth-config"
+version = "1.6.2"
+dependencies = [
+ "anyhow",
+ "nth-auth",
+ "nth-context",
+ "nth-format",
+ "nth-lsp",
+ "nth-notify",
+ "nth-protocol",
+ "nth-session",
+ "nth-tools",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -2027,6 +2046,7 @@ dependencies = [
  "hoodrich",
  "ignore",
  "nth-auth",
+ "nth-config",
  "nth-context",
  "nth-format",
  "nth-icons",

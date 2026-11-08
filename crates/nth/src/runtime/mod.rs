@@ -14,14 +14,13 @@ use std::{
 
 use anyhow::Result;
 use futures::FutureExt;
+use nth_config::Config;
 use nth_context::Paths;
 use nth_llm::Providers;
 use nth_protocol::{Effort, Llm, Mode, Provider, SubagentLlm};
 use nth_session::{Session, Subagents};
 use nth_tui::PreparedRuntime;
 pub(crate) use tools::{post_write, tools};
-
-use crate::config::Config;
 
 /// What the command line decided once: the config file, the model that
 /// overrides the config's, the global directories, and the one ChatGPT
@@ -75,8 +74,21 @@ impl Runtime {
     }
 
     /// Where a session on `config` finds its global files and skills.
-    fn paths(&self, config: &Config) -> Paths {
+    pub(crate) fn paths(&self, config: &Config) -> Paths {
         config.paths_over(self.env.clone())
+    }
+
+    /// The global config file: `--config` or `NTH_CONFIG`, else the one in
+    /// the config directory. `None` without a home directory.
+    pub fn config_file(&self) -> Option<PathBuf> {
+        self.config_path
+            .clone()
+            .or_else(|| Config::default_path(&self.env))
+    }
+
+    /// The home, config and data directories the runtime reads.
+    pub fn env(&self) -> &Paths {
+        &self.env
     }
 
     /// The process's ChatGPT login: every call a clone of one handle, so
@@ -126,10 +138,10 @@ impl Runtime {
                 // building the providers reads the ChatGPT login: off the
                 // runtime's workers, which the chat's loop shares.
                 let blocking = runtime.clone();
-                let (start, mut config, providers) =
+                let (start, config, providers) =
                     tokio::task::spawn_blocking(move || blocking.resume(session)).await??;
                 runtime
-                    .prepare(&mut config, Arc::new(providers), start, subagents)
+                    .prepare(config, Arc::new(providers), start, subagents)
                     .await
             }
             .boxed()
@@ -140,12 +152,12 @@ impl Runtime {
     /// and through `providers`: its instruction files, directories, limits,
     /// llms, tools and the shell for `!` commands. A fresh start on a config
     /// without a model runs on one picked from what the providers list,
-    /// written into `config` so the caller sees it too. What is worth telling
+    /// written into the config the runtime carries on. What is worth telling
     /// you, the pick and directories that cannot be added, comes back in
     /// `warnings`; the instruction files' own warnings stay on the context.
     pub async fn prepare(
         &self,
-        config: &mut Config,
+        mut config: Config,
         providers: Arc<Providers>,
         start: Start,
         subagents: Subagents,
@@ -154,7 +166,7 @@ impl Runtime {
         match &start {
             // `config_for` did this already; done again so a config loaded
             // any other way still gives the other mode the session's model.
-            Start::Saved(session) => resumed_config(config, session),
+            Start::Saved(session) => resumed_config(&mut config, session),
             // The model above fills in for every profile slot that has none,
             // and both modes when the config lists no profiles at all.
             Start::Fresh { .. } if config.needs_model() => {
@@ -166,7 +178,7 @@ impl Runtime {
             }
             Start::Fresh { .. } => {}
         }
-        let paths = self.paths(config);
+        let paths = self.paths(&config);
         let context =
             Arc::new(nth_context::Context::load(start.cwd().to_path_buf(), paths.clone()).await);
         let mut session = match start {
@@ -198,14 +210,14 @@ impl Runtime {
                 *session
             }
         };
-        warnings.extend(apply_directories(&mut session, config));
+        warnings.extend(apply_directories(&mut session, &config));
         session.max_steps = config.session.max_steps;
         session.tool_timeout = config.session.tool_timeout();
         // The configured compaction policy; the limits come from a listing once
         // the model is final, so preparing waits on no endpoint. A saved
         // session keeps the limits it saved until then.
         session.compaction = config.context;
-        let (mut mode_llms, profiles) = llms::model_settings(config, &providers);
+        let (mut mode_llms, profiles) = llms::model_settings(&config, &providers);
         // A saved session keeps its model; the other mode starts on the
         // config's. One running as an agent keeps it for the agent, which the
         // chat takes from the session.
@@ -218,10 +230,10 @@ impl Runtime {
             (None, Mode::Plan) => mode_llms.plan = current,
             (None, Mode::Act) => mode_llms.act = current,
         }
-        let post_write = post_write(config);
-        let checkers = tools::checkers(&post_write, config);
+        let post_write = post_write(&config);
+        let checkers = tools::checkers(&post_write, &config);
         let provider: Arc<dyn Provider> = providers;
-        let model_tools = Arc::new(tools(config, post_write, provider.clone(), subagents));
+        let model_tools = Arc::new(tools(&config, post_write, provider.clone(), subagents));
         Ok(PreparedRuntime {
             session,
             paths,
@@ -233,6 +245,7 @@ impl Runtime {
             mode_llms,
             profiles,
             warnings,
+            config,
         })
     }
 
@@ -338,15 +351,10 @@ pub(crate) mod tests {
     async fn prepare_qualifies_a_saved_sessions_model() {
         let dir = tempfile::tempdir().expect("tempdir");
         let saved = Session::new("a", dir.path().into());
-        let mut config = config("model = \"zen/b\"");
+        let config = config("model = \"zen/b\"");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(
-                &mut config,
-                zen(&[]),
-                Start::Saved(Box::new(saved)),
-                subagents(),
-            )
+            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
             .await
             .expect("prepares");
 
@@ -357,7 +365,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn prepare_fills_a_fresh_session_from_the_config() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut config = config(
+        let config = config(
             r#"
             [session]
             max_steps = 7
@@ -392,7 +400,7 @@ pub(crate) mod tests {
         };
 
         let prepared = runtime(dir.path(), None)
-            .prepare(&mut config, zen(&[]), start, subagents())
+            .prepare(config, zen(&[]), start, subagents())
             .await
             .expect("prepares");
 
@@ -429,15 +437,10 @@ pub(crate) mod tests {
         let mut saved = Session::new("zen/a", dir.path().into());
         saved.mode = Mode::Plan;
         saved.effort = Effort::High;
-        let mut config = config("model = \"zen/b\"");
+        let config = config("model = \"zen/b\"");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(
-                &mut config,
-                zen(&[]),
-                Start::Saved(Box::new(saved)),
-                subagents(),
-            )
+            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
             .await
             .expect("prepares");
 
@@ -448,18 +451,18 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_missing_model_is_picked_and_warned_about() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut config = config("");
+        let config = config("");
         let start = Start::Fresh {
             cwd: dir.path().into(),
             mode: Mode::Act,
         };
 
         let prepared = runtime(dir.path(), None)
-            .prepare(&mut config, zen(&["a"]), start, subagents())
+            .prepare(config, zen(&["a"]), start, subagents())
             .await
             .expect("prepares");
 
-        assert_eq!(config.model, "zen/a");
+        assert_eq!(prepared.config.model, "zen/a");
         assert_eq!(prepared.session.model, "zen/a");
         assert_eq!(
             prepared.warnings,
@@ -474,15 +477,10 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut saved = Session::new("zen/a", dir.path().into());
         saved.set_limits(Some(200_000), Some(64_000));
-        let mut config = config("model = \"zen/a\"\n[context]\nauto = false\nreserved = 30000");
+        let config = config("model = \"zen/a\"\n[context]\nauto = false\nreserved = 30000");
 
         let prepared = runtime(dir.path(), None)
-            .prepare(
-                &mut config,
-                zen(&[]),
-                Start::Saved(Box::new(saved)),
-                subagents(),
-            )
+            .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
             .await
             .expect("prepares");
 
@@ -499,16 +497,11 @@ pub(crate) mod tests {
         for text in ["", "[[profiles]]\nname = \"p\"\n"] {
             let dir = tempfile::tempdir().expect("tempdir");
             let saved = Session::new("zen/a", dir.path().into());
-            let mut config = config(text);
+            let config = config(text);
             assert!(config.needs_model());
 
             let prepared = runtime(dir.path(), None)
-                .prepare(
-                    &mut config,
-                    zen(&[]),
-                    Start::Saved(Box::new(saved)),
-                    subagents(),
-                )
+                .prepare(config, zen(&[]), Start::Saved(Box::new(saved)), subagents())
                 .await
                 .expect("prepares");
 
@@ -586,7 +579,7 @@ pub(crate) mod tests {
         let endpoint = resumed.chatgpt().expect("the built-in endpoint");
         assert!(endpoint.same_store(&login));
 
-        let settings = crate::chat::settings(&config, runtime, subagents()).expect("settings");
+        let settings = crate::chat::settings(runtime, subagents()).expect("settings");
         assert!(settings.chatgpt.same_store(&login));
     }
 

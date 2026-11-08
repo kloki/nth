@@ -1,11 +1,10 @@
 //! What each mode, the subagents and the clerk run on, and the profiles
 //! ctrl+p cycles.
 
+use nth_config::Config;
 use nth_llm::{Providers, providers::Error};
 use nth_protocol::{Effort, Mode};
 use nth_tui::{Llm, ModeLlms, Profile};
-
-use crate::config::Config;
 
 pub(super) fn model_settings(config: &Config, provider: &Providers) -> (ModeLlms, Vec<Profile>) {
     let llm = |(model, effort): (String, Effort)| Llm {

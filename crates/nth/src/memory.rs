@@ -4,11 +4,12 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Context, Result};
+use nth_config::Config;
 use nth_context::memory::{self, Entry, INDEX, INDEX_BYTES, INDEX_LINES, Kind};
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, text::shorten};
+use crate::text::shorten;
 
 pub fn run(json: bool, config: &Config) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;

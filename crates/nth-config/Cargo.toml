@@ -1,0 +1,20 @@
+[package]
+name = "nth-config"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nth-auth.workspace = true
+nth-context.workspace = true
+nth-format.workspace = true
+nth-lsp.workspace = true
+nth-notify.workspace = true
+nth-protocol.workspace = true
+nth-session.workspace = true
+nth-tools.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use nth_config::Config;
 use nth_icons::icons;
 use nth_protocol::{FrontEnd, Mode, Provider, Tool};
 use nth_session::{
@@ -19,10 +20,7 @@ use nth_tui::PreparedRuntime;
 use owo_colors::OwoColorize;
 use tokio::sync::mpsc;
 
-use crate::{
-    config::Config,
-    runtime::{Runtime, Start},
-};
+use crate::runtime::{Runtime, Start};
 
 /// How long an interrupted run waits for its subagents' turns to end, so
 /// what they spent is counted.
@@ -34,7 +32,7 @@ pub async fn run(
     prompt: String,
     mode: Mode,
     agent: Option<String>,
-    mut config: Config,
+    config: Config,
     runtime: &Runtime,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;
@@ -44,7 +42,7 @@ pub async fn run(
     let subagents = Subagents::default();
     let prepared = runtime
         .prepare(
-            &mut config,
+            config,
             providers,
             Start::Fresh { cwd, mode },
             subagents.clone(),

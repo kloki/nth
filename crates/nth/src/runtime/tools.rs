@@ -2,11 +2,10 @@
 
 use std::sync::Arc;
 
+use nth_config::Config;
 use nth_protocol::{Provider, Tool};
 use nth_session::Subagents;
 use nth_tools::PostWrite;
-
-use crate::config::Config;
 
 /// Every tool the model gets: nth-tools' list, the task tool that hands
 /// each subagent its share of the same list, task_stop, and the work

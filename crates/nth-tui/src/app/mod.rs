@@ -158,6 +158,9 @@ pub struct App {
     /// How the chats show what the model did: the config's `[chat]` to
     /// start, `/settings` to change it for this run.
     settings: ChatSettings,
+    /// The config the runtime in use was prepared from; `None` until one
+    /// is installed. What a resumed runtime's config is compared with.
+    config: Option<nth_config::Config>,
     /// The terminal width from which the content panel splits, chat on the
     /// left; 0 never splits. `[layout] split_width`.
     split_width: u16,
@@ -484,7 +487,7 @@ impl App {
             inbox.clone(),
         );
         let home = std::env::var("HOME").ok();
-        // Replaced by `with_notifier`.
+        // Replaced by the config `new` installs.
         let notifier = Notifier::off();
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
@@ -519,6 +522,7 @@ impl App {
             llm_usage: LlmUsage::default(),
             llm_usage_saving: Job::default(),
             settings: ChatSettings::default(),
+            config: None,
             split_width: 0,
             wide: false,
             queue: VecDeque::new(),
@@ -640,7 +644,9 @@ impl App {
             mode_llms,
             profiles,
             warnings,
+            config,
         } = runtime;
+        self.apply_config(config);
         self.paths = paths;
         self.provider = provider;
         // Whatever the old provider listed is no guide to the new one's.
@@ -663,6 +669,23 @@ impl App {
         self.formatters_lookup = Default::default();
         self.diagnostics = Default::default();
         (session, warnings)
+    }
+
+    /// Takes on `config`'s `[chat]`, `[layout]` and `[notify]`. A section
+    /// equal to the last config's is left alone, so the `/settings` flips of
+    /// this run outlive a `/resume` whose config says the same, and the
+    /// notifier is not built again for nothing; one that differs starts
+    /// over from the new config.
+    fn apply_config(&mut self, config: nth_config::Config) {
+        let old = self.config.as_ref();
+        if old.is_none_or(|old| old.chat != config.chat) {
+            self.settings = ChatSettings::from(&config.chat);
+        }
+        if old.is_none_or(|old| old.notify != config.notify) {
+            self.set_notifier(config.notify.notifier());
+        }
+        self.split_width = config.layout.split_width;
+        self.config = Some(config);
     }
 
     /// Runs the commands typed after `!` on `shell`.
@@ -704,15 +727,9 @@ impl App {
         self
     }
 
-    /// The initial thinking and tool-output toggles, from the config's
-    /// `[chat]`; `/settings` flips them for the run.
-    pub fn with_chat_settings(mut self, settings: ChatSettings) -> Self {
-        self.settings = settings;
-        self
-    }
-
     /// The terminal width from which the chat gets the left half of the
-    /// content panel, from `[layout]`; 0 never splits.
+    /// content panel, over the config's; 0 never splits.
+    #[cfg(test)]
     pub fn with_split_width(mut self, width: u16) -> Self {
         self.split_width = width;
         self

@@ -11,10 +11,17 @@ use nth_protocol::{Ask, Message, Mode};
 use super::{App, TabState};
 
 impl App {
+    #[cfg(test)]
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.set_notifier(notifier);
+        self
+    }
+
+    /// Sends through `notifier` from now on, and hears of its failures
+    /// rather than the last one's.
+    pub(super) fn set_notifier(&mut self, notifier: Notifier) {
         self.notify_errors = notifier.errors();
         self.notifier = notifier;
-        self
     }
 
     /// At the end of a turn, once it is clear whether nth now waits on you:

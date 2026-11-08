@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::Result;
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
+use nth_config::Config;
 use nth_icons::icons;
 use nth_protocol::{Cost, Listing, Provider};
 use nth_session::{
@@ -20,7 +21,7 @@ use nth_session::{
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
-use crate::{config::Config, runtime::Runtime};
+use crate::runtime::Runtime;
 
 /// How long a price waits for the model listing.
 const LISTING_WAIT: Duration = Duration::from_secs(3);

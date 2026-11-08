@@ -10,6 +10,7 @@ repository = "https://github.com/kloki/nth"
 
 [workspace.dependencies]
 nth-auth = { path = "crates/nth-auth" }
+nth-config = { path = "crates/nth-config" }
 nth-context = { path = "crates/nth-context" }
 nth-curios = { path = "crates/nth-curios" }
 nth-directories = { path = "crates/nth-directories" }

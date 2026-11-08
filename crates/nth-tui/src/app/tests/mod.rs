@@ -29,7 +29,8 @@ pub(crate) fn app() -> App {
 
 /// `session` on `provider` with no tools, a shell, idle checkers and each
 /// mode on the session's llm, as a repository with an empty config would
-/// prepare it.
+/// prepare it, but for two keys: notifications are off, so no test reaches
+/// your desktop, and the panel never splits unless a test asks.
 pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> PreparedRuntime {
     let llm = nth_protocol::Llm {
         model: session.model.clone(),
@@ -49,6 +50,14 @@ pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> Prepared
         mode_llms: ModeLlms::same(llm),
         profiles: Vec::new(),
         warnings: Vec::new(),
+        config: nth_config::Config {
+            layout: nth_config::LayoutConfig { split_width: 0 },
+            notify: nth_notify::NotifyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     }
 }
 
@@ -1033,10 +1042,11 @@ async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
 
 #[test]
 fn chat_settings_start_from_the_config() {
-    let mut app = app().with_chat_settings(crate::settings::ChatSettings {
-        thinking: false,
-        tool_output: false,
-    });
+    let session = Session::new("glm", "/repo".into());
+    let mut runtime = runtime(session, Arc::new(Scripted::idle()));
+    runtime.config.chat.thinking = false;
+    runtime.config.chat.tool_output = false;
+    let mut app = App::new(runtime);
     app.run_command(crate::command::Command::Settings);
     let shown = rows(&mut app);
     assert!(

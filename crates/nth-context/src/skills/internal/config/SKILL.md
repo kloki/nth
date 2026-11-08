@@ -287,7 +287,8 @@ enabled = true         # the model saves what it learns in .nth/memory/; false t
 
 ## Reference
 
-Every key with its default, in the order of `nth init`'s template.
+Every key with its default, in the order of `nth init`'s template
+(`crates/nth-config/src/config.toml` in nth's source).
 
 | Key     | Default | Meaning                                                            |
 | ------- | ------- | ------------------------------------------------------------------ |
@@ -398,6 +399,12 @@ Every key with its default, in the order of `nth init`'s template.
 | Key     | Default | Meaning                                                         |
 | ------- | ------- | --------------------------------------------------------------- |
 | `paths` | `[]`    | Extra folders searched for `SKILL.md`, after the standard ones. |
+
+**`[directories]`**
+
+| Key     | Default | Meaning                                                        |
+| ------- | ------- | -------------------------------------------------------------- |
+| `paths` | `[]`    | Additional directories available to sessions, like `/add-dir`. |
 
 **`[format]`** — run a file's formatters after a tool writes it.
 

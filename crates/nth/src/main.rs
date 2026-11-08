@@ -195,7 +195,7 @@ async fn dispatch(
 ) -> Result<()> {
     // Each command loads the config itself, so init can run without one:
     // the file may not exist yet, or be the broken one --force replaces.
-    let runtime = Runtime::new(config_path.clone(), model);
+    let runtime = Runtime::new(config_path, model);
     let config = || runtime.load(&std::env::current_dir().context("no working directory")?);
     match command {
         Command::Curio(args) => curios::run(args).await,
@@ -208,12 +208,12 @@ async fn dispatch(
             Err(e) => Err(anyhow::anyhow!(e)),
         },
         Command::Models { json } => models::run(json, config()?, &runtime).await,
-        Command::Skills { json } => skills::run(json, &config()?).await,
-        Command::Agents { json } => agents::run(json, &config()?).await,
+        Command::Skills { json } => skills::run(json, runtime.paths(&config()?)).await,
+        Command::Agents { json } => agents::run(json, runtime.paths(&config()?)).await,
         Command::Formatters { json } => formatters::run(json, &config()?).await,
         Command::Lsp { json, command } => lsp::run(command, json, &config()?).await,
-        Command::Config => config::show(config_path.clone(), &config()?),
-        Command::Init { force } => config::init(config_path.clone(), force),
+        Command::Config => config::show(&runtime, &config()?),
+        Command::Init { force } => config::init(&runtime, force),
         Command::Notify { event, json } => notify::run(event, json, &config()?).await,
         Command::Usage { session, all, json } => {
             usage::run(session, all, json, config()?, &runtime).await

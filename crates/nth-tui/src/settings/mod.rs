@@ -26,6 +26,15 @@ impl Default for ChatSettings {
     }
 }
 
+impl From<&nth_config::ChatConfig> for ChatSettings {
+    fn from(config: &nth_config::ChatConfig) -> Self {
+        Self {
+            thinking: config.thinking,
+            tool_output: config.tool_output,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Thinking,

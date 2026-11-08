@@ -49,10 +49,8 @@ use nth_context::Paths;
 use nth_format::Formatters;
 use nth_icons::icons;
 use nth_lsp::Lsp;
-use nth_notify::Notifier;
 use nth_protocol::{Provider, Tool};
 use nth_session::{Session, Store, Subagents, subagent::SubagentEvent};
-pub use settings::ChatSettings;
 use tokio::sync::mpsc;
 
 /// What the tools reach for besides themselves: the same language servers
@@ -70,8 +68,9 @@ pub struct Checkers {
 /// Everything a session runs with in its repository: the session, where
 /// nth looks for project files, its provider, the model's tools and the
 /// shell for `!` commands, what checks the writes, the llms each mode runs
-/// on, the profiles ctrl+p cycles, and what is worth telling you about how
-/// it was prepared. The chat starts on one and `/resume` swaps in another.
+/// on, the profiles ctrl+p cycles, what is worth telling you about how it
+/// was prepared, and the config it was prepared from. The chat starts on
+/// one and `/resume` swaps in another.
 pub struct PreparedRuntime {
     pub session: Session,
     pub paths: Paths,
@@ -82,21 +81,18 @@ pub struct PreparedRuntime {
     pub mode_llms: ModeLlms,
     pub profiles: Vec<Profile>,
     pub warnings: Vec<String>,
+    /// Where the chat reads its own sections from: `[chat]`, `[layout]`
+    /// and `[notify]`.
+    pub config: nth_config::Config,
 }
 
 /// What `/resume` prepares a saved session's runtime with, for its own
 /// repository: what the chat started on came through the same steps.
 pub type Reload = Arc<dyn Fn(Session) -> BoxFuture<'static, Result<PreparedRuntime>> + Send + Sync>;
 
-/// What the config decided beyond the runtime: where notifications go, how
-/// the chat shows what the model did, and the accounts `/connect` signs in
-/// to.
+/// What the chat runs with beyond a runtime: the accounts `/connect` signs
+/// in to and how `/resume` prepares another runtime.
 pub struct Settings {
-    pub notifier: Notifier,
-    pub chat: ChatSettings,
-    /// The terminal width from which the chat and another tab show side by
-    /// side; 0 never splits.
-    pub split_width: u16,
     /// What `/connect` signs in to ChatGPT through.
     pub chatgpt: nth_auth::ChatGpt,
     /// What `/resume` prepares another session's repository runtime with;
@@ -115,13 +111,7 @@ pub async fn run(
     subagents: Subagents,
     subagent_rx: mpsc::Receiver<SubagentEvent>,
     store: Store,
-    Settings {
-        notifier,
-        chat,
-        split_width,
-        chatgpt,
-        loader,
-    }: Settings,
+    Settings { chatgpt, loader }: Settings,
 ) -> Result<()> {
     // Without this check, piped or tty-less runs would write setup escape
     // codes into the pipe and then fail on raw mode.
@@ -144,9 +134,6 @@ pub async fn run(
         .with_reload(loader)
         .with_history(history)
         .with_llm_usage(llm_usage)
-        .with_notifier(notifier)
-        .with_chat_settings(chat)
-        .with_split_width(split_width)
         .with_chatgpt(chatgpt);
     let result = app.run(&mut terminal).await;
     terminal::restore();

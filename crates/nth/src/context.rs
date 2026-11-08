@@ -46,10 +46,10 @@ async fn reconstruct(
 ) -> Result<(Session, Arc<Vec<Box<dyn Tool>>>, Vec<String>)> {
     let (model, messages) = (session.model.clone(), session.messages.clone());
     let start = Start::Saved(Box::new(session));
-    let mut config = runtime.config_for(&start)?;
+    let config = runtime.config_for(&start)?;
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let prepared = runtime
-        .prepare(&mut config, offline_provider()?, start, Subagents::new(tx))
+        .prepare(config, offline_provider()?, start, Subagents::new(tx))
         .await?;
     let mut session = prepared.session;
     session.model = model;
@@ -244,10 +244,11 @@ fn write_entry(out: &mut impl Write, entry: &Entry) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use nth_config::Config;
     use nth_protocol::{AssistantMessage, Image, ToolCall};
 
     use super::*;
-    use crate::{config::Config, runtime::tests::runtime};
+    use crate::runtime::tests::runtime;
 
     #[test]
     fn text_and_json_show_complete_preview_without_image_bytes() {
