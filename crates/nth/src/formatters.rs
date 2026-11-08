@@ -4,10 +4,9 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Context, Result};
+use nth_config::Config;
 use nth_icons::icons;
 use owo_colors::OwoColorize;
-
-use crate::config::Config;
 
 pub async fn run(json: bool, config: &Config) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;

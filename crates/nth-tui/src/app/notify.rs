@@ -11,10 +11,17 @@ use nth_protocol::{Ask, Message, Mode};
 use super::{App, TabState};
 
 impl App {
+    #[cfg(test)]
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.set_notifier(notifier);
+        self
+    }
+
+    /// Sends through `notifier` from now on, and hears of its failures
+    /// rather than the last one's.
+    pub(super) fn set_notifier(&mut self, notifier: Notifier) {
         self.notify_errors = notifier.errors();
         self.notifier = notifier;
-        self
     }
 
     /// At the end of a turn, once it is clear whether nth now waits on you:
@@ -412,5 +419,39 @@ mod tests {
         assert!(!app.inbox.wakes());
         app.notify_turn_ended(false, None, Duration::ZERO);
         assert!(next(&mut rx).await.summary.contains("done"));
+    }
+
+    #[tokio::test]
+    async fn only_a_changed_notify_config_builds_the_notifier_again() {
+        use nth_notify::BackendKind;
+
+        let (mut app, mut rx) = answering("unused");
+        let config = || {
+            crate::app::tests::runtime(
+                Session::new("glm", "/repo".into()),
+                Arc::new(Scripted::idle()),
+            )
+            .config
+        };
+        // `bare` installed no config, and a first one is always taken.
+        app.config = Some(config());
+        let note = |summary: &str| Notification {
+            summary: summary.into(),
+            body: String::new(),
+        };
+
+        app.apply_config(config());
+        app.notifier.notify(note("kept"));
+        assert_eq!(rx.recv().await, Some(note("kept")), "the same [notify]");
+
+        let mut changed = config();
+        changed.notify.backend = match BackendKind::default() {
+            BackendKind::NotifySend => BackendKind::Osascript,
+            BackendKind::Osascript => BackendKind::NotifySend,
+        };
+        app.apply_config(changed);
+        // The recording notifier's task ends once its last handle is gone,
+        // dropping the backend and so the channel's sender.
+        assert_eq!(rx.recv().await, None, "a changed [notify] replaced it");
     }
 }

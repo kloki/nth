@@ -8,15 +8,19 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use nth_context::skills::{Skill, Skills, Source};
+use nth_context::{
+    Paths,
+    skills::{Skill, Skills, Source},
+};
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, context, text::shorten};
+use crate::{context, text::shorten};
 
-pub async fn run(json: bool, config: &Config) -> Result<()> {
+/// `paths` are the session's global directories with the configured skill
+/// folders, as `Runtime::paths` gives them.
+pub async fn run(json: bool, paths: Paths) -> Result<()> {
     let cwd = std::env::current_dir().context("no working directory")?;
-    let paths = config.paths();
     let context = context(cwd, &paths).await;
 
     let mut out = std::io::stdout().lock();

@@ -427,6 +427,107 @@ mod tests {
         );
     }
 
+    /// An app with the diagnostics tab open, after resuming a session that
+    /// thought `pondering` and answered `hello`, its runtime prepared from
+    /// `config`; with the folder its store saves in, kept for the test.
+    async fn resumed_on(
+        config: impl Fn() -> nth_config::Config + Send + Sync + 'static,
+    ) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut saved = Session::new("glm", dir.path().into());
+        saved.messages.push(Message::User("hi".into()));
+        saved.messages.push(Message::Assistant(AssistantMessage {
+            text: "hello".into(),
+            reasoning: "pondering".into(),
+            ..Default::default()
+        }));
+        store.save(&saved).await.unwrap();
+        let config = Arc::new(config);
+        let reload: crate::Reload = Arc::new(move |session: Session| {
+            let config = config.clone();
+            async move {
+                Ok(crate::PreparedRuntime {
+                    config: config(),
+                    ..runtime(session, Arc::new(crate::app::tests::Scripted::idle()))
+                })
+            }
+            .boxed()
+        });
+        let mut app = app().with_store(store).with_reload(Some(reload));
+        app.open_content(super::super::Tab::Diagnostics);
+        app.open_session_picker();
+        let listed = app.session_listing.join().await.unwrap();
+        app.sessions_listed(listed);
+        app.choose_session();
+        let loaded = app.session_loading.join().await.unwrap();
+        app.session_loaded(loaded);
+        assert_eq!(app.session_id, saved.id);
+        (app, dir)
+    }
+
+    /// The config `runtime` prepares, so a resume onto it changes nothing.
+    fn unchanged() -> nth_config::Config {
+        runtime(
+            Session::new("glm", "/repo".into()),
+            Arc::new(crate::app::tests::Scripted::idle()),
+        )
+        .config
+    }
+
+    /// Whether the chat on the left of a 100-column app shows `text`.
+    fn chat_shows(app: &mut App, text: &str) -> bool {
+        crate::app::tests::rows_of(app, 100)[2..]
+            .iter()
+            .any(|row| row.chars().take(50).collect::<String>().contains(text))
+    }
+
+    /// A repository's `.nth/config` cannot set `[chat]` or `[layout]`, so
+    /// what changes them on a resume is the global config, edited since nth
+    /// started.
+    #[tokio::test]
+    async fn resuming_onto_a_changed_config_takes_its_chat_and_layout() {
+        let (mut app, _dir) = resumed_on(unchanged).await;
+        assert!(
+            !chat_shows(&mut app, "hello"),
+            "the diagnostics tab fills the panel"
+        );
+
+        let split = || {
+            let mut config = unchanged();
+            config.layout.split_width = 1;
+            config
+        };
+        let (mut app, _dir) = resumed_on(split).await;
+        assert!(chat_shows(&mut app, "hello"), "beside the diagnostics tab");
+        assert!(chat_shows(&mut app, "pondering"), "thinking shows");
+
+        let (mut app, _dir) = resumed_on(move || {
+            let mut config = split();
+            config.chat.thinking = false;
+            config
+        })
+        .await;
+        assert!(chat_shows(&mut app, "hello"));
+        assert!(!chat_shows(&mut app, "pondering"), "thinking is hidden");
+    }
+
+    #[test]
+    fn only_a_changed_chat_config_starts_the_settings_over() {
+        let mut app = app();
+        // As `/settings` flips it for the run.
+        app.settings.thinking = false;
+
+        app.apply_config(unchanged());
+        assert!(!app.settings.thinking, "the same [chat] keeps the flip");
+
+        let mut config = unchanged();
+        config.chat.tool_output = false;
+        app.apply_config(config);
+        assert!(app.settings.thinking, "a changed [chat] starts over");
+        assert!(!app.settings.tool_output);
+    }
+
     #[test]
     fn without_a_store_the_picker_says_so() {
         let mut app = app();

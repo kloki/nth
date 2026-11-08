@@ -8,11 +8,10 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use clap::ValueEnum;
+use nth_config::Config;
 use nth_icons::icons;
 use nth_notify::{Context, Event};
 use owo_colors::OwoColorize;
-
-use crate::config::Config;
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Sample {

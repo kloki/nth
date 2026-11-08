@@ -2,11 +2,10 @@
 //! config names none.
 
 use anyhow::{Context, Result, bail};
+use nth_config::Config;
 use nth_context::Paths;
 use nth_llm::{Credentials, EndpointConfig, Providers, Unavailable};
 use nth_protocol::{Listing, Mode, Provider};
-
-use crate::config::Config;
 
 /// Any one of the models the providers list.
 pub(super) async fn random_model(providers: &Providers) -> Result<String> {

@@ -8,11 +8,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use nth_config::Config;
 use nth_icons::icons;
 use nth_lsp::{Lsp, ServerState, report};
 use owo_colors::OwoColorize;
-
-use crate::config::Config;
 
 #[derive(Subcommand)]
 pub enum LspCommand {

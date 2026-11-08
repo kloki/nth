@@ -5,11 +5,12 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Result, anyhow};
+use nth_config::Config;
 use nth_icons::icons;
 use nth_protocol::Provider;
 use owo_colors::OwoColorize;
 
-use crate::{config::Config, runtime::Runtime};
+use crate::runtime::Runtime;
 
 pub async fn run(json: bool, config: Config, runtime: &Runtime) -> Result<()> {
     let providers = runtime.providers(&config)?;
