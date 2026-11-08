@@ -67,46 +67,91 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+/// A server on a free local port that accepts a connection and never
+/// writes to it, as a server that hangs before its headers does.
+pub(crate) async fn serve_silent() -> String {
+    let (listener, url) = listen().await;
+    tokio::spawn(async move {
+        // Held, not dropped: closing would end the request at once.
+        let _connection = listener.accept().await.expect("a request");
+        std::future::pending::<()>().await;
+    });
+    url
+}
+
+/// A server on a free local port that refuses one request with `status`
+/// and `Retry-After: retry_after` seconds, then never sends the body its
+/// headers promise, as a proxy that holds a refusal's body back does.
+pub(crate) async fn serve_unfinished(status: u16, retry_after: u64) -> String {
+    use tokio::io::AsyncWriteExt;
+
+    let (listener, url) = listen().await;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("a request");
+        read_request(&mut stream).await;
+        let head = format!(
+            "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: 64\r\nretry-after: {retry_after}\r\n\r\n",
+            reason(status),
+        );
+        stream.write_all(head.as_bytes()).await.expect("writable");
+        std::future::pending::<()>().await;
+    });
+    url
+}
+
+async fn listen() -> (tokio::net::TcpListener, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port");
+    let url = format!("http://{}", listener.local_addr().expect("bound"));
+    (listener, url)
+}
+
+/// The whole request, as its head (request line and headers) and its body:
+/// closing on unread bytes would reset the connection under the reply.
+async fn read_request(stream: &mut tokio::net::TcpStream) -> (String, String) {
+    use tokio::io::AsyncReadExt;
+
+    let mut request = Vec::new();
+    let mut buf = [0; 4096];
+    let head = loop {
+        let n = stream.read(&mut buf).await.expect("readable");
+        request.extend_from_slice(&buf[..n]);
+        if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+            break String::from_utf8_lossy(&request[..end]).into_owned();
+        }
+        assert!(n > 0, "the request ended inside its head");
+    };
+    let length = head
+        .lines()
+        .find_map(|l| {
+            l.to_lowercase()
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().to_string())
+        })
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    while request.len() < head.len() + 4 + length {
+        let n = stream.read(&mut buf).await.expect("readable");
+        assert!(n > 0, "the request ended inside its body");
+        request.extend_from_slice(&buf[..n]);
+    }
+    let body = String::from_utf8_lossy(&request[head.len() + 4..]).into_owned();
+    (head, body)
+}
+
 async fn serve(
     status: u16,
     content_type: &'static str,
     body: &'static [u8],
 ) -> (String, tokio::sync::oneshot::Receiver<(String, String)>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("a free port");
-    let url = format!("http://{}", listener.local_addr().expect("bound"));
+    let (listener, url) = listen().await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("a request");
-        // The whole request, body included: closing on unread bytes would
-        // reset the connection under the reply.
-        let mut request = Vec::new();
-        let mut buf = [0; 4096];
-        let head = loop {
-            let n = stream.read(&mut buf).await.expect("readable");
-            request.extend_from_slice(&buf[..n]);
-            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                break String::from_utf8_lossy(&request[..end]).into_owned();
-            }
-            assert!(n > 0, "the request ended inside its head");
-        };
-        let length = head
-            .lines()
-            .find_map(|l| {
-                l.to_lowercase()
-                    .strip_prefix("content-length:")
-                    .map(|v| v.trim().to_string())
-            })
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0);
-        while request.len() < head.len() + 4 + length {
-            let n = stream.read(&mut buf).await.expect("readable");
-            assert!(n > 0, "the request ended inside its body");
-            request.extend_from_slice(&buf[..n]);
-        }
+        let request = read_request(&mut stream).await;
         let reply = format!(
             "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             reason(status),
@@ -114,8 +159,7 @@ async fn serve(
         );
         stream.write_all(reply.as_bytes()).await.expect("writable");
         stream.write_all(body).await.expect("writable");
-        let sent = String::from_utf8_lossy(&request[head.len() + 4..]).into_owned();
-        let _ = tx.send((head, sent));
+        let _ = tx.send(request);
     });
     (url, rx)
 }

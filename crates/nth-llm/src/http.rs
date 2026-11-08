@@ -16,6 +16,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// stream keeps sending (if only keep-alive comments), while a dead
 /// connection would otherwise hang the turn forever.
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The longest wait from sending a request to its response's headers. A
+/// server that accepted the connection but never answers, or a proxy that
+/// holds the reply back, would otherwise hang the turn before the idle
+/// deadline above starts. Generous, since the wait includes uploading the
+/// request (up to 25 MiB of images on a slow uplink) and some local servers
+/// send no headers until they have processed the whole prompt; opencode
+/// waits as long. Not the client's own timeout, which would also cut a long
+/// reply's body.
+pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+/// The longest wait for a refusal's body; its status alone still says
+/// whether to retry, so a body that never ends is read as empty.
+pub(crate) const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How every endpoint is reached; `Providers` shares one between them, and
 /// every request nth makes goes through it, so it names nth once here.
