@@ -9,9 +9,9 @@ mod usage;
 mod fake;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, hash_map},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, Mutex, Weak, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -43,10 +43,9 @@ pub struct ServerStatus {
 pub enum ServerState {
     Starting,
     Connected,
-    /// It failed to start, and is not tried again; died, and is tried
-    /// again once stopped for idling, when `[lsp] idle_secs` is set; or
-    /// stopped reading what it is sent, and was killed, to be started again
-    /// on the next touch.
+    /// It failed to start, and is not tried again; or it died or stopped
+    /// reading what it is sent, and was killed, to be started again on the
+    /// next touch, at most `MAX_RESTARTS` times. The reason says which.
     Broken(String),
 }
 
@@ -63,6 +62,11 @@ pub struct ServerInfo {
 
 type Key = (String, PathBuf);
 
+/// How many times a server that died, or stopped reading, is started again
+/// in one root. Never reset by a start that succeeds: one that dies every
+/// ten minutes costs a re-index each time and should stop being tried.
+pub const MAX_RESTARTS: u32 = 3;
+
 /// One client's start, shared by everyone who touches its (id, root). The
 /// first runs it in a task of its own, since a cancelled turn drops its tool
 /// futures and must not take a server that is still starting down with it;
@@ -72,12 +76,29 @@ type Slot = Shared<BoxFuture<'static, Option<Arc<Client>>>>;
 
 struct Entry {
     slot: Slot,
+    /// Stops the start and then the client, which kills the server. The
+    /// entry going cancels it, so neither outlives the entry.
+    cancel: CancellationToken,
     /// When the last touch of a file this client serves ended, which its
     /// idle time counts from.
     touched: Instant,
     /// Touches using it right now: never idle while there are any.
     busy: usize,
     usage: ProcessUsage,
+}
+
+impl Entry {
+    /// Whether this entry's start made `client`, rather than one that took
+    /// its place under the same key.
+    fn holds(&self, client: &Arc<Client>) -> bool {
+        matches!(self.slot.peek(), Some(Some(held)) if Arc::ptr_eq(held, client))
+    }
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 /// Cheap to clone; every clone shares the same clients. Dropping the last
@@ -92,6 +113,9 @@ pub struct Lsp {
 struct Inner {
     servers: Arc<[Server]>,
     clients: Mutex<HashMap<Key, Entry>>,
+    /// How many times each server was started again after it died. Taken
+    /// only while holding `clients`, so the two agree.
+    restarts: Mutex<HashMap<Key, u32>>,
     status: watch::Sender<Vec<ServerStatus>>,
     usage: watch::Sender<Vec<ProcessUsage>>,
     /// A usage sampler runs: `usage()` starts one when it is not set, and
@@ -126,6 +150,7 @@ impl Lsp {
             inner: Arc::new(Inner {
                 servers: servers.into(),
                 clients: Mutex::new(HashMap::new()),
+                restarts: Mutex::new(HashMap::new()),
                 status: watch::Sender::new(Vec::new()),
                 usage: watch::Sender::new(Vec::new()),
                 sampling: AtomicBool::new(false),
@@ -194,13 +219,16 @@ impl Lsp {
                 Ok(version) if wait => client.wait_for_diagnostics(&path, version, after).await,
                 Ok(_) => {}
                 Err(Error::Closed) => {
-                    self.broken(client, client.stderr().explain("exited"), false);
+                    let reason = client.failure().unwrap_or_else(|| "exited".to_string());
+                    let reason = client.stderr().explain_ended(&reason).await;
+                    self.retire(client, reason);
                     return false;
                 }
                 // Not reading what it is sent, so it never will: the next
                 // touch starts it again rather than wait on it once more.
+                // Still running, so its stderr has no end to wait for.
                 Err(e @ Error::Timeout(_)) => {
-                    self.broken(client, client.stderr().explain(&e.to_string()), true);
+                    self.retire(client, client.stderr().explain(&e.to_string()));
                     return false;
                 }
                 // The file vanished or is not text: nothing to report.
@@ -278,7 +306,10 @@ impl Lsp {
         )
         .await;
         let (busy, clients): (Vec<_>, Vec<_>) = started.into_iter().unzip();
-        (busy, clients.into_iter().flatten().collect())
+        (
+            busy.into_iter().flatten().collect(),
+            clients.into_iter().flatten().collect(),
+        )
     }
 
     async fn client(
@@ -286,7 +317,7 @@ impl Lsp {
         server: Server,
         root: PathBuf,
         caller: Option<Caller>,
-    ) -> (Busy, Option<Arc<Client>>) {
+    ) -> (Option<Busy>, Option<Arc<Client>>) {
         let key = (server.id.clone(), root.clone());
         let (slot, usage) = {
             let mut clients = self
@@ -294,22 +325,27 @@ impl Lsp {
                 .clients
                 .lock()
                 .expect("lsp client map lock poisoned");
-            let entry = clients
-                .entry((server.id.clone(), root.clone()))
-                .or_insert_with(|| {
+            let entry = match clients.entry(key.clone()) {
+                hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                // Its status says it was given up on.
+                hash_map::Entry::Vacant(_) if self.inner.given_up(&key) => return (None, None),
+                hash_map::Entry::Vacant(vacant) => {
                     let usage = ProcessUsage::starting(server.id.clone(), root.clone());
-                    let lsp = self.clone();
-                    let started = tokio::spawn(async move { lsp.start(server, root).await });
-                    Entry {
+                    let cancel = self.inner.cancel.child_token();
+                    let inner = Arc::downgrade(&self.inner);
+                    let started = tokio::spawn(start(inner, server, root, cancel.clone()));
+                    vacant.insert(Entry {
                         // A start that panicked counts as a failed one.
                         slot: async move { started.await.unwrap_or(None) }
                             .boxed()
                             .shared(),
+                        cancel,
                         touched: Instant::now(),
                         busy: 0,
                         usage,
-                    }
-                });
+                    })
+                }
+            };
             entry.enter(caller.as_ref());
             let slot = entry.slot.clone();
             (slot, snapshot(&clients))
@@ -321,55 +357,14 @@ impl Lsp {
             slot: slot.clone(),
             caller,
         };
-        (busy, slot.await)
+        (Some(busy), slot.await)
     }
 
-    async fn start(&self, server: Server, root: PathBuf) -> Option<Arc<Client>> {
-        let launch = {
-            let (server, root) = (server.clone(), root.clone());
-            tokio::task::spawn_blocking(move || server.launch(&root))
-                .await
-                .ok()??
-        };
-        self.set_state(&server.id, &root, ServerState::Starting);
-        let stderr = Stderr::default();
-        let cancel = self.inner.cancel.child_token();
-        match Client::spawn(&server.id, launch, cancel.clone(), stderr.clone()).await {
-            Ok(client) => {
-                let usage = {
-                    let mut clients = self
-                        .inner
-                        .clients
-                        .lock()
-                        .expect("lsp client map lock poisoned");
-                    if let Some(entry) = clients.get_mut(&(server.id.clone(), root.clone())) {
-                        entry.usage.pid = client.pid();
-                    }
-                    snapshot(&clients)
-                };
-                self.inner.publish(usage);
-                self.set_state(&server.id, &root, ServerState::Connected);
-                let client = Arc::new(client);
-                if let Some(idle) = self.inner.idle {
-                    let inner = Arc::downgrade(&self.inner);
-                    let key = (server.id, root);
-                    tokio::spawn(stop_when_idle(inner, key, client.clone(), idle, cancel));
-                }
-                Some(client)
-            }
-            Err(e) => {
-                let reason = stderr.explain(&e.to_string());
-                self.set_state(&server.id, &root, ServerState::Broken(reason));
-                None
-            }
-        }
-    }
-
-    /// Marks `client`'s server broken for `reason`. With `evict`, also
-    /// drops it from the pool and kills it, so the next touch starts the
-    /// server again; the status says why until then. Nothing changes once
+    /// Forgets `client`, which died or stopped reading, and kills it, so
+    /// the next touch starts its server again, up to [`MAX_RESTARTS`]
+    /// times; past that the status stays broken. Nothing changes once
     /// another start has taken the client's place.
-    fn broken(&self, client: &Arc<Client>, reason: String, evict: bool) {
+    fn retire(&self, client: &Arc<Client>, reason: String) {
         let key = (client.id().to_string(), client.root().to_path_buf());
         let usage = {
             let mut clients = self
@@ -377,23 +372,34 @@ impl Lsp {
                 .clients
                 .lock()
                 .expect("lsp client map lock poisoned");
-            let Some(entry) = clients.get_mut(&key).filter(
-                |entry| matches!(entry.slot.peek(), Some(Some(held)) if Arc::ptr_eq(held, client)),
-            ) else {
+            if !clients.get(&key).is_some_and(|entry| entry.holds(client)) {
                 return;
-            };
-            if evict {
-                clients.remove(&key);
-            } else {
-                entry.usage.state = ServerState::Broken(reason.clone());
             }
+            // Dropping the entry cancels its token, which stops the task
+            // and kills the server, even one stuck writing to it. Under the
+            // lock, so no touch can reach it in between.
+            clients.remove(&key);
+            let restarts = {
+                let mut restarts = self
+                    .inner
+                    .restarts
+                    .lock()
+                    .expect("lsp restart count lock poisoned");
+                let count = restarts.entry(key.clone()).or_insert(0);
+                *count += 1;
+                *count
+            };
+            let reason = match restarts > MAX_RESTARTS {
+                true => format!(
+                    "{reason} (gave up after {MAX_RESTARTS} restarts; restart nth to try again)"
+                ),
+                false => {
+                    format!("{reason} (restart {restarts} of {MAX_RESTARTS} on the next touch)")
+                }
+            };
             // Under the lock, as when stopped for idling, so a start that
             // follows cannot have its status overwritten.
             self.set_status(&key.0, &key.1, ServerState::Broken(reason));
-            // Still under the lock, so no touch can reach it in between.
-            if evict {
-                client.kill();
-            }
             snapshot(&clients)
         };
         self.inner.publish(usage);
@@ -438,12 +444,85 @@ impl Lsp {
     }
 }
 
+impl Inner {
+    /// The server died or stopped reading more than [`MAX_RESTARTS`] times
+    /// in this root. Asked holding `clients`.
+    fn given_up(&self, key: &Key) -> bool {
+        let restarts = self
+            .restarts
+            .lock()
+            .expect("lsp restart count lock poisoned");
+        restarts.get(key).is_some_and(|&count| count > MAX_RESTARTS)
+    }
+}
+
+/// Launches `server` in `root` and runs the handshake, for the entry that
+/// owns `cancel`. Holds the pool only weakly, so dropping the last `Lsp`
+/// cancels a start rather than wait for it; the server it launched then
+/// dies with its client.
+async fn start(
+    inner: Weak<Inner>,
+    server: Server,
+    root: PathBuf,
+    cancel: CancellationToken,
+) -> Option<Arc<Client>> {
+    let launch = {
+        let (server, root) = (server.clone(), root.clone());
+        // The lookup goes on in its thread, but nobody waits on it.
+        tokio::select! {
+            _ = cancel.cancelled() => return None,
+            launched = tokio::task::spawn_blocking(move || server.launch(&root)) => launched.ok()??,
+        }
+    };
+    Lsp {
+        inner: inner.upgrade()?,
+    }
+    .set_state(&server.id, &root, ServerState::Starting);
+    let stderr = Stderr::default();
+    let spawned = match Client::spawn(&server.id, launch, cancel.clone(), stderr.clone()).await {
+        Ok(client) => Ok(client),
+        // It went before it answered, and its last words say why.
+        Err(e) => Err(stderr.explain_ended(&e.to_string()).await),
+    };
+    // Gone while the server started: nobody will use it.
+    let lsp = Lsp {
+        inner: inner.upgrade()?,
+    };
+    match spawned {
+        Ok(client) => {
+            let usage = {
+                let mut clients = lsp
+                    .inner
+                    .clients
+                    .lock()
+                    .expect("lsp client map lock poisoned");
+                if let Some(entry) = clients.get_mut(&(server.id.clone(), root.clone())) {
+                    entry.usage.pid = client.pid();
+                }
+                snapshot(&clients)
+            };
+            lsp.inner.publish(usage);
+            lsp.set_state(&server.id, &root, ServerState::Connected);
+            let client = Arc::new(client);
+            if let Some(idle) = lsp.inner.idle {
+                let key = (server.id, root);
+                tokio::spawn(stop_when_idle(inner, key, client.clone(), idle, cancel));
+            }
+            Some(client)
+        }
+        Err(reason) => {
+            lsp.set_state(&server.id, &root, ServerState::Broken(reason));
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::{
-        fake::{config_with, exited, pid_of, scripted, state_of},
+        fake::{closed, config_with, exited, pid_of, scripted, state_of},
         *,
     };
 
@@ -494,25 +573,146 @@ mod tests {
         assert_eq!(diagnostics[&file][0].message, "boom");
     }
 
+    fn broken_reason(lsp: &Lsp) -> String {
+        match state_of(&lsp.status().borrow()) {
+            Some(ServerState::Broken(reason)) => reason,
+            other => panic!("not broken: {other:?}"),
+        }
+    }
+
     #[tokio::test]
-    async fn a_server_that_exits_takes_its_diagnostics_with_it() {
+    async fn a_server_that_dies_is_started_again_on_the_next_touch() {
         let (_tmp, file, lsp) = scripted(&["die"]);
 
         let first = lsp.touch(&file, true).await;
         assert_eq!(first[&file][0].message, "boom");
+        let dead = pid_of(&lsp).expect("the server ran");
+        closed(&lsp).await;
 
-        // It exited after publishing: the next touch finds it gone, and its
-        // last report is not repeated.
+        // The next touch finds it gone, and its last report is not repeated.
         let again = lsp.touch(&file, true).await;
         assert!(again.is_empty(), "{again:?}");
-        let status = lsp.status().borrow().clone();
-        match &status[0].state {
-            ServerState::Broken(reason) => {
-                assert_eq!(reason, "exited: scripted server here", "{reason}")
-            }
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(
+            broken_reason(&lsp),
+            "exited: scripted server here (restart 1 of 3 on the next touch)"
+        );
+        assert_eq!(pid_of(&lsp), None, "the dead client is forgotten");
+
+        // The one after starts it again, as the first touch did.
+        let restarted = lsp.touch(&file, true).await;
+        assert_eq!(restarted[&file][0].message, "boom");
+        assert_eq!(
+            state_of(&lsp.status().borrow()),
+            Some(ServerState::Connected)
+        );
+        let pid = pid_of(&lsp).expect("the server runs again");
+        assert_ne!(pid, dead);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_dies_is_given_its_last_words() {
+        let (_tmp, file, lsp) = scripted(&["last-words"]);
+
+        assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
+        closed(&lsp).await;
         assert!(lsp.touch(&file, true).await.is_empty());
+        assert_eq!(
+            broken_reason(&lsp),
+            "exited: scripted server here | last words (restart 1 of 3 on the next touch)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_keeps_dying_stays_broken_after_the_limit() {
+        let (_tmp, file, lsp) = scripted(&["die"]);
+
+        let mut pids = Vec::new();
+        for death in 1..=MAX_RESTARTS + 1 {
+            assert_eq!(lsp.touch(&file, true).await[&file][0].message, "boom");
+            pids.push(pid_of(&lsp).expect("the server runs"));
+            closed(&lsp).await;
+            assert!(lsp.touch(&file, true).await.is_empty());
+            let reason = broken_reason(&lsp);
+            match death > MAX_RESTARTS {
+                true => assert_eq!(
+                    reason,
+                    "exited: scripted server here (gave up after 3 restarts; restart nth to try again)"
+                ),
+                false => {
+                    assert!(reason.ends_with(&format!("(restart {death} of 3 on the next touch)")))
+                }
+            }
+        }
+        pids.dedup();
+        assert_eq!(pids.len(), 4, "a new process each time: {pids:?}");
+
+        // Given up on: nothing starts, and the status keeps saying so.
+        let status = lsp.status().borrow().clone();
+        assert!(lsp.touch(&file, true).await.is_empty());
+        assert_eq!(*lsp.status().borrow(), status);
+        assert!(lsp.inner.clients.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_sends_an_unreadable_message_says_so() {
+        let (_tmp, file, lsp) = scripted(&["huge"]);
+
+        assert!(lsp.touch(&file, false).await.is_empty());
+        closed(&lsp).await;
+        assert!(lsp.touch(&file, false).await.is_empty());
+        let reason = broken_reason(&lsp);
+        assert!(
+            reason.starts_with(
+                "unreadable message: Content-Length 99999999999 is past the 67108864 byte cap: \
+                 scripted server here"
+            ),
+            "{reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_pool_does_not_outlive_its_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let file = tmp.path().join("a.nthtest");
+        std::fs::write(&file, "x").unwrap();
+        // Never answers `initialize`, so its start would wait out the
+        // handshake's timeout.
+        let pidfile = tmp.path().join("pid");
+        let script = format!("echo $$ > '{}'; exec sleep 600", pidfile.display());
+        let lsp = Lsp::new(&config_with("fake", &["sh", "-c", &script], &[".nthtest"]));
+
+        // The touch is given up on once the server runs; its start is not.
+        let pid = tokio::select! {
+            _ = lsp.touch(&file, false) => panic!("the start finished"),
+            pid = async {
+                loop {
+                    let written = std::fs::read_to_string(&pidfile).unwrap_or_default();
+                    if let Some(pid) = written.strip_suffix('\n') {
+                        break pid.parse::<u32>().unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => pid,
+        };
+
+        let pool = Arc::downgrade(&lsp.inner);
+        drop(lsp);
+        assert!(pool.upgrade().is_none(), "the start holds the pool");
+        let metrics = tokio::runtime::Handle::current().metrics();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while metrics.num_alive_tasks() > 0 || !exited(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{} tasks left, server exited: {}",
+                metrics.num_alive_tasks(),
+                exited(pid)
+            )
+        });
     }
 
     #[tokio::test]
@@ -571,7 +771,13 @@ mod tests {
         std::fs::create_dir(tmp.path().join(".git")).unwrap();
         let file = tmp.path().join("a.nthtest");
         std::fs::write(&file, "x").unwrap();
-        let command = ["sh", "-c", "echo 'no such option' >&2; exit 2"];
+        // Its reason comes after its stdout closed and it was killed, from
+        // a process it left behind, as a wrapper's child would say it.
+        let command = [
+            "sh",
+            "-c",
+            "(exec 1>&-; sleep 0.2; echo 'no such option' >&2) & exec 1>&-; exit 2",
+        ];
         let lsp = Lsp::new(&config_with("fake", &command, &[".nthtest"]));
 
         assert!(lsp.touch(&file, true).await.is_empty());

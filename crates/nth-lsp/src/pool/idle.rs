@@ -64,7 +64,7 @@ impl Drop for Busy {
 
 /// Stops `client` once its entry has gone `idle` without a touch: the entry
 /// and its status go, so the next touch starts the server again. Holds the
-/// pool only weakly, and ends with it.
+/// pool only weakly, and ends with it, or with the entry (`cancel` is its).
 pub(super) async fn stop_when_idle(
     inner: Weak<Inner>,
     key: Key,
@@ -73,7 +73,7 @@ pub(super) async fn stop_when_idle(
     cancel: CancellationToken,
 ) {
     let mut deadline = Instant::now() + idle;
-    let (inner, usage) = loop {
+    let (inner, usage, entry) = loop {
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = tokio::time::sleep_until(deadline) => {}
@@ -90,7 +90,8 @@ pub(super) async fn stop_when_idle(
         if deadline > Instant::now() {
             continue;
         }
-        clients.remove(&key);
+        // Kept until the server is asked to leave: dropping it kills it.
+        let entry = clients.remove(&key);
         // Under the lock, so a start for the same key that follows cannot
         // have its status taken away.
         inner
@@ -98,12 +99,12 @@ pub(super) async fn stop_when_idle(
             .send_modify(|all| all.retain(|s| s.id != key.0 || s.root != key.1));
         let usage = snapshot(&clients);
         drop(clients);
-        break (inner, usage);
+        break (inner, usage, entry);
     };
     inner.publish(usage);
     drop(inner);
     client.shutdown().await;
-    cancel.cancel();
+    drop(entry);
 }
 
 #[cfg(test)]
