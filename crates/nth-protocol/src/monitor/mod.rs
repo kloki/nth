@@ -1,13 +1,14 @@
 //! Background monitors: commands the model leaves running whose output
 //! comes back to it through the model's inbox, between steps or as a turn
 //! of their own. The types here are what a monitor says; `registry` keeps
-//! the running ones and puts what they say in the inbox.
+//! the running ones and passes what they say to the front-end, which owns
+//! the inbox.
 
 mod registry;
 
 use std::{fmt, path::PathBuf};
 
-pub use registry::{Monitors, log_dir};
+pub use registry::Monitors;
 use tokio_util::sync::CancellationToken;
 
 /// Numbered from 1 for as long as the front-end runs, so a monitor keeps its

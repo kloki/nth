@@ -218,6 +218,12 @@ impl Store {
         self.images().join(id.to_string())
     }
 
+    /// Where the monitors `id` starts log, one file each: beside its images,
+    /// so deleting the session finds them and a store in a test keeps its own.
+    pub fn monitor_dir(&self, id: Uuid) -> PathBuf {
+        self.dir.join("monitors").join(id.to_string())
+    }
+
     fn path(&self, id: Uuid) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }

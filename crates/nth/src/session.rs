@@ -11,12 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use jiff::Timestamp;
 use nth_icons::icons;
-use nth_protocol::monitor_log_dir;
-use nth_session::{
-    Session, Store, Summary, plan,
-    store::{self, age},
-    work,
-};
+use nth_session::{Session, Store, Summary, plan, store::age, work};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
@@ -61,7 +56,7 @@ pub async fn run(command: SessionCommand) -> Result<()> {
         }
         SessionCommand::Delete { session } => {
             let session = pick(&store, Some(&session)).await?;
-            let removed = delete(&store, &session, &store::data_dir()?).await?;
+            let removed = delete(&store, &session).await?;
             let mut out = io::stdout().lock();
             let title = session.title().unwrap_or_default();
             writeln!(
@@ -118,7 +113,7 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
 /// its work items and its monitor logs, each only if it is there. Its
 /// worktrees are left alone, since they may hold work not merged yet.
 /// Returns what went besides the save.
-async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec<PathBuf>> {
+async fn delete(store: &Store, session: &Session) -> Result<Vec<PathBuf>> {
     let curio_dir = curio_dir(session)?;
     store.delete(session.id).await?;
     let mut removed = Vec::new();
@@ -148,7 +143,7 @@ async fn delete(store: &Store, session: &Session, data_dir: &Path) -> Result<Vec
     work_dirs.sort();
     work_dirs.dedup();
     let dirs = work_dirs.into_iter().chain([
-        monitor_log_dir(data_dir, &session.id.to_string()),
+        store.monitor_dir(session.id),
         // Its subagents' images too: they keep theirs in its folder.
         store.images_dir(session.id),
     ]);
@@ -375,14 +370,13 @@ mod tests {
     async fn delete_removes_the_save_plan_work_monitor_logs_and_images() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path().join("sessions"));
-        let data = dir.path().join("data");
         let mut session = Session::new("glm", dir.path().join("repo"));
         session.messages.push(Message::User("fix it".into()));
         store.save(&session).await.expect("saves");
         let other = Session::new("glm", dir.path().join("repo"));
         let plan = session.plan_path();
         let work = session.work_dir();
-        let monitors = monitor_log_dir(&data, &session.id.to_string());
+        let monitors = store.monitor_dir(session.id);
         let images = store.images_dir(session.id);
         let kept = other.plan_path();
         for file in [
@@ -396,7 +390,7 @@ mod tests {
             std::fs::write(file, "x").unwrap();
         }
 
-        let removed = delete(&store, &session, &data).await.expect("deletes");
+        let removed = delete(&store, &session).await.expect("deletes");
 
         assert_eq!(
             removed,
@@ -405,7 +399,7 @@ mod tests {
         assert!(store.list().await.expect("lists").is_empty());
         assert!(!plan.exists() && !work.exists() && !monitors.exists() && !images.exists());
         assert!(kept.exists(), "another session's plan stays");
-        assert!(delete(&store, &session, &data).await.is_err(), "gone");
+        assert!(delete(&store, &session).await.is_err(), "gone");
     }
 
     #[tokio::test]
@@ -416,7 +410,7 @@ mod tests {
         session.messages.push(Message::User("fix it".into()));
         store.save(&session).await.expect("saves");
 
-        let removed = delete(&store, &session, dir.path()).await.expect("deletes");
+        let removed = delete(&store, &session).await.expect("deletes");
 
         assert!(removed.is_empty(), "{removed:?}");
     }
@@ -435,7 +429,7 @@ mod tests {
         std::fs::create_dir_all(&own).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(root.join("project.html"), "keep").unwrap();
-        let removed = delete(&store, &session, dir.path()).await.unwrap();
+        let removed = delete(&store, &session).await.unwrap();
         assert_eq!(removed.as_slice(), std::slice::from_ref(&own));
         assert!(!own.exists());
         assert!(other.exists());
@@ -461,12 +455,7 @@ mod tests {
         session.curio_root = Some(session.cwd.clone());
         session.messages.push(Message::User("review".into()));
         store.save(&session).await.unwrap();
-        assert!(
-            delete(&store, &session, dir.path())
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(delete(&store, &session).await.unwrap().is_empty());
         assert!(store.list().await.unwrap().is_empty());
     }
 
@@ -486,7 +475,7 @@ mod tests {
             std::fs::write(file, "x").unwrap();
         }
 
-        let removed = delete(&store, &session, dir.path()).await.expect("deletes");
+        let removed = delete(&store, &session).await.expect("deletes");
 
         assert_eq!(removed, std::slice::from_ref(&before));
         assert!(!before.exists() && !after.exists());

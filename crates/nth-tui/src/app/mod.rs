@@ -70,7 +70,7 @@ use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
     Ask, BoxError, Compaction, ContextSnapshot, Event, Inbox, Listing, Llm, Mode, MonitorEvent,
-    MonitorId, Monitors, Provider, Show, Tool, Usage, monitor_log_dir, tool_names,
+    Monitors, Provider, Show, Tool, Usage, tool_names,
 };
 use nth_session::{
     Session, Store, Subagents, Summary, ToolUse, store,
@@ -101,7 +101,6 @@ use crate::{
     history::History,
     keymaps::Keymaps,
     llm_picker::usage::LlmUsage,
-    monitor::MonitorView,
     prompt::{self, Prompt},
     settings::ChatSettings,
     spinner, status,
@@ -305,8 +304,8 @@ pub struct App {
     /// and the prompts on their way into a running turn.
     pub(crate) inbox: Inbox,
     monitor_rx: mpsc::Receiver<MonitorEvent>,
-    /// Each monitor's tab, open from its start until you close it.
-    monitor_views: BTreeMap<MonitorId, MonitorView>,
+    /// Each monitor's tab, and which monitors still speak to the model.
+    monitor_tabs: monitor::MonitorTabs,
     /// The subagents the task tool started, shared with it.
     subagents: Subagents,
     subagent_rx: mpsc::Receiver<SubagentEvent>,
@@ -315,8 +314,6 @@ pub struct App {
     file_tabs: file::FileTabs,
     plan: plan::PlanTab,
     work: work::WorkTab,
-    /// Where monitors log, one folder per session under it.
-    monitor_root: PathBuf,
     /// When the notices waiting start a turn, if the app is idle by then.
     notices_due: Option<tokio::time::Instant>,
     /// Notices wait for your next prompt rather than start a turn, after
@@ -463,13 +460,11 @@ impl App {
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
         // Replaced by `with_subagents`; until then no subagent reports here.
         let (_, subagent_rx) = mpsc::channel(1);
-        let monitor_root = std::env::temp_dir().join("nth");
         let inbox = Inbox::new();
-        let monitors = Monitors::new(
-            monitor_tx,
-            monitor_log_dir(&monitor_root, &session.id.to_string()),
-            inbox.clone(),
-        );
+        // No folder until `with_store` puts each session's monitor logs
+        // beside its save: every chat nth runs has a store, and tests that
+        // read a log path name their own.
+        let monitors = Monitors::new(monitor_tx, PathBuf::new());
         let home = std::env::var("HOME").ok();
         // Replaced by the config `new` installs.
         let notifier = Notifier::off();
@@ -571,14 +566,13 @@ impl App {
             monitors,
             inbox,
             monitor_rx,
-            monitor_views: BTreeMap::new(),
+            monitor_tabs: monitor::MonitorTabs::default(),
             subagents: Subagents::default(),
             subagent_rx,
             subagent_views: BTreeMap::new(),
             file_tabs: file::FileTabs::new(),
             plan: plan::PlanTab::new(plan_path),
             work: work::WorkTab::new(work_dir),
-            monitor_root,
             notices_due: None,
             hold_notices: false,
             hint: None,
@@ -679,10 +673,7 @@ impl App {
     /// Saves sessions to `store`, and logs monitors next to them.
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Some(Arc::new(store));
-        if let Ok(data) = store::data_dir() {
-            self.monitor_root = data;
-            self.log_monitors_for_session();
-        }
+        self.log_monitors_for_session();
         self
     }
 
@@ -1020,7 +1011,7 @@ impl App {
                 }
             }
             Tab::Monitor(id) => {
-                if let Some(view) = self.monitor_views.get_mut(&id) {
+                if let Some(view) = self.monitor_tabs.views.get_mut(&id) {
                     view.draw(frame, area, self.home.as_deref());
                 }
             }

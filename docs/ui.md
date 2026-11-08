@@ -87,7 +87,7 @@ The `monitor` tool leaves a command running; each one gets its own tab, opened w
 
 ```
 $ tail -f deploy.log | grep --line-buffered ERROR
-running · 42s · 3 events · ~/.local/share/nth/monitors/<session>/1.log
+running · 42s · 3 events · ~/.local/share/nth/sessions/monitors/<session>/1.log
 
 ERROR db timeout
 warning: slow query        (stderr, dim)

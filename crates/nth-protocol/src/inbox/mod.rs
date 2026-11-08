@@ -1,6 +1,6 @@
 //! The model's inbox: what it has not heard yet, handed over between its
-//! steps or as a turn of its own when idle. Monitors put their output here
-//! and subagents their answers, and work items what happened to them;
+//! steps or as a turn of its own when idle. The front-end puts what its
+//! monitors print here and subagents their answers, and work items what happened to them;
 //! `notice` is the text that carries them,
 //! written for the model and read back by the transcript. A prompt you send
 //! while a turn runs waits here too, and pre-empts its next tool calls.

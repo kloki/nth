@@ -2,8 +2,6 @@
 //! its idle preview is rebuilt: at once for your changes, once a tick for
 //! what reaches the inbox, never for the clock alone.
 
-use std::path::Path;
-
 use crossterm::event::Event as TermEvent;
 use nth_protocol::{Phase, Preview, Tool};
 use nth_session::SubagentEvent;
@@ -26,10 +24,17 @@ fn open_tab() -> App {
     app
 }
 
-/// A monitor's stdout line, into the inbox and to the app.
+/// A monitor's stdout line, which the app puts in the inbox; the monitor
+/// starts with the first.
 fn monitor_line(app: &mut App, line: &str) {
-    app.inbox
-        .monitor_line(1, "build", Path::new("/tmp/build.log"), line.into());
+    if !app.monitor_tabs.views.contains_key(&1) {
+        app.on_monitor(MonitorEvent::Started {
+            id: 1,
+            description: "build".into(),
+            command: "make".into(),
+            log: "/tmp/build.log".into(),
+        });
+    }
     app.on_monitor(MonitorEvent::Output {
         id: 1,
         line: line.into(),
