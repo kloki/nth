@@ -3,6 +3,10 @@
 
 use nth_protocol::StreamEvent;
 
+/// Whether a boxed error, as the session holds it, is retried: what
+/// `Providers::retry` answers for it.
+pub(crate) use crate::stream::retry_boxed as retry;
+
 /// `input` as the chunks a connection might deliver it in.
 pub(crate) fn chunks<E>(input: &[u8], chunk_size: usize) -> Vec<Result<bytes::Bytes, E>> {
     input

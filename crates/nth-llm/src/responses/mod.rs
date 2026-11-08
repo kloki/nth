@@ -11,55 +11,61 @@ use nth_protocol::{BoxError, Request, StreamEvent, ToolCall, Usage};
 
 use crate::{
     auth::Auth,
-    stream::{self, Flow, Out, Payload, Protocol},
+    stream::{self, Error, Flow, Out, Protocol, Refusal},
 };
 
-pub(crate) type Error = stream::Error<Provider>;
-
-/// An `error` event or a failed response, sent after the 200 status.
-/// Also a response stopped for a reason other than its length.
-#[derive(Debug, thiserror::Error)]
-#[error("provider error {kind}: {message}")]
-pub(crate) struct Provider {
-    pub(crate) kind: String,
-    pub(crate) message: String,
+/// An `error` event or a failed response, sent after the 200 status;
+/// also a response stopped for a reason other than its length. Retried
+/// for a rate limit or a server failure.
+pub(crate) fn provider_error(kind: String, message: String) -> Error {
+    let retryable = matches!(kind.as_str(), "rate_limit_exceeded" | "server_error");
+    Error::Provider {
+        message: format!("provider error {kind}: {message}"),
+        retryable,
+        overflow: false,
+    }
 }
 
-impl Payload for Provider {
-    fn status_message(body: &str) -> Option<String> {
+/// A refused request's body is an error response whose message says it,
+/// and whose code may say no wait helps.
+pub(crate) const REFUSAL: Refusal = Refusal {
+    message: |body| {
         serde_json::from_str::<event::ErrorResponse>(body)
             .ok()
             .map(|error| error.error.message)
-    }
+    },
+    is_final: final_refusal,
+};
 
-    /// A ChatGPT plan refusal that no wait fixes: a usage limit (a 429
-    /// whose reset OpenAI does not say), an account or workspace that may
-    /// not use its plan, or a request the plan does not cover. The 503
-    /// ones (`subscription_sharing_usage_unavailable`,
-    /// `subscription_sharing_user_unavailable`) are retried as usual.
-    fn final_refusal(body: &str) -> bool {
-        serde_json::from_str::<event::ErrorResponse>(body).is_ok_and(|error| {
-            matches!(
-                error.error.code.as_deref(),
-                Some(
-                    "subscription_sharing_usage_limit_exceeded"
-                        | "subscription_sharing_user_not_eligible"
-                        | "subscription_sharing_unsupported_capability"
-                        | "subscription_sharing_route_not_supported"
-                )
+/// A ChatGPT plan refusal that no wait fixes: a usage limit (a 429 whose
+/// reset OpenAI does not say), an account or workspace that may not use
+/// its plan, or a request the plan does not cover. The 503 ones
+/// (`subscription_sharing_usage_unavailable`,
+/// `subscription_sharing_user_unavailable`) are retried as usual.
+fn final_refusal(body: &str) -> bool {
+    serde_json::from_str::<event::ErrorResponse>(body).is_ok_and(|error| {
+        matches!(
+            error.error.code.as_deref(),
+            Some(
+                "subscription_sharing_usage_limit_exceeded"
+                    | "subscription_sharing_user_not_eligible"
+                    | "subscription_sharing_unsupported_capability"
+                    | "subscription_sharing_route_not_supported"
             )
-        })
-    }
-
-    /// A rate limit or a server failure.
-    fn retryable(&self) -> bool {
-        matches!(self.kind.as_str(), "rate_limit_exceeded" | "server_error")
-    }
+        )
+    })
 }
 
-pub(crate) type Client = stream::Client<State>;
+/// Where requests go, under the endpoint's base URL.
+const ROUTE: &str = "/responses";
+
+pub(crate) struct Client(stream::Client);
 
 impl Client {
+    pub(crate) fn new(http: reqwest::Client, base_url: String) -> Self {
+        Self(stream::Client::new(http, base_url, ROUTE))
+    }
+
     /// `reasons` is whether the model is known to reason, which asks for
     /// its summary even when the effort is left to it.
     pub(crate) async fn stream(
@@ -68,7 +74,7 @@ impl Client {
         reasons: bool,
         auth: &Auth,
     ) -> Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError> {
-        let builder = auth.bearer(self.post()).json(&wire::body(
+        let builder = auth.bearer(self.0.post()).json(&wire::body(
             request.model,
             request.session_id,
             request.effort,
@@ -76,7 +82,7 @@ impl Client {
             request.messages,
             request.tools,
         ));
-        stream::send::<State>(builder, &request).await
+        stream::send::<State>(builder, &request, REFUSAL).await
     }
 }
 
@@ -99,15 +105,13 @@ pub(crate) struct State {
 }
 
 impl Protocol for State {
-    type Provider = Provider;
     type Event = event::Event;
-    const ROUTE: &'static str = "/responses";
 
     fn parse(line: &str) -> Result<Vec<event::Event>, Error> {
-        Ok(event::parse_line(line)?.into_iter().collect())
+        event::parse_line(line)
     }
 
-    fn apply(&mut self, event: event::Event, out: &mut Out<Provider>) -> Flow {
+    fn apply(&mut self, event: event::Event, out: &mut Out) -> Flow {
         match event {
             event::Event::TextDelta { delta } if !delta.is_empty() => {
                 self.text = true;
@@ -160,10 +164,10 @@ impl Protocol for State {
                 if reason.as_deref() == Some("max_output_tokens") {
                     stream::cut(self.text, self.called, out);
                 } else {
-                    out.push_back(Err(Error::Provider(Provider {
-                        kind: reason.unwrap_or_default(),
-                        message: "response stopped early".into(),
-                    })));
+                    out.push_back(Err(provider_error(
+                        reason.unwrap_or_default(),
+                        "response stopped early".into(),
+                    )));
                 }
                 return Flow::Done;
             }
@@ -173,7 +177,7 @@ impl Protocol for State {
     }
 }
 
-fn usage(response: &event::Response, out: &mut Out<Provider>) {
+fn usage(response: &event::Response, out: &mut Out) {
     if let Some(usage) = response.usage {
         out.push_back(Ok(StreamEvent::Usage(Usage {
             input: usage.input_tokens,
@@ -194,12 +198,8 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        chunks, reports_output, runs_no_tools, serve_status, text, until, without_text,
+        chunks, reports_output, retry, runs_no_tools, serve_status, text, until, without_text,
     };
-
-    fn retry(error: &BoxError) -> Option<Retry> {
-        stream::retry::<Provider>(error)
-    }
 
     fn events<S>(bytes: S) -> impl futures::Stream<Item = Result<StreamEvent, Error>>
     where
@@ -429,10 +429,14 @@ mod tests {
                 r#""incomplete_details":{"reason":"content_filter"},"output":[]"#,
             );
         let events = replay_bytes(input.as_bytes(), input.len()).await;
-        assert!(matches!(
-            events.last(),
-            Some(Err(Error::Provider(Provider { kind, .. }))) if kind == "content_filter"
-        ));
+        assert!(
+            matches!(
+                events.last(),
+                Some(Err(Error::Provider { message, retryable: false, .. }))
+                    if message == "provider error content_filter: response stopped early"
+            ),
+            "{events:?}"
+        );
         assert!(runs_no_tools(&events));
     }
 
@@ -447,7 +451,14 @@ mod tests {
         let Some(Err(error)) = events.last() else {
             panic!("expected an error, got {events:?}");
         };
-        assert!(matches!(error, Error::Provider(Provider { kind, .. }) if kind == "server_error"));
+        assert!(
+            matches!(
+                error,
+                Error::Provider { message, retryable: true, .. }
+                    if message == "provider error server_error: Upstream failed"
+            ),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]
@@ -488,15 +499,11 @@ mod tests {
         assert_eq!(retry(&error), None);
     }
 
-    /// The payload's part of the policy; the rest is `stream`'s.
+    /// The protocol's part of the policy; the rest is `stream`'s.
     #[test]
     fn only_transient_errors_are_retryable() {
-        let in_stream = |kind: &str| -> BoxError {
-            Box::new(Error::Provider(Provider {
-                kind: kind.into(),
-                message: String::new(),
-            }))
-        };
+        let in_stream =
+            |kind: &str| -> BoxError { Box::new(provider_error(kind.into(), String::new())) };
         for kind in ["server_error", "rate_limit_exceeded"] {
             assert_eq!(
                 retry(&in_stream(kind)),
@@ -506,9 +513,6 @@ mod tests {
         }
         assert_eq!(retry(&in_stream("invalid_prompt")), None);
         assert_eq!(retry(&in_stream("content_filter")), None);
-
-        let other: BoxError = Box::new(crate::messages::Error::Incomplete);
-        assert_eq!(retry(&other), None, "another protocol's error");
     }
 
     /// A ChatGPT plan's usage limit comes as a 429, but waiting does not
@@ -516,10 +520,11 @@ mod tests {
     #[test]
     fn a_plan_usage_limit_is_not_retried() {
         let refused = |status: u16, code: &str| {
-            crate::stream::status_error::<Provider>(
+            crate::stream::status_error(
                 reqwest::StatusCode::from_u16(status).unwrap(),
                 serde_json::json!({"error": {"code": code, "message": "plan says no"}}).to_string(),
                 None,
+                REFUSAL,
             )
         };
         let limited = refused(429, "subscription_sharing_usage_limit_exceeded");

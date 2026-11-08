@@ -17,7 +17,7 @@ use nth_protocol::{BoxError, Listing, Provider, Request, Retry, StreamEvent};
 use tokio::task::JoinHandle;
 
 use self::endpoint::Endpoint;
-use crate::{catalog::Snapshot, chat_completions, messages, responses, stream};
+use crate::{catalog::Snapshot, stream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -191,10 +191,7 @@ impl Provider for Providers {
     }
 
     fn retry(&self, error: &BoxError) -> Option<Retry> {
-        // Each protocol recognises only its own errors.
-        stream::retry::<chat_completions::Provider>(error)
-            .or_else(|| stream::retry::<messages::Provider>(error))
-            .or_else(|| stream::retry::<responses::Provider>(error))
+        stream::retry_boxed(error)
     }
 
     fn qualify(&self, model: &str) -> String {
@@ -299,6 +296,13 @@ mod tests {
             None,
             "compacting, not retrying, is the fix"
         );
+    }
+
+    #[test]
+    fn a_stream_error_is_retried_as_the_stream_says() {
+        let providers = providers("opencode/deepseek");
+        let cut: BoxError = Box::new(stream::Error::Incomplete);
+        assert_eq!(providers.retry(&cut), Some(Retry { after: None }));
     }
 
     #[test]
