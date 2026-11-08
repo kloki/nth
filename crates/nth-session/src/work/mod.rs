@@ -135,7 +135,7 @@ pub(crate) fn root(ctx: &ToolContext) -> PathBuf {
     ctx.state_root.clone().unwrap_or_else(|| {
         let origin = ctx.workdir.origin();
         let cwd = origin.as_deref().unwrap_or(&ctx.cwd);
-        nth_context::main_project_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
+        nth_directories::main_project_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
     })
 }
 

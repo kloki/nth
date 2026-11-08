@@ -9,6 +9,7 @@ use std::{
 };
 
 use fs2::FileExt;
+use nth_directories::Directories;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
@@ -217,7 +218,10 @@ fn no_symlinks(path: &Path) -> Result<()> {
                 "Curios paths must not contain symlinks".into(),
             ));
         }
-        if ancestor.file_name().is_some_and(|name| name == ".nth") {
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name == nth_directories::NTH)
+        {
             break;
         }
     }
@@ -384,7 +388,7 @@ impl Store {
         if repository_root(&root)? != root {
             return Err(Error::RepoRequired);
         }
-        let base = root.join(".nth/curios");
+        let base = Directories::from_root(&root).curios();
         no_symlinks(&base)?;
         fs::create_dir_all(&base)?;
         let ignore = base.join(".gitignore");
@@ -453,7 +457,7 @@ impl Store {
         &self.session
     }
     pub fn path(&self) -> PathBuf {
-        self.root.join(".nth/curios").join(&self.session)
+        Directories::from_root(&self.root).curio_owner(&self.session)
     }
     pub fn source_dir(&self) -> PathBuf {
         self.path().join("source")
@@ -640,11 +644,8 @@ impl Store {
     /// adopted curio, whose `index.html` adoption rewrites, so it is the time
     /// it was adopted.
     fn updated_at(&self, curio: &Curio) -> Option<u64> {
-        let path = self
-            .path()
-            .join(&curio.id)
-            .join("revisions")
-            .join(curio.current_revision.to_string())
+        let path = Directories::from_root(&self.root)
+            .curio_revision(&self.session, &curio.id, curio.current_revision)
             .join("index.html");
         let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
         Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs())
@@ -778,11 +779,8 @@ impl Store {
     pub fn content(&self, curio_id: &str, revision: u64) -> Result<String> {
         component(curio_id)?;
         self.snapshot(curio_id, Some(revision))?;
-        let path = self
-            .path()
-            .join(curio_id)
-            .join("revisions")
-            .join(revision.to_string())
+        let path = Directories::from_root(&self.root)
+            .curio_revision(&self.session, curio_id, revision)
             .join("index.html");
         no_symlinks(&path)?;
         let mut html = String::new();
@@ -1261,7 +1259,7 @@ struct Seen {
 impl Discovery {
     pub fn refresh(&mut self, repo_root: &Path) -> Result<Vec<Curio>> {
         self.skipped.clear();
-        let base = repo_root.join(".nth/curios");
+        let base = Directories::from_root(repo_root).curios();
         if !base.exists() {
             self.seen.clear();
             return Ok(vec![]);

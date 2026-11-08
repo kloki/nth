@@ -15,9 +15,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use nth_directories::{main_checkout, project_root};
 pub use watch::{Change, ChangeKind, Watch};
 
-use crate::{Paths, main_checkout, project_root, search_dirs};
+use crate::{Paths, search_dirs};
 
 /// Tried in order in every directory.
 const NAMES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];

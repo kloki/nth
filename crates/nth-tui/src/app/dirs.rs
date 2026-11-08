@@ -1,10 +1,8 @@
 //! Working directories added with `/add-dir`: adding one, and keeping the
 //! session and the status bar in step with the ones there are.
 
-use nth_session::{
-    directories::{self, Overlap, Refusal},
-    store,
-};
+use nth_directories::added::{self, Overlap, Refusal};
+use nth_session::store;
 
 use super::App;
 use crate::status;
@@ -23,12 +21,12 @@ impl App {
             self.hint = Some("usage: /add-dir <directory>".into());
             return;
         }
-        let spelled = directories::expand(
+        let spelled = added::expand(
             &self.cwd,
             self.home.as_deref().map(std::path::Path::new),
             arg,
         );
-        let dir = match directories::validate(&spelled, &self.cwd, &self.extra_dirs) {
+        let dir = match added::validate(&spelled, &self.cwd, &self.extra_dirs) {
             Ok(dir) => dir,
             Err(refusal) => {
                 let hint = match refusal {

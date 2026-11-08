@@ -1821,6 +1821,7 @@ dependencies = [
  "nth-config",
  "nth-context",
  "nth-curios",
+ "nth-directories",
  "nth-format",
  "nth-icons",
  "nth-llm",
@@ -1863,6 +1864,7 @@ dependencies = [
  "anyhow",
  "nth-auth",
  "nth-context",
+ "nth-directories",
  "nth-format",
  "nth-lsp",
  "nth-notify",
@@ -1920,6 +1922,7 @@ name = "nth-format"
 version = "1.6.2"
 dependencies = [
  "nth-context",
+ "nth-directories",
  "serde",
  "serde_json",
  "tempfile",
@@ -1956,6 +1959,7 @@ version = "1.6.2"
 dependencies = [
  "futures",
  "nth-context",
+ "nth-directories",
  "serde",
  "serde_json",
  "sysinfo",
@@ -2023,6 +2027,7 @@ dependencies = [
  "libc",
  "nth-context",
  "nth-curios",
+ "nth-directories",
  "nth-format",
  "nth-lsp",
  "nth-protocol",
@@ -2051,6 +2056,7 @@ dependencies = [
  "nth-config",
  "nth-context",
  "nth-curios",
+ "nth-directories",
  "nth-format",
  "nth-icons",
  "nth-lsp",

@@ -1,6 +1,24 @@
-//! Repository discovery and the locations of project-local nth state.
+//! Repository discovery, the locations of project-local nth state, and how
+//! a path the user types is read.
+
+pub mod added;
+
+/// The folder nth keeps a project's own state in, in its main checkout.
+pub const NTH: &str = ".nth";
 
 use std::path::{Component, Path, PathBuf};
+
+/// `path` in `home` when it is exactly `~` or starts with `~/`, as a shell
+/// reads it; `None` for any other path, which the caller resolves as it
+/// resolves paths. `~user` and a `~` further in are names like any other,
+/// and with no home `~` stays one too.
+pub fn expand_home(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    if path == "~" {
+        return Some(home.to_path_buf());
+    }
+    path.strip_prefix("~/").map(|rest| home.join(rest))
+}
 
 /// The nearest checkout, including a submodule or linked worktree.
 pub fn project_root(cwd: &Path) -> Option<PathBuf> {
@@ -91,7 +109,11 @@ impl Directories {
 
     /// State shared by the repository's worktrees.
     pub fn nth(&self) -> PathBuf {
-        self.main_checkout.join(".nth")
+        self.main_checkout.join(NTH)
+    }
+    /// The repository's own nth config.
+    pub fn config(&self) -> PathBuf {
+        self.nth().join("config")
     }
     pub fn plans(&self) -> PathBuf {
         self.nth().join("plans")
@@ -117,12 +139,23 @@ impl Directories {
     pub fn curio_owner(&self, session: &str) -> PathBuf {
         self.curios().join(session)
     }
+    /// One published revision of a curio.
+    pub fn curio_revision(&self, session: &str, curio: &str, revision: u64) -> PathBuf {
+        self.curio_owner(session)
+            .join(curio)
+            .join("revisions")
+            .join(revision.to_string())
+    }
     /// The editable source directory for an owner session.
     pub fn curio_source(&self, session: &str) -> PathBuf {
         self.curio_owner(session).join("source")
     }
     pub fn worktrees(&self) -> PathBuf {
         self.nth().join("worktrees")
+    }
+    /// The script a new worktree runs before the session moves into it.
+    pub fn worktree_setup(&self) -> PathBuf {
+        self.nth().join("worktree-setup")
     }
 }
 
@@ -160,6 +193,43 @@ mod tests {
                 "-qm",
                 "initial",
             ],
+        );
+    }
+
+    #[test]
+    fn only_a_leading_tilde_alone_or_before_a_slash_is_home() {
+        let home = Some(Path::new("/home/me"));
+        assert_eq!(expand_home("~", home), Some(PathBuf::from("/home/me")));
+        assert_eq!(
+            expand_home("~/a/b", home),
+            Some(PathBuf::from("/home/me/a/b"))
+        );
+        assert_eq!(expand_home("~user/x", home), None);
+        assert_eq!(expand_home("a/~", home), None);
+        assert_eq!(expand_home("/abs", home), None);
+        assert_eq!(expand_home("~", None), None);
+    }
+
+    #[test]
+    fn project_root_is_the_nearest_git_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        std::fs::create_dir_all(root.join("a/b")).expect("subdirs");
+
+        assert_eq!(project_root(&root.join("a/b")), Some(root.to_path_buf()));
+        assert_eq!(project_root(root), Some(root.to_path_buf()));
+    }
+
+    #[test]
+    fn config_and_curio_revision_paths() {
+        let root = PathBuf::from("/known/root");
+        let dirs = Directories::from_root(&root);
+        assert_eq!(dirs.config(), root.join(".nth/config"));
+        assert_eq!(dirs.worktree_setup(), root.join(".nth/worktree-setup"));
+        assert_eq!(
+            dirs.curio_revision("abc", "page", 3),
+            root.join(".nth/curios/abc/page/revisions/3")
         );
     }
 

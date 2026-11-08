@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use jiff::Timestamp;
+use nth_directories::Directories;
 use nth_icons::icons;
 use nth_session::{Session, Store, Summary, plan, store::age, work};
 use owo_colors::OwoColorize;
@@ -191,9 +192,9 @@ fn curio_dir(state_root: &Path, cached: Option<&Path>, id: &str) -> Result<Optio
     }
     // The root and what Curios made below it; its ancestors are the
     // system's (macOS keeps temporary folders under `/var`, a symlink).
-    let curios = root.join(".nth/curios");
-    let dir = curios.join(id);
-    for current in [root.clone(), root.join(".nth"), curios, dir.clone()] {
+    let dirs = Directories::from_root(&root);
+    let dir = dirs.curio_owner(id);
+    for current in [root.clone(), dirs.nth(), dirs.curios(), dir.clone()] {
         match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => bail!(
                 "refusing Curios deletion through symlink {}",

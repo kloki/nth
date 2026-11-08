@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use nth_context::Paths;
+use nth_directories::Directories;
 
 use crate::Config;
 
@@ -73,14 +74,14 @@ impl Config {
 /// among the directories instructions are read from (up to home when under
 /// it, else `cwd` alone).
 pub fn repo_config(cwd: &Path, home: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
-    if let Some(root) = nth_context::main_project_root(cwd) {
-        let file = root.join(".nth/config");
+    if let Some(root) = nth_directories::main_project_root(cwd) {
+        let file = Directories::from_root(&root).config();
         return file.exists().then_some((root, file));
     }
     nth_context::search_dirs(cwd, home)
         .into_iter()
         .find_map(|root| {
-            let file = root.join(".nth/config");
+            let file = Directories::from_root(root).config();
             file.exists().then(|| (root.to_path_buf(), file))
         })
 }
@@ -288,7 +289,7 @@ fn merge(base: &mut toml::Value, overlay: toml::Value, key: &str) {
 /// Everything else, relative paths included, is left for the caller to
 /// resolve.
 pub(crate) fn skill_path(path: &str, home: Option<&Path>) -> PathBuf {
-    nth_context::expand_home(path, home).unwrap_or_else(|| PathBuf::from(path))
+    nth_directories::expand_home(path, home).unwrap_or_else(|| PathBuf::from(path))
 }
 
 #[cfg(test)]
