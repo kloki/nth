@@ -1,17 +1,16 @@
 //! The front-end's monitors: which are running and who stopped them. What
-//! they print goes into the model's inbox, which the front-end owns.
+//! they print goes to the front-end, which puts it in the model's inbox.
 
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{MonitorEvent, MonitorId, Registered, StoppedBy, Stream};
-use crate::Inbox;
+use super::{MonitorEvent, MonitorId, Registered, StoppedBy};
 
 /// The front-end's monitors, shared by the monitor tools that start and
 /// stop them and the front-end that shows them. The default has no
@@ -23,8 +22,6 @@ pub struct Monitors(Option<Arc<Inner>>);
 #[derive(Debug)]
 struct Inner {
     front_end: mpsc::Sender<MonitorEvent>,
-    /// Where what the monitors print waits for the model.
-    inbox: Inbox,
     state: Mutex<State>,
 }
 
@@ -37,19 +34,15 @@ struct State {
 
 #[derive(Debug)]
 struct Running {
-    description: String,
-    log: PathBuf,
     stop: CancellationToken,
     stopped_by: Option<StoppedBy>,
 }
 
 impl Monitors {
-    /// Monitors that report to `front_end`, log under `log_dir`, and put
-    /// what they print in `inbox`.
-    pub fn new(front_end: mpsc::Sender<MonitorEvent>, log_dir: PathBuf, inbox: Inbox) -> Self {
+    /// Monitors that report to `front_end` and log under `log_dir`.
+    pub fn new(front_end: mpsc::Sender<MonitorEvent>, log_dir: PathBuf) -> Self {
         Self(Some(Arc::new(Inner {
             front_end,
-            inbox,
             state: Mutex::new(State {
                 log_dir,
                 ..State::default()
@@ -83,8 +76,6 @@ impl Monitors {
             state.running.insert(
                 id,
                 Running {
-                    description: description.to_string(),
-                    log: log.clone(),
                     stop: stop.clone(),
                     stopped_by: None,
                 },
@@ -125,14 +116,18 @@ impl Monitors {
         }
     }
 
-    /// Stops every running monitor for a session that was left: what they
-    /// still say goes to the front-end only, never to the next session's
-    /// model, since a forgotten monitor has no notice to join.
-    pub fn forget_all(&self) {
-        let Some(inner) = &self.0 else { return };
-        for (_, running) in inner.lock().running.drain() {
+    /// Stops every running monitor for a session that was left, and
+    /// returns the highest number handed out so far: every monitor up to it
+    /// ran for that session, so the front-end keeps what they still say
+    /// from the next session's model. Read under the same lock that numbers
+    /// new monitors, so one registered meanwhile is on one side or the other.
+    pub fn forget_all(&self) -> MonitorId {
+        let Some(inner) = &self.0 else { return 0 };
+        let mut state = inner.lock();
+        for (_, running) in state.running.drain() {
             running.stop.cancel();
         }
+        state.next
     }
 
     /// Who stopped a monitor whose token was cancelled.
@@ -155,12 +150,14 @@ impl Monitors {
             .map_or(0, |inner| inner.lock().running.len())
     }
 
-    /// Puts a monitor's output or end in the model's inbox and passes it
-    /// on to the front-end. `false` once the front-end is gone, when the
-    /// monitor should stop: nobody is left to hear from it.
+    /// Passes a monitor's output or end on to the front-end; an end also
+    /// stops counting it as running. `false` once the front-end is gone,
+    /// when the monitor should stop: nobody is left to hear from it.
     pub async fn event(&self, event: MonitorEvent) -> bool {
         let Some(inner) = &self.0 else { return false };
-        inner.record(&event);
+        if let MonitorEvent::Ended { id, .. } = &event {
+            inner.lock().running.remove(id);
+        }
         inner.front_end.send(event).await.is_ok()
     }
 }
@@ -171,65 +168,14 @@ impl Inner {
     }
 }
 
-impl Inner {
-    /// What a running monitor said goes to the inbox under its name; a
-    /// forgotten one has no notice to join. Stderr is for the log only.
-    /// Posted under the registry's lock, which `forget_all` takes too, so
-    /// nothing slips into the inbox after a session was left. The inbox
-    /// never takes this lock, so the order is safe.
-    fn record(&self, event: &MonitorEvent) {
-        match event {
-            MonitorEvent::Started { .. } => {}
-            MonitorEvent::Output {
-                stream: Stream::Stderr,
-                ..
-            } => {}
-            MonitorEvent::Output { id, line, .. } => {
-                let state = self.lock();
-                if let Some(running) = state.running.get(id) {
-                    self.inbox
-                        .monitor_line(*id, &running.description, &running.log, line.clone());
-                }
-            }
-            MonitorEvent::Ended { id, end, events } => {
-                let mut state = self.lock();
-                if let Some(running) = state.running.remove(id) {
-                    self.inbox.monitor_ended(
-                        *id,
-                        &running.description,
-                        &running.log,
-                        *end,
-                        *events,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Where a monitor's log goes, under nth's data folder, per session.
-pub fn log_dir(data_dir: &Path, session_id: &str) -> PathBuf {
-    data_dir.join("monitors").join(session_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::MonitorEnd;
 
-    fn monitors() -> (Monitors, Inbox, mpsc::Receiver<MonitorEvent>) {
+    fn monitors() -> (Monitors, mpsc::Receiver<MonitorEvent>) {
         let (tx, rx) = mpsc::channel(64);
-        let inbox = Inbox::new();
-        (Monitors::new(tx, "/logs".into(), inbox.clone()), inbox, rx)
-    }
-
-    async fn line(monitors: &Monitors, id: MonitorId, line: &str) {
-        let output = MonitorEvent::Output {
-            id,
-            line: line.into(),
-            stream: Stream::Stdout,
-        };
-        assert!(monitors.event(output).await);
+        (Monitors::new(tx, "/logs".into()), rx)
     }
 
     #[tokio::test]
@@ -241,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_numbers_and_announces() {
-        let (monitors, _inbox, mut rx) = monitors();
+        let (monitors, mut rx) = monitors();
         let first = monitors.register("errors", "tail -f log").await.unwrap();
         let second = monitors.register("ci", "gh run watch").await.unwrap();
         assert_eq!((first.id, second.id), (1, 2));
@@ -259,53 +205,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stdout_lines_become_one_notice_and_stderr_none() {
-        let (monitors, inbox, _rx) = monitors();
-        let m = monitors
-            .register("errors \"in\" log", "tail")
-            .await
-            .unwrap();
-        line(&monitors, m.id, "ERROR one").await;
-        let stderr = MonitorEvent::Output {
-            id: m.id,
-            line: "noise".into(),
-            stream: Stream::Stderr,
-        };
-        monitors.event(stderr).await;
-        line(&monitors, m.id, "ERROR two").await;
-
-        assert!(inbox.has_notices());
-        assert_eq!(
-            inbox.take_notices().unwrap(),
-            "<monitor id=\"1\" description=\"errors &quot;in&quot; log\" log=\"/logs/1.log\">\n\
-             ERROR one\nERROR two\n</monitor>"
-        );
-        assert_eq!(inbox.take_notices(), None, "taken");
-    }
-
-    #[tokio::test]
-    async fn ending_adds_an_end_notice_and_stops_running() {
-        let (monitors, inbox, _rx) = monitors();
+    async fn an_end_reaches_the_front_end_and_stops_running() {
+        let (monitors, mut rx) = monitors();
         let m = monitors.register("ci", "watch").await.unwrap();
-        line(&monitors, m.id, "build ok").await;
         let ended = MonitorEvent::Ended {
             id: m.id,
             end: MonitorEnd::Exited(Some(1)),
-            events: 1,
+            events: 0,
         };
-        monitors.event(ended).await;
+        assert!(monitors.event(ended.clone()).await);
 
         assert_eq!(monitors.running(), 0);
-        assert_eq!(
-            inbox.take_notices().unwrap(),
-            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
-             <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\" ended=\"exited with code 1\" events=\"1\"/>"
-        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(MonitorEvent::Started { .. })
+        ));
+        assert_eq!(rx.recv().await, Some(ended));
     }
 
     #[tokio::test]
     async fn stop_remembers_who_stopped_it() {
-        let (monitors, _inbox, _rx) = monitors();
+        let (monitors, _rx) = monitors();
         let m = monitors.register("ci", "watch").await.unwrap();
         assert!(!monitors.stop(9, StoppedBy::Model), "no such monitor");
         assert!(monitors.stop(m.id, StoppedBy::User));
@@ -319,23 +239,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forgotten_monitors_say_nothing_more_to_the_model() {
-        let (monitors, inbox, mut rx) = monitors();
+    async fn forgetting_stops_them_and_says_up_to_which_number() {
+        let (monitors, mut rx) = monitors();
+        assert_eq!(
+            Monitors::default().forget_all(),
+            0,
+            "none without a front-end"
+        );
         let m = monitors.register("ci", "watch").await.unwrap();
-        line(&monitors, m.id, "before").await;
-        monitors.forget_all();
-        inbox.clear();
+        monitors.register("logs", "tail").await.unwrap();
+
+        assert_eq!(monitors.forget_all(), 2);
         assert!(m.stop.is_cancelled());
         assert_eq!(monitors.running(), 0);
+        let next = monitors.register("new", "watch").await.unwrap();
+        assert_eq!(next.id, 3, "numbers go on across sessions");
+
         let ended = MonitorEvent::Ended {
             id: m.id,
             end: MonitorEnd::Stopped(StoppedBy::Exit),
             events: 1,
         };
         assert!(monitors.event(ended.clone()).await, "the tab still hears");
-        assert_eq!(inbox.take_notices(), None);
         while let Ok(event) = rx.try_recv() {
-            if matches!(event, MonitorEvent::Ended { .. }) {
+            if event == ended {
                 return;
             }
         }

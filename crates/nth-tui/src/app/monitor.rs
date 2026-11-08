@@ -1,12 +1,28 @@
-//! The commands the model left running: a tab each, their notices start a
-//! turn when the app is idle, and leaving a session or quitting stops them.
-//! A monitor's tab closes by itself once its process has stopped, and only
-//! then, so nothing keeps running out of sight; the log keeps its output.
+//! The commands the model left running: a tab each, what they print put
+//! in the model's inbox, their notices start a turn when the app is idle,
+//! and leaving a session or quitting stops them. A monitor's tab closes by
+//! itself once its process has stopped, and only then, so nothing keeps
+//! running out of sight; the log keeps its output.
 
-use nth_protocol::{MonitorEvent, Stream, monitor_log_dir};
+use std::collections::BTreeMap;
+
+use nth_protocol::{MonitorEvent, MonitorId, Stream};
 
 use super::{App, NOTICE_DELAY, Tab};
 use crate::monitor::MonitorView;
+
+/// The monitors' tabs, and which monitors the model still hears from.
+#[derive(Default)]
+pub(super) struct MonitorTabs {
+    /// Each monitor's tab, open from its start until its process stops.
+    pub(super) views: BTreeMap<MonitorId, MonitorView>,
+    /// Monitors numbered up to here ran for a session that was left: what
+    /// they still say shows in their tabs but never reaches the next
+    /// session's model, which has no notice for them to join. A number
+    /// rather than a set of live ones, since a monitor's start may still
+    /// wait in the channel when its session is left.
+    forgotten: MonitorId,
+}
 
 impl App {
     pub(super) fn on_monitor(&mut self, event: MonitorEvent) {
@@ -17,25 +33,37 @@ impl App {
                 command,
                 log,
             } => {
-                self.monitor_views
+                self.monitor_tabs
+                    .views
                     .insert(id, MonitorView::new(description, command, log));
                 // Opened, not shown: you keep looking at the chat while the
                 // model works.
                 self.content.add(Tab::Monitor(id));
             }
             MonitorEvent::Output { id, line, stream } => {
-                // Its stdout goes into the inbox, which the idle preview
-                // lists as pending.
-                if stream == Stream::Stdout {
+                let Some(view) = self.monitor_tabs.views.get_mut(&id) else {
+                    return;
+                };
+                // Stderr is for the tab and the log only. Stdout goes into
+                // the inbox, which the idle preview lists as pending.
+                let heard = stream == Stream::Stdout && id > self.monitor_tabs.forgotten;
+                if heard {
+                    self.inbox
+                        .monitor_line(id, &view.description, &view.log, line.clone());
+                }
+                view.push(stream, line);
+                if heard {
                     self.context_stale();
                 }
-                if let Some(view) = self.monitor_views.get_mut(&id) {
-                    view.push(stream, line);
-                }
             }
-            MonitorEvent::Ended { id, .. } => {
+            MonitorEvent::Ended { id, end, events } => {
+                if let Some(view) = self.monitor_tabs.views.remove(&id)
+                    && id > self.monitor_tabs.forgotten
+                {
+                    self.inbox
+                        .monitor_ended(id, &view.description, &view.log, end, events);
+                }
                 self.context_stale();
-                self.monitor_views.remove(&id);
                 self.content.remove(Tab::Monitor(id));
             }
         }
@@ -71,24 +99,36 @@ impl App {
         self.areas.forget(&crate::app::mouse::Target::PullRequest);
         self.reset_curios();
         self.left_subagents();
-        self.monitors.forget_all();
+        self.monitor_tabs.forgotten = self.monitors.forget_all();
         self.inbox.clear();
         self.notices_due = None;
         self.hold_notices = false;
         self.log_monitors_for_session();
     }
 
+    /// Points the monitors started from now on at the session's folder in
+    /// the store.
     pub(super) fn log_monitors_for_session(&self) {
-        if let Some(session) = &self.session {
-            let dir = monitor_log_dir(&self.monitor_root, &session.id.to_string());
-            self.monitors.set_log_dir(dir);
+        if let Some(store) = &self.store {
+            self.monitors
+                .set_log_dir(store.monitor_dir(self.session_id));
         }
+    }
+
+    /// Whether the app has yet to hear a monitor of this session end: the
+    /// registry stops counting one as its end is sent, before the app
+    /// hears it, so the registry alone cannot say every end is in the inbox.
+    pub(super) fn awaits_monitor_ends(&self) -> bool {
+        self.monitor_tabs
+            .views
+            .keys()
+            .any(|id| *id > self.monitor_tabs.forgotten)
     }
 
     /// Monitors whose process runs, as far as the app has heard: each has
     /// a tab until it stops.
     pub(crate) fn running_monitors(&self) -> usize {
-        self.monitor_views.len()
+        self.monitor_tabs.views.len()
     }
 }
 
@@ -167,7 +207,7 @@ pub(super) mod tests {
         ended(&mut app, m.id, MonitorEnd::Exited(Some(0))).await;
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(2)]);
         assert_eq!(app.content.active(), Tab::Chat, "the one before shows");
-        assert!(!app.monitor_views.contains_key(&m.id));
+        assert!(!app.monitor_tabs.views.contains_key(&m.id));
     }
 
     #[tokio::test]
@@ -219,7 +259,7 @@ pub(super) mod tests {
 
         ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::User)).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
-        assert!(app.monitor_views.is_empty());
+        assert!(app.monitor_tabs.views.is_empty());
     }
 
     #[tokio::test]
@@ -234,5 +274,118 @@ pub(super) mod tests {
         ended(&mut app, running.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(!app.inbox.has_notices(), "not for the new session");
+    }
+
+    #[tokio::test]
+    async fn a_stdout_line_reaches_the_inbox_and_stderr_does_not() {
+        let mut app = app();
+        app.monitors.set_log_dir("/logs".into());
+        let m = start(&mut app, "errors \"in\" log").await;
+        say(&mut app, m.id, "ERROR one", Stream::Stdout).await;
+        say(&mut app, m.id, "noise", Stream::Stderr).await;
+        say(&mut app, m.id, "ERROR two", Stream::Stdout).await;
+
+        assert!(app.inbox.wakes());
+        assert!(app.notices_due.is_some(), "a turn is on its way");
+        assert_eq!(
+            app.inbox.take_notices().unwrap(),
+            "<monitor id=\"1\" description=\"errors &quot;in&quot; log\" log=\"/logs/1.log\">\n\
+             ERROR one\nERROR two\n</monitor>"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ended_monitor_closes_its_notice() {
+        let mut app = app();
+        app.monitors.set_log_dir("/logs".into());
+        let m = start(&mut app, "ci").await;
+        say(&mut app, m.id, "build ok", Stream::Stdout).await;
+        app.monitors
+            .event(MonitorEvent::Ended {
+                id: m.id,
+                end: MonitorEnd::Exited(Some(1)),
+                events: 1,
+            })
+            .await;
+        hear(&mut app);
+
+        assert_eq!(app.monitors.running(), 0);
+        assert_eq!(
+            app.inbox.take_notices().unwrap(),
+            "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\n</monitor>\n\
+             <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\" ended=\"exited with code 1\" events=\"1\"/>"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_monitors_late_end_posts_nothing() {
+        let mut app = app();
+        let m = start(&mut app, "ci").await;
+        say(&mut app, m.id, "before", Stream::Stdout).await;
+
+        app.run_command(crate::command::Command::Clear);
+        assert!(m.stop.is_cancelled());
+        say(&mut app, m.id, "after", Stream::Stdout).await;
+        ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
+
+        assert!(!app.inbox.has_notices());
+        assert!(app.notices_due.is_none());
+        assert_eq!(app.content.tabs(), [Tab::Chat], "the tab still heard it");
+    }
+
+    #[tokio::test]
+    async fn a_monitor_whose_start_was_still_queued_stays_with_its_session() {
+        let mut app = app();
+        // Started and printing before the app heard of it, then the
+        // session is left: the old registry forgot it under its lock, so
+        // nothing it says may reach the next session's model.
+        let m = app
+            .monitors
+            .register("ci", "watch")
+            .await
+            .expect("front-end");
+        let output = MonitorEvent::Output {
+            id: m.id,
+            line: "late".into(),
+            stream: Stream::Stdout,
+        };
+        app.monitors.event(output).await;
+        app.run_command(crate::command::Command::Clear);
+        hear(&mut app);
+        ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
+        assert!(!app.inbox.has_notices());
+
+        let next = start(&mut app, "next").await;
+        say(&mut app, next.id, "heard", Stream::Stdout).await;
+        assert!(app.inbox.wakes(), "the next session's monitors still speak");
+    }
+
+    #[tokio::test]
+    async fn a_left_sessions_monitor_is_not_waited_for() {
+        let mut app = app();
+        start(&mut app, "ci").await;
+        assert!(app.awaits_monitor_ends(), "this session's");
+
+        app.run_command(crate::command::Command::Clear);
+        assert_eq!(
+            app.content.tabs(),
+            [Tab::Chat, Tab::Monitor(1)],
+            "not heard"
+        );
+        assert!(!app.awaits_monitor_ends(), "its end reaches no inbox");
+    }
+
+    #[tokio::test]
+    async fn monitors_log_beside_the_session_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = nth_session::Store::at(dir.path());
+        let mut app = app().with_store(store.clone());
+        let first = start(&mut app, "ci").await;
+        assert_eq!(first.log, store.monitor_dir(app.session_id).join("1.log"));
+
+        app.run_command(crate::command::Command::Clear);
+        let second = start(&mut app, "ci").await;
+        assert_eq!(second.log, store.monitor_dir(app.session_id).join("2.log"));
+        assert_ne!(first.log.parent(), second.log.parent(), "a folder each");
     }
 }

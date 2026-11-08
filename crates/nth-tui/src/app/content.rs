@@ -295,7 +295,8 @@ impl App {
                 .map_or_else(|| format!("file {id}"), FileView::label),
             Tab::Keymaps => "keymaps".into(),
             Tab::Monitor(id) => self
-                .monitor_views
+                .monitor_tabs
+                .views
                 .get(&id)
                 .map_or_else(|| format!("monitor {id}"), MonitorView::label),
             Tab::Subagent(id) => self
@@ -328,7 +329,7 @@ impl App {
             return;
         }
         let running = match self.content.active() {
-            Tab::Monitor(id) => self.monitor_views.contains_key(&id),
+            Tab::Monitor(id) => self.monitor_tabs.views.contains_key(&id),
             Tab::Subagent(id) => self
                 .subagent_views
                 .get(&id)
@@ -461,7 +462,7 @@ impl App {
             Tab::Context => &mut self.context_tab.view.pager,
             Tab::Diagnostics => &mut self.diagnostics.pager,
             Tab::Usage => &mut self.usage_view.pager,
-            Tab::Monitor(id) => &mut self.monitor_views.get_mut(&id)?.pager,
+            Tab::Monitor(id) => &mut self.monitor_tabs.views.get_mut(&id)?.pager,
             Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat.pager,
             Tab::Plan => &mut self.plan.view.pager,
             Tab::Work => &mut self.work.view.pager,

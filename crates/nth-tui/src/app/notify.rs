@@ -66,8 +66,13 @@ impl App {
         }
     }
 
+    /// A monitor's end the app has not heard yet counts too: it reaches the
+    /// inbox, and wakes the model, only once heard.
     fn background_waiting(&self) -> bool {
-        self.subagents.running() > 0 || self.monitors.running() > 0 || self.inbox.wakes()
+        self.subagents.running() > 0
+            || self.monitors.running() > 0
+            || self.awaits_monitor_ends()
+            || self.inbox.wakes()
     }
 
     /// For every ask as it arrives, including those queued behind the one
@@ -128,7 +133,7 @@ mod tests {
     use crossterm::event::Event as TermEvent;
     use futures::{FutureExt, future::BoxFuture};
     use nth_notify::{Backend, BoxError as NotifyError, Notification};
-    use nth_protocol::Question;
+    use nth_protocol::{MonitorEnd, MonitorEvent, Question};
     use nth_session::Session;
     use tokio::sync::{mpsc, oneshot};
 
@@ -292,6 +297,21 @@ mod tests {
         let n = next(&mut rx).await;
         assert_eq!(n.summary, "nth · needs you");
         assert_eq!(n.body, "Doom loop: Keep going?\nand 1 more question");
+    }
+
+    #[tokio::test]
+    async fn a_monitor_end_not_heard_yet_suppresses_done() {
+        let (mut app, mut rx) = answering("ok");
+        let m = crate::app::monitor::tests::start(&mut app, "build").await;
+        send(&mut app, "go");
+        let ended = MonitorEvent::Ended {
+            id: m.id,
+            end: MonitorEnd::Exited(Some(0)),
+            events: 0,
+        };
+        app.monitors.event(ended).await;
+        end(&mut app).await;
+        none(&mut rx).await;
     }
 
     #[tokio::test]

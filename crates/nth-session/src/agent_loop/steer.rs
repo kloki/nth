@@ -106,8 +106,8 @@ mod tests {
 
     use futures::{FutureExt, future::BoxFuture};
     use nth_protocol::{
-        AssistantMessage, Event, Inbox, Message, MonitorEvent, Monitors, Stream, StreamEvent, Tool,
-        ToolContext, ToolResult, ToolSpec,
+        AssistantMessage, Event, Inbox, Message, StreamEvent, Tool, ToolContext, ToolResult,
+        ToolSpec,
     };
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -115,7 +115,8 @@ mod tests {
     use super::*;
     use crate::agent_loop::{Turn, tests::*};
 
-    /// Starts a monitor that says one line straight away.
+    /// Starts a monitor that says one line straight away, which the
+    /// front-end puts in the inbox while the tools still run.
     struct Watch;
 
     impl Tool for Watch {
@@ -133,17 +134,8 @@ mod tests {
             ctx: &'a ToolContext,
         ) -> BoxFuture<'a, ToolResult> {
             async move {
-                let m = ctx
-                    .monitors
-                    .register("ci", "watch")
-                    .await
-                    .ok_or("headless")?;
-                let line = MonitorEvent::Output {
-                    id: m.id,
-                    line: "build failed".into(),
-                    stream: Stream::Stdout,
-                };
-                ctx.monitors.event(line).await;
+                let log = std::path::Path::new("/logs/1.log");
+                ctx.inbox.monitor_line(1, "ci", log, "build failed".into());
                 Ok("started".into())
             }
             .boxed()
@@ -157,11 +149,8 @@ mod tests {
             vec![StreamEvent::TextDelta("on it".into())],
         ]);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch)];
-        let (front_end, _monitor_events) = mpsc::channel(16);
-        let inbox = Inbox::new();
         let ctx = ToolContext {
-            monitors: Monitors::new(front_end, "/logs".into(), inbox.clone()),
-            inbox,
+            inbox: Inbox::new(),
             ..ToolContext::new(".".into())
         };
         let (tx, mut rx) = mpsc::channel(16);

@@ -61,13 +61,18 @@ impl App {
         let mut unsaved = self.stop_turn_for_exit().await;
         self.curios.invalidate();
         self.stop_subagents_for_exit().await;
-        if self.monitors.running() > 0 {
-            self.monitors.stop_all(StoppedBy::Exit);
-            let monitors = self.monitors.clone();
-            let rx = &mut self.monitor_rx;
-            let ended = async { while monitors.running() > 0 && rx.recv().await.is_some() {} };
-            let _ = tokio::time::timeout(EXIT_WAIT, ended).await;
-        }
+        self.monitors.stop_all(StoppedBy::Exit);
+        // Each end reaches the inbox as the app hears it, so the save below
+        // says how they ended, also of one that ended before you quit.
+        let ended = async {
+            while self.monitors.running() > 0 || self.awaits_monitor_ends() {
+                let Some(event) = self.monitor_rx.recv().await else {
+                    break;
+                };
+                self.on_monitor(event);
+            }
+        };
+        let _ = tokio::time::timeout(EXIT_WAIT, ended).await;
         self.save_history_for_exit().await;
         // A save between turns is of an older clone of the session: landing
         // after the one below, it would roll the file back. One that failed
@@ -456,5 +461,28 @@ mod tests {
             panic!("no notice saved");
         };
         assert!(notice.contains("ended=\"stopped: nth exited\""), "{notice}");
+    }
+
+    #[tokio::test]
+    async fn quitting_saves_an_end_the_app_had_not_heard_yet() {
+        let mut app = app();
+        let m = start(&mut app, "ci").await;
+        let end = MonitorEnd::Exited(Some(0));
+        app.monitors
+            .event(MonitorEvent::Ended {
+                id: m.id,
+                end,
+                events: 0,
+            })
+            .await;
+        assert_eq!(app.monitors.running(), 0, "the registry is done with it");
+
+        app.stop_background_for_exit().await;
+
+        let session = app.session.as_ref().expect("idle");
+        let Some(Message::User(notice)) = session.messages.last() else {
+            panic!("no notice saved");
+        };
+        assert!(notice.contains("ended=\"exited with code 0\""), "{notice}");
     }
 }
