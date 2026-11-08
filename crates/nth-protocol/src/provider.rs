@@ -66,6 +66,22 @@ pub struct SubagentLlm {
     pub cost: Option<Cost>,
 }
 
+impl SubagentLlm {
+    /// `llm` with what `listing` says of its model; a model it does not
+    /// name stays unsized, since a window borrowed from elsewhere would
+    /// fire its compaction at the wrong point.
+    pub fn sized(llm: Llm, listing: &Listing) -> SubagentLlm {
+        let info = listing.get(&llm.model);
+        SubagentLlm {
+            context_window: info.and_then(|info| info.context),
+            max_output: info.and_then(|info| info.output),
+            takes_images: info.and_then(|info| info.takes_images),
+            cost: info.and_then(|info| info.cost),
+            llm,
+        }
+    }
+}
+
 /// How hard a reasoning model thinks before it answers. The levels are
 /// models.dev's; a model takes only some of them (`ModelInfo::efforts`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,9 +315,14 @@ impl From<Vec<ModelInfo>> for Listing {
 }
 
 impl Listing {
+    /// The entry for `model`, by the id a session names it with.
+    pub fn get(&self, model: &str) -> Option<&ModelInfo> {
+        self.models.iter().find(|m| m.id == model)
+    }
+
     /// What `model` costs, when the catalogue says.
     pub fn cost_of(&self, model: &str) -> Option<Cost> {
-        self.models.iter().find(|m| m.id == model)?.cost
+        self.get(model)?.cost
     }
 }
 
@@ -531,5 +552,50 @@ mod tests {
             ..served
         };
         assert_eq!(mismatched.wire_id(), "lyceumx", "no slash, so no prefix");
+    }
+
+    #[test]
+    fn sized_leaves_an_unlisted_model_unsized() {
+        let cost = Cost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        let listing = Listing::from(vec![ModelInfo {
+            id: "zen/a".into(),
+            name: None,
+            context: Some(200_000),
+            output: Some(64_000),
+            efforts: Vec::new(),
+            origin: None,
+            cost: Some(cost),
+            takes_images: Some(false),
+        }]);
+        let llm = |model: &str| Llm {
+            model: model.into(),
+            effort: Effort::High,
+        };
+
+        let listed = SubagentLlm::sized(llm("zen/a"), &listing);
+        assert_eq!(
+            listed,
+            SubagentLlm {
+                llm: llm("zen/a"),
+                context_window: Some(200_000),
+                max_output: Some(64_000),
+                takes_images: Some(false),
+                cost: Some(cost),
+            }
+        );
+
+        let unlisted = SubagentLlm::sized(llm("zen/b"), &listing);
+        assert_eq!(
+            unlisted,
+            SubagentLlm {
+                llm: llm("zen/b"),
+                ..SubagentLlm::default()
+            }
+        );
     }
 }

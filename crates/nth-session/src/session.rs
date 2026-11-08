@@ -7,7 +7,7 @@ use std::{
 
 use nth_context::{Agent, Context, instructions::Watch};
 use nth_protocol::{
-    AssistantMessage, Cost, Effort, Event, FrontEnd, Llm, Message, Mode, Phase, Provider,
+    AssistantMessage, Cost, Effort, Event, FrontEnd, Listing, Llm, Message, Mode, Phase, Provider,
     SubagentLlm, Tool, ToolCall, ToolContext, Usage, Workdir, instructions_notice,
 };
 use serde::{Deserialize, Serialize};
@@ -473,6 +473,30 @@ impl Session {
         self.max_output = max_output;
     }
 
+    /// Sizes the session to its model from `listing`: the context window
+    /// and output limit that size the compaction trigger, whether it takes
+    /// images and what it costs, and the same for what its subagents and
+    /// its clerk run on. Front-ends call it once the model is final. The
+    /// limits stay as they are when the listing does not name the model, so
+    /// a resumed session's saved limits still fire its compaction; a caller
+    /// switching to another model clears them first.
+    pub fn size_to(&mut self, listing: &Listing) {
+        let info = listing.get(&self.model);
+        if let Some(info) = info {
+            self.set_limits(info.context, info.output);
+        }
+        // Unknown counts as taking images: the providers still turn an image
+        // into a note for a model that takes none.
+        self.takes_images = info.and_then(|info| info.takes_images).unwrap_or(true);
+        self.cost = info.and_then(|info| info.cost);
+        for llm in [&mut self.subagent_llm, &mut self.clerk_llm]
+            .into_iter()
+            .flatten()
+        {
+            *llm = SubagentLlm::sized(llm.llm.clone(), listing);
+        }
+    }
+
     fn rewrite_system_prompt(&mut self) {
         let prompt = self.system_prompt();
         if let Some(first @ Message::System(_)) = self.messages.first_mut() {
@@ -913,6 +937,120 @@ pub(crate) mod tests {
 
         assert!(!session.is_empty());
         assert_eq!(session.title().as_deref(), Some("fix the build"));
+    }
+
+    fn listed(id: &str, context: Option<u64>, output: Option<u64>) -> nth_protocol::ModelInfo {
+        nth_protocol::ModelInfo {
+            id: id.into(),
+            name: None,
+            context,
+            output,
+            efforts: Vec::new(),
+            origin: None,
+            cost: None,
+            takes_images: None,
+        }
+    }
+
+    #[test]
+    fn size_to_puts_the_listed_window_and_output_on_the_session() {
+        let cost = Cost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        };
+        let mut entry = listed("zen/a", Some(200_000), Some(64_000));
+        entry.takes_images = Some(false);
+        entry.cost = Some(cost);
+        let listing = Listing::from(vec![entry]);
+        let mut session = Session::new("zen/a", "/repo".into());
+
+        session.size_to(&listing);
+
+        assert_eq!(session.context_window, Some(200_000));
+        assert_eq!(session.max_output, Some(64_000));
+        assert!(!session.takes_images);
+        assert_eq!(session.cost, Some(cost));
+    }
+
+    #[test]
+    fn size_to_leaves_an_unlisted_model_unknown() {
+        let listing = Listing::from(vec![listed("zen/b", Some(1_000), Some(100))]);
+        let mut session = Session::new("zen/a", "/repo".into());
+
+        session.size_to(&listing);
+
+        assert_eq!(session.context_window, None);
+        assert_eq!(session.max_output, None);
+        assert!(session.takes_images, "unknown counts as taking images");
+        assert_eq!(session.cost, None);
+    }
+
+    #[test]
+    fn size_to_keeps_known_limits_for_an_unlisted_model() {
+        // A resumed session's saved limits still fire its compaction before
+        // a listing names its model.
+        let listing = Listing::from(vec![listed("zen/b", Some(1_000), Some(100))]);
+        let mut resumed = Session::new("zen/a", "/repo".into());
+        resumed.set_limits(Some(100_000), Some(8_000));
+
+        resumed.size_to(&listing);
+
+        assert_eq!(resumed.context_window, Some(100_000));
+        assert_eq!(resumed.max_output, Some(8_000));
+    }
+
+    #[test]
+    fn limits_come_from_the_listing_entry_of_the_model() {
+        let listing = Listing::from(vec![
+            listed("zen/a", Some(200_000), Some(64_000)),
+            listed("go/c", Some(1_000_000), None),
+        ]);
+        let mut session = Session::new("go/c", "/repo".into());
+        session.set_limits(Some(1), Some(1));
+
+        session.size_to(&listing);
+
+        // An output limit the entry leaves out is unknown, not the old one.
+        assert_eq!(
+            (session.context_window, session.max_output),
+            (Some(1_000_000), None)
+        );
+    }
+
+    #[test]
+    fn size_to_resizes_the_subagent_and_clerk_llms() {
+        let mut images = listed("zen/b", Some(400_000), Some(32_000));
+        images.takes_images = Some(true);
+        let listing = Listing::from(vec![listed("zen/a", Some(200_000), Some(64_000)), images]);
+        let picked = |model: &str| SubagentLlm {
+            llm: Llm {
+                model: model.into(),
+                effort: Effort::Low,
+            },
+            context_window: Some(1),
+            max_output: Some(1),
+            ..SubagentLlm::default()
+        };
+        let mut session = Session::new("zen/a", "/repo".into());
+        session.subagent_llm = Some(picked("zen/a"));
+        session.clerk_llm = Some(picked("zen/b"));
+
+        session.size_to(&listing);
+
+        let subagent = session.subagent_llm.expect("kept");
+        assert_eq!(subagent.llm.model, "zen/a");
+        assert_eq!(subagent.llm.effort, Effort::Low);
+        assert_eq!(
+            (subagent.context_window, subagent.max_output),
+            (Some(200_000), Some(64_000))
+        );
+        let clerk = session.clerk_llm.expect("kept");
+        assert_eq!(
+            (clerk.context_window, clerk.max_output, clerk.takes_images),
+            (Some(400_000), Some(32_000), Some(true))
+        );
     }
 
     #[test]
