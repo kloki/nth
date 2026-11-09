@@ -17,6 +17,7 @@ pub struct WorkNotice {
     pub item: String,
     /// The subagent working on it.
     pub task: SubagentId,
+    pub name: String,
     pub agent: String,
     pub state: WorkState,
 }

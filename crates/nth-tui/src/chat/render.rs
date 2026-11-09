@@ -179,19 +179,30 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             ])]
         }
         Entry::Notice(NoticeSummary::Task {
-            id, agent, state, ..
+            id,
+            name,
+            agent,
+            state,
+            ..
         }) => vec![Line::from(vec![
             Span::raw(INDENT),
             Span::styled(
                 format!("{} ", icons().subagent),
                 Style::new().fg(Color::Magenta),
             ),
-            Span::styled(format!("subagent {id} · {agent} · {state}"), dim),
+            Span::styled(
+                match name {
+                    Some(name) => format!("subagent {name} #{id} · {agent} · {state}"),
+                    None => format!("subagent {id} · {agent} · {state}"),
+                },
+                dim,
+            ),
         ])],
         Entry::Notice(NoticeSummary::Work {
             cycle,
             item,
             task,
+            name,
             agent,
             state,
             outcome,
@@ -203,6 +214,9 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
             }
             if let Some((done, total)) = progress {
                 said.push_str(&format!(" {done}/{total}"));
+            }
+            if let Some(name) = name {
+                said.push_str(&format!(" · {name}"));
             }
             said.push_str(&format!(" · @{agent} #{task}"));
             vec![Line::from(vec![
@@ -339,12 +353,19 @@ fn tool(
         ToolState::Done | ToolState::Failed(_) => name_style,
     };
     let bar = Style::new().fg(Color::Cyan);
+    let mut summary = call.summary(cwd);
+    if matches!(call.name.as_str(), "task" | "work_assign")
+        && let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        && let Some(name) = args["name"].as_str().filter(|name| !name.is_empty())
+    {
+        summary = format!("{name} · {summary}");
+    }
     let mut spans = vec![
         Span::styled(BAR, bar),
         Span::styled(icons().tool_icon(&call.name), icon_style),
         Span::raw(" "),
         Span::styled(format!("{:<6} ", call.name), name_style),
-        Span::styled(call.summary(cwd), dim),
+        Span::styled(summary, dim),
     ];
     if let ToolState::Failed(e) = state {
         spans.push(Span::styled(format!("  {e}"), Style::new().fg(Color::Red)));

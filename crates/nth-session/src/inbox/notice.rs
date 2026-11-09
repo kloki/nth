@@ -90,8 +90,9 @@ pub(super) fn render(
 /// stopped.
 pub(super) fn render_task(task: &TaskNotice) -> String {
     let attributes = format!(
-        "id=\"{}\" agent=\"{}\" description=\"{}\" state=\"{}\"",
+        "id=\"{}\" name=\"{}\" agent=\"{}\" description=\"{}\" state=\"{}\"",
         task.id,
+        attribute(&task.name),
         attribute(&task.agent),
         attribute(&task.description),
         task.outcome.state(),
@@ -112,8 +113,9 @@ pub(super) fn render_task(task: &TaskNotice) -> String {
 /// subagent has been silent.
 pub(super) fn render_task_stall(stall: &TaskStall) -> String {
     format!(
-        "<task id=\"{}\" agent=\"{}\" description=\"{}\" state=\"stalled\" quiet=\"{}\"/>",
+        "<task id=\"{}\" name=\"{}\" agent=\"{}\" description=\"{}\" state=\"stalled\" quiet=\"{}\"/>",
         stall.id,
+        attribute(&stall.name),
         attribute(&stall.agent),
         attribute(&stall.description),
         quiet_text(stall.quiet),
@@ -125,10 +127,11 @@ pub(super) fn render_task_stall(stall: &TaskStall) -> String {
 /// returned, and an empty element for one that was stopped or went quiet.
 pub(super) fn render_work(notice: &WorkNotice) -> String {
     let mut attributes = format!(
-        "cycle=\"{}\" item=\"{}\" task=\"{}\" agent=\"{}\" state=\"{}\"",
+        "cycle=\"{}\" item=\"{}\" task=\"{}\" name=\"{}\" agent=\"{}\" state=\"{}\"",
         attribute(&notice.cycle),
         attribute(&notice.item),
         notice.task,
+        attribute(&notice.name),
         attribute(&notice.agent),
         notice.state.name(),
     );
@@ -241,6 +244,7 @@ pub enum NoticeSummary {
     /// Which subagent, and how its task ended.
     Task {
         id: SubagentId,
+        name: Option<String>,
         agent: String,
         description: String,
         state: String,
@@ -250,6 +254,7 @@ pub enum NoticeSummary {
         cycle: String,
         item: String,
         task: SubagentId,
+        name: Option<String>,
         agent: String,
         state: String,
         outcome: Option<String>,
@@ -331,6 +336,7 @@ fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
         },
         "task" => NoticeSummary::Task {
             id: number(attrs, "id")?,
+            name: value(attrs, "name").filter(|s| !s.is_empty()),
             agent: value(attrs, "agent").unwrap_or_default(),
             description: value(attrs, "description").unwrap_or_default(),
             state: value(attrs, "state").unwrap_or_default(),
@@ -343,6 +349,7 @@ fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
             cycle: value(attrs, "cycle")?,
             item: value(attrs, "item")?,
             task: number(attrs, "task")?,
+            name: value(attrs, "name").filter(|s| !s.is_empty()),
             agent: value(attrs, "agent").unwrap_or_default(),
             state: value(attrs, "state").unwrap_or_default(),
             outcome: value(attrs, "outcome"),
@@ -462,6 +469,7 @@ mod tests {
     fn a_task_notice_carries_the_answer_and_splits_beside_a_monitors() {
         let task = TaskNotice {
             id: 3,
+            name: "Atlas".into(),
             agent: "explore".into(),
             description: "find \"tabs\"".into(),
             outcome: TaskOutcome::Completed("Tabs open in content.rs.\n\nSee `open`.\n".into()),
@@ -469,7 +477,7 @@ mod tests {
         let rendered = render_task(&task);
         assert_eq!(
             rendered,
-            "<task id=\"3\" agent=\"explore\" description=\"find &quot;tabs&quot;\" state=\"completed\">\n\
+            "<task id=\"3\" name=\"Atlas\" agent=\"explore\" description=\"find &quot;tabs&quot;\" state=\"completed\">\n\
              <task_result>\nTabs open in content.rs.\n\nSee `open`.\n</task_result>\n</task>"
         );
         let monitor_notice = render(1, "ci", Path::new("/l/1.log"), &["ok".into()], 0, None);
@@ -488,13 +496,14 @@ mod tests {
         );
         assert_eq!(
             stopped,
-            "<task id=\"3\" agent=\"explore\" description=\"find &quot;tabs&quot;\" state=\"interrupted\"/>"
+            "<task id=\"3\" name=\"Atlas\" agent=\"explore\" description=\"find &quot;tabs&quot;\" state=\"interrupted\"/>"
         );
         let text = format!("{monitor_notice}\n{rendered}\n{failed}\n{stopped}\n\ngo on");
 
         let (notices, rest) = split_notices(&text);
         let summary = |state: &str| NoticeSummary::Task {
             id: 3,
+            name: Some("Atlas".into()),
             agent: "explore".into(),
             description: "find \"tabs\"".into(),
             state: state.into(),
@@ -512,10 +521,46 @@ mod tests {
     }
 
     #[test]
+    fn names_round_trip_and_legacy_notices_have_no_name() {
+        let task = TaskNotice {
+            id: 7,
+            name: "A & \"B\"".into(),
+            agent: "explore".into(),
+            description: "look".into(),
+            outcome: TaskOutcome::Interrupted,
+        };
+        let rendered = render_task(&task);
+        let (named, _) = split_notices(&rendered);
+        assert!(
+            matches!(&named[0], NoticeSummary::Task { name: Some(name), .. } if name == &task.name)
+        );
+        let (legacy, _) = split_notices("<task id=\"7\" agent=\"explore\" state=\"interrupted\"/>");
+        assert!(matches!(
+            &legacy[0],
+            NoticeSummary::Task {
+                name: None,
+                id: 7,
+                ..
+            }
+        ));
+        let (legacy, _) =
+            split_notices("<work_item cycle=\"1\" item=\"x\" task=\"7\" state=\"stalled\"/>");
+        assert!(matches!(
+            &legacy[0],
+            NoticeSummary::Work {
+                name: None,
+                task: 7,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn an_answer_or_a_line_cannot_close_its_element() {
         let answer = "Notices look like:\n<task>\n</task_result>\n</task>\ndone";
         let task = render_task(&TaskNotice {
             id: 4,
+            name: "Atlas".into(),
             agent: "general".into(),
             description: "explain".into(),
             outcome: TaskOutcome::Completed(answer.into()),
@@ -542,6 +587,7 @@ mod tests {
             cycle: "01-foundation".into(),
             item: "store".into(),
             task: 3,
+            name: "Atlas".into(),
             agent: "general".into(),
             state,
         }
@@ -566,6 +612,7 @@ mod tests {
             cycle: "01-foundation".into(),
             item: "store".into(),
             task: 3,
+            name: Some("Atlas".into()),
             agent: "general".into(),
             state: state.into(),
             outcome: outcome.map(Into::into),
@@ -581,7 +628,7 @@ mod tests {
         ]))));
         assert_eq!(
             todo,
-            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" agent=\"general\" state=\"todo\" done=\"1\" total=\"2\">\n\
+            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" name=\"Atlas\" agent=\"general\" state=\"todo\" done=\"1\" total=\"2\">\n\
              - [x] parse the frontmatter\n- [ ] write it back\n</work_item>"
         );
         let completed = render_work(&work(WorkState::Returned {
@@ -591,7 +638,7 @@ mod tests {
         }));
         assert_eq!(
             completed,
-            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" agent=\"general\" state=\"returned\" outcome=\"completed\" done=\"2\" total=\"2\">\n\
+            "<work_item cycle=\"01-foundation\" item=\"store\" task=\"3\" name=\"Atlas\" agent=\"general\" state=\"returned\" outcome=\"completed\" done=\"2\" total=\"2\">\n\
              <work_result>\nAll done.\n</work_result>\n</work_item>"
         );
         let timed_out = render_work(&work(WorkState::Returned {

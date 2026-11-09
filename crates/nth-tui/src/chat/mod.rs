@@ -147,7 +147,12 @@ mod tests {
 
     #[test]
     fn child_chat_hit_targets_follow_its_scrolled_viewport() {
-        let mut child = SubagentView::new("agent".into(), "task".into(), "/repo".into());
+        let mut child = SubagentView::new(
+            "Atlas".into(),
+            "agent".into(),
+            "task".into(),
+            "/repo".into(),
+        );
         for i in 0..8 {
             child.chat.transcript.push_user(format!("message {i}"));
         }

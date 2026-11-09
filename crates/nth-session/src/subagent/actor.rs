@@ -38,6 +38,7 @@ pub(super) enum Command {
 
 pub(super) struct Actor {
     pub id: SubagentId,
+    pub name: String,
     pub agent: String,
     pub description: String,
     pub session: Session,
@@ -54,6 +55,7 @@ pub(super) struct Actor {
 /// Who a job's ending is told as, and through whom.
 struct Who {
     id: SubagentId,
+    name: String,
     agent: String,
     description: String,
     parent: Parent,
@@ -164,6 +166,7 @@ impl Queue {
 pub(super) async fn run(actor: Actor) {
     let Actor {
         id,
+        name,
         agent,
         description,
         mut session,
@@ -176,6 +179,7 @@ pub(super) async fn run(actor: Actor) {
     } = actor;
     let who = Who {
         id,
+        name,
         agent,
         description,
         parent,
@@ -183,6 +187,7 @@ pub(super) async fn run(actor: Actor) {
     let mut queue = Queue::new(commands, status);
     let started = SubagentEvent::Started {
         id,
+        name: who.name.clone(),
         agent: who.agent.clone(),
         description: who.description.clone(),
         model: session.model.clone(),
@@ -459,6 +464,7 @@ impl Who {
                 self.parent.tell(|| {
                     inbox.post_task_stalled(TaskStall {
                         id: self.id,
+                        name: self.name.clone(),
                         agent: self.agent.clone(),
                         description: self.description.clone(),
                         quiet,
@@ -482,6 +488,7 @@ impl Who {
                 self.parent.tell(|| {
                     inbox.post_task(TaskNotice {
                         id: self.id,
+                        name: self.name.clone(),
                         agent: self.agent.clone(),
                         description: self.description.clone(),
                         outcome: task_outcome(&turn),
@@ -635,7 +642,7 @@ mod tests {
         assert_eq!(
             inbox.take_notices().unwrap(),
             format!(
-                "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"{}\"/>",
+                "<task id=\"1\" name=\"explore\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"{}\"/>",
                 quiet_text(quiets[1])
             ),
             "one notice, the latest silence"
@@ -654,6 +661,7 @@ mod tests {
     fn who() -> Who {
         Who {
             id: 1,
+            name: "explore".into(),
             agent: "explore".into(),
             description: "d".into(),
             parent: Subagents::default().reserve().parent(),

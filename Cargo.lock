@@ -1832,6 +1832,7 @@ dependencies = [
  "nth-tools",
  "nth-tui",
  "nth-work",
+ "nth-worktree",
  "owo-colors",
  "serde",
  "serde_json",

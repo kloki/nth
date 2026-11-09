@@ -48,7 +48,7 @@ async fn write(work: &Work, ctx: &ToolContext, cycle: u32, item: &str) {
 }
 
 fn assign(cycle: u32, item: &str) -> serde_json::Value {
-    json!({ "cycle": cycle, "item": item, "subagent_type": "general" })
+    json!({ "cycle": cycle, "item": item, "subagent_type": "general", "name": "worker" })
 }
 
 async fn read(dir: &Path, cycle: &str, item: &str) -> Item {
@@ -131,7 +131,7 @@ async fn headless_it_waits_while_the_child_ticks_its_todo() {
 
     assert_eq!(
         result,
-        "<work_item cycle=\"01-c1\" item=\"store\" task=\"1\" agent=\"general\" state=\"returned\" outcome=\"completed\" done=\"1\" total=\"2\">\n\
+        "<work_item cycle=\"01-c1\" item=\"store\" task=\"1\" name=\"worker\" agent=\"general\" state=\"returned\" outcome=\"completed\" done=\"1\" total=\"2\">\n\
          <work_result>\nParsed; writing is left.\n</work_result>\n</work_item>"
     );
     let item = read(dir.path(), "01-c1", "store").await;
@@ -164,8 +164,9 @@ async fn with_an_inbox_it_returns_at_once_and_every_change_is_a_notice() {
         .unwrap();
 
     assert!(
-        result
-            .starts_with("Assigned 01-c1/store to subagent 1 (@general). Its answer and any stall"),
+        result.starts_with(
+            "Assigned 01-c1/store to subagent 1 (worker, @general). Its answer and any stall"
+        ),
         "{result}"
     );
     assert_eq!(
@@ -300,7 +301,7 @@ async fn cycles_run_one_after_another_and_closed_items_stay_closed() {
 async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
     let dir = tempfile::tempdir().unwrap();
     let work = work_with(
-        vec![says("first try"), says("second try")],
+        vec![says("first try"), says("second try"), says("third try")],
         Vec::new(),
         Subagents::default(),
         Inbox::default(),
@@ -312,14 +313,59 @@ async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
     let tool = WorkAssign::new(work);
     tool.call(assign(1, "a"), &ctx).await.unwrap();
 
-    let again = |item: &str, id: u32| json!({ "cycle": 1, "item": item, "subagent_type": "general", "task_id": id });
+    let again = |item: &str, id: u32| json!({ "cycle": 1, "item": item, "subagent_type": "general", "name": "worker", "task_id": id });
+    let mut mismatch = again("a", 1);
+    mismatch["name"] = json!("other");
+    assert!(
+        tool.call(mismatch, &ctx)
+            .await
+            .unwrap_err()
+            .contains("different name")
+    );
     assert_eq!(
         tool.call(again("b", 1), &ctx).await.unwrap_err(),
         "subagent 1 did not work on 01-c1/b in this run of nth; leave task_id out to start a fresh one"
     );
     let result = tool.call(again("a", 1), &ctx).await.unwrap();
     assert!(result.contains("second try"), "{result}");
+    let mut unnamed = again("a", 1);
+    unnamed.as_object_mut().unwrap().remove("name");
+    let result = tool.call(unnamed, &ctx).await.unwrap();
+    assert!(result.contains("name=\"worker\""), "{result}");
+    assert!(result.contains("third try"), "{result}");
     assert_eq!(read(dir.path(), "01-c1", "a").await.task, Some(1));
+}
+
+#[tokio::test]
+async fn fresh_assignment_requires_a_valid_name_without_starting_a_subagent() {
+    let dir = tempfile::tempdir().unwrap();
+    let subagents = Subagents::default();
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        subagents.clone(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
+    write(&work, &ctx, 1, "a").await;
+    let tool = WorkAssign::new(work);
+    let mut args = assign(1, "a");
+    args.as_object_mut().unwrap().remove("name");
+    assert!(
+        tool.call(args.clone(), &ctx)
+            .await
+            .unwrap_err()
+            .contains("name is required")
+    );
+    for name in ["", " worker", "bad\nname"] {
+        args["name"] = json!(name);
+        assert!(tool.call(args.clone(), &ctx).await.is_err());
+    }
+    assert!(subagents.ids().is_empty());
+    assert_eq!(read(dir.path(), "01-c1", "a").await.status, Status::Pending);
+    tool.call(assign(1, "a"), &ctx).await.unwrap();
+    assert_eq!(subagents.name(1).as_deref(), Some("worker"));
 }
 
 #[tokio::test]
@@ -608,7 +654,7 @@ async fn a_timeout_of_zero_is_no_limit() {
     );
     let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
-    let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "timeout_ms": 0 });
+    let args = json!({ "cycle": 1, "item": "a", "subagent_type": "general", "name": "worker", "timeout_ms": 0 });
 
     let result = WorkAssign::new(work).call(args, &ctx).await.unwrap();
 
@@ -687,6 +733,7 @@ async fn a_todo_tick_after_forgetting_tells_no_model() {
         store,
         at,
         task: reserved.id(),
+        name: "worker".into(),
         agent: "general".into(),
         inbox: inbox.clone(),
         parent: reserved.parent(),
@@ -732,6 +779,7 @@ fn a_forgotten_work_subagent_that_stalls_tells_no_model() {
                 item: "a".into(),
             },
             task: reserved.id(),
+            name: "worker".into(),
             agent: "general".into(),
             inbox: inbox.clone(),
             parent: reserved.parent(),

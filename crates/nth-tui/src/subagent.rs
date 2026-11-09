@@ -22,6 +22,7 @@ const HEADER_ROWS: u16 = 2;
 const TITLE_CHARS: usize = 20;
 
 pub struct SubagentView {
+    pub name: String,
     pub agent: String,
     pub description: String,
     pub chat: Chat,
@@ -40,8 +41,9 @@ pub struct SubagentView {
 }
 
 impl SubagentView {
-    pub fn new(agent: String, description: String, cwd: std::path::PathBuf) -> Self {
+    pub fn new(name: String, agent: String, description: String, cwd: std::path::PathBuf) -> Self {
         Self {
+            name,
             agent,
             description,
             chat: Chat::new(cwd),
@@ -116,8 +118,8 @@ impl SubagentView {
 
     /// The tab's name in the header: what it was asked, cut short.
     pub fn label(&self) -> String {
-        let mut title: String = self.description.chars().take(TITLE_CHARS).collect();
-        if self.description.chars().count() > TITLE_CHARS {
+        let mut title: String = self.name.chars().take(TITLE_CHARS).collect();
+        if self.name.chars().count() > TITLE_CHARS {
             title.push('…');
         }
         title
@@ -177,7 +179,10 @@ impl SubagentView {
             rest.push_str(&format!(" · {queued} queued"));
         }
         Line::from(vec![
-            Span::styled(format!("@{}", self.agent), Style::new().fg(Color::Cyan)),
+            Span::styled(
+                format!("{} · @{}", self.name, self.agent),
+                Style::new().fg(Color::Cyan),
+            ),
             Span::styled(format!(" · {} · ", self.description), dim),
             Span::styled(state, Style::new().fg(colour)),
             Span::styled(rest, dim),
@@ -190,13 +195,18 @@ mod tests {
     use super::*;
 
     fn view() -> SubagentView {
-        SubagentView::new("explore".into(), "find tabs".into(), "/repo".into())
+        SubagentView::new(
+            "Atlas".into(),
+            "explore".into(),
+            "find tabs".into(),
+            "/repo".into(),
+        )
     }
 
     #[test]
     fn the_state_follows_the_turn() {
         let mut view = view();
-        assert_eq!(view.label(), "find tabs");
+        assert_eq!(view.label(), "Atlas");
         assert_eq!(view.state(), TabState::Working);
         assert_eq!(view.icon(), "@", "no turn to spin for yet");
         view.prompted("go".into());
@@ -241,7 +251,7 @@ mod tests {
             .collect();
         assert_eq!(
             header,
-            "@explore · find tabs · running · 0s · 1 tool call · 1 queued"
+            "Atlas · @explore · find tabs · running · 0s · 1 tool call · 1 queued"
         );
 
         view.ended(
@@ -255,7 +265,10 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert_eq!(header, "@explore · find tabs · done · 3s · 1 tool call");
+        assert_eq!(
+            header,
+            "Atlas · @explore · find tabs · done · 3s · 1 tool call"
+        );
     }
 
     fn state(view: &SubagentView) -> String {

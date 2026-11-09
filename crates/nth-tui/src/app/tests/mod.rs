@@ -1328,6 +1328,7 @@ fn a_draw_changes_no_tab() {
     let mut app = test_app();
     app.on_subagent(SubagentEvent::Started {
         id: 1,
+        name: "Atlas".into(),
         agent: "explore".into(),
         description: "find tabs".into(),
         model: "glm".into(),
@@ -1355,6 +1356,7 @@ fn the_frame_after_a_step_closes_an_answered_tab_before_drawing() {
     let mut app = test_app();
     app.on_subagent(SubagentEvent::Started {
         id: 1,
+        name: "Atlas".into(),
         agent: "explore".into(),
         description: "find tabs".into(),
         model: "glm".into(),

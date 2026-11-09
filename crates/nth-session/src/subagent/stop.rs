@@ -111,7 +111,7 @@ mod tests {
             LIMITS,
         );
         let stop = TaskStop::new(subagents.clone());
-        let start = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let start = json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout" });
         task.call(start, &ctx()).await.unwrap();
         // Stopping what still waits in the inbox skips it without a turn;
         // the test is about a turn under way.
@@ -135,7 +135,7 @@ mod tests {
         }
         assert_eq!(
             inbox.take_notices().unwrap(),
-            "<task id=\"1\" agent=\"explore\" description=\"d\" state=\"interrupted\"/>"
+            "<task id=\"1\" name=\"scout\" agent=\"explore\" description=\"d\" state=\"interrupted\"/>"
         );
         assert_eq!(
             stop.call(json!({ "task_id": "1" }), &ctx())
@@ -161,7 +161,7 @@ mod tests {
         );
         let stop = TaskStop::new(subagents.clone());
         task.call(
-            json!({ "description": "d", "prompt": "p", "subagent_type": "explore" }),
+            json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout" }),
             &ctx(),
         )
         .await
