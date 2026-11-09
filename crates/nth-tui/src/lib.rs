@@ -7,6 +7,7 @@ mod chat;
 mod command;
 mod connect;
 mod context;
+mod curios;
 mod diagnostics;
 mod file;
 mod fuzzy;
