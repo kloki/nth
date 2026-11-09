@@ -158,7 +158,7 @@ mod tests {
         let area = Rect::new(3, 1, 30, 7);
         terminal
             .draw(|f| {
-                child.draw(f, area, ChatSettings::default());
+                child.draw(f, area, ChatSettings::default(), 0);
             })
             .unwrap();
         let link = (area.y..area.bottom())
@@ -176,7 +176,7 @@ mod tests {
         child.chat.pager.jump_top();
         terminal
             .draw(|f| {
-                child.draw(f, area, ChatSettings::default());
+                child.draw(f, area, ChatSettings::default(), 0);
             })
             .unwrap();
         assert!(child.chat.link_at(link.0.x, link.0.y).is_none());

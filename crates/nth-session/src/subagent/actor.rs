@@ -1,19 +1,21 @@
 //! The task that owns a subagent's session and runs its prompts one after
-//! another, reporting to the front-end and settling each job's `Done`.
+//! another, reporting to the front-end and settling each job's `Done`. It
+//! alone holds the jobs waiting and the running one's token: the registry
+//! reaches it through [`Command`]s and reads what it publishes as a
+//! [`Status`].
 
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use nth_protocol::{Event, Message, Provider, Tool};
-use tokio::{sync::mpsc, time::Instant};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ChildState, Done, Job, State, SubagentEvent, SubagentId, TaskNotice, TaskOutcome, TaskStall,
-    task_outcome,
+    Done, Job, Parent, State, Status, SubagentEvent, SubagentId, TaskNotice, TaskOutcome,
+    TaskStall, task_outcome,
 };
 use crate::{Error, FrontEnd, Session, Spend, agent_loop::settle_unanswered};
 
@@ -22,6 +24,17 @@ use crate::{Error, FrontEnd, Session, Spend, agent_loop::settle_unanswered};
 /// cooperative: anything in the turn that awaits without heeding the cancel
 /// would otherwise keep the job, and a work item on it, running for good.
 pub(super) const GRACE: Duration = Duration::from_secs(30);
+
+/// What the registry asks of an actor. The registry dropping its sender
+/// is the last word: the child was forgotten with its session, so the
+/// actor stops its turn, settles what waits as interrupted, tells no model
+/// and ends.
+pub(super) enum Command {
+    Prompt(Box<Job>),
+    /// Stops the running turn and every job waiting; the subagent stays.
+    /// Answered with whether anything ran or waited.
+    Stop(oneshot::Sender<bool>),
+}
 
 pub(super) struct Actor {
     pub id: SubagentId,
@@ -32,15 +45,122 @@ pub(super) struct Actor {
     pub tools: Vec<Arc<dyn Tool>>,
     /// `None` without a front-end: nobody watches the tab.
     pub front_end: Option<mpsc::Sender<SubagentEvent>>,
-    pub shared: Arc<Mutex<ChildState>>,
-    /// The registry forgot the child.
-    pub closed: CancellationToken,
-    pub jobs: mpsc::UnboundedReceiver<Job>,
-    /// Where each turn's spend goes, for the parent's session.
-    pub spent: Arc<Mutex<Vec<Spend>>>,
+    pub commands: mpsc::UnboundedReceiver<Command>,
+    pub status: watch::Sender<Status>,
+    /// Where its notices and spend go, while its session was not left.
+    pub parent: Parent,
 }
 
-/// Runs until the inbox closes or the front-end is gone.
+/// Who a job's ending is told as, and through whom.
+struct Who {
+    id: SubagentId,
+    agent: String,
+    description: String,
+    parent: Parent,
+}
+
+/// The jobs an actor holds, and what it publishes about them.
+struct Queue {
+    commands: mpsc::UnboundedReceiver<Command>,
+    waiting: VecDeque<Job>,
+    /// Taken off `waiting` by a stop, to settle as interrupted once no turn
+    /// runs: settling a work item waits on the lock the running turn's
+    /// `work_todo` may hold, and the turn is not polled while an arm of
+    /// its watch awaits.
+    stopped: Vec<Job>,
+    /// `false` once the registry let go of the child, or the front-end is
+    /// gone: nothing more will run.
+    open: bool,
+    state: Option<State>,
+    status: watch::Sender<Status>,
+}
+
+impl Queue {
+    fn new(commands: mpsc::UnboundedReceiver<Command>, status: watch::Sender<Status>) -> Self {
+        Self {
+            commands,
+            waiting: VecDeque::new(),
+            stopped: Vec::new(),
+            open: true,
+            state: None,
+            status,
+        }
+    }
+
+    /// Acts on `command`, `running` being the running turn's token while
+    /// one runs.
+    fn take(&mut self, command: Command, running: Option<&CancellationToken>) {
+        match command {
+            Command::Prompt(job) => {
+                self.waiting.push_back(*job);
+                self.publish();
+            }
+            Command::Stop(answer) => {
+                let anything = running.is_some_and(|token| !token.is_cancelled())
+                    || self.waiting.iter().any(|job| !job.cancel.is_cancelled());
+                self.stop(running);
+                // Before answering, so whoever hears it reads the queue
+                // emptied.
+                self.publish();
+                // A dropped receiver is a caller that stopped listening.
+                let _ = answer.send(anything);
+            }
+        }
+    }
+
+    /// The registry let go of the child: forgotten with its session.
+    fn close(&mut self, running: Option<&CancellationToken>) {
+        self.open = false;
+        self.stop(running);
+        self.publish();
+    }
+
+    fn stop(&mut self, running: Option<&CancellationToken>) {
+        if let Some(token) = running {
+            token.cancel();
+        }
+        self.stopped.extend(self.waiting.drain(..));
+    }
+
+    /// Takes what was sent while the actor was busy elsewhere, so a stop
+    /// that came then still catches the jobs waiting behind it.
+    fn take_sent(&mut self) {
+        while self.open {
+            match self.commands.try_recv() {
+                Ok(command) => self.take(command, None),
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => self.close(None),
+            }
+        }
+    }
+
+    /// Waits for the next command; `false` once the registry let go.
+    async fn wait(&mut self) -> bool {
+        match self.commands.recv().await {
+            Some(command) => self.take(command, None),
+            None => self.close(None),
+        }
+        self.open
+    }
+
+    fn publish(&self) {
+        let now = Status {
+            state: self.state,
+            queued: self
+                .waiting
+                .iter()
+                .filter(|job| !job.cancel.is_cancelled())
+                .count(),
+        };
+        self.status.send_if_modified(|status| {
+            let changed = *status != now;
+            *status = now;
+            changed
+        });
+    }
+}
+
+/// Runs until the registry lets go of the child or the front-end is gone.
 pub(super) async fn run(actor: Actor) {
     let Actor {
         id,
@@ -50,22 +170,42 @@ pub(super) async fn run(actor: Actor) {
         provider,
         tools,
         front_end,
-        shared,
-        closed,
-        mut jobs,
-        spent,
+        commands,
+        status,
+        parent,
     } = actor;
+    let who = Who {
+        id,
+        agent,
+        description,
+        parent,
+    };
+    let mut queue = Queue::new(commands, status);
     let started = SubagentEvent::Started {
         id,
-        agent: agent.clone(),
-        description: description.clone(),
+        agent: who.agent.clone(),
+        description: who.description.clone(),
         model: session.model.clone(),
     };
     if !send(&front_end, started).await {
-        abandon(&mut jobs, &shared, &closed, &agent, &description, id).await;
+        abandon(&mut queue, &who).await;
         return;
     }
-    while let Some(job) = jobs.recv().await {
+    loop {
+        queue.take_sent();
+        while !queue.stopped.is_empty() {
+            who.settle_stopped(&mut queue).await;
+            // A stop that came while settling still skips what waits,
+            // rather than interrupting it once it has started.
+            queue.take_sent();
+        }
+        let Some(job) = queue.waiting.pop_front() else {
+            if queue.open && queue.wait().await {
+                continue;
+            }
+            who.settle_stopped(&mut queue).await;
+            return;
+        };
         let Job {
             text,
             cancel,
@@ -73,23 +213,13 @@ pub(super) async fn run(actor: Actor) {
             timeout,
             stall,
         } = job;
-        let skipped = {
-            let mut state = lock(&shared);
-            state.waiting.pop_front();
-            // Stopped while it waited: it never ran, so nothing to show.
-            let skipped = cancel.is_cancelled() || closed.is_cancelled();
-            if !skipped {
-                state.running = Some(cancel.clone());
-                state.state = Some(State::Running);
-            }
-            skipped
-        };
-        // Settled with the state's lock let go: settling may wait.
-        if skipped {
-            let done = told(done, &closed);
-            settle(done, &agent, &description, id, Err(Error::Interrupted)).await;
+        // Stopped while it waited: it never ran, so nothing to show.
+        if cancel.is_cancelled() {
+            who.settle(done, Err(Error::Interrupted)).await;
             continue;
         }
+        queue.state = Some(State::Running);
+        queue.publish();
         if !send(
             &front_end,
             SubagentEvent::Prompted {
@@ -99,9 +229,8 @@ pub(super) async fn run(actor: Actor) {
         )
         .await
         {
-            let done = told(done, &closed);
-            settle(done, &agent, &description, id, Err(Error::Interrupted)).await;
-            abandon(&mut jobs, &shared, &closed, &agent, &description, id).await;
+            who.settle(done, Err(Error::Interrupted)).await;
+            abandon(&mut queue, &who).await;
             return;
         }
         let began = Instant::now();
@@ -110,14 +239,15 @@ pub(super) async fn run(actor: Actor) {
         // Nobody at the tab answers questions or looks at panels, and a
         // monitor's notices would go to the parent's model: headless.
         let front = FrontEnd::default();
+        // The actor aborted mid-turn, as dropping the registry does, still
+        // stops what the turn started that heeds its cancel.
+        let stop_on_drop = cancel.clone().drop_guard();
         let mut watch = Watch {
-            id,
-            agent: &agent,
-            description: &description,
+            who: &who,
             done: &done,
             front_end: &front_end,
-            closed: &closed,
             cancel: &cancel,
+            queue: &mut queue,
             timeout,
             stall,
             grace: GRACE,
@@ -133,6 +263,7 @@ pub(super) async fn run(actor: Actor) {
             mut outbox,
             ..
         } = watch;
+        stop_on_drop.disarm();
         let result = match ended {
             Some(result) => result,
             None => {
@@ -145,28 +276,30 @@ pub(super) async fn run(actor: Actor) {
             (Err(Error::Interrupted), Some(timeout)) if timed_out => Err(Error::TimedOut(timeout)),
             (result, _) => result,
         };
-        record_spend(&spent, &closed, &session, spends, &agent);
+        who.parent
+            .record(session.usage.since(spends).iter().map(|spend| Spend {
+                agent: Some(who.agent.clone()),
+                ..spend.clone()
+            }));
         let answer = result.map(|()| last_answer(&session));
         let outcome = task_outcome(&answer);
         // First, so a front-end that falls behind cannot keep whoever
         // waits from hearing; and before the turn counts as ended, so
         // whoever looks for the answer once it has, on `TurnEnded` or when
         // nothing runs any more, finds it.
-        settle(told(done, &closed), &agent, &description, id, answer).await;
+        who.settle(done, answer).await;
+        who.settle_stopped(&mut queue).await;
         // Sent just before the turn returned, and they belong before the
         // footer.
         if heard {
             heard = flush(&front_end, &mut outbox, &mut rx, id).await;
         }
-        {
-            let mut state = lock(&shared);
-            state.running = None;
-            state.state = Some(match &outcome {
-                TaskOutcome::Completed(_) => State::Idle,
-                TaskOutcome::Interrupted => State::Interrupted,
-                TaskOutcome::Failed(_) => State::Failed,
-            });
-        }
+        queue.state = Some(match &outcome {
+            TaskOutcome::Completed(_) => State::Idle,
+            TaskOutcome::Interrupted => State::Interrupted,
+            TaskOutcome::Failed(_) => State::Failed,
+        });
+        queue.publish();
         let ended = SubagentEvent::TurnEnded {
             id,
             outcome,
@@ -175,7 +308,7 @@ pub(super) async fn run(actor: Actor) {
         };
         heard = heard && send(&front_end, ended).await;
         if !heard {
-            abandon(&mut jobs, &shared, &closed, &agent, &description, id).await;
+            abandon(&mut queue, &who).await;
             return;
         }
     }
@@ -183,13 +316,13 @@ pub(super) async fn run(actor: Actor) {
 
 /// What the actor watches a turn with, and what it learned doing so.
 struct Watch<'a> {
-    id: SubagentId,
-    agent: &'a str,
-    description: &'a str,
+    who: &'a Who,
     done: &'a Done,
     front_end: &'a Option<mpsc::Sender<SubagentEvent>>,
-    closed: &'a CancellationToken,
     cancel: &'a CancellationToken,
+    /// Read while the turn runs, so a prompt queues, a stop stops it and
+    /// a forgotten child's turn ends without waiting for it.
+    queue: &'a mut Queue,
     timeout: Option<Duration>,
     stall: Option<Duration>,
     grace: Duration,
@@ -206,8 +339,8 @@ struct Watch<'a> {
 
 impl Watch<'_> {
     /// Runs `turn` until it ends, forwarding its events, reporting its
-    /// silences and holding it to its budget; `None` when it was dropped
-    /// for not ending within the grace after its cancel.
+    /// silences, taking commands and holding it to its budget; `None` when
+    /// it was dropped for not ending within the grace after its cancel.
     async fn turn(
         &mut self,
         turn: impl Future<Output = Result<(), Error>>,
@@ -255,6 +388,10 @@ impl Watch<'_> {
                     self.outbox.clear();
                     self.cancel.cancel();
                 }
+                command = self.queue.commands.recv(), if self.queue.open => match command {
+                    Some(command) => self.queue.take(command, Some(self.cancel)),
+                    None => self.queue.close(Some(self.cancel)),
+                },
                 () = &mut quiet, if self.stall.is_some() && !stopping => {
                     quiet.as_mut().reset(Instant::now() + self.stall.unwrap_or_default());
                     // It spoke; only the front-end has not kept up.
@@ -278,7 +415,7 @@ impl Watch<'_> {
                     if let Some(stall) = self.stall {
                         quiet.as_mut().reset(silent_since + stall);
                     }
-                    self.forward(SubagentEvent::Session { id: self.id, event });
+                    self.forward(SubagentEvent::Session { id: self.who.id, event });
                 }
             }
         }
@@ -287,10 +424,11 @@ impl Watch<'_> {
     /// The turn has said nothing for `quiet`: whoever waits on the job
     /// hears, unless the child was forgotten, and so does the tab.
     fn stalled(&mut self, quiet: Duration) {
-        if !self.closed.is_cancelled() {
-            report_stall(self.done, self.id, self.agent, self.description, quiet);
-        }
-        self.forward(SubagentEvent::Stalled { id: self.id, quiet });
+        self.who.report_stall(self.done, quiet);
+        self.forward(SubagentEvent::Stalled {
+            id: self.who.id,
+            quiet,
+        });
     }
 
     fn forward(&mut self, event: SubagentEvent) {
@@ -309,40 +447,57 @@ fn give_up(session: &mut Session, at: usize) {
     session.usage.close(at);
 }
 
-/// A child that was forgotten spent for a session that was left. Checked
-/// under the lock `forget_all` takes the spend under, after cancelling
-/// `closed`, so none of it lands after that.
-fn record_spend(
-    spent: &Mutex<Vec<Spend>>,
-    closed: &CancellationToken,
-    session: &Session,
-    since: usize,
-    agent: &str,
-) {
-    let mut spent = lock_spent(spent);
-    if !closed.is_cancelled() {
-        spent.extend(session.usage.since(since).iter().map(|spend| Spend {
-            agent: Some(agent.to_string()),
-            ..spend.clone()
-        }));
-    }
-}
-
-/// Tells whoever waits on the job that its turn has said nothing for
-/// `quiet`. Only a model hears it: the tab has its own event, and nothing
-/// would wake a headless parent.
-fn report_stall(done: &Done, id: SubagentId, agent: &str, description: &str, quiet: Duration) {
-    match done {
-        Done::Work(assigned) => assigned.stalled(quiet),
-        Done::Notify(inbox) => {
-            inbox.post_task_stalled(TaskStall {
-                id,
-                agent: agent.to_string(),
-                description: description.to_string(),
-                quiet,
-            });
+impl Who {
+    /// Tells whoever waits on the job that its turn has said nothing for
+    /// `quiet`. Only a model hears it, and only one whose session was not
+    /// left: the tab has its own event, and nothing would wake a headless
+    /// parent.
+    fn report_stall(&self, done: &Done, quiet: Duration) {
+        match done {
+            Done::Work(assigned) => assigned.stalled(quiet),
+            Done::Notify(inbox) => {
+                self.parent.tell(|| {
+                    inbox.post_task_stalled(TaskStall {
+                        id: self.id,
+                        agent: self.agent.clone(),
+                        description: self.description.clone(),
+                        quiet,
+                    });
+                });
+            }
+            Done::Reply(_) | Done::Nothing => {}
         }
-        Done::Reply(_) | Done::Nothing => {}
+    }
+
+    /// Tells whoever waits on the job how it ended. A model whose session
+    /// was left hears nothing: the one after it never asked. A work item's
+    /// file still returns, or it would read as running forever.
+    async fn settle(&self, done: Done, turn: super::Answer) {
+        match done {
+            // A dropped receiver is a parent that stopped waiting, which is fine.
+            Done::Reply(reply) => {
+                let _ = reply.send(turn);
+            }
+            Done::Notify(inbox) => {
+                self.parent.tell(|| {
+                    inbox.post_task(TaskNotice {
+                        id: self.id,
+                        agent: self.agent.clone(),
+                        description: self.description.clone(),
+                        outcome: task_outcome(&turn),
+                    });
+                });
+            }
+            Done::Work(assigned) => assigned.settle(turn).await,
+            Done::Nothing => {}
+        }
+    }
+
+    /// Settles the jobs a stop took off the queue as interrupted.
+    async fn settle_stopped(&self, queue: &mut Queue) {
+        for job in std::mem::take(&mut queue.stopped) {
+            self.settle(job.done, Err(Error::Interrupted)).await;
+        }
     }
 }
 
@@ -365,38 +520,22 @@ async fn flush(
     true
 }
 
-/// The front-end is gone, so the actor ends: every job still in its inbox
-/// settles as interrupted, so whoever waits on one hears, and a work item
-/// on one does not stay running. Nothing reads as running or waiting
-/// after, since nothing will run.
-async fn abandon(
-    jobs: &mut mpsc::UnboundedReceiver<Job>,
-    shared: &Mutex<ChildState>,
-    closed: &CancellationToken,
-    agent: &str,
-    description: &str,
-    id: SubagentId,
-) {
-    // Closed first, so no prompt slips in once `waiting` is cleared.
-    jobs.close();
-    {
-        let mut state = lock(shared);
-        state.running = None;
-        state.waiting.clear();
-        if state.state == Some(State::Running) {
-            state.state = Some(State::Interrupted);
-        }
+/// The front-end is gone, so the actor ends: every job waiting, or sent
+/// before the registry hears, settles as interrupted, so whoever waits on
+/// one hears, and a work item on one does not stay running. Nothing reads
+/// as running or waiting after, since nothing will run.
+async fn abandon(queue: &mut Queue, who: &Who) {
+    // Closed first, so a prompt sent from now on is refused rather than
+    // left unsettled.
+    queue.commands.close();
+    while let Some(command) = queue.commands.recv().await {
+        queue.take(command, None);
     }
-    while let Some(job) = jobs.recv().await {
-        settle(
-            told(job.done, closed),
-            agent,
-            description,
-            id,
-            Err(Error::Interrupted),
-        )
-        .await;
+    if queue.state == Some(State::Running) {
+        queue.state = Some(State::Interrupted);
     }
+    queue.close(None);
+    who.settle_stopped(queue).await;
 }
 
 /// Over once a job's time is up; never, for a job without a budget.
@@ -419,37 +558,6 @@ fn last_answer(session: &Session) -> String {
             _ => None,
         })
         .unwrap_or_default()
-}
-
-/// Who still hears how a job ended: once the child is forgotten, its
-/// session was left, and the model of the one after it never asked. A
-/// work item's file still returns, or it would read as running forever.
-fn told(done: Done, closed: &CancellationToken) -> Done {
-    match done {
-        Done::Notify(_) if closed.is_cancelled() => Done::Nothing,
-        Done::Work(assigned) if closed.is_cancelled() => Done::Work(assigned.unheard()),
-        done => done,
-    }
-}
-
-/// Tells whoever waits on the job how it ended.
-async fn settle(done: Done, agent: &str, description: &str, id: SubagentId, turn: super::Answer) {
-    match done {
-        // A dropped receiver is a parent that stopped waiting, which is fine.
-        Done::Reply(reply) => {
-            let _ = reply.send(turn);
-        }
-        Done::Notify(inbox) => {
-            inbox.post_task(TaskNotice {
-                id,
-                agent: agent.to_string(),
-                description: description.to_string(),
-                outcome: task_outcome(&turn),
-            });
-        }
-        Done::Work(assigned) => assigned.settle(turn).await,
-        Done::Nothing => {}
-    }
 }
 
 /// `false` once the front-end is gone, when the actor should end: nobody
@@ -478,14 +586,6 @@ async fn gone(front_end: &Option<mpsc::Sender<SubagentEvent>>) {
         Some(front_end) => front_end.closed().await,
         None => std::future::pending().await,
     }
-}
-
-fn lock_spent(spent: &Mutex<Vec<Spend>>) -> std::sync::MutexGuard<'_, Vec<Spend>> {
-    spent.lock().expect("subagent spend lock poisoned")
-}
-
-fn lock(shared: &Mutex<ChildState>) -> std::sync::MutexGuard<'_, ChildState> {
-    shared.lock().expect("subagent state lock poisoned")
 }
 
 #[cfg(test)]
@@ -543,22 +643,38 @@ mod tests {
         assert!(subagents.is_running(id), "a stall stops nothing");
     }
 
+    /// The jobs of an actor whose registry still holds it, and so goes
+    /// on sending.
+    fn queue() -> (mpsc::UnboundedSender<Command>, Queue) {
+        let (commands, received) = mpsc::unbounded_channel();
+        let (status, _) = watch::channel(Status::default());
+        (commands, Queue::new(received, status))
+    }
+
+    fn who() -> Who {
+        Who {
+            id: 1,
+            agent: "explore".into(),
+            description: "d".into(),
+            parent: Subagents::default().reserve().parent(),
+        }
+    }
+
     /// A turn's watch for `done`, with no budget or stall and a short
     /// grace, as each test sets.
     fn watch<'a>(
+        who: &'a Who,
         done: &'a Done,
         front_end: &'a Option<mpsc::Sender<SubagentEvent>>,
-        closed: &'a CancellationToken,
+        queue: &'a mut Queue,
         cancel: &'a CancellationToken,
     ) -> Watch<'a> {
         Watch {
-            id: 1,
-            agent: "explore",
-            description: "d",
+            who,
             done,
             front_end,
-            closed,
             cancel,
+            queue,
             timeout: None,
             stall: None,
             grace: Duration::from_millis(10),
@@ -577,12 +693,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_that_does_not_stop_within_the_grace_is_given_up_as_timed_out() {
-        let (done, closed, cancel) = (
-            Done::Nothing,
-            CancellationToken::new(),
-            CancellationToken::new(),
-        );
-        let mut watch = watch(&done, &None, &closed, &cancel);
+        let (who, done, cancel) = (who(), Done::Nothing, CancellationToken::new());
+        let (_commands, mut queue) = queue();
+        let mut watch = watch(&who, &done, &None, &mut queue, &cancel);
         watch.timeout = Some(Duration::from_millis(20));
         let (_tx, mut rx) = mpsc::channel(1);
 
@@ -595,12 +708,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_stopped_turn_that_does_not_end_is_given_up_too() {
-        let (done, closed, cancel) = (
-            Done::Nothing,
-            CancellationToken::new(),
-            CancellationToken::new(),
-        );
-        let mut watch = watch(&done, &None, &closed, &cancel);
+        let (who, done, cancel) = (who(), Done::Nothing, CancellationToken::new());
+        let (_commands, mut queue) = queue();
+        let mut watch = watch(&who, &done, &None, &mut queue, &cancel);
         // Runs out inside the grace: a stopped turn's budget no longer counts.
         watch.timeout = Some(Duration::from_millis(5));
         let (_tx, mut rx) = mpsc::channel(1);
@@ -615,9 +725,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_stopped_turn_is_never_reported_stalled() {
         let inbox = Inbox::new();
-        let done = Done::Notify(inbox.clone());
-        let (closed, cancel) = (CancellationToken::new(), CancellationToken::new());
-        let mut watch = watch(&done, &None, &closed, &cancel);
+        let (who, done, cancel) = (who(), Done::Notify(inbox.clone()), CancellationToken::new());
+        let (_commands, mut queue) = queue();
+        let mut watch = watch(&who, &done, &None, &mut queue, &cancel);
         watch.stall = Some(Duration::from_millis(5));
         watch.grace = Duration::from_millis(50);
         let (_tx, mut rx) = mpsc::channel(1);
@@ -630,6 +740,61 @@ mod tests {
             !inbox.has_notices(),
             "silent through the grace, not stalled"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_forgotten_task_that_stalls_tells_no_model() {
+        let subagents = Subagents::default();
+        let who = Who {
+            parent: subagents.reserve().parent(),
+            ..who()
+        };
+        subagents.forget_all();
+        let inbox = Inbox::new();
+        let (done, cancel) = (Done::Notify(inbox.clone()), CancellationToken::new());
+        let (_commands, mut queue) = queue();
+        let mut watch = watch(&who, &done, &None, &mut queue, &cancel);
+        watch.stall = Some(Duration::from_millis(5));
+        watch.timeout = Some(Duration::from_millis(20));
+        let (_tx, mut rx) = mpsc::channel(1);
+
+        let ended = watch.turn(deaf(), &mut rx).await;
+
+        assert!(
+            ended.is_none() && watch.timed_out,
+            "it stalled, then ran out"
+        );
+        assert!(
+            !inbox.has_notices(),
+            "the session after the one that asked hears nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_registry_mid_turn_stops_the_turns_token() {
+        let (tx, _rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
+        let (hanging, cancel) = job("go", Done::Nothing);
+        subagents.prompt(id, hanging);
+        let mut status = subagents.status(id).expect("registered");
+        status
+            .wait_for(|s| s.state == Some(State::Running))
+            .await
+            .expect("the actor runs");
+
+        drop(subagents);
+
+        tokio::time::timeout(Duration::from_secs(5), cancel.cancelled())
+            .await
+            .expect("the aborted actor cancels what its turn started");
     }
 
     #[test]
@@ -660,8 +825,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_front_end_that_falls_behind_is_no_stall() {
         let inbox = Inbox::new();
-        let done = Done::Notify(inbox.clone());
-        let (closed, cancel) = (CancellationToken::new(), CancellationToken::new());
+        let (who, done, cancel) = (who(), Done::Notify(inbox.clone()), CancellationToken::new());
+        let (_commands, mut queue) = queue();
         // Full, and never read.
         let (front_tx, _front_rx) = mpsc::channel(1);
         front_tx
@@ -671,7 +836,7 @@ mod tests {
             })
             .unwrap();
         let front_end = Some(front_tx);
-        let mut watch = watch(&done, &front_end, &closed, &cancel);
+        let mut watch = watch(&who, &done, &front_end, &mut queue, &cancel);
         watch.stall = Some(Duration::from_secs(10));
         watch.timeout = Some(Duration::from_secs(35));
         let (tx, mut rx) = mpsc::channel(8);

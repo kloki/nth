@@ -10,27 +10,31 @@ mod actor;
 mod child;
 mod mention;
 mod notice;
+mod parent;
 mod spawn;
 mod stop;
 mod task;
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+use actor::Command;
 pub(crate) use child::child_session;
 pub use mention::resolve;
 pub use notice::{SubagentId, TaskNotice, TaskOutcome, TaskStall};
 use nth_context::Agent;
 use nth_protocol::{Event, Provider, Tool, Writable, tool_names};
+pub(crate) use parent::Parent;
+use parent::Spending;
 pub(crate) use spawn::{Spawner, find_agent};
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
 pub use task::{Limits, Task};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -144,39 +148,56 @@ pub(crate) fn tools_for(
         .collect()
 }
 
-/// What the registry and a subagent's actor share about it. The actor
-/// updates it; the registry and the front-end read it.
-#[derive(Debug, Default)]
-pub(crate) struct ChildState {
-    /// The running job's token, for ctrl+w and Esc on the tab.
-    running: Option<CancellationToken>,
-    /// The tokens of the jobs in the inbox the actor has not started, in
-    /// the order they wait, so stopping the subagent stops them too.
-    waiting: VecDeque<CancellationToken>,
-    state: Option<State>,
+/// Where a subagent stands, as its actor last published it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Status {
+    /// Where it is between prompts; `None` until its first one.
+    pub state: Option<State>,
+    /// Prompts waiting behind the running one, the stopped ones left out:
+    /// they will be skipped. A prompt counts once the actor has read it,
+    /// and a job whose own token is cancelled from outside stays counted
+    /// until the actor next publishes.
+    pub queued: usize,
 }
 
 /// A subagent's number, taken before it starts so what it is handed can
 /// name it: `work_todo` is bound to its item and the id the item file
 /// keeps. `Subagents::spawn` spends it; one never spent is a skipped
 /// number, which nothing counts on.
-#[derive(Debug)]
 #[must_use = "a reserved number is spent by Subagents::spawn"]
 pub struct Reserved {
-    id: SubagentId,
-    /// The child's own once it starts, so a tool built before then hears
-    /// when it is forgotten.
-    closed: CancellationToken,
+    parent: Parent,
+}
+
+impl std::fmt::Debug for Reserved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Reserved").field(&self.id()).finish()
+    }
 }
 
 impl Reserved {
     pub fn id(&self) -> SubagentId {
-        self.id
+        self.parent.id()
     }
 
-    /// Cancelled once the subagent is forgotten with its session.
-    pub(crate) fn closed(&self) -> CancellationToken {
-        self.closed.clone()
+    /// How the subagent reaches its session's model, for a tool built
+    /// before it starts: it hears when the subagent is forgotten.
+    pub(crate) fn parent(&self) -> Parent {
+        self.parent.clone()
+    }
+}
+
+/// A stop [`Subagents::cancel`] sent. Dropping it leaves the stop sent.
+pub struct Stop(Option<oneshot::Receiver<bool>>);
+
+impl Stop {
+    /// Whether anything ran or waited, as the actor found it once it read
+    /// the stop; `false` too when it had ended.
+    pub async fn anything(self) -> bool {
+        match self.0 {
+            Some(answered) => answered.await.unwrap_or(false),
+            None => false,
+        }
     }
 }
 
@@ -190,19 +211,23 @@ struct Inner {
     front_end: Option<mpsc::Sender<SubagentEvent>>,
     registry: Mutex<Registry>,
     /// What the children's finished turns spent, until the front-end
-    /// takes it into the parent's session. Apart from the registry so an
-    /// actor can reach it without holding the registry alive.
-    spent: Arc<Mutex<Vec<Spend>>>,
+    /// takes it into the parent's session, and which children were
+    /// forgotten. Apart from the registry so an actor can reach it without
+    /// holding the registry alive.
+    spending: Spending,
 }
 
 #[derive(Default)]
 struct Registry {
     next: SubagentId,
-    /// Every id up to this one was forgotten with its session.
-    forgotten: SubagentId,
     children: BTreeMap<SubagentId, Child>,
+    /// The actors of forgotten children, which end on their own once
+    /// their turn has; kept so dropping the last handle still stops them.
+    leaving: Vec<JoinHandle<()>>,
 }
 
+/// What the registry answers for without asking the actor: the facts that
+/// never change, and the handles to reach it.
 struct Child {
     agent: String,
     description: String,
@@ -210,16 +235,13 @@ struct Child {
     /// Whether its tools can change files, which a planning parent may not
     /// continue it with.
     writes: bool,
-    /// Cancelled when the child is forgotten: the actor stops whatever
-    /// waits in its inbox and tells no model, since the session it would
-    /// tell was left.
-    closed: CancellationToken,
     /// Unbounded: the TUI sends from its synchronous loop and must never
     /// wait on an actor that may be waiting on the TUI. Prompts come at
-    /// human speed, or one per task call.
-    inbox: mpsc::UnboundedSender<Job>,
+    /// human speed, or one per task call. Dropped when the child is
+    /// forgotten, which is what tells its actor.
+    commands: mpsc::UnboundedSender<Command>,
+    status: watch::Receiver<Status>,
     actor: JoinHandle<()>,
-    shared: Arc<Mutex<ChildState>>,
 }
 
 impl Subagents {
@@ -228,7 +250,7 @@ impl Subagents {
         Self(Arc::new(Inner {
             front_end: Some(front_end),
             registry: Mutex::default(),
-            spent: Arc::default(),
+            spending: Spending::default(),
         }))
     }
 
@@ -237,8 +259,7 @@ impl Subagents {
         let mut registry = self.0.lock();
         registry.next += 1;
         Reserved {
-            id: registry.next,
-            closed: CancellationToken::new(),
+            parent: self.0.spending.parent(registry.next),
         }
     }
 
@@ -255,17 +276,19 @@ impl Subagents {
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
     ) -> SubagentId {
-        let (inbox, jobs) = mpsc::unbounded_channel();
-        let shared = Arc::new(Mutex::new(ChildState::default()));
         let writes = tools
             .iter()
             .any(|tool| tool_names::writes_files(tool.spec().name));
-        let Reserved { id, closed } = reserved;
+        let Reserved { parent } = reserved;
+        let id = parent.id();
+        // Under the registry's lock, which forgetting takes too: either it
+        // starts before and is forgotten with the rest, or it sees it was.
         let mut registry = self.0.lock();
-        if id <= registry.forgotten {
-            closed.cancel();
+        if self.0.spending.forgotten(id) {
             return id;
         }
+        let (commands, inbox) = mpsc::unbounded_channel();
+        let (publish, status) = watch::channel(Status::default());
         let session_id = session.id;
         let actor = tokio::spawn(actor::run(actor::Actor {
             id,
@@ -275,10 +298,9 @@ impl Subagents {
             provider,
             tools,
             front_end: self.0.front_end.clone(),
-            shared: shared.clone(),
-            closed: closed.clone(),
-            jobs,
-            spent: self.0.spent.clone(),
+            commands: inbox,
+            status: publish,
+            parent,
         }));
         registry.children.insert(
             id,
@@ -287,77 +309,59 @@ impl Subagents {
                 description: description.to_string(),
                 session_id,
                 writes,
-                closed,
-                inbox,
+                commands,
+                status,
                 actor,
-                shared,
             },
         );
         id
     }
 
-    /// Queues `job` on subagent `id`; `false` when there is no such one.
+    /// Queues `job` on subagent `id`; `false` when there is no such one,
+    /// or it has ended.
     pub fn prompt(&self, id: SubagentId, job: Job) -> bool {
         let registry = self.0.lock();
-        let Some(child) = registry.children.get(&id) else {
-            return false;
-        };
-        // Counted under the lock the actor takes to count it off, so it is
-        // never taken off before it was put on.
-        let mut state = child.lock();
-        let token = job.cancel.clone();
-        let sent = child.inbox.send(job).is_ok();
-        if sent {
-            state.waiting.push_back(token);
-        }
-        sent
+        registry
+            .children
+            .get(&id)
+            .is_some_and(|child| child.commands.send(Command::Prompt(Box::new(job))).is_ok())
     }
 
     /// Stops the running turn of subagent `id` and every prompt waiting
-    /// for it, so stopping it leaves it idle; `false` when nothing ran or
-    /// waited.
-    pub fn cancel(&self, id: SubagentId) -> bool {
+    /// for it, so stopping it leaves it idle. The stop goes out at once;
+    /// what comes back says whether there was anything to stop, for
+    /// whoever asks.
+    pub fn cancel(&self, id: SubagentId) -> Stop {
+        let (answer, answered) = oneshot::channel();
         let registry = self.0.lock();
-        let Some(child) = registry.children.get(&id) else {
-            return false;
-        };
-        let state = child.lock();
-        let tokens: Vec<_> = state
-            .running
-            .iter()
-            .chain(&state.waiting)
-            .filter(|token| !token.is_cancelled())
-            .collect();
-        tokens.iter().for_each(|token| token.cancel());
-        !tokens.is_empty()
+        let sent = registry
+            .children
+            .get(&id)
+            .is_some_and(|child| child.commands.send(Command::Stop(answer)).is_ok());
+        Stop(sent.then_some(answered))
     }
 
-    /// Ends every subagent, for a session that was left: the running turns
-    /// are stopped, what waits in the inboxes is dropped and nothing is
-    /// posted to the model, so each actor ends on its own.
-    /// What they spent and nobody took is dropped with them: it belonged
-    /// to the session that was left.
+    /// Ends every subagent, for a session that was left: their turns are
+    /// stopped, what waits in their inboxes is dropped and nothing is
+    /// posted to the model, so each actor ends on its own. What they spent
+    /// and nobody took is dropped with them: it belonged to the session
+    /// that was left.
     pub fn forget_all(&self) {
         let mut registry = self.0.lock();
-        registry.forgotten = registry.next;
-        for (_, child) in std::mem::take(&mut registry.children) {
-            // Before looking for the running turn: an actor that has not
-            // yet marked one running sees `closed` and skips it.
-            child.closed.cancel();
-            if let Some(token) = &child.lock().running {
-                token.cancel();
-            }
-        }
-        drop(registry);
-        // Only once every child is closed: an actor checks that under the
-        // lock this takes, so nothing of the left session's comes after.
-        self.take_spent();
+        self.0.spending.forget_up_to(registry.next);
+        let children = std::mem::take(&mut registry.children);
+        registry.leaving.retain(|actor| !actor.is_finished());
+        // Each child's command sender goes with it, which is what tells
+        // its actor.
+        registry
+            .leaving
+            .extend(children.into_values().map(|child| child.actor));
     }
 
     /// What the subagents' turns spent since this was last called, for
     /// the parent's session to [record](crate::Ledger::record).
     pub fn take_spent(&self) -> Vec<Spend> {
-        std::mem::take(&mut *self.0.spent.lock().expect("subagent spend lock poisoned"))
+        self.0.spending.take()
     }
 
     /// The agent and description of subagent `id`.
@@ -378,13 +382,13 @@ impl Subagents {
     /// Whether subagent `id` belonged to a session that was left, for its
     /// events still on their way.
     pub fn forgotten(&self, id: SubagentId) -> bool {
-        id <= self.0.lock().forgotten
+        self.0.spending.forgotten(id)
     }
 
-    /// Cancelled once subagent `id` is forgotten with its session, for
-    /// what it posts outside its own turn's settling.
-    pub(crate) fn closed(&self, id: SubagentId) -> Option<CancellationToken> {
-        Some(self.0.lock().children.get(&id)?.closed.clone())
+    /// How subagent `id` reaches its session's model, for what it posts
+    /// outside its own turn's settling.
+    pub(crate) fn parent(&self, id: SubagentId) -> Parent {
+        self.0.spending.parent(id)
     }
 
     /// Whether subagent `id` has tools that change files.
@@ -392,9 +396,15 @@ impl Subagents {
         self.0.lock().children.get(&id).is_some_and(|c| c.writes)
     }
 
+    /// Where subagent `id` stands, as its actor last published it; a
+    /// prompt or stop sent since counts once the actor has read it.
+    pub fn status(&self, id: SubagentId) -> Option<watch::Receiver<Status>> {
+        Some(self.0.lock().children.get(&id)?.status.clone())
+    }
+
     pub fn state(&self, id: SubagentId) -> Option<State> {
         let registry = self.0.lock();
-        registry.children.get(&id)?.lock().state
+        registry.children.get(&id)?.status.borrow().state
     }
 
     pub fn is_running(&self, id: SubagentId) -> bool {
@@ -407,18 +417,19 @@ impl Subagents {
         registry
             .children
             .values()
-            .filter(|child| child.lock().state == Some(State::Running))
+            .filter(|child| child.status.borrow().state == Some(State::Running))
             .count()
     }
 
-    /// Prompts waiting in the inbox of subagent `id`, the stopped ones
-    /// left out: they will be skipped.
+    /// Prompts waiting for subagent `id`, the stopped ones left out: they
+    /// will be skipped. As [`Status::queued`]: a prompt counts once the
+    /// actor has read it.
     pub fn queued(&self, id: SubagentId) -> usize {
         let registry = self.0.lock();
-        registry.children.get(&id).map_or(0, |child| {
-            let state = child.lock();
-            state.waiting.iter().filter(|t| !t.is_cancelled()).count()
-        })
+        registry
+            .children
+            .get(&id)
+            .map_or(0, |child| child.status.borrow().queued)
     }
 
     pub fn ids(&self) -> Vec<SubagentId> {
@@ -434,14 +445,9 @@ impl Inner {
     }
 }
 
-impl Child {
-    fn lock(&self) -> std::sync::MutexGuard<'_, ChildState> {
-        self.shared.lock().expect("subagent state lock poisoned")
-    }
-}
-
 /// The last handle gone, nobody could hear from the actors: stop them
-/// rather than leave them to the runtime's shutdown.
+/// rather than leave them to the runtime's shutdown. Each stops its
+/// running turn's token as it is dropped.
 impl Drop for Inner {
     fn drop(&mut self) {
         let registry = self
@@ -449,10 +455,10 @@ impl Drop for Inner {
             .get_mut()
             .expect("subagent registry lock poisoned");
         for child in registry.children.values() {
-            if let Some(token) = &child.lock().running {
-                token.cancel();
-            }
             child.actor.abort();
+        }
+        for actor in &registry.leaving {
+            actor.abort();
         }
     }
 }
@@ -463,7 +469,7 @@ pub(crate) mod tests {
     use nth_protocol::StreamEvent;
 
     use super::*;
-    use crate::agent_loop::tests::Scripted;
+    use crate::agent_loop::tests::{Reply, Scripted};
 
     pub(super) fn explore() -> Agent {
         Context::discover(std::path::Path::new("/nowhere"), &Paths::default())
@@ -505,19 +511,201 @@ pub(crate) mod tests {
         events
     }
 
+    /// Waits until subagent `id`'s status reads `pick`.
+    async fn status(subagents: &Subagents, id: SubagentId, pick: impl FnMut(&Status) -> bool) {
+        let mut status = subagents.status(id).expect("registered");
+        status.wait_for(pick).await.expect("the actor runs");
+    }
+
+    async fn running(subagents: &Subagents, id: SubagentId) {
+        status(subagents, id, |s| s.state == Some(State::Running)).await;
+    }
+
+    /// Waits for the actors of the forgotten subagents to end by
+    /// themselves.
+    async fn left(subagents: &Subagents) {
+        let leaving = std::mem::take(&mut subagents.0.lock().leaving);
+        for actor in leaving {
+            actor.await.expect("ended, not aborted");
+        }
+    }
+
+    fn replies(
+        subagents: &Subagents,
+        id: SubagentId,
+        texts: &[&str],
+    ) -> Vec<oneshot::Receiver<Answer>> {
+        texts
+            .iter()
+            .map(|text| {
+                let (reply, answer) = oneshot::channel();
+                assert!(subagents.prompt(id, job(text, Done::Reply(reply)).0));
+                answer
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn status_follows_the_actor() {
+        let (tx, _rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let provider = Arc::new(Scripted::script(vec![
+            Reply::Hangs(Vec::new()),
+            Reply::Events(says("two")),
+            Reply::Events(says("three")),
+        ]));
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
+        assert_eq!(
+            subagents.status(id).map(|s| *s.borrow()),
+            Some(Status::default())
+        );
+        let (one, stop_one) = job("one", Done::Nothing);
+        subagents.prompt(id, one);
+        running(&subagents, id).await;
+        assert_eq!(subagents.queued(id), 0);
+
+        let mut answers = replies(&subagents, id, &["two"]);
+        let (skipped, cancel) = job("never", Done::Nothing);
+        cancel.cancel();
+        subagents.prompt(id, skipped);
+        answers.extend(replies(&subagents, id, &["three"]));
+        status(&subagents, id, |s| s.queued == 2).await;
+        assert!(subagents.is_running(id), "one still runs");
+        assert_eq!(subagents.queued(id), 2, "the cancelled one will not run");
+        assert_eq!(subagents.running(), 1);
+
+        stop_one.cancel();
+        status(&subagents, id, |s| {
+            s.state == Some(State::Idle) && s.queued == 0
+        })
+        .await;
+
+        for (answer, text) in answers.into_iter().zip(["two", "three"]) {
+            assert_eq!(answer.await.unwrap().unwrap(), text);
+        }
+        assert_eq!(subagents.running(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stop_during_a_turn_drains_the_queue_and_the_subagent_goes_on() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let provider = Arc::new(Scripted::script(vec![
+            Reply::Hangs(Vec::new()),
+            Reply::Events(says("later")),
+        ]));
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            provider,
+            Vec::new(),
+        );
+        let stopped = replies(&subagents, id, &["one", "two", "three"]);
+        status(&subagents, id, |s| {
+            s.state == Some(State::Running) && s.queued == 2
+        })
+        .await;
+
+        assert!(
+            subagents.cancel(id).anything().await,
+            "one ran, two and three waited"
+        );
+
+        assert_eq!(subagents.queued(id), 0, "emptied once it answered");
+        for answer in stopped {
+            assert!(matches!(answer.await.unwrap(), Err(Error::Interrupted)));
+        }
+        status(&subagents, id, |s| s.state == Some(State::Interrupted)).await;
+        let later = replies(&subagents, id, &["four"]);
+        for answer in later {
+            assert_eq!(answer.await.unwrap().unwrap(), "later", "it goes on");
+        }
+        let prompted: Vec<_> = until_ended(&mut rx)
+            .await
+            .into_iter()
+            .chain(until_ended(&mut rx).await)
+            .filter_map(|e| match e {
+                SubagentEvent::Prompted { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(prompted, ["one", "four"], "two and three never ran");
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_childs_spend_is_dropped_by_its_tag() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let usage = |input| {
+            StreamEvent::Usage(nth_protocol::Usage {
+                input,
+                ..nth_protocol::Usage::default()
+            })
+        };
+        // Its spend is counted as the reply reports it, and recorded when
+        // the turn ends: after its session was left.
+        let old = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            Arc::new(Scripted::script(vec![Reply::Hangs(vec![usage(300)])])),
+            Vec::new(),
+        );
+        subagents.prompt(old, job("go", Done::Nothing).0);
+        while !matches!(
+            rx.recv().await,
+            Some(SubagentEvent::Session {
+                event: Event::Usage(_),
+                ..
+            })
+        ) {}
+
+        subagents.forget_all();
+        left(&subagents).await;
+        let new = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            Arc::new(Scripted::new(vec![vec![
+                StreamEvent::TextDelta("done".into()),
+                usage(7),
+            ]])),
+            Vec::new(),
+        );
+        let answers = replies(&subagents, new, &["go"]);
+        for answer in answers {
+            answer.await.unwrap().unwrap();
+        }
+
+        let spent = subagents.take_spent();
+        assert_eq!(spent.len(), 1, "{spent:?}");
+        assert_eq!(spent[0].tokens.input, 7, "only the new session's");
+    }
+
     #[tokio::test]
     async fn a_number_reserved_before_its_session_was_left_never_starts() {
         let (tx, mut rx) = mpsc::channel(64);
         let subagents = Subagents::new(tx);
         let reserved = subagents.reserve();
-        let closed = reserved.closed();
+        let parent = reserved.parent();
         subagents.forget_all();
         let provider = Arc::new(Scripted::new(vec![says("late")]));
 
         let id = subagents.spawn(reserved, &explore(), "d", session(), provider, Vec::new());
 
         assert_eq!(id, 1);
-        assert!(closed.is_cancelled(), "what it was handed hears it");
+        assert!(parent.forgotten(), "what it was handed hears it");
         assert!(subagents.ids().is_empty());
         let (late, _) = job("go", Done::Notify(Inbox::default()));
         assert!(!subagents.prompt(id, late), "refused as an ended one");
@@ -743,7 +931,6 @@ pub(crate) mod tests {
         subagents.prompt(id, job("one", Done::Reply(first_tx)).0);
         subagents.prompt(id, skipped);
         subagents.prompt(id, job("two", Done::Reply(second_tx)).0);
-        assert_eq!(subagents.queued(id), 2, "the cancelled one will not run");
 
         assert_eq!(first_rx.await.unwrap().unwrap(), "first");
         assert!(matches!(skipped_rx.await.unwrap(), Err(Error::Interrupted)));
@@ -778,7 +965,7 @@ pub(crate) mod tests {
         subagents.prompt(id, job("one", Done::Nothing).0);
         subagents.prompt(id, job("two", Done::Reply(reply_tx)).0);
 
-        assert!(subagents.cancel(id));
+        assert!(subagents.cancel(id).anything().await);
 
         assert_eq!(subagents.queued(id), 0);
         assert!(matches!(reply_rx.await.unwrap(), Err(Error::Interrupted)));
@@ -853,9 +1040,9 @@ pub(crate) mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         subagents.prompt(id, job("go", Done::Reply(reply_tx)).0);
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        running(&subagents, id).await;
         assert!(subagents.is_running(id));
-        assert!(subagents.cancel(id));
+        assert!(subagents.cancel(id).anything().await);
 
         until_ended(&mut rx).await;
         assert!(matches!(reply_rx.await.unwrap(), Err(Error::Interrupted)));
@@ -880,6 +1067,8 @@ pub(crate) mod tests {
         subagents.prompt(id, job("two", Done::Notify(inbox.clone())).0);
 
         subagents.forget_all();
+        // Ended on its own, not aborted with the registry.
+        left(&subagents).await;
         drop(subagents);
 
         let mut events = Vec::new();
@@ -928,7 +1117,10 @@ pub(crate) mod tests {
         .expect("every job settles once the front-end is gone");
         assert_eq!(subagents.queued(id), 0, "nothing will run what waited");
         assert!(!subagents.is_running(id));
-        assert!(!subagents.cancel(id), "nothing left to stop");
+        assert!(
+            !subagents.cancel(id).anything().await,
+            "nothing left to stop"
+        );
     }
 
     #[tokio::test]

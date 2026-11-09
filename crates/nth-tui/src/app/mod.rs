@@ -967,7 +967,8 @@ impl App {
             }
             Tab::Subagent(id) => {
                 if let Some(view) = self.subagent_views.get_mut(&id) {
-                    let chat = view.draw(frame, area, self.settings);
+                    let queued = self.subagents.queued(id);
+                    let chat = view.draw(frame, area, self.settings, queued);
                     if let Some(state) = view.chat.scrollbar() {
                         draw_scrollbar(frame, chat, state);
                     }
