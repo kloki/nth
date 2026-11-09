@@ -146,10 +146,10 @@ pub(crate) struct CuriosTab {
     /// How many acknowledging jobs started, so a test sees the back-off.
     #[cfg(test)]
     acknowledgments: usize,
-    pub(crate) polling: Job<Tick>,
-    pub(crate) acknowledging: Job<core::Result<()>>,
+    polling: Job<Tick>,
+    acknowledging: Job<core::Result<()>>,
     hosts: BTreeMap<(String, String), Host>,
-    pub(crate) opening: Job<core::Result<Opened>>,
+    opening: Job<core::Result<Opened>>,
     opening_revision: Option<u64>,
     /// Whether the opening job checks a host already serving, so a failure
     /// is the revision's rather than the host's.
@@ -198,17 +198,22 @@ impl CuriosTab {
 
     /// Resolves with the next job to end, or once a second when a poll is
     /// due. A poll still running is left to finish, so a slow one never
-    /// stacks, and outside a repository the tick wakes nobody. Cancel-safe.
+    /// stacks; outside a repository the tick is off, since no poll will
+    /// run again. Cancel-safe.
     pub(crate) async fn next(&mut self) -> CurioStep {
         let tick = self.tick.get_or_insert_with(|| {
             let mut tick = tokio::time::interval(POLL_EVERY);
             tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             tick
         });
+        let outside = self.root == Root::Outside;
         loop {
             tokio::select! {
                 polled = self.polling.join() => return CurioStep::Polled(polled),
                 opened = self.opening.join() => {
+                    // A task that panicked or was aborted brought no host
+                    // back; telling it as a failed opening shows the hint
+                    // rather than leaving the click unanswered.
                     return CurioStep::Opened(opened.unwrap_or_else(|_| {
                         Err(core::Error::Invalid("host unavailable".into()))
                     }));
@@ -216,8 +221,8 @@ impl CuriosTab {
                 acknowledged = self.acknowledging.join() => {
                     return CurioStep::Acknowledged(acknowledged);
                 }
-                _ = tick.tick() => {
-                    if !self.polling.is_running() && self.root != Root::Outside {
+                _ = tick.tick(), if !outside => {
+                    if !self.polling.is_running() {
                         return CurioStep::PollDue;
                     }
                 }
@@ -227,6 +232,19 @@ impl CuriosTab {
 
     pub(crate) fn has_curios(&self) -> bool {
         !self.items.is_empty()
+    }
+
+    /// Starts a poll as `poll` does unless one runs already, so a slow one
+    /// never stacks.
+    pub(crate) fn poll_if_idle(&mut self, me: String, claim: bool) {
+        if !self.polling.is_running() {
+            self.poll(me, claim);
+        }
+    }
+
+    /// Whether a poll was asked for while the last one ran; clears the mark.
+    pub(crate) fn take_again(&mut self) -> bool {
+        self.polling.take_again()
     }
 
     /// Starts a poll for session `me`, or while one runs, another once it
@@ -443,6 +461,18 @@ impl CuriosTab {
 
 #[cfg(test)]
 impl CuriosTab {
+    pub(crate) fn polling(&mut self) -> &mut Job<Tick> {
+        &mut self.polling
+    }
+
+    pub(crate) fn acknowledging(&mut self) -> &mut Job<core::Result<()>> {
+        &mut self.acknowledging
+    }
+
+    pub(crate) fn opening(&mut self) -> &mut Job<core::Result<Opened>> {
+        &mut self.opening
+    }
+
     pub(crate) fn root(&self) -> &Root {
         &self.root
     }
@@ -500,14 +530,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn outside_a_repository_the_tick_wakes_nobody() {
+    async fn outside_a_repository_the_tick_is_off() {
         let mut tab = CuriosTab::new("/nowhere".into());
         tab.root = Root::Outside;
         assert!(resolves(&mut tab, Duration::from_secs(5)).await.is_none());
     }
 
     #[tokio::test]
-    async fn a_job_that_ends_is_handed_over_before_the_tick() {
+    async fn finished_jobs_come_through_next() {
         let mut tab = CuriosTab::new("/nowhere".into());
         // The first tick is spent, so only the job can end the wait.
         assert!(matches!(tab.next().await, CurioStep::PollDue));

@@ -38,9 +38,8 @@ impl App {
 
     /// Polls unless one runs already, so a slow one never stacks.
     pub(super) fn poll_curios(&mut self) {
-        if !self.curios.polling.is_running() {
-            self.request_curio_poll();
-        }
+        let claim = self.session.is_some();
+        self.curios.poll_if_idle(self.session_id.to_string(), claim);
     }
 
     /// Starts a poll, or while one runs, another once it is done: something
@@ -57,7 +56,7 @@ impl App {
             Ok(tick) => self.apply_curio_tick(tick),
             Err(_) => self.hint = Some("could not read Curios".into()),
         }
-        if self.curios.polling.take_again() {
+        if self.curios.take_again() {
             self.request_curio_poll();
         }
     }
@@ -151,8 +150,8 @@ impl App {
         for _ in 0..50 {
             self.request_curio_poll();
             self.settle_curio_polls().await;
-            if self.curios.acknowledging.is_running() {
-                let acknowledged = self.curios.acknowledging.join().await;
+            if self.curios.acknowledging().is_running() {
+                let acknowledged = self.curios.acknowledging().join().await;
                 self.curio_acknowledged(acknowledged);
             }
             if !self.curios.busy() {
@@ -165,8 +164,8 @@ impl App {
 
     #[cfg(test)]
     async fn settle_curio_polls(&mut self) {
-        while self.curios.polling.is_running() {
-            let tick = self.curios.polling.join().await;
+        while self.curios.polling().is_running() {
+            let tick = self.curios.polling().join().await;
             self.curio_polled(tick);
         }
     }
@@ -312,20 +311,20 @@ mod tests {
     async fn the_tick_starts_no_second_poll_while_one_runs() {
         let (_dir, mut app, _store, _c) = fixture().await;
         app.poll_curios();
-        let first = app.curios.polling.abort_handle().expect("a poll runs");
-        let token = app.curios.polling.token().expect("a poll runs");
+        let first = app.curios.polling().abort_handle().expect("a poll runs");
+        let token = app.curios.polling().token().expect("a poll runs");
         app.poll_curios();
-        assert!(app.curios.polling.is_running());
-        let still = app.curios.polling.abort_handle().expect("a poll runs");
+        assert!(app.curios.polling().is_running());
+        let still = app.curios.polling().abort_handle().expect("a poll runs");
         assert_eq!(first.id(), still.id(), "the tick left the running poll");
         assert!(!token.is_cancelled());
         assert!(
-            !app.curios.polling.take_again(),
+            !app.curios.polling().take_again(),
             "a tick does not queue another"
         );
-        let tick = app.curios.polling.join().await;
+        let tick = app.curios.polling().join().await;
         app.curio_polled(tick);
-        assert!(!app.curios.polling.is_running());
+        assert!(!app.curios.polling().is_running());
     }
 
     #[tokio::test]
@@ -335,7 +334,7 @@ mod tests {
         let step = app.curios.next().await;
         assert!(matches!(step, CurioStep::PollDue));
         app.curio_step(step);
-        assert!(app.curios.polling.is_running());
+        assert!(app.curios.polling().is_running());
         let step = app.curios.next().await;
         assert!(matches!(step, CurioStep::Polled(_)));
         app.curio_step(step);
@@ -357,7 +356,7 @@ mod tests {
             panic!("picker")
         };
         assert!(!p.pending()[0]);
-        assert!(app.curios.polling.is_running());
+        assert!(app.curios.polling().is_running());
         app.poll_curios_through().await;
         let Input::Curios(p) = &app.input else {
             panic!("picker")
@@ -443,7 +442,7 @@ mod tests {
             app.hint.as_deref(),
             Some("Curios is still looking for the repository")
         );
-        assert!(!app.curios.opening.is_running());
+        assert!(!app.curios.opening().is_running());
     }
 
     #[tokio::test]
@@ -454,7 +453,7 @@ mod tests {
         app.poll_curios_through().await;
         assert_eq!(*app.curios.root(), Root::Outside);
         app.poll_curios();
-        assert!(!app.curios.polling.is_running());
+        assert!(!app.curios.polling().is_running());
     }
 
     async fn fixture() -> (tempfile::TempDir, App, core::Store, Curio) {
@@ -654,7 +653,7 @@ mod tests {
             .unwrap();
         app.opener = |_| panic!("invalid revision must not reach the opener");
         app.open_curio(c.session_id.clone(), c.id.clone(), Some(99));
-        let opened = app.curios.opening.join().await.unwrap();
+        let opened = app.curios.opening().join().await.unwrap();
         assert!(opened.is_err());
         app.curio_opened(opened);
         assert_eq!(app.curios.hosts(), 0);
@@ -667,13 +666,13 @@ mod tests {
             Err(std::io::Error::other(url.to_string()))
         };
         app.open_curio(c.session_id.clone(), c.id.clone(), Some(1));
-        let opened = app.curios.opening.join().await.unwrap();
+        let opened = app.curios.opening().join().await.unwrap();
         app.curio_opened(opened);
         assert_eq!(app.curios.hosts(), 1);
         assert!(!app.hint.as_deref().unwrap().contains("127.0.0.1"));
 
         app.open_curio(c.session_id.clone(), c.id.clone(), Some(1));
-        let opened = app.curios.opening.join().await.unwrap();
+        let opened = app.curios.opening().join().await.unwrap();
         assert!(
             opened.as_ref().unwrap().host.is_none(),
             "the host is reused"
@@ -684,7 +683,7 @@ mod tests {
         app.opener = |_| panic!("invalid revision must not reach the reused host opener");
         for revision in [0, 99] {
             app.open_curio(c.session_id.clone(), c.id.clone(), Some(revision));
-            let opened = app.curios.opening.join().await.unwrap();
+            let opened = app.curios.opening().join().await.unwrap();
             app.curio_opened(opened);
             assert_eq!(app.hint.as_deref(), Some("could not open Curio revision"));
         }
@@ -693,7 +692,7 @@ mod tests {
             Ok(())
         };
         app.open_curio(c.session_id, c.id, None);
-        let opened = app.curios.opening.join().await.unwrap();
+        let opened = app.curios.opening().join().await.unwrap();
         app.curio_opened(opened);
         assert!(app.hint.as_deref().unwrap().starts_with("opened Curio"));
     }
@@ -711,7 +710,7 @@ mod tests {
             row: rect.y,
             modifiers: KeyModifiers::NONE,
         });
-        let opened = app.curios.opening.join().await.unwrap();
+        let opened = app.curios.opening().join().await.unwrap();
         app.opener = |url| {
             assert!(url.starts_with("http://127.0.0.1:"));
             assert!(url.contains('#'));
@@ -763,7 +762,7 @@ mod tests {
             row: curio.y,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(app.curios.opening.is_running());
+        assert!(app.curios.opening().is_running());
         app.curios.invalidate();
         app.opener = |url| {
             assert_eq!(url, "https://example.test/pull/123");
@@ -775,7 +774,7 @@ mod tests {
             row: pr.y,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(!app.curios.opening.is_running());
+        assert!(!app.curios.opening().is_running());
         assert!(app.hint.as_deref().unwrap().contains("example.test"));
         app.pr_loaded(None);
         assert!(
