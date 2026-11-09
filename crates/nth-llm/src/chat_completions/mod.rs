@@ -145,7 +145,15 @@ impl Protocol for State {
             stream::cut(self.text, !calls.is_empty(), out);
             return;
         }
-        out.extend(calls.into_values().map(|c| Ok(StreamEvent::ToolCall(c))));
+        out.extend(calls.into_iter().map(|(index, mut call)| {
+            // Some servers send no id. The result has to name its call, and
+            // a server that checks ids refuses an empty one on the next
+            // request, so the call's place in the reply stands in.
+            if call.id.is_empty() {
+                call.id = format!("call_{index}");
+            }
+            Ok(StreamEvent::ToolCall(call))
+        }));
     }
 }
 
@@ -164,7 +172,7 @@ impl State {
                 name: String::new(),
                 arguments: String::new(),
             });
-            if let Some(id) = part.id {
+            if let Some(id) = part.id.filter(|id| !id.is_empty()) {
                 call.id = id;
             }
             if let Some(function) = part.function {
@@ -261,6 +269,23 @@ mod tests {
                 }),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_call_without_an_id_gets_one_from_its_index() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture
+            .replace(r#""id":"call_a","#, "")
+            .replace(r#""id":"call_b""#, r#""id":"""#);
+        let ids: Vec<_> = replay_bytes(input.as_bytes(), input.len())
+            .await
+            .into_iter()
+            .filter_map(|event| match event.expect("valid stream") {
+                StreamEvent::ToolCall(call) => Some(call.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["call_0", "call_1"]);
     }
 
     #[tokio::test]

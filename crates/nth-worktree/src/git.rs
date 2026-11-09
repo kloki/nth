@@ -42,36 +42,6 @@ pub(crate) async fn add(cwd: &Path, path: &Path, name: &str, create: bool) -> Re
     git(cwd, args).await.map(drop)
 }
 
-pub(crate) async fn head(cwd: &Path) -> Result<String, String> {
-    Ok(git(cwd, &["rev-parse", "HEAD"]).await?.trim().to_string())
-}
-
-/// Whether anything in the checkout differs from HEAD, untracked files
-/// included.
-pub(crate) async fn dirty(cwd: &Path) -> Result<bool, String> {
-    Ok(!git(cwd, &["status", "--porcelain"])
-        .await?
-        .trim()
-        .is_empty())
-}
-
-/// Commits on HEAD that `base` does not have.
-pub(crate) async fn commits_since(cwd: &Path, base: &str) -> Result<usize, String> {
-    let range = format!("{base}..HEAD");
-    let count = git(cwd, &["rev-list", "--count", &range]).await?;
-    count
-        .trim()
-        .parse()
-        .map_err(|e| format!("unexpected rev-list output {count:?}: {e}"))
-}
-
-/// Deletes the worktree at `path`, whatever is in it, and then `branch`.
-pub(crate) async fn remove(cwd: &Path, path: &Path, branch: &str) -> Result<(), String> {
-    let path = path.to_string_lossy();
-    git(cwd, &["worktree", "remove", "--force", &path]).await?;
-    git(cwd, &["branch", "-D", branch]).await.map(drop)
-}
-
 /// git's stdout, or its stderr as the error.
 async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
