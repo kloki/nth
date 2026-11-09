@@ -5,7 +5,7 @@
 
 use std::{
     collections::HashMap,
-    fs::OpenOptions,
+    fs::{File, OpenOptions, Permissions},
     io::{self, ErrorKind, Write as _},
     path::{Component, Path, PathBuf},
     sync::{
@@ -198,7 +198,9 @@ impl Writing<'_> {
 /// folders are created. A symlink is written through: the file it names is
 /// replaced and the link stays a link. A file that exists keeps its
 /// permissions, and one that refuses to be written in place still refuses,
-/// though the rename itself asks only the folder.
+/// though the rename itself asks only the folder. Where no rename can work,
+/// a file in a folder nth may not write in, or a file mounted on its own,
+/// the file is written in place.
 pub(crate) async fn write_atomic(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
     let path = path.to_path_buf();
     // One blocking job rather than a `tokio::fs` call per step: a call
@@ -223,41 +225,125 @@ fn write_aside(path: &Path, bytes: &[u8]) -> io::Result<()> {
         }
         Err(e) => return Err(e),
     };
-    if existing.is_some() {
-        // Opened only to ask, without truncating: a read-only file or a
-        // directory is refused as writing it in place would have been.
-        OpenOptions::new().write(true).open(&target)?;
+    if let Some(meta) = &existing {
+        may_write(&target, meta)?;
     }
     let parent = target
         .parent()
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "no parent folder"))?;
-    // Unique per write, as two calls may write into one folder at once, and
-    // short, so a long file name cannot push it past the name limit.
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-    let n = WRITES.fetch_add(1, Ordering::Relaxed);
-    let tmp = parent.join(format!(".nth-{}-{n}.tmp", std::process::id()));
-    let create = || OpenOptions::new().write(true).create_new(true).open(&tmp);
-    let mut file = match create() {
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            std::fs::create_dir_all(parent)?;
-            create()?
+    let permissions = existing.as_ref().map(|meta| meta.permissions());
+    let (tmp, file) = match create_temp(parent, permissions.as_ref()) {
+        Ok(created) => created,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied && existing.is_some() => {
+            return write_in_place(&target, bytes);
         }
-        result => result?,
+        Err(e) => return Err(e),
     };
+    match replace(&tmp, file, bytes, &target) {
+        // A file bind-mounted on its own (a devcontainer's) cannot be
+        // renamed over, nor can one on another filesystem than its folder.
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::ResourceBusy | ErrorKind::CrossesDevices
+            ) =>
+        {
+            write_in_place(&target, bytes)
+        }
+        result => result,
+    }
+}
+
+/// Refuses a file that writing in place would have refused: a directory,
+/// or one this process may not write. The rename would only ask the folder.
+fn may_write(target: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    if meta.is_dir() {
+        return Err(io::Error::from(ErrorKind::IsADirectory));
+    }
+    // Asked rather than opened for writing, which a watcher would take for
+    // a write.
+    let c_path = std::ffi::CString::new(target.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
+    // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
+    // call, and access only reads it.
+    if unsafe { libc::access(c_path.as_ptr(), libc::W_OK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Numbers the temporary files: unique per write, as two calls may write
+/// into one folder at once, and short, so a long file name cannot push the
+/// temporary one past the name limit.
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// A new, empty file in `parent` to write aside in, with the folder made if
+/// it is missing. Given the permissions of the file it replaces, it has them
+/// before it holds a byte, so a private file's content is never readable by
+/// anyone it was not readable by.
+fn create_temp(parent: &Path, permissions: Option<&Permissions>) -> io::Result<(PathBuf, File)> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // A name may be taken by a file a killed run of nth left behind.
+    const TRIES: usize = 16;
+    let mut made_folder = false;
+    let mut tries = 0;
+    loop {
+        let n = WRITES.fetch_add(1, Ordering::Relaxed);
+        let tmp = parent.join(format!(".nth-{}-{n}.tmp", std::process::id()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        if let Some(permissions) = permissions {
+            // The umask may take bits away, never add them, so the file is
+            // never more open than the one it replaces.
+            options.mode(permissions.mode() & 0o777);
+        }
+        match options.open(&tmp) {
+            Ok(file) => {
+                // Exactly as the file it replaces, bits the umask took
+                // included, still before any byte is written.
+                if let Some(permissions) = permissions
+                    && let Err(e) = file.set_permissions(permissions.clone())
+                {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                return Ok((tmp, file));
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound && !made_folder => {
+                std::fs::create_dir_all(parent)?;
+                made_folder = true;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < TRIES => tries += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Fills `tmp` with `bytes` and renames it over `target`; on any failure the
+/// temporary file goes and `target` is as it was.
+fn replace(tmp: &Path, mut file: File, bytes: &[u8], target: &Path) -> io::Result<()> {
     let written = (|| {
         file.write_all(bytes)?;
-        if let Some(meta) = &existing {
-            file.set_permissions(meta.permissions())?;
-        }
         // On disk before the rename, so a power cut cannot leave the new
         // name pointing at an empty file.
         file.sync_all()?;
-        std::fs::rename(&tmp, &target)
+        std::fs::rename(tmp, target)
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
     }
     written
+}
+
+/// The last resort when no rename can replace `target`: truncated and
+/// written where it is, which keeps its permissions by itself.
+fn write_in_place(target: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).truncate(true).open(target)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// `result`, then each section that is not empty, a blank line apart. LSP
@@ -557,7 +643,7 @@ mod tests {
         let locked = dir.path().join("locked");
         std::fs::write(&locked, "kept").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
-        if unsafe { libc::geteuid() } != 0 {
+        if !is_root() {
             let err = write_atomic(&locked, b"x".to_vec()).await.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::PermissionDenied);
             assert_eq!(std::fs::read_to_string(&locked).unwrap(), "kept");
@@ -572,6 +658,90 @@ mod tests {
                 .all(|name| !name.to_string_lossy().ends_with(".tmp")),
             "{names:?}"
         );
+    }
+
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[test]
+    fn the_temporary_file_has_the_old_mode_before_it_holds_a_byte() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // 0600 must never be wider; 0666 must not lose what the umask takes.
+        for mode in [0o600, 0o666] {
+            let permissions = Permissions::from_mode(mode);
+            let (tmp, _file) = create_temp(dir.path(), Some(&permissions)).unwrap();
+            let meta = std::fs::metadata(&tmp).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, mode);
+            assert_eq!(meta.len(), 0);
+            std::fs::remove_file(tmp).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_failed_rename_takes_its_temporary_file_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder with something in it cannot be renamed over.
+        let target = dir.path().join("folder");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("inside"), "kept").unwrap();
+        let (tmp, file) = create_temp(dir.path(), None).unwrap();
+        replace(&tmp, file, b"new", &target).unwrap_err();
+        assert!(!tmp.exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("inside")).unwrap(),
+            "kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leftover_temporary_file_is_stepped_over() {
+        let dir = tempfile::tempdir().unwrap();
+        // The next names this process will try, as a killed run that had
+        // the same pid would have left them.
+        let next = WRITES.load(Ordering::Relaxed);
+        for n in next..next + 3 {
+            let name = format!(".nth-{}-{n}.tmp", std::process::id());
+            std::fs::write(dir.path().join(name), "left").unwrap();
+        }
+        let path = dir.path().join("a");
+        write_atomic(&path, b"new".to_vec()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_in_a_folder_nth_may_not_write_is_written_in_place() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        if is_root() {
+            // Root writes into any folder, so the rename always works.
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("locked");
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("a");
+        std::fs::write(&path, "old").unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        std::fs::set_permissions(&folder, Permissions::from_mode(0o555)).unwrap();
+        let written = write_atomic(&path, b"new".to_vec()).await;
+        std::fs::set_permissions(&folder, Permissions::from_mode(0o755)).unwrap();
+        written.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            inode,
+            "written in place"
+        );
+        // A new file there has nowhere to go.
+        std::fs::set_permissions(&folder, Permissions::from_mode(0o555)).unwrap();
+        let refused = write_atomic(&folder.join("b"), b"x".to_vec()).await;
+        std::fs::set_permissions(&folder, Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(refused.unwrap_err().kind(), ErrorKind::PermissionDenied);
     }
 
     #[tokio::test]

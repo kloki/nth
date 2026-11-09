@@ -246,12 +246,6 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
     }
 }
 
-/// The next line from a pipe, without its end; `None` once it is closed,
-/// and forever after, so a closed pipe's `select!` arm sleeps. A line ends
-/// at `\n` or `\r\n`. A lone `\r` is how a progress bar redraws itself: what
-/// follows replaces the line so far, so a bar arrives as its latest state
-/// in one line rather than as a line per redraw, which would trip the flood
-/// guard and stop a monitor that only waits for the bar to finish.
 /// How a reaped command ended: its exit code, or the signal that killed
 /// it, which has no code.
 fn end_of(status: std::process::ExitStatus) -> MonitorEnd {
@@ -262,6 +256,12 @@ fn end_of(status: std::process::ExitStatus) -> MonitorEnd {
     MonitorEnd::Exited(status.code())
 }
 
+/// The next line from a pipe, without its end; `None` once it is closed,
+/// and forever after, so a closed pipe's `select!` arm sleeps. A line ends
+/// at `\n` or `\r\n`. A lone `\r` is how a progress bar redraws itself: what
+/// follows replaces the line so far, so a bar arrives as its latest state
+/// in one line rather than as a line per redraw, which would trip the flood
+/// guard and stop a monitor that only waits for the bar to finish.
 async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
     let Some(Pipe {
         reader,

@@ -133,13 +133,13 @@ fn relative(path: &Path, cwd: &Path) -> String {
 
 /// The file each path names, keyed by the path: `a.txt`, `sub/../a.txt` and
 /// a symlink to it are one file, as [`PostWrite::lock`] sees them.
-async fn identities(paths: Vec<PathBuf>) -> Result<HashMap<PathBuf, PathBuf>, String> {
+async fn identities(paths: Vec<PathBuf>) -> Result<HashMap<PathBuf, Identity>, String> {
     // `identity` asks the filesystem about every component.
     tokio::task::spawn_blocking(move || {
         paths
             .into_iter()
             .map(|path| {
-                let identity = post_write::identity(&path);
+                let identity = Identity::of(&path);
                 (path, identity)
             })
             .collect()
@@ -148,12 +148,32 @@ async fn identities(paths: Vec<PathBuf>) -> Result<HashMap<PathBuf, PathBuf>, St
     .map_err(|e| format!("cannot resolve the patch's paths: {e}"))
 }
 
+#[derive(Clone)]
+struct Identity {
+    /// The file the path names, through a symlink at its end.
+    file: PathBuf,
+    /// The path's last component itself, which differs from `file` only
+    /// when that component is a symlink.
+    own: PathBuf,
+}
+
+impl Identity {
+    fn of(path: &Path) -> Self {
+        let file = post_write::identity(path);
+        let own = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => post_write::identity(parent).join(name),
+            _ => file.clone(),
+        };
+        Self { file, own }
+    }
+}
+
 /// What a patch does to each file, worked out in memory before any file is
 /// written, so a hunk that fails to apply leaves every file as it was.
 struct Plan<'a> {
     cwd: &'a Path,
     /// The file each path the patch names is, from [`identities`].
-    identities: HashMap<PathBuf, PathBuf>,
+    identities: HashMap<PathBuf, Identity>,
     /// What becomes of each file, keyed by its identity, so two names for
     /// one file are one entry. Sections read what earlier ones planned, so
     /// a patch may touch a file twice.
@@ -174,10 +194,12 @@ struct Planned {
 struct Named {
     name: PathBuf,
     identity: PathBuf,
+    /// The path's own last component, a symlink where it differs.
+    own: PathBuf,
 }
 
 impl<'a> Plan<'a> {
-    fn new(cwd: &'a Path, identities: HashMap<PathBuf, PathBuf>) -> Self {
+    fn new(cwd: &'a Path, identities: HashMap<PathBuf, Identity>) -> Self {
         Self {
             cwd,
             identities,
@@ -191,8 +213,31 @@ impl<'a> Plan<'a> {
         // Every path a section names was resolved before planning; a miss
         // would be a path the tool forgot to collect, keyed as named.
         let identity = self.identities.get(&name).cloned();
-        let identity = identity.unwrap_or_else(|| name.clone());
-        Named { name, identity }
+        let identity = identity.unwrap_or_else(|| Identity {
+            file: name.clone(),
+            own: name.clone(),
+        });
+        Named {
+            name,
+            identity: identity.file,
+            own: identity.own,
+        }
+    }
+
+    /// Plans `file` gone. A symlink goes itself, as `rm` and git remove
+    /// one, never the file it names, which may lie outside what this
+    /// session may write.
+    async fn remove(&mut self, file: Named) {
+        if file.own != file.identity && tokio::fs::symlink_metadata(&file.own).await.is_ok() {
+            self.on_disk.insert(file.own.clone());
+            let link = Named {
+                identity: file.own.clone(),
+                ..file
+            };
+            self.set(link, None);
+        } else {
+            self.set(file, None);
+        }
     }
 
     fn set(&mut self, file: Named, content: Option<String>) {
@@ -225,7 +270,7 @@ impl<'a> Plan<'a> {
                         file.name.display()
                     ));
                 }
-                self.set(file, None);
+                self.remove(file).await;
                 Ok(format!("D {path}"))
             }
             Section::Update {
@@ -252,7 +297,7 @@ impl<'a> Plan<'a> {
                             dest.name.display()
                         ));
                     }
-                    self.set(file, None);
+                    self.remove(file).await;
                 }
                 self.set(dest, Some(updated));
                 Ok(format!("M {move_to}"))
@@ -283,8 +328,8 @@ impl<'a> Plan<'a> {
     }
 
     /// Deletes first, so a file may give way to a directory of its name.
-    /// Each operation goes to the file itself, so deleting through a
-    /// symlink deletes what it names, as updating through one does.
+    /// A write goes through a symlink to the file it names; a delete was
+    /// keyed on the link itself by [`Plan::remove`].
     async fn write(self) -> Result<(), String> {
         let deletes = self
             .files
@@ -396,6 +441,38 @@ mod tests {
         let link = std::fs::symlink_metadata(&alias).unwrap();
         assert!(link.file_type().is_symlink(), "the link stays a link");
         assert!(!dir.path().join("new.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_delete_or_move_through_a_symlink_takes_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = file(dir.path(), "kept.txt", "kept\n");
+        let source = file(dir.path(), "source.txt", "one\n");
+        let gone = dir.path().join("gone.txt");
+        let moving = dir.path().join("moving.txt");
+        std::os::unix::fs::symlink("kept.txt", &gone).unwrap();
+        std::os::unix::fs::symlink("source.txt", &moving).unwrap();
+
+        patch(
+            dir.path(),
+            "*** Begin Patch
+*** Delete File: gone.txt
+*** Update File: moving.txt
+*** Move to: moved.txt
+@@
+-one
++two
+*** End Patch",
+        )
+        .await
+        .expect("links deleted and moved");
+
+        assert!(std::fs::symlink_metadata(&gone).is_err(), "the link went");
+        assert_eq!(contents(&kept), "kept\n", "the file it named stays");
+        assert!(std::fs::symlink_metadata(&moving).is_err());
+        assert_eq!(contents(&source), "one\n");
+        assert_eq!(contents(&dir.path().join("moved.txt")), "two\n");
     }
 
     #[tokio::test]
