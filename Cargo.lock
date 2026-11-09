@@ -1952,6 +1952,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1977,6 +1978,7 @@ version = "1.6.2"
 dependencies = [
  "futures",
  "serde",
+ "tempfile",
  "tokio",
  "toml",
 ]

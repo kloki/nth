@@ -4,6 +4,7 @@
 //! waiting. `notify-send` (Linux) and `osascript` (macOS) are the backends;
 //! another is one module and one `BackendKind` variant.
 
+mod command;
 mod config;
 mod message;
 mod notify_send;

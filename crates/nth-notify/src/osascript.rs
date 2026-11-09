@@ -5,7 +5,10 @@ use std::process::Stdio;
 use futures::future::BoxFuture;
 use tokio::process::Command;
 
-use crate::{Backend, BoxError, Notification};
+use crate::{
+    Backend, BoxError, Notification,
+    command::{self, SEND_TIMEOUT},
+};
 
 pub struct Osascript;
 
@@ -15,21 +18,11 @@ impl Backend for Osascript {
     }
 
     fn send<'a>(&'a self, notification: &'a Notification) -> BoxFuture<'a, Result<(), BoxError>> {
-        Box::pin(async move {
-            let output = Command::new("osascript")
-                .arg("-e")
-                .arg(script(notification))
-                .stdin(Stdio::null())
-                .output()
-                .await?;
-            match output.status.success() {
-                true => Ok(()),
-                false => Err(String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_string()
-                    .into()),
-            }
-        })
+        let mut send = Command::new("osascript");
+        send.arg("-e")
+            .arg(script(notification))
+            .stdin(Stdio::null());
+        Box::pin(command::run(send, SEND_TIMEOUT))
     }
 }
 
