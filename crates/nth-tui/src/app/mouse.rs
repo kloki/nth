@@ -11,8 +11,6 @@
 //! [`Areas::target`] where it is drawn, and acted on in [`App::click`] or
 //! [`App::right_click`].
 
-use std::process::Stdio;
-
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
@@ -312,25 +310,6 @@ impl App {
             Err(e) => format!("could not copy: {e}").into(),
         });
     }
-}
-
-/// Hands `url` to the desktop's opener and comes back at once. The child is
-/// let go of: tokio reaps it when it exits, and the browser it starts is
-/// meant to outlive nth. `Ok` means the opener started, not that it found
-/// a browser.
-pub(super) fn open(url: &str) -> std::io::Result<()> {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    tokio::process::Command::new(opener)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(drop)
 }
 
 #[cfg(test)]

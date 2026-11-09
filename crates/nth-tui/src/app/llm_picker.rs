@@ -8,7 +8,7 @@ use nth_protocol::{BoxError, Cost, Effort, Listing, Llm};
 use nth_session::Price;
 
 use super::{App, input::Input, keys::Action};
-use crate::llm_picker::LlmPicker;
+use crate::llm_picker::{LlmPicker, usage};
 
 impl App {
     /// A key while the model picker is open.
@@ -110,19 +110,17 @@ impl App {
         }
     }
 
-    /// Writes the counts in the background, as the prompt history is.
+    /// Adds this run's new turns to the saved counts in the background, as
+    /// the prompt history is; one asked for while a save runs goes once
+    /// that one ends.
     pub(super) fn save_llm_usage(&mut self) {
         let Some(path) = self.llm_usage.saved_at().map(Path::to_path_buf) else {
             return;
         };
-        let json = self.llm_usage.to_json();
+        let counts = &mut self.llm_usage;
         self.llm_usage_saving.start_or_queue(|_| {
-            tokio::spawn(async move {
-                if let Some(dir) = path.parent() {
-                    tokio::fs::create_dir_all(dir).await?;
-                }
-                tokio::fs::write(&path, json).await
-            })
+            let turns = counts.take_unsaved();
+            tokio::spawn(async move { usage::add(&path, turns).await })
         });
     }
 
@@ -355,6 +353,30 @@ mod tests {
         app.turn.join().await.expect("turn task finished");
 
         assert_eq!(LlmUsage::load(path).await.ranked(), [("glm", 1)]);
+    }
+
+    #[tokio::test]
+    async fn model_counts_merge_with_what_another_run_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nth/llm-usage.json");
+        let mut app = listed(App::new(AppConfig {
+            llm_usage: LlmUsage::load(path.clone()).await,
+            ..test_config()
+        }));
+        // Another nth saves after this one loaded.
+        std::fs::create_dir_all(dir.path().join("nth")).expect("mkdir");
+        std::fs::write(&path, r#"{"glm": 2, "kimi": 3}"#).expect("write");
+
+        app.prompt.insert_str("go");
+        app.submit();
+        let saved = app.llm_usage_saving.join().await.expect("save finished");
+        app.llm_usage_saved(saved);
+        app.turn.join().await.expect("turn task finished");
+
+        assert_eq!(
+            LlmUsage::load(path).await.ranked(),
+            [("glm", 3), ("kimi", 3)]
+        );
     }
 
     #[test]

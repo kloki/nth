@@ -30,7 +30,8 @@ pub async fn run(status: bool, logout: bool, json: bool, chatgpt: ChatGpt) -> Re
     let account = chatgpt
         .login(|url| {
             println!("{} {url}", icons().to.cyan().bold());
-            nth_auth::open_browser(url);
+            // The URL above is the way in when no browser opens.
+            let _ = nth_auth::open_browser(url);
             println!("{}", "waiting for authorization…".dimmed());
         })
         .await?;

@@ -387,24 +387,24 @@ fn escape_html(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Opens `url` in your browser, where the platform has a way to. Whether it
-/// did is not known, so callers show the URL as well.
-pub fn open_browser(url: &str) {
+/// Hands `url` to the desktop's opener and comes back at once. `Ok` means
+/// the opener started, not that it found a browser, so callers show the URL
+/// as well. The browser it starts is meant to outlive nth.
+pub fn open_browser(url: &str) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
     };
-    let child = std::process::Command::new(opener)
+    let mut child = std::process::Command::new(opener)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()?;
     // Waited on aside, so it is reaped without holding up the caller.
-    if let Ok(mut child) = child {
-        std::thread::spawn(move || child.wait());
-    }
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[cfg(test)]
