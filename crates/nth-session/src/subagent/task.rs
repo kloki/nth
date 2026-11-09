@@ -310,7 +310,7 @@ mod tests {
         )
     }
 
-    fn names(tools: &[Box<dyn Tool>]) -> Vec<&'static str> {
+    fn names(tools: &[Arc<dyn Tool>]) -> Vec<&'static str> {
         tools.iter().map(|t| t.spec().name).collect()
     }
 

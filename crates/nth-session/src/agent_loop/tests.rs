@@ -292,7 +292,7 @@ async fn runs_tools_until_the_model_answers() {
         ],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
     let ctx = ToolContext::new(".".into());
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
@@ -444,7 +444,7 @@ async fn tools_called_on_the_last_step_do_not_run() {
         "echo",
         r#"{"say":"hi"}"#,
     ))]]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
     let ctx = ToolContext::new(".".into());
     let (tx, mut rx) = mpsc::channel(16);
     let mut messages = vec![Message::User("go".into())];
@@ -571,7 +571,7 @@ async fn a_turn_blocked_on_a_full_event_channel_still_answers_its_cancel() {
 /// event it sent.
 pub(crate) async fn turn(
     provider: &dyn Provider,
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
     ctx: &ToolContext,
     messages: &mut Vec<Message>,
 ) -> (Result<(), Error>, Vec<Event>) {
@@ -581,7 +581,7 @@ pub(crate) async fn turn(
 /// [`turn`] handing the model what waits in `inbox`.
 pub(crate) async fn turn_with(
     provider: &dyn Provider,
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
     ctx: &ToolContext,
     inbox: &crate::Inbox,
     messages: &mut Vec<Message>,

@@ -23,6 +23,8 @@ mod websearch;
 mod worktree;
 mod write;
 
+use std::sync::Arc;
+
 pub use apply_patch::ApplyPatch;
 pub use bash::{Bash, BashConfig};
 pub use context_preview::ContextPreview;
@@ -55,28 +57,28 @@ pub struct ToolsConfig {
 /// Every tool nth ships. Agents filter this list by name. `post_write`
 /// runs after every tool that writes a file. Reads share its language
 /// servers, so they warm the ones a later write asks.
-pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Box<dyn Tool>> {
+pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Arc<dyn Tool>> {
     vec![
-        Box::new(Read::new(config.read.clone(), post_write.lsp().clone())),
-        Box::new(Write::new(post_write.clone())),
-        Box::new(Edit::new(post_write.clone())),
-        Box::new(ApplyPatch::new(post_write)),
-        Box::new(Bash::new(config.bash.clone())),
-        Box::new(Monitor),
-        Box::new(MonitorStop),
-        Box::new(Glob),
-        Box::new(Grep),
-        Box::new(Skill),
-        Box::new(WebFetch),
-        Box::new(Websearch::new(config.websearch.clone())),
-        Box::new(Question),
-        Box::new(Panel),
-        Box::new(ContextPreview),
-        Box::new(ShowUser),
-        Box::new(CurioPublish),
-        Box::new(CurioRead),
-        Box::new(CurioReply),
-        Box::new(EnterWorktree),
-        Box::new(ExitWorktree),
+        Arc::new(Read::new(config.read.clone(), post_write.lsp().clone())),
+        Arc::new(Write::new(post_write.clone())),
+        Arc::new(Edit::new(post_write.clone())),
+        Arc::new(ApplyPatch::new(post_write)),
+        Arc::new(Bash::new(config.bash.clone())),
+        Arc::new(Monitor),
+        Arc::new(MonitorStop),
+        Arc::new(Glob),
+        Arc::new(Grep),
+        Arc::new(Skill),
+        Arc::new(WebFetch),
+        Arc::new(Websearch::new(config.websearch.clone())),
+        Arc::new(Question),
+        Arc::new(Panel),
+        Arc::new(ContextPreview),
+        Arc::new(ShowUser),
+        Arc::new(CurioPublish),
+        Arc::new(CurioRead),
+        Arc::new(CurioReply),
+        Arc::new(EnterWorktree),
+        Arc::new(ExitWorktree),
     ]
 }

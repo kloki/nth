@@ -29,7 +29,7 @@ pub(super) struct Actor {
     pub description: String,
     pub session: Session,
     pub provider: Arc<dyn Provider>,
-    pub tools: Vec<Box<dyn Tool>>,
+    pub tools: Vec<Arc<dyn Tool>>,
     /// `None` without a front-end: nobody watches the tab.
     pub front_end: Option<mpsc::Sender<SubagentEvent>>,
     pub shared: Arc<Mutex<ChildState>>,

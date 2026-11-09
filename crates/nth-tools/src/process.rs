@@ -468,13 +468,15 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn tools_reject_old_timeout_names_even_with_new_name() {
+        use std::sync::Arc;
+
         use nth_protocol::{Tool, ToolContext};
         use serde_json::json;
         let ctx = ToolContext::new(Path::new(".").to_path_buf());
-        let tools: Vec<Box<dyn Tool>> = vec![
-            Box::new(crate::bash::Bash::default()),
-            Box::new(crate::webfetch::WebFetch),
-            Box::new(crate::monitor::Monitor),
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(crate::bash::Bash::default()),
+            Arc::new(crate::webfetch::WebFetch),
+            Arc::new(crate::monitor::Monitor),
         ];
         for tool in tools {
             for old in ["timeout", "timeout_secs"] {

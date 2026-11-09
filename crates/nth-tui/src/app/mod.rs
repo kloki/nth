@@ -252,7 +252,7 @@ pub struct App {
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
-    tools: Arc<Vec<Box<dyn Tool>>>,
+    tools: Vec<Arc<dyn Tool>>,
     /// Runs the commands typed after `!`.
     shell: Arc<dyn Tool>,
     channels: TurnChannels,

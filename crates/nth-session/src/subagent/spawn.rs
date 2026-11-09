@@ -54,7 +54,7 @@ impl Spawner {
     }
 
     /// The tools `agent` gets.
-    pub(crate) fn tools_for(&self, agent: &Agent, writable: &Writable) -> Vec<Box<dyn Tool>> {
+    pub(crate) fn tools_for(&self, agent: &Agent, writable: &Writable) -> Vec<Arc<dyn Tool>> {
         tools_for(&self.tools, agent, writable)
     }
 
@@ -67,7 +67,7 @@ impl Spawner {
         agent: &Agent,
         description: &str,
         ctx: &ToolContext,
-        extra: Vec<Box<dyn Tool>>,
+        extra: Vec<Arc<dyn Tool>>,
     ) -> SubagentId {
         // The agent's own model is as its frontmatter wrote it, perhaps
         // bare; qualified, its tab names it as the picker would.
