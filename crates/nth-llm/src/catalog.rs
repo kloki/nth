@@ -313,7 +313,8 @@ impl Snapshot {
         };
         {
             // Held while reading, so a request that comes meanwhile takes
-            // the copy this read instead of reading the disk a second time.
+            // the copy this read, when there is a copy, instead of reading
+            // the disk a second time.
             let _one = self.fetching.lock().await;
             if self.state().catalog.is_none() {
                 self.load_cache().await;

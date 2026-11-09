@@ -145,12 +145,18 @@ impl Protocol for State {
             stream::cut(self.text, !calls.is_empty(), out);
             return;
         }
+        // Some servers send no id. The result has to name its call, a
+        // server that checks ids refuses an empty one, and Anthropic refuses
+        // one the history already holds should the session switch to Claude,
+        // so the reply gets a random part shared by its calls and each call
+        // its place in the reply.
+        let reply = calls
+            .values()
+            .any(|call| call.id.is_empty())
+            .then(|| uuid::Uuid::new_v4().simple().to_string()[..12].to_string());
         out.extend(calls.into_iter().map(|(index, mut call)| {
-            // Some servers send no id. The result has to name its call, and
-            // a server that checks ids refuses an empty one on the next
-            // request, so the call's place in the reply stands in.
-            if call.id.is_empty() {
-                call.id = format!("call_{index}");
+            if let Some(reply) = reply.as_deref().filter(|_| call.id.is_empty()) {
+                call.id = format!("call_{reply}_{index}");
             }
             Ok(StreamEvent::ToolCall(call))
         }));
@@ -271,21 +277,53 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_call_without_an_id_gets_one_from_its_index() {
-        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
-        let input = fixture
-            .replace(r#""id":"call_a","#, "")
-            .replace(r#""id":"call_b""#, r#""id":"""#);
-        let ids: Vec<_> = replay_bytes(input.as_bytes(), input.len())
+    async fn call_ids(input: &str) -> Vec<String> {
+        replay_bytes(input.as_bytes(), input.len())
             .await
             .into_iter()
             .filter_map(|event| match event.expect("valid stream") {
                 StreamEvent::ToolCall(call) => Some(call.id),
                 _ => None,
             })
-            .collect();
-        assert_eq!(ids, ["call_0", "call_1"]);
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_call_without_an_id_gets_one_from_its_index() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture
+            .replace(r#""id":"call_a","#, "")
+            .replace(r#""id":"call_b""#, r#""id":"""#);
+
+        let first = call_ids(&input).await;
+        let [a, b] = first.as_slice() else {
+            panic!("two calls: {first:?}");
+        };
+        let reply = a.strip_suffix("_0").expect("index 0");
+        assert!(
+            reply.starts_with("call_") && reply.len() > "call_".len(),
+            "{a}"
+        );
+        assert_eq!(*b, format!("{reply}_1"));
+
+        // Every id-less reply numbers its calls from 0, and one history
+        // holds them all.
+        let second = call_ids(&input).await;
+        assert!(
+            first.iter().all(|id| !second.contains(id)),
+            "{first:?} {second:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_id_later_keeps_the_one_sent_first() {
+        let fixture = std::str::from_utf8(FIXTURE).expect("utf-8 fixture");
+        let input = fixture.replace(
+            r#"{"index":0,"function":{"arguments":"{\"filePath\":"}}"#,
+            r#"{"index":0,"id":"","function":{"arguments":"{\"filePath\":"}}"#,
+        );
+        assert_ne!(input, fixture);
+        assert_eq!(call_ids(&input).await, ["call_a", "call_b"]);
     }
 
     #[tokio::test]
