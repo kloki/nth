@@ -431,8 +431,7 @@ pub(crate) mod tests {
             session: "s1".into(),
             ..nth_protocol::ToolContext::new(dir.path().into())
         };
-        let args =
-            serde_json::json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let args = serde_json::json!({ "name": "Cedar", "description": "d", "prompt": "p", "subagent_type": "explore" });
         let started = tool("task").call(args, &ctx).await.expect("starts");
         assert!(
             started.starts_with("Started subagent 1"),
@@ -449,7 +448,7 @@ pub(crate) mod tests {
             "instruction": "Do a.",
         });
         tool("work_item").call(item, &ctx).await.expect("writes");
-        let assign = serde_json::json!({ "cycle": 1, "item": "a", "subagent_type": "general" });
+        let assign = serde_json::json!({ "cycle": 1, "item": "a", "name": "Finch", "subagent_type": "general" });
         let assigned = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             tool("work_assign").call(assign, &ctx),

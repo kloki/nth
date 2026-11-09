@@ -21,6 +21,20 @@ pub(crate) fn find_agent<'a>(ctx: &'a ToolContext, name: &str) -> Result<&'a Age
     })
 }
 
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.trim() != name
+        || name.chars().any(char::is_control)
+        || name.chars().count() > 80
+    {
+        return Err(
+            "name must be 1-80 characters, with no surrounding whitespace or control characters"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Starts subagents for a tool: on the parent's provider, each with its
 /// share of every tool the model has.
 pub(crate) struct Spawner {
@@ -65,6 +79,7 @@ impl Spawner {
         &self,
         reserved: Reserved,
         agent: &Agent,
+        name: &str,
         description: &str,
         ctx: &ToolContext,
         extra: Vec<Arc<dyn Tool>>,
@@ -82,9 +97,10 @@ impl Spawner {
         let session = child_session(agent, ctx, self.limits.max_steps);
         let mut tools = self.tools_for(agent, &ctx.writable);
         tools.extend(extra);
-        self.subagents.spawn(
+        self.subagents.spawn_named(
             reserved,
             agent,
+            name,
             description,
             session,
             self.provider.clone(),
@@ -151,6 +167,7 @@ mod tests {
         spawner.spawn(
             spawner.subagents().reserve(),
             &agent,
+            "scout",
             "look",
             &ToolContext::new("/repo".into()),
             Vec::new(),

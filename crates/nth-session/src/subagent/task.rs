@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     Done, Job, PLANNING, SubagentId, Subagents, TaskNotice, TaskOutcome,
-    spawn::{Spawner, find_agent},
+    spawn::{Spawner, find_agent, validate_name},
 };
 use crate::{Error, Inbox, work::ORCHESTRATOR_TOOLS};
 
@@ -66,6 +66,7 @@ pub struct Limits {
 
 #[derive(Deserialize)]
 struct Args {
+    name: Option<String>,
     description: String,
     prompt: String,
     subagent_type: String,
@@ -120,6 +121,7 @@ impl Tool for Task {
                     "description": { "type": "string", "description": "A short (3-5 words) description of the task" },
                     "prompt": { "type": "string", "description": "The task for the agent to perform" },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to use for this task" },
+                    "name": { "type": "string", "description": "Instance name; required on fresh spawn, optional on continuation." },
                     "task_id": { "type": "integer", "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)" }
                 },
                 "required": ["description", "prompt", "subagent_type"]
@@ -141,6 +143,12 @@ impl Tool for Task {
             let subagents = self.spawner.subagents();
             let limits = self.spawner.limits();
             let planning = ctx.writable.planning();
+            if let Some(name) = &args.name {
+                validate_name(name)?;
+            }
+            if args.task_id.is_none() && args.name.is_none() {
+                return Err("name is required for a fresh subagent".into());
+            }
             let (id, started) = match &args.task_id {
                 Some(id) => {
                     let id = id.parse()?;
@@ -158,6 +166,7 @@ impl Tool for Task {
                         }
                         Some(_) => {}
                     }
+                    if let Some(name) = &args.name && subagents.name(id).as_deref() != Some(name.as_str()) { return Err(format!("subagent {id} has a different name; omit name or use its original name")); }
                     self.spawner.read_only(id, planning)?;
                     (id, false)
                 }
@@ -165,6 +174,7 @@ impl Tool for Task {
                     self.spawner.spawn(
                         subagents.reserve(),
                         agent,
+                        args.name.as_deref().ok_or("name is required for a fresh subagent")?,
                         &args.description,
                         ctx,
                         Vec::new(),
@@ -172,6 +182,7 @@ impl Tool for Task {
                     true,
                 ),
             };
+            let name = subagents.name(id).ok_or_else(|| format!("subagent {id} has ended"))?;
             let text = match planning {
                 true => format!("{}\n\n{PLANNING}", args.prompt),
                 false => args.prompt,
@@ -191,8 +202,8 @@ impl Tool for Task {
                     return Err(format!("subagent {id} has ended; leave task_id out to start a new one"));
                 }
                 let verb = match started {
-                    true => format!("Started subagent {id} (@{}, \"{}\")", agent.name, args.description),
-                    false => format!("Sent the prompt to subagent {id} (@{})", agent.name),
+                    true => format!("Started subagent {id} ({name}, @{}, \"{}\")", agent.name, args.description),
+                    false => format!("Sent the prompt to subagent {id} ({name}, @{})", agent.name),
                 };
                 return Ok(format!(
                     "{verb}. Its answer reaches you as a notice when it is done; carry on with other work or answer meanwhile. Continue it later with task_id {id}."
@@ -217,8 +228,9 @@ impl Tool for Task {
             match waiting.await {
                 Ok(Ok(text)) => Ok(TaskNotice {
                     id,
+                    name,
                     agent: agent.name.clone(),
-                    description: args.description,
+                    description: subagents.describe(id).map(|(_, description)| description).unwrap_or(args.description),
                     outcome: TaskOutcome::Completed(text),
                 }
                 .render()),
@@ -389,17 +401,16 @@ mod tests {
             subagents.clone(),
             Inbox::default(),
         );
-        let args =
-            json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore" });
+        let args = json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore", "name": "scout" });
 
         let result = task.call(args, &ctx()).await.unwrap();
 
         assert_eq!(
             result,
-            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
+            "<task id=\"1\" name=\"scout\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
              <task_result>\nTabs open in content.rs.\n</task_result>\n</task>"
         );
-        let again = json!({ "description": "find tabs", "prompt": "and closing?", "subagent_type": "explore", "task_id": "1" });
+        let again = json!({ "description": "find tabs", "prompt": "and closing?", "subagent_type": "explore", "name": "scout", "task_id": "1" });
         let result = task.call(again, &ctx()).await.unwrap();
         assert!(
             result.starts_with("<task id=\"1\" "),
@@ -407,6 +418,44 @@ mod tests {
         );
         assert!(result.contains("And close there too."), "{result}");
         assert_eq!(subagents.ids(), [1]);
+    }
+
+    #[tokio::test]
+    async fn names_are_required_validated_and_stable_on_continuation() {
+        let subagents = Subagents::default();
+        let task = task(
+            vec![says("one"), says("two")],
+            subagents.clone(),
+            Inbox::default(),
+        );
+        let base = json!({"description":"first", "prompt":"go", "subagent_type":"explore"});
+        assert!(
+            task.call(base.clone(), &ctx())
+                .await
+                .unwrap_err()
+                .contains("name is required")
+        );
+        for name in ["", " scout", "bad\nname"] {
+            let mut args = base.clone();
+            args["name"] = json!(name);
+            assert!(task.call(args, &ctx()).await.is_err());
+        }
+        let mut args = base.clone();
+        args["name"] = json!("Scout");
+        task.call(args, &ctx()).await.unwrap();
+        assert_eq!(subagents.name(1).as_deref(), Some("Scout"));
+        let mut again = base;
+        again["task_id"] = json!(1);
+        again["name"] = json!("Other");
+        assert!(
+            task.call(again.clone(), &ctx())
+                .await
+                .unwrap_err()
+                .contains("different name")
+        );
+        again.as_object_mut().unwrap().remove("name");
+        let result = task.call(again, &ctx()).await.unwrap();
+        assert!(result.contains("name=\"Scout\""));
     }
 
     #[tokio::test]
@@ -423,7 +472,7 @@ mod tests {
             extra_dirs: vec!["/elsewhere".into()],
             ..ctx()
         };
-        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout" });
 
         task.call(args, &ctx).await.unwrap();
 
@@ -443,7 +492,7 @@ mod tests {
                 ..LIMITS
             },
         );
-        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let args = json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout" });
 
         assert_eq!(
             task.call(args, &ctx()).await.unwrap_err(),
@@ -460,13 +509,12 @@ mod tests {
             task.call(unknown, &ctx()).await.unwrap_err(),
             "Agent \"nobody\" not found. Available agents: clerk, experimenter, explore, general, review"
         );
-        let stale =
-            json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "task_id": 7 });
+        let stale = json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout", "task_id": 7 });
         assert_eq!(
             task.call(stale, &ctx()).await.unwrap_err(),
             "no subagent with task_id 7; leave task_id out to start a new one"
         );
-        let fine = json!({ "description": "d", "prompt": "p", "subagent_type": "explore" });
+        let fine = json!({ "description": "d", "prompt": "p", "subagent_type": "explore", "name": "scout" });
         assert_eq!(
             task.call(fine, &ToolContext::new("/repo".into()))
                 .await
@@ -482,14 +530,13 @@ mod tests {
         let inbox = Inbox::new();
         let task = task(vec![says("found")], subagents, inbox.clone());
         let ctx = ctx();
-        let args =
-            json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore" });
+        let args = json!({ "description": "find tabs", "prompt": "where?", "subagent_type": "explore", "name": "scout" });
 
         let result = task.call(args, &ctx).await.unwrap();
 
         assert_eq!(
             result,
-            "Started subagent 1 (@explore, \"find tabs\"). Its answer reaches you as a notice when it is done; \
+            "Started subagent 1 (scout, @explore, \"find tabs\"). Its answer reaches you as a notice when it is done; \
              carry on with other work or answer meanwhile. Continue it later with task_id 1."
         );
         while let Some(event) = rx.recv().await {
@@ -514,8 +561,7 @@ mod tests {
             subagents.clone(),
             Inbox::default(),
         );
-        let start =
-            |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent });
+        let start = |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent, "name": "scout" });
         let again = |agent: &str| json!({ "description": "d", "prompt": "p", "subagent_type": agent, "task_id": 1 });
         let planning = ToolContext {
             writable: Writable::plan("/repo/.nth/plans/x.md".into()),
@@ -534,8 +580,7 @@ mod tests {
         );
         task.call(start("general"), &planning).await.unwrap();
         assert!(!subagents.writes(2), "started while planning");
-        let reused =
-            json!({ "description": "d", "prompt": "p", "subagent_type": "general", "task_id": 2 });
+        let reused = json!({ "description": "d", "prompt": "p", "subagent_type": "general", "name": "scout", "task_id": 2 });
         assert!(task.call(reused, &planning).await.is_ok());
     }
 }

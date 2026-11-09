@@ -420,6 +420,7 @@ mod tests {
         app.last_turn = TabState::Done;
         app.inbox.post_task(TaskNotice {
             id: 1,
+            name: "Atlas".into(),
             agent: "explore".into(),
             description: "search".into(),
             outcome: TaskOutcome::Completed("found".into()),
@@ -428,6 +429,7 @@ mod tests {
         none(&mut rx).await;
         app.inbox.take_notices();
         app.inbox.post_work(WorkNotice {
+            name: "Atlas".into(),
             cycle: "01".into(),
             item: "task".into(),
             task: 1,

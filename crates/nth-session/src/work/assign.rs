@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Assignment, Work, WorkNotice, WorkState, open_items, outcome, returned, todo::WorkTodo,
 };
-use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent};
+use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent, validate_name};
 
 const ASSIGNED: &str = include_str!("assigned.md");
 
@@ -36,6 +36,7 @@ impl Assigned {
                 cycle: a.at.cycle.clone(),
                 item: a.at.item.clone(),
                 task: a.task,
+                name: a.name.clone(),
                 agent: a.agent.clone(),
                 state: WorkState::Stalled { quiet },
             });
@@ -70,6 +71,7 @@ impl WorkAssign {
 
 #[derive(Deserialize)]
 struct Args {
+    name: Option<String>,
     cycle: u32,
     item: String,
     subagent_type: String,
@@ -88,6 +90,7 @@ impl Tool for WorkAssign {
                     "cycle": { "type": "integer", "description": "The item's cycle number." },
                     "item": { "type": "string", "description": "The item's slug." },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to put on it" },
+                    "name": { "type": "string", "description": "Instance name; required on fresh spawn, optional on continuation." },
                     "task_id": { "type": "integer", "description": "Only to continue the subagent that last worked on this item, with what it remembers; leave it out for a fresh one." },
                     "timeout_ms": { "type": "integer", "minimum": 0, "description": "Milliseconds this attempt may run before it returns as timed out, 0 for no limit; the configured limit by default." }
                 },
@@ -113,6 +116,8 @@ impl Tool for WorkAssign {
             let agent = find_agent(ctx, &args.subagent_type)?;
             let planning = ctx.writable.planning();
             let continued = args.task_id.as_ref().map(TaskIdArg::parse).transpose()?;
+            if let Some(name) = &args.name { validate_name(name)?; }
+            if continued.is_none() && args.name.is_none() { return Err("name is required for a fresh subagent".into()); }
             // Held from reading the plan until the file says running and
             // `Live` knows it, so two calls cannot both take one item.
             let (mut live, plan) = self.work.locked_plan(&store).await?;
@@ -177,6 +182,7 @@ impl Tool for WorkAssign {
                         }
                         Some(_) => {}
                     }
+                    if let Some(name) = &args.name && subagents.name(id).as_deref() != Some(name.as_str()) { return Err(format!("subagent {id} has a different name; omit name or use its original name")); }
                     if subagents.is_running(id) || subagents.queued(id) > 0 {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
@@ -188,11 +194,13 @@ impl Tool for WorkAssign {
                     (reserved.id(), reserved.parent(), Some(reserved))
                 }
             };
+            let name = match continued { Some(_) => subagents.name(id).ok_or_else(|| format!("subagent {id} has ended"))?, None => args.name.expect("fresh name checked") };
             let assignment = Assignment {
                 files: shared.files.clone(),
                 store: store.clone(),
                 at: at.clone(),
                 task: id,
+                name: name.clone(),
                 agent: agent.name.clone(),
                 inbox: shared.inbox.clone(),
                 parent,
@@ -267,7 +275,7 @@ impl Tool for WorkAssign {
             if let Some((reserved, todo)) = fresh {
                 shared
                     .spawner
-                    .spawn(reserved, agent, &format!("work {at}"), ctx, vec![todo]);
+                    .spawn(reserved, agent, &name, &format!("work {at}"), ctx, vec![todo]);
             }
             if !subagents.prompt(id, job) {
                 let restored = match store.write(&before).await {
@@ -282,8 +290,8 @@ impl Tool for WorkAssign {
             live.worked.insert(path.clone(), id);
             let Some(waiting) = waiting else {
                 let verb = match continued {
-                    Some(_) => format!("Sent {at} back to subagent {id} (@{})", agent.name),
-                    None => format!("Assigned {at} to subagent {id} (@{})", agent.name),
+                    Some(_) => format!("Sent {at} back to subagent {id} ({name}, @{})", agent.name),
+                    None => format!("Assigned {at} to subagent {id} ({name}, @{})", agent.name),
                 };
                 return Ok(format!(
                     "{verb}. Its answer and any stall reach you as <work_item> notices, its todo updates along with them; carry on, or end your turn to wait. task_id {id} continues the same subagent on this item later."

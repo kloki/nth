@@ -255,6 +255,7 @@ mod tests {
 
         app.on_subagent(SubagentEvent::Started {
             id: 1,
+            name: "Atlas".into(),
             agent: "general".into(),
             description: "work 01-a/store".into(),
             model: "glm".into(),
@@ -306,6 +307,7 @@ mod tests {
     async fn todo_ticks_wait_for_a_wake_and_a_return_is_one() {
         let mut app = test_app();
         let notice = |state| nth_session::work::WorkNotice {
+            name: "Atlas".into(),
             cycle: "01-a".into(),
             item: "store".into(),
             task: 1,

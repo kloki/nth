@@ -98,6 +98,23 @@ impl ToolCall {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.arguments) else {
             return self.arguments.clone();
         };
+        if matches!(self.name.as_str(), "task" | "work_assign")
+            && let Some(name) = args["name"].as_str().filter(|name| !name.trim().is_empty())
+        {
+            let detail = if self.name == "task" {
+                "description"
+            } else {
+                "item"
+            };
+            return match args[detail].as_str().filter(|text| !text.is_empty()) {
+                Some(text) => format!(
+                    "{} · {}",
+                    name.trim(),
+                    text.lines().next().unwrap_or_default()
+                ),
+                None => name.trim().to_string(),
+            };
+        }
         // The question tool's headers, which name what it asked.
         if let Some(questions) = args["questions"].as_array() {
             let headers: Vec<&str> = questions
@@ -176,6 +193,21 @@ mod tests {
             name: "read".into(),
             arguments: arguments.into(),
         }
+    }
+
+    #[test]
+    fn subagent_calls_show_the_name_and_task() {
+        let cwd = Path::new("/repo");
+        let task = ToolCall {
+            name: "task".into(),
+            ..call(r#"{"name":"Cedar","description":"find tabs"}"#)
+        };
+        assert_eq!(task.summary(cwd), "Cedar · find tabs");
+        let work = ToolCall {
+            name: "work_assign".into(),
+            ..call(r#"{"name":"Finch","item":"ui"}"#)
+        };
+        assert_eq!(work.summary(cwd), "Finch · ui");
     }
 
     #[test]

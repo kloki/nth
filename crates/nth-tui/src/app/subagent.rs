@@ -22,6 +22,7 @@ impl App {
         match event {
             SubagentEvent::Started {
                 id,
+                name,
                 agent,
                 description,
                 ..
@@ -30,8 +31,10 @@ impl App {
                 if self.subagents.forgotten(id) {
                     return;
                 }
-                self.subagent_views
-                    .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
+                self.subagent_views.insert(
+                    id,
+                    SubagentView::new(name, agent, description, self.cwd.clone()),
+                );
                 // Opened, not shown: you keep looking at the chat while the
                 // model works.
                 self.content.add(Tab::Subagent(id));
@@ -40,8 +43,15 @@ impl App {
                 if !self.subagent_views.contains_key(&id)
                     && let Some((agent, description)) = self.subagents.describe(id)
                 {
-                    self.subagent_views
-                        .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
+                    self.subagent_views.insert(
+                        id,
+                        SubagentView::new(
+                            self.subagents.name(id).unwrap_or_else(|| id.to_string()),
+                            agent,
+                            description,
+                            self.cwd.clone(),
+                        ),
+                    );
                 }
                 // Its tab was closed and the model continued it: it opens
                 // again, with its earlier turns, so nothing runs out of
@@ -230,6 +240,7 @@ pub(super) mod tests {
     fn started(app: &mut App, id: SubagentId, agent: &str) {
         app.on_subagent(SubagentEvent::Started {
             id,
+            name: "Atlas".into(),
             agent: agent.into(),
             description: "find tabs".into(),
             model: "glm".into(),
@@ -288,9 +299,7 @@ pub(super) mod tests {
         let rows = rows(&mut app);
         assert!(rows[0].starts_with(" [› chat] "), "{}", rows[0]);
         assert!(
-            rows[0].contains(" find tabs ")
-                && !rows[0].contains('@')
-                && !rows[0].contains("explore"),
+            rows[0].contains(" Atlas ") && !rows[0].contains('@') && !rows[0].contains("explore"),
             "the spinner stands in for @ while it runs: {}",
             rows[0]
         );
@@ -310,7 +319,7 @@ pub(super) mod tests {
 
         let before = rows(&mut app);
         assert!(
-            before[2].starts_with(" @explore · find tabs · running · 0s"),
+            before[2].starts_with(" Atlas · @explore · find tabs · running"),
             "{}",
             before[2]
         );
@@ -329,7 +338,7 @@ pub(super) mod tests {
 
         ended(&mut app, 1, TaskOutcome::Completed("In content.rs.".into()));
         let after = rows(&mut app);
-        assert!(after[0].contains("[@ find tabs]"), "{}", after[0]);
+        assert!(after[0].contains("[@ Atlas]"), "{}", after[0]);
         assert_eq!(
             after[0].find(']').map(|i| after[0][..i].chars().count()),
             before[0].find(']').map(|i| before[0][..i].chars().count()),
@@ -338,12 +347,12 @@ pub(super) mod tests {
             after[0]
         );
         assert_eq!(
-            tab_colour(&mut app, "@ find tabs"),
+            tab_colour(&mut app, "@ Atlas"),
             Color::Reset,
             "done fades on the tab showing"
         );
         assert!(
-            crate::app::tests::prompt_row(&after, 0).starts_with(" ▎ explore "),
+            crate::app::tests::prompt_row(&after, 0).starts_with(" ▎ Atlas "),
             "the label names it: {}",
             crate::app::tests::prompt_row(&after, 0)
         );
@@ -436,7 +445,7 @@ pub(super) mod tests {
 
         let rows = crate::app::tests::rows_of(&mut app, 80);
         assert!(
-            rows[2].starts_with(" @explore · find tabs · running · ")
+            rows[2].starts_with(" explore · @explore · find tabs · running · ")
                 && rows[2].contains(" · 2 queued"),
             "{}",
             rows[2]
@@ -452,6 +461,7 @@ pub(super) mod tests {
 
         app.inbox.post_task(nth_session::subagent::TaskNotice {
             id: 1,
+            name: "Atlas".into(),
             agent: "explore".into(),
             description: "find tabs".into(),
             outcome: TaskOutcome::Completed("found".into()),
@@ -478,7 +488,7 @@ pub(super) mod tests {
         ended(&mut app, 1, TaskOutcome::Interrupted);
         app.apply(Action::Content(0));
         assert_eq!(
-            tab_colour(&mut app, "@ find tabs"),
+            tab_colour(&mut app, "@ Atlas"),
             Color::Red,
             "stays open to say why"
         );
@@ -773,7 +783,7 @@ pub(super) mod tests {
             panic!("no notice saved");
         };
         assert!(
-            notice.contains("<task id=\"1\" agent=\"explore\""),
+            notice.contains("<task id=\"1\" name=\"explore\""),
             "{notice}"
         );
     }
