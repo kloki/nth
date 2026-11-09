@@ -74,16 +74,22 @@ impl App {
     /// already: a burst keeps its first deadline rather than putting it off
     /// line by line.
     pub(super) fn arm_notices(&mut self) {
-        if self.notices_due.is_none() && self.inbox.wakes() {
-            self.notices_due = Some(tokio::time::Instant::now() + NOTICE_DELAY);
+        if self.inbox.wakes() {
+            self.turns
+                .arm_notices(tokio::time::Instant::now() + NOTICE_DELAY);
         }
+    }
+
+    /// Starts the wait afresh, for notices that waited through a turn.
+    pub(super) fn rearm_notices(&mut self) {
+        self.turns
+            .rearm_notices(tokio::time::Instant::now() + NOTICE_DELAY);
     }
 
     /// Wakes the agent with what its monitors said, unless a turn is
     /// running, which hands them over itself, or you stopped the last one.
     pub(super) fn notices_due(&mut self) {
-        self.notices_due = None;
-        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
+        if self.turns.notices_came_due(self.is_busy()) && self.inbox.wakes() {
             self.start_turn(String::new());
         }
     }
@@ -101,8 +107,7 @@ impl App {
         self.left_subagents();
         self.monitor_tabs.forgotten = self.monitors.forget_all();
         self.inbox.clear();
-        self.notices_due = None;
-        self.hold_notices = false;
+        self.turns.forget_notices();
         self.log_monitors_for_session();
     }
 
@@ -286,7 +291,7 @@ pub(super) mod tests {
         say(&mut app, m.id, "ERROR two", Stream::Stdout).await;
 
         assert!(app.inbox.wakes());
-        assert!(app.notices_due.is_some(), "a turn is on its way");
+        assert!(app.turns.due().is_some(), "a turn is on its way");
         assert_eq!(
             app.inbox.take_notices().unwrap(),
             "<monitor id=\"1\" description=\"errors &quot;in&quot; log\" log=\"/logs/1.log\">\n\
@@ -329,7 +334,7 @@ pub(super) mod tests {
         ended(&mut app, m.id, MonitorEnd::Stopped(StoppedBy::Exit)).await;
 
         assert!(!app.inbox.has_notices());
-        assert!(app.notices_due.is_none());
+        assert!(app.turns.due().is_none());
         assert_eq!(app.content.tabs(), [Tab::Chat], "the tab still heard it");
     }
 

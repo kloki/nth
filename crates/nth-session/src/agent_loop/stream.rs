@@ -105,9 +105,12 @@ impl Turn<'_> {
                 StreamEvent::ToolCall(call) => reply.tool_calls.push(call),
                 StreamEvent::Usage(usage) => {
                     *last_usage = Some(usage);
-                    self.spend.steps += 1;
-                    self.spend.tokens += usage;
+                    self.spend.count(usage);
                     emit(events, cancel, Event::Usage(usage)).await;
+                    // The front-ends draw the running turn's spend from the
+                    // session's own, never a tally of their own.
+                    let spend = Box::new(self.spend.clone());
+                    emit(events, cancel, Event::Spend(spend)).await;
                 }
             }
         }

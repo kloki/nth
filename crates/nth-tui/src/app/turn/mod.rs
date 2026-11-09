@@ -10,10 +10,15 @@ use std::{
 use nth_notify::Event;
 use nth_protocol::{Asker, Llm, ModelSettings, Screen};
 use nth_session::{FrontEnd, Session, Store, Subagents, TurnEnv, plan, store};
+pub use queue::Queued;
+use queue::{AfterTurn, Sent, Stop, Unqueued};
 use tokio::task::JoinError;
 
 use super::{App, TabState};
 use crate::{command::Command, status};
+
+mod queue;
+pub(crate) use queue::TurnQueue;
 
 /// What a turn task hands back: the session, how its turn ended, and
 /// whether saving it afterwards, and then acknowledging the Curios
@@ -81,47 +86,6 @@ async fn ended(
     }
 }
 
-/// What is sent while a turn runs. A plain prompt is not held: it steers
-/// into the running turn through the model's inbox (see [`App::send`]);
-/// the rest waits for the turn to end. What the model gets for the plan
-/// ones is rendered only then: it is written for the model, so it never
-/// goes back into the prompt.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Queued {
-    Prompt(String),
-    /// A command to run, typed after `!`.
-    Shell(String),
-    /// `/approve`: the plan's approval.
-    Approve(String),
-    /// `/compact`: one compaction of the session.
-    Compact,
-    /// The plan as ctrl+g found it and as you left it.
-    PlanEdits {
-        original: String,
-        edited: String,
-    },
-}
-
-impl Queued {
-    /// As the status bar names it: a prompt as typed, a command with its
-    /// `!`, and a word for what goes to the model as a reminder or a diff.
-    pub fn label(&self) -> String {
-        match self {
-            Queued::Prompt(text) => text.clone(),
-            Queued::Shell(command) => format!("!{command}"),
-            Queued::Approve(instructions) if instructions.is_empty() => "/approve".into(),
-            Queued::Approve(instructions) => format!("/approve {instructions}"),
-            Queued::Compact => "/compact".into(),
-            Queued::PlanEdits { .. } => "plan edits".into(),
-        }
-    }
-
-    /// A turn for the notices alone, which nobody sent.
-    pub(crate) fn is_wake(&self) -> bool {
-        matches!(self, Queued::Prompt(text) if text.is_empty())
-    }
-}
-
 impl App {
     pub fn is_busy(&self) -> bool {
         self.turn.is_running()
@@ -169,10 +133,7 @@ impl App {
         // transcript keeps the order the model saw.
         let next = match shell {
             true => Queued::Shell(text),
-            false => {
-                self.hold_notices = false;
-                Queued::Prompt(text)
-            }
+            false => Queued::Prompt(text),
         };
         self.send(next);
     }
@@ -180,24 +141,17 @@ impl App {
     /// Runs `next` as a turn, holds it until the running one ends, or, for
     /// a plain prompt while one runs, steers it: the turn picks it up from
     /// the model's inbox at its next step, pre-empting the tool calls it
-    /// was about to run. A skill is filled in when its own turn starts,
-    /// what already waits keeps its place ahead, and a prompt for another
-    /// mode, agent or model than the running turn's runs on its own, so
-    /// those queue.
+    /// was about to run. `TurnQueue::send` says which.
     pub(super) fn send(&mut self, next: Queued) {
-        if let Queued::Prompt(text) = &next
-            && self.is_busy()
-            && self.queue.is_empty()
-            && self.steerable == Some(self.runs_as())
-            && nth_context::skills::parse(text, &self.context.skills).is_none()
-        {
-            self.inbox.post_prompt(text.clone());
-            return;
-        }
-        if self.is_busy() {
-            self.queue.push_back(next);
-        } else {
-            self.start(next);
+        let is_skill = matches!(&next, Queued::Prompt(text)
+            if nth_context::skills::parse(text, &self.context.skills).is_some());
+        let runs_as = self.runs_as();
+        match self.turns.send(next, self.is_busy(), &runs_as, is_skill) {
+            Sent::Steer(text) => {
+                self.inbox.post_prompt(text);
+            }
+            Sent::Queued => {}
+            Sent::Start(next) => self.start(next),
         }
     }
 
@@ -231,13 +185,12 @@ impl App {
         if self.session_saving.is_running() {
             return self.after_save(Queued::Shell(command));
         }
-        let Some(mut session) = self.session.take() else {
+        let Some(mut session) = self.take_session() else {
             return;
         };
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
-        // A command never asks the model, so nothing would pick a prompt up.
-        self.steerable = None;
+        self.turns.started_without_model();
         let events = self.events_tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
@@ -257,10 +210,7 @@ impl App {
     /// A compaction is always the main session's, even from a subagent's
     /// tab, which is where a command typed there goes.
     pub(super) fn compact(&mut self) {
-        match self.is_busy() {
-            true => self.queue.push_back(Queued::Compact),
-            false => self.start_compact(),
-        }
+        self.send(Queued::Compact);
     }
 
     /// Runs one compaction as a turn does, so Esc stops it and what you
@@ -270,7 +220,7 @@ impl App {
         if self.session_saving.is_running() {
             return self.after_save(Queued::Compact);
         }
-        let Some(mut session) = self.session.take() else {
+        let Some(mut session) = self.take_session() else {
             return;
         };
         // As a turn does: the picker may have changed the model since the
@@ -279,8 +229,7 @@ impl App {
         self.adopt_llm(&mut session);
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
-        // A compaction never picks a prompt up, so nothing steers into it.
-        self.steerable = None;
+        self.turns.started_without_model();
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let events = self.events_tx.clone();
@@ -307,7 +256,7 @@ impl App {
         if self.session_saving.is_running() {
             return self.after_save(Queued::Prompt(text));
         }
-        let Some(mut session) = self.session.take() else {
+        let Some(mut session) = self.take_session() else {
             return;
         };
         // `/name args` runs a skill: the chat shows it as typed, and the
@@ -332,7 +281,6 @@ impl App {
                 None => text,
             },
         };
-        self.notices_due = None;
         self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
@@ -341,13 +289,12 @@ impl App {
         }
         let model = self.selection.current().model;
         self.llm_usage.count(&model);
-        self.spent.turn_started(&model);
         self.save_llm_usage();
         session.mode = self.selection.mode;
         if session.agent != self.selection.agent {
             session.set_agent(self.selection.agent.clone());
         }
-        self.steerable = Some(self.runs_as());
+        self.turns.started(self.runs_as());
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }
@@ -398,18 +345,17 @@ impl App {
     }
 
     /// Holds `next` until the save between turns in flight ends, when
-    /// `session_saved` starts it: that save is of an older clone of the
-    /// session, and landing after the turn's own save it would roll the
-    /// file back. What starts meanwhile queues behind it, as behind a
-    /// running turn. A wake for notices alone, `Prompt("")`, gives way to
-    /// anything else: a turn hands the notices over, and the end of any
-    /// run wakes the model with what is left.
+    /// `session_saved` starts it (see `TurnQueue::hold`).
     fn after_save(&mut self, next: Queued) {
-        match &self.turn_after_save {
-            Some(_) if next.is_wake() => {}
-            Some(held) if !held.is_wake() => self.queue.push_back(next),
-            _ => self.turn_after_save = Some(next),
-        }
+        self.turns.hold(next);
+    }
+
+    /// The session, for a turn's task to take; what it spent so far stays
+    /// drawn meanwhile.
+    fn take_session(&mut self) -> Option<Session> {
+        let session = self.session.take()?;
+        self.ledger = session.usage.clone();
+        Some(session)
     }
 
     /// The handles the session's tools reach the app through.
@@ -473,22 +419,15 @@ impl App {
     /// Esc cancels the turn cooperatively so the session comes back;
     /// aborting the task would drop the session with it.
     pub(super) fn interrupt(&mut self) {
-        if self.is_busy() {
-            self.interrupted = true;
-        }
+        let prompts_waiting = self.inbox.prompts_waiting().is_some();
+        let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
         self.turn.cancel();
-        // Nothing runs yet, but Esc still means stop, as on a running
-        // turn: what you sent goes back, and the notices wait for your next
-        // prompt. A wake for notices alone was nobody's to stop, so they
-        // still wake the model on their own.
-        if !self.is_busy()
-            && let Some(held) = &self.turn_after_save
-        {
-            let sent = !held.is_wake() || self.inbox.prompts_waiting().is_some();
-            self.unqueue();
-            match sent {
-                true => self.hold_notices = true,
-                false => self.arm_notices(),
+        match stop {
+            Stop::Nothing => {}
+            Stop::GiveBack => self.unqueue(),
+            Stop::GiveBackWake => {
+                self.unqueue();
+                self.arm_notices();
             }
         }
     }
@@ -510,18 +449,15 @@ impl App {
             .busy_since
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
+        self.running = None;
+        let ending = self.turns.ended(&result);
         let transcript = &mut self.chat.transcript;
-        // Esc after the reply ended still comes back `Ok`, but it still
-        // means stop.
-        let interrupted = std::mem::take(&mut self.interrupted)
-            || matches!(result, Err(nth_session::Error::Interrupted));
-        let send_next = result.is_ok() && !interrupted;
         let error = match &result {
             Err(nth_session::Error::Interrupted) | Ok(()) => None,
             Err(e) => Some(e.to_string()),
         };
         self.last_turn = match &result {
-            Ok(()) if send_next => TabState::Done,
+            Ok(()) if ending.went_well => TabState::Done,
             Ok(()) | Err(nth_session::Error::Interrupted) => TabState::Idle,
             Err(_) => TabState::Failed,
         };
@@ -571,31 +507,16 @@ impl App {
             true => self.work.for_session(work_dir),
             false => self.work.read(),
         }
-        // Notices that came after the model's last step go with the next
-        // prompt once you stopped it, else wake it on their own: a turn
-        // that failed is no reason to keep a subagent's answer from it.
-        self.hold_notices = interrupted;
-        self.steerable = None;
-        if !send_next {
-            // What the turn never picked up goes back, steered or queued:
-            // sent prompts were written for a turn that went well. The
-            // notices stay and wake the model on their own.
-            self.unqueue();
-        } else if self.inbox.prompts_waiting().is_some() {
-            // Steered prompts the turn never picked up were sent before
-            // anything that queued behind them, so they run first.
-            self.start_turn(String::new());
-        } else {
-            match self.queue.pop_front() {
-                Some(next) => self.start(next),
-                None => self.start_turn(String::new()),
-            }
+        let steered_waiting = self.inbox.prompts_waiting().is_some();
+        match self.turns.after(ending, steered_waiting) {
+            AfterTurn::GiveBack => self.unqueue(),
+            AfterTurn::StartSteered | AfterTurn::StartEmpty => self.start_turn(String::new()),
+            AfterTurn::Start(next) => self.start(next),
         }
         // What waited through a failed turn: no new notice will come to
         // arm the timer for it.
-        if !self.is_busy() && !self.hold_notices && self.inbox.wakes() {
-            self.notices_due = None;
-            self.arm_notices();
+        if !self.is_busy() && !self.turns.holds_notices() && self.inbox.wakes() {
+            self.rearm_notices();
         }
         // A command of yours is not the model answering: nothing to say.
         self.notify_turn_ended(!ran.answered(), error, elapsed);
@@ -642,58 +563,49 @@ impl App {
             .busy_since
             .take()
             .map_or(Duration::ZERO, |t| t.elapsed());
-        self.interrupted = false;
+        self.running = None;
         let cx = self.notify_context(elapsed);
         self.notify(Event::Failed(format!("turn task failed: {error}")), &cx);
         self.chat.transcript.fail_turn(format!(
             "turn task failed: {error} · continuing in a new session; \
              the old one was last saved after its previous turn, /resume brings it back"
         ));
-        self.steerable = None;
         // Before the fresh session: starting one clears the inbox, and a
         // steered prompt still in it is yours to give back.
-        self.unqueue();
+        let unqueued = self.turns.failed(self.inbox.take_prompts());
+        self.back_to_prompt(unqueued);
         self.start_fresh_session();
     }
 
-    /// After an interrupted or failed turn, the queued prompts go back into
-    /// the prompt ahead of what is typed: sent prompts were written for a
-    /// turn that went well, so they wait to be looked at again. An
-    /// approval, a compaction or plan edits are dropped, and the status bar
-    /// says so. An approval's instructions also return to the prompt. So
-    /// does a turn held for a save, ahead of what queued behind it, when
-    /// you stop it or leave the session.
+    /// After an interrupted or failed turn, what waits goes back into the
+    /// prompt ahead of what is typed (see `TurnQueue::give_back`): sent
+    /// prompts were written for a turn that went well, so they wait to be
+    /// looked at again. So does a turn held for a save, when you stop it or
+    /// leave the session.
     pub(super) fn unqueue(&mut self) {
-        let mut parts = Vec::new();
-        let mut dropped = Vec::new();
-        // Prompts on their way into the turn were typed before what queued.
-        if let Some(prompts) = self.inbox.take_prompts() {
-            parts.push(prompts);
-        }
-        let held = self.turn_after_save.take().filter(|held| !held.is_wake());
-        for next in held.into_iter().chain(self.queue.drain(..)) {
-            match next {
-                Queued::Prompt(_) | Queued::Shell(_) => parts.push(next.label()),
-                Queued::Approve(ref instructions) if !instructions.is_empty() => {
-                    parts.push(instructions.clone());
-                    dropped.push("plan approval discarded");
-                }
-                Queued::Approve(_) => dropped.push("plan approval discarded"),
-                Queued::Compact => dropped.push("compaction discarded"),
-                Queued::PlanEdits { .. } => dropped.push("plan edits discarded"),
-            }
-        }
-        dropped.dedup();
+        let unqueued = self.turns.give_back(self.inbox.take_prompts());
+        self.back_to_prompt(unqueued);
+    }
+
+    /// Puts what was given back into the prompt, and says on the status
+    /// bar what was dropped.
+    fn back_to_prompt(
+        &mut self,
+        Unqueued {
+            mut prompt_parts,
+            dropped,
+        }: Unqueued,
+    ) {
         if !dropped.is_empty() {
             self.hint = Some(dropped.join(" · ").into());
         }
-        if parts.is_empty() {
+        if prompt_parts.is_empty() {
             return;
         }
         if !self.prompt.is_empty() {
-            parts.push(self.prompt.take());
+            prompt_parts.push(self.prompt.take());
         }
-        self.prompt.set(&parts.join("\n\n"));
+        self.prompt.set(&prompt_parts.join("\n\n"));
     }
 }
 

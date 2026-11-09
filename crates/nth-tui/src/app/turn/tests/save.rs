@@ -49,7 +49,7 @@ async fn a_turn_waits_for_a_pending_save() {
     land(&mut app, open).await;
     assert!(app.is_busy(), "the turn starts once the save landed");
     assert_eq!(last_user(&app), Some("go"));
-    assert_eq!(app.queue, [Queued::Prompt("then".into())]);
+    assert_eq!(*app.turns.queued(), [Queued::Prompt("then".into())]);
 }
 
 #[tokio::test]
@@ -59,7 +59,7 @@ async fn an_approval_waits_as_itself() {
 
     app.start(Queued::Approve("skip it".into()));
 
-    assert_eq!(app.turn_after_save, Some(Queued::Approve("skip it".into())));
+    assert_eq!(app.turns.held(), Some(&Queued::Approve("skip it".into())));
     assert_eq!(queued_row(&mut app), " > 1 queued · /approve skip it");
 }
 
@@ -74,7 +74,7 @@ async fn a_held_wake_gives_way_to_what_you_send() {
         let _open = gate_save(&mut app);
         monitor_says(&mut app, "build failed").await;
         app.notices_due();
-        assert_eq!(app.turn_after_save, Some(Queued::Prompt(String::new())));
+        assert_eq!(app.turns.held(), Some(&Queued::Prompt(String::new())));
         assert!(
             !queued_row(&mut app).contains("queued"),
             "nobody sent the wake"
@@ -84,8 +84,8 @@ async fn a_held_wake_gives_way_to_what_you_send() {
             Some(text) => command(&mut app, text),
             None => send(&mut app, sent),
         }
-        assert_eq!(app.turn_after_save, Some(held));
-        assert!(app.queue.is_empty());
+        assert_eq!(app.turns.held(), Some(&held));
+        assert!(app.turns.queued().is_empty());
     }
 }
 
@@ -97,8 +97,8 @@ async fn a_wake_behind_a_held_command_comes_after_it() {
     command(&mut app, "echo hi");
     monitor_says(&mut app, "build failed").await;
     app.notices_due();
-    assert_eq!(app.turn_after_save, Some(Queued::Shell("echo hi".into())));
-    assert!(app.queue.is_empty(), "the wake is not queued");
+    assert_eq!(app.turns.held(), Some(&Queued::Shell("echo hi".into())));
+    assert!(app.turns.queued().is_empty(), "the wake is not queued");
 
     land(&mut app, open).await;
     assert!(app.is_busy(), "the command runs");
@@ -127,7 +127,7 @@ async fn esc_hands_a_held_turn_back() {
     app.apply(crate::app::keys::Action::Interrupt);
 
     assert_eq!(app.prompt.text(), "go\n\nthen");
-    assert!(app.turn_after_save.is_none() && app.queue.is_empty());
+    assert!(app.turns.held().is_none() && app.turns.queued().is_empty());
     land(&mut app, open).await;
     assert!(!app.is_busy(), "nothing left to start");
 }
@@ -143,7 +143,7 @@ async fn clearing_the_session_hands_a_held_turn_back() {
 
     assert_ne!(app.session_id, old);
     assert_eq!(app.prompt.text(), "go");
-    assert!(app.turn_after_save.is_none());
+    assert!(app.turns.held().is_none());
     land(&mut app, open).await;
     assert!(!app.is_busy(), "nothing runs in the new session");
 }
@@ -170,11 +170,11 @@ async fn esc_on_a_held_wake_leaves_the_notices_to_wake_the_model() {
     let open = gate_save(&mut app);
     monitor_says(&mut app, "build failed").await;
     app.notices_due();
-    assert_eq!(app.turn_after_save, Some(Queued::Prompt(String::new())));
+    assert_eq!(app.turns.held(), Some(&Queued::Prompt(String::new())));
 
     app.apply(crate::app::keys::Action::Interrupt);
-    assert!(app.turn_after_save.is_none());
-    assert!(app.notices_due.is_some(), "armed again");
+    assert!(app.turns.held().is_none());
+    assert!(app.turns.due().is_some(), "armed again");
     land(&mut app, open).await;
     app.notices_due();
 
@@ -193,7 +193,7 @@ async fn a_turn_waits_for_a_save_asked_for_during_the_one_it_waited_for() {
     land(&mut app, open).await;
     assert!(app.session_saving.is_running(), "the second save");
     assert!(!app.is_busy(), "the turn waits for it too");
-    assert_eq!(app.turn_after_save, Some(Queued::Prompt("go".into())));
+    assert_eq!(app.turns.held(), Some(&Queued::Prompt("go".into())));
 
     let saved = app.session_saving.join().await.expect("saves");
     app.session_saved(saved);

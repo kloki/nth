@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use crate::{ToolCall, ToolResult, Usage};
+use crate::{Spend, ToolCall, ToolResult, Usage};
 
 /// What a running session reports to its front-ends.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +21,9 @@ pub enum Event {
     },
     /// After each model reply, when the provider reports it.
     Usage(Usage),
+    /// Right after each `Usage`: what the running turn, or compaction, has
+    /// spent so far, as the session's ledger holds it.
+    Spend(Box<Spend>),
     /// Handed to the model between steps as a user message: what monitors
     /// and subagents said, or a prompt sent mid-turn.
     Notice(String),

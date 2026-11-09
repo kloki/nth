@@ -382,7 +382,7 @@ mod tests {
         app.prompt.insert_str("/approve Skip the migration");
         app.apply(Action::Submit);
         assert_eq!(
-            app.queue.front(),
+            app.turns.queued().front(),
             Some(&Queued::Approve("Skip the migration".into()))
         );
         let ended = app.turn.join().await.expect("first ends");

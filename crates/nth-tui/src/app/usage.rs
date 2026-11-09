@@ -1,89 +1,30 @@
-//! What the session spent, as far as the app has heard: its saved ledger,
-//! then each request's usage as it arrives, its own and its subagents'.
-//! The session counts the same reports in its task, so the two agree
-//! without the app waiting for the session to come back. Two exceptions:
-//! a subagent forgotten with a left session was counted here, but its
-//! spend never reaches the saved ledger; the next session starts afresh.
-//! And a usage report the turn could not send because it was cancelled
-//! while the event channel was full is in the ledger but not here.
+//! What the session spent, as the usage tab, the status bar and the
+//! model picker show it. The session's ledger is the one record: while a
+//! turn's task holds the session, the app draws the copy it took then and
+//! what the running turn reported spending so far; a subagent's turn
+//! shows once its spend reaches that ledger, when the parent's turn ends,
+//! or at once while the parent is idle.
 
-use std::collections::HashMap;
-
-use nth_protocol::Usage;
-use nth_session::{Ledger, Spend, SubagentId, store};
+use nth_session::{Ledger, Session, Spend, store};
 
 use super::App;
 use crate::usage::ToolTotals;
 
-#[derive(Debug, Default)]
-pub struct Spent {
-    pub ledger: Ledger,
-    /// Where the running turn's spend is.
-    turn: Option<usize>,
-    subagents: HashMap<SubagentId, Subagent>,
-}
-
-#[derive(Debug)]
-struct Subagent {
-    agent: String,
-    model: String,
-    /// Where its running turn's spend is.
-    turn: Option<usize>,
-}
-
-impl Spent {
-    /// Starting from what a session saved.
-    pub fn new(ledger: Ledger) -> Self {
-        Self {
-            ledger,
-            ..Self::default()
-        }
-    }
-
-    pub fn turn_started(&mut self, model: &str) {
-        self.turn = Some(self.ledger.open(Spend::new(model, None)));
-    }
-
-    /// One request of the session's own; a report outside a turn opens one.
-    pub fn usage(&mut self, model: &str, usage: Usage) {
-        let at = *self
-            .turn
-            .get_or_insert_with(|| self.ledger.open(Spend::new(model, None)));
-        self.ledger.add(at, usage);
-    }
-
-    pub fn subagent_started(&mut self, id: SubagentId, agent: String, model: String) {
-        let subagent = Subagent {
-            agent,
-            model,
-            turn: None,
-        };
-        self.subagents.insert(id, subagent);
-    }
-
-    /// One request of subagent `id`'s, counted to its running turn.
-    pub fn subagent_usage(&mut self, id: SubagentId, usage: Usage) {
-        let Some(subagent) = self.subagents.get_mut(&id) else {
-            return;
-        };
-        let ledger = &mut self.ledger;
-        let at = *subagent.turn.get_or_insert_with(|| {
-            ledger.open(Spend::new(
-                subagent.model.clone(),
-                Some(subagent.agent.clone()),
-            ))
-        });
-        ledger.add(at, usage);
-    }
-
-    pub fn subagent_ended(&mut self, id: SubagentId) {
-        if let Some(subagent) = self.subagents.get_mut(&id) {
-            subagent.turn = None;
-        }
-    }
-}
-
 impl App {
+    /// What the session spent, its subagents' finished turns included,
+    /// with the running turn so far.
+    pub(crate) fn spent(&self) -> &Ledger {
+        spent(self.session.as_ref(), &self.ledger, self.running.as_ref())
+    }
+
+    /// The running turn reported what it spent so far. The ledger it adds
+    /// to is copied once here, per request, rather than on every draw.
+    pub(super) fn spend_reported(&mut self, spend: Spend) {
+        let mut ledger = spent(self.session.as_ref(), &self.ledger, None).clone();
+        ledger.record(spend);
+        self.running = Some(ledger);
+    }
+
     /// Re-reads every saved session's tool totals, for the usage tab's
     /// all-time section; the store's absence leaves what is shown.
     pub(super) fn load_tools(&mut self) {
@@ -102,41 +43,130 @@ impl App {
     }
 }
 
+/// `running` while a turn reports what it spends, else the session's
+/// ledger while it is here, else `ledger`, the copy taken when its turn's
+/// task took it: apart from `App`, so a view on `App` can be drawn into
+/// beside it.
+pub(super) fn spent<'a>(
+    session: Option<&'a Session>,
+    ledger: &'a Ledger,
+    running: Option<&'a Ledger>,
+) -> &'a Ledger {
+    running.unwrap_or_else(|| session.map_or(ledger, |session| &session.usage))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
 
-    fn usage(input: u64) -> Usage {
-        Usage {
+    use nth_protocol::{Event, StreamEvent, Usage};
+    use nth_session::{Session, Total};
+
+    use super::*;
+    use crate::app::{
+        Tab,
+        tests::{Scripted, rows},
+    };
+
+    fn usage(input: u64) -> StreamEvent {
+        StreamEvent::Usage(Usage {
             input,
+            output: 10,
             ..Usage::default()
+        })
+    }
+
+    fn total(steps: u32, input: u64, output: u64) -> Total {
+        Total {
+            steps,
+            tokens: Usage {
+                input,
+                output,
+                ..Usage::default()
+            },
         }
     }
 
-    #[test]
-    fn counts_turns_and_subagents_apart() {
-        let mut spent = Spent::default();
-        spent.turn_started("glm");
-        spent.usage("glm", usage(100));
-        spent.subagent_started(1, "explore".into(), "kimi".into());
-        spent.subagent_usage(1, usage(30));
-        spent.usage("glm", usage(200));
-        spent.subagent_usage(1, usage(40));
-        spent.subagent_ended(1);
-        spent.subagent_usage(1, usage(5));
-
-        let spends = spent.ledger.spends();
-        assert_eq!(spends.len(), 3, "a new subagent turn after the first ended");
-        assert_eq!((spends[0].steps, spends[0].tokens.input), (2, 300));
-        assert_eq!(spends[1].agent.as_deref(), Some("explore"));
-        assert_eq!((spends[1].steps, spends[1].tokens.input), (2, 70));
-        assert_eq!(spends[2].tokens.input, 5);
+    /// An idle app whose requests get `replies` in turn, then "ok".
+    fn app(replies: impl IntoIterator<Item = Vec<StreamEvent>>) -> App {
+        let session = Session::new("glm", "/repo".into());
+        App::bare(
+            session,
+            Arc::new(Scripted::new(replies)),
+            Arc::new(Vec::new()),
+        )
     }
 
-    #[test]
-    fn a_subagent_never_announced_is_not_counted() {
-        let mut spent = Spent::default();
-        spent.subagent_usage(9, usage(30));
-        assert!(spent.ledger.spends().is_empty());
+    /// Hears what the turn sent, as the loop does before the turn's end
+    /// arrives, and what the app drew as spent after each spend report.
+    fn hear(app: &mut App) -> Vec<Total> {
+        let mut drawn = Vec::new();
+        while let Ok(event) = app.events_rx.try_recv() {
+            let spend = matches!(event, Event::Spend(_));
+            app.on_session(event);
+            if spend {
+                drawn.push(app.spent().total());
+            }
+        }
+        drawn
+    }
+
+    #[tokio::test]
+    async fn the_usage_tab_follows_the_running_turn() {
+        let mut app = app([vec![
+            StreamEvent::TextDelta("done".into()),
+            usage(100),
+            usage(50),
+        ]]);
+        app.open_content(Tab::Usage);
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn ends");
+
+        assert_eq!(
+            hear(&mut app),
+            [total(1, 100, 10), total(2, 150, 20)],
+            "each report shows while the turn runs"
+        );
+        // The usage tab's rows; the input panel below shows the spinner.
+        let tab = |app: &mut App| rows(app)[..9].to_vec();
+        let running = tab(&mut app);
+        assert!(running[3].contains("all  2 steps  150 in"), "{running:#?}");
+        app.end_turn(ended);
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(session.usage.total(), total(2, 150, 20));
+        assert_eq!(app.spent().total(), session.usage.total());
+        assert_eq!(app.running, None);
+        assert_eq!(tab(&mut app), running, "the same totals, from the session");
+    }
+
+    #[tokio::test]
+    async fn a_compaction_is_its_own_spend() {
+        let mut app = app([
+            vec![StreamEvent::TextDelta("done".into()), usage(100)],
+            vec![StreamEvent::TextDelta("the summary".into()), usage(900)],
+        ]);
+        app.prompt.insert_str("go");
+        app.submit();
+        let ended = app.turn.join().await.expect("turn ends");
+        app.end_turn(ended);
+
+        app.prompt.insert_str("/compact");
+        app.submit();
+        assert!(app.is_busy(), "the compaction runs as a turn");
+        let ended = app.turn.join().await.expect("compaction ends");
+        hear(&mut app);
+        let spends = |ledger: &Ledger| -> Vec<u64> {
+            ledger.spends().iter().map(|s| s.tokens.input).collect()
+        };
+        assert_eq!(
+            spends(app.spent()),
+            [100, 900],
+            "not booked on the turn before it"
+        );
+        app.end_turn(ended);
+        let session = app.session.as_ref().expect("session came back");
+        assert_eq!(spends(&session.usage), [100, 900]);
+        assert_eq!(app.spent(), &session.usage);
     }
 }

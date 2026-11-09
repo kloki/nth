@@ -11,6 +11,7 @@ mod monitor;
 mod provider;
 mod question;
 mod screen;
+mod spend;
 mod tool;
 mod workdir;
 mod writable;
@@ -34,6 +35,7 @@ pub use provider::{
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
+pub use spend::{Price, Spend, ToolUse};
 pub use tool::{
     ChildLlm, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
     failed, failure_reason, parse_args, reject_old_timeout, timed_out,

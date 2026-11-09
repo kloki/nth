@@ -608,13 +608,10 @@ mod tests {
         let store = Store::at(dir.path().join("sessions"));
         let mut spent = session("fix the build", 2);
         let turn = spent.usage.open(crate::Spend::new("glm-5.3", None));
-        spent.usage.add(
-            turn,
-            nth_protocol::Usage {
-                input: 10,
-                ..Default::default()
-            },
-        );
+        spent.usage.spend_mut(turn).count(nth_protocol::Usage {
+            input: 10,
+            ..Default::default()
+        });
         store.save(&spent).await.expect("saves");
         store.save(&session("older", 1)).await.expect("saves");
 

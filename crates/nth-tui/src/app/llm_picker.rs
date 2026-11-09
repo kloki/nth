@@ -83,7 +83,7 @@ impl App {
 
     /// What the session spent so far, at the catalogue's prices.
     pub fn price(&self) -> Option<Price> {
-        self.spent.ledger.price(|model| self.cost_of(model))
+        self.spent().price(|model| self.cost_of(model))
     }
 
     /// Whether a provider could not list, so its models are missing.

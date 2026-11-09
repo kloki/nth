@@ -2,113 +2,11 @@
 //! requests used as the provider reported them, kept in the session's
 //! [`Ledger`] and saved with it.
 
-use std::{
-    collections::BTreeMap,
-    time::{Duration, SystemTime},
-};
+use std::{collections::BTreeMap, time::Duration};
 
-use nth_protocol::{Cost, Message, Usage, failure_reason};
+use nth_protocol::{Cost, Usage};
+pub use nth_protocol::{Price, Spend, ToolUse};
 use serde::{Deserialize, Serialize};
-
-/// One turn's requests: on which model, for whom, how many, and the tokens
-/// they used added up.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Spend {
-    pub model: String,
-    /// The subagent that spent it on the session's behalf; `None` for the
-    /// session's own turns.
-    pub agent: Option<String>,
-    /// Requests the provider reported usage for.
-    pub steps: u32,
-    pub tokens: Usage,
-    /// When the turn started.
-    pub at: SystemTime,
-    /// What the model's tokens cost, when the listing said; `None` prices
-    /// them by the front-end's live listing at display time.
-    #[serde(default)]
-    pub cost: Option<Cost>,
-    /// Every tool call the turn ran, by name, so a spend carries what it
-    /// did, not only what it cost.
-    #[serde(default)]
-    pub tools: BTreeMap<String, ToolUse>,
-}
-
-/// What the calls of one tool used: how many ran, how many failed, how long
-/// they took added up, and how much output they returned.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolUse {
-    pub calls: u32,
-    pub failed: u32,
-    pub duration: Duration,
-    pub output: u64,
-}
-
-impl std::ops::AddAssign for ToolUse {
-    fn add_assign(&mut self, other: Self) {
-        self.calls += other.calls;
-        self.failed += other.failed;
-        self.duration += other.duration;
-        self.output += other.output;
-    }
-}
-
-/// `SystemTime` has none, so the epoch stands in for a spend with no turn.
-impl Default for Spend {
-    fn default() -> Self {
-        Self {
-            model: String::new(),
-            agent: None,
-            steps: 0,
-            tokens: Usage::default(),
-            at: SystemTime::UNIX_EPOCH,
-            cost: None,
-            tools: BTreeMap::new(),
-        }
-    }
-}
-
-impl Spend {
-    pub fn new(model: impl Into<String>, agent: Option<String>) -> Self {
-        Self {
-            model: model.into(),
-            agent,
-            at: SystemTime::now(),
-            ..Self::default()
-        }
-    }
-
-    /// Tallies one finished call of `name`: whether it failed, the time it
-    /// took and the size of what it returned.
-    pub fn tool(&mut self, name: &str, result: &Message, took: Duration) {
-        let use_of = self.tools.entry(name.to_string()).or_default();
-        use_of.calls += 1;
-        use_of.duration += took;
-        if let Message::ToolResult { content, .. } = result {
-            use_of.output += content.len() as u64;
-            if failure_reason(content).is_some() {
-                use_of.failed += 1;
-            }
-        }
-    }
-
-    /// What this spend cost at its stored rates, else at what `cost` knows
-    /// for its model; `None` when neither prices it.
-    pub fn price(&self, cost: &dyn Fn(&str) -> Option<Cost>) -> Option<Price> {
-        let rates = self.cost.or_else(|| cost(&self.model))?;
-        Some(Price {
-            dollars: rates.price(self.tokens),
-            partial: false,
-        })
-    }
-
-    /// What the cache saved this spend, at its stored rates else `cost`'s
-    /// for its model.
-    pub fn saved(&self, cost: &dyn Fn(&str) -> Option<Cost>) -> Option<f64> {
-        self.cost
-            .or_else(|| cost(&self.model))
-            .map(|rates| rates.saved(self.tokens))
-    }
-}
 
 /// Steps and tokens added up over several spends.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -154,11 +52,11 @@ impl Ledger {
         self.0.get(at..).unwrap_or_default()
     }
 
-    /// Starts a turn's spend and returns where it is, for [`Ledger::add`]
-    /// or [`Ledger::spend_mut`]: counted to as the turn goes, so a turn
+    /// Starts a turn's spend and returns where it is, for
+    /// [`Ledger::spend_mut`]: counted to as the turn goes, so a turn
     /// that is dropped part way keeps what it spent. [`Ledger::close`]
     /// ends it.
-    pub fn open(&mut self, spend: Spend) -> usize {
+    pub(crate) fn open(&mut self, spend: Spend) -> usize {
         self.0.push(spend);
         self.0.len() - 1
     }
@@ -173,14 +71,6 @@ impl Ledger {
     pub(crate) fn close(&mut self, at: usize) {
         if self.0.get(at).is_some_and(|spend| spend.steps == 0) {
             self.0.remove(at);
-        }
-    }
-
-    /// One request's usage, counted to the spend at `at`.
-    pub fn add(&mut self, at: usize, usage: Usage) {
-        if let Some(spend) = self.0.get_mut(at) {
-            spend.steps += 1;
-            spend.tokens += usage;
         }
     }
 
@@ -280,23 +170,6 @@ pub fn price_spends<'a>(
         partial: unpriced,
         ..price
     })
-}
-
-/// A list-price estimate in dollars: what the tokens would cost at the
-/// catalogue's prices, whatever the plan they ran on bills.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Price {
-    pub dollars: f64,
-    /// Some of it ran on a model without a known price, left out.
-    pub partial: bool,
-}
-
-/// `$3.10`, with a `+` when some of it could not be priced.
-impl std::fmt::Display for Price {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let more = if self.partial { "+" } else { "" };
-        write!(f, "${:.2}{more}", self.dollars)
-    }
 }
 
 impl Extend<Spend> for Ledger {
@@ -425,6 +298,8 @@ pub fn short_duration(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Message;
+
     use super::*;
 
     #[test]
@@ -435,9 +310,7 @@ mod tests {
         assert!(ledger.spends().is_empty(), "nothing was reported");
 
         let at = ledger.open(Spend::new("glm", None));
-        let spend = ledger.spend_mut(at);
-        spend.steps += 1;
-        spend.tokens += usage(300, 7, None);
+        ledger.spend_mut(at).count(usage(300, 7, None));
         // A turn dropped here never closes, and keeps what it spent.
         assert_eq!(ledger.spends()[at].tokens.input, 300);
         ledger.close(at);
@@ -458,8 +331,8 @@ mod tests {
     fn a_turn_adds_up_its_requests() {
         let mut ledger = Ledger::default();
         let turn = ledger.open(Spend::new("glm", None));
-        ledger.add(turn, usage(100, 10, Some(80)));
-        ledger.add(turn, usage(200, 20, None));
+        ledger.spend_mut(turn).count(usage(100, 10, Some(80)));
+        ledger.spend_mut(turn).count(usage(200, 20, None));
 
         let total = ledger.total();
         assert_eq!(total.steps, 2);
@@ -479,7 +352,7 @@ mod tests {
     fn totals_per_model_and_spends_without_requests_left_out() {
         let mut ledger = Ledger::default();
         let mine = ledger.open(Spend::new("glm", None));
-        ledger.add(mine, usage(100, 10, None));
+        ledger.spend_mut(mine).count(usage(100, 10, None));
         let mut theirs = Spend::new("kimi", Some("explore".into()));
         theirs.steps = 3;
         theirs.tokens = usage(50, 5, None);
@@ -495,7 +368,7 @@ mod tests {
     fn saved_and_loaded_unchanged() {
         let mut ledger = Ledger::default();
         let turn = ledger.open(Spend::new("glm", Some("explore".into())));
-        ledger.add(turn, usage(100, 10, Some(5)));
+        ledger.spend_mut(turn).count(usage(100, 10, Some(5)));
         let mut spend = Spend::new("kimi", None);
         spend.steps = 1;
         spend.tokens = usage(50, 5, None);
@@ -537,7 +410,9 @@ mod tests {
     fn priced_per_model_and_unpriced_models_marked() {
         let mut ledger = Ledger::default();
         let glm = ledger.open(Spend::new("glm", None));
-        ledger.add(glm, usage(1_000_000, 100_000, Some(500_000)));
+        ledger
+            .spend_mut(glm)
+            .count(usage(1_000_000, 100_000, Some(500_000)));
         let cost = |model: &str| {
             (model == "glm").then_some(Cost {
                 input: 1.0,
@@ -551,7 +426,7 @@ mod tests {
         assert_eq!(price.to_string(), "$1.00");
 
         let kimi = ledger.open(Spend::new("kimi", None));
-        ledger.add(kimi, usage(10, 1, None));
+        ledger.spend_mut(kimi).count(usage(10, 1, None));
         assert_eq!(ledger.price(cost).expect("partly").to_string(), "$1.00+");
         assert_eq!(ledger.price(|_| None), None);
     }

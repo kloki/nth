@@ -24,13 +24,12 @@ impl App {
                 id,
                 agent,
                 description,
-                model,
+                ..
             } => {
                 // Forgotten before it got here: its session was left.
                 if self.subagents.forgotten(id) {
                     return;
                 }
-                self.spent.subagent_started(id, agent.clone(), model);
                 self.subagent_views
                     .insert(id, SubagentView::new(agent, description, self.cwd.clone()));
                 // Opened, not shown: you keep looking at the chat while the
@@ -56,9 +55,6 @@ impl App {
                 }
             }
             SubagentEvent::Session { id, event } => {
-                if let Event::Usage(usage) = event {
-                    self.spent.subagent_usage(id, usage);
-                }
                 // A subagent on a work item ticked its todo, whose notice
                 // the idle preview lists as pending.
                 if let Event::ToolFinished { call, .. } = &event
@@ -87,7 +83,6 @@ impl App {
             } => {
                 // Its answer is in the inbox too.
                 self.context_stale();
-                self.spent.subagent_ended(id);
                 // A work item's subagent returned it.
                 if self.work.view.exists() {
                     self.work.read();
@@ -415,7 +410,7 @@ mod tests {
         let mut app = app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
-        assert!(app.notices_due.is_none());
+        assert!(app.turns.due().is_none());
 
         app.inbox.post_task(nth_session::subagent::TaskNotice {
             id: 1,
@@ -425,7 +420,7 @@ mod tests {
         });
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
 
-        assert!(app.notices_due.is_some(), "the inbox wakes the model");
+        assert!(app.turns.due().is_some(), "the inbox wakes the model");
     }
 
     #[test]
@@ -441,7 +436,7 @@ mod tests {
         assert!(hint.starts_with("still running · ctrl+w stops it first"));
 
         app.apply(Action::Interrupt);
-        assert!(!app.interrupted, "the parent's turn is left alone");
+        assert!(!app.turns.interrupted(), "the parent's turn is left alone");
         ended(&mut app, 1, TaskOutcome::Interrupted);
         app.apply(Action::Content(0));
         assert_eq!(
@@ -520,7 +515,7 @@ mod tests {
         prompted(&mut app, 1, "go");
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
 
-        rows(&mut app);
+        app.settle();
         assert_eq!(app.content.tabs(), [Tab::Chat]);
         assert!(app.subagent_views.contains_key(&1));
     }
@@ -533,10 +528,10 @@ mod tests {
         app.apply(Action::Content(1));
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
 
-        rows(&mut app);
+        app.settle();
         assert_eq!(app.content.active(), Tab::Subagent(1), "you are reading it");
         app.apply(Action::Content(0));
-        rows(&mut app);
+        app.settle();
         assert_eq!(app.content.tabs(), [Tab::Chat]);
     }
 
@@ -546,7 +541,7 @@ mod tests {
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "first question");
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
-        rows(&mut app);
+        app.settle();
         assert_eq!(app.content.tabs(), [Tab::Chat]);
 
         prompted(&mut app, 1, "second question");

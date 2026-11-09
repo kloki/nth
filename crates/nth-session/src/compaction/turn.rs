@@ -167,9 +167,10 @@ impl Turn<'_> {
                 // No tools were offered, so none can arrive.
                 StreamEvent::ToolCall(_) => {}
                 StreamEvent::Usage(usage) => {
-                    self.spend.steps += 1;
-                    self.spend.tokens += usage;
+                    self.spend.count(usage);
                     emit(events, cancel, Event::Usage(usage)).await;
+                    let spend = Box::new(self.spend.clone());
+                    emit(events, cancel, Event::Spend(spend)).await;
                 }
             }
         }
@@ -302,11 +303,12 @@ mod tests {
             events,
             [
                 Event::Usage(usage(100, 10)),
+                Event::Spend(Box::new(spent.clone())),
                 Event::Compacted {
                     summary: "# Objective\nship it".into()
                 }
             ],
-            "the summary request is reported, then the compaction"
+            "the summary request is reported with what it spent, then the compaction"
         );
 
         let sent = provider.sent.lock().expect("not poisoned").clone();

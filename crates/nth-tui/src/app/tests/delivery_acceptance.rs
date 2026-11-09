@@ -167,10 +167,10 @@ async fn cancellation_holds_later_send_until_deliberate_resumption() {
     app.poll_curios_through().await;
     app.notices_due();
     assert!(!app.is_busy());
-    assert!(app.hold_notices);
+    assert!(app.turns.holds_notices());
     assert!(review_text(&app.session.as_ref().unwrap().messages).is_empty());
     assert!(!store.batches(true).unwrap()[0].recorded);
-    app.hold_notices = false;
+    app.turns.set_hold_notices(false);
     app.notices_due();
     let ended = app.turn.join().await.unwrap();
     app.end_turn(ended);

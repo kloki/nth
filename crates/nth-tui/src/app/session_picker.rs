@@ -6,7 +6,7 @@ use std::sync::Arc;
 use nth_context::Context;
 use nth_session::{Session, Summary, store};
 
-use super::{App, TabState, input::Input, keys::Action, usage::Spent};
+use super::{App, TabState, input::Input, keys::Action};
 use crate::{chat::Chat, session_picker::SessionPicker, status};
 
 pub(super) enum Loaded {
@@ -159,7 +159,7 @@ impl App {
         self.last_turn = TabState::Idle;
         self.chat.warn(&session.context().warnings);
         self.usage = None;
-        self.spent = Spent::new(session.usage.clone());
+        self.running = None;
         self.files.clear();
         self.plan.for_session(session.plan_path());
         self.work.for_session(session.work_dir());

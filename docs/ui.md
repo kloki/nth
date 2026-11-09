@@ -252,7 +252,7 @@ Opened with `/diagnostics`, or by the agent. What nth found and runs for this pr
 
 ## Usage
 
-Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session spent, its subagents included — all of it, then per model, then per turn — and `all time`, the turns run on each model across runs. Each spend row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`. It scrolls like the chat.
+Opened with `/usage`, icon `∑`. Two parts: `current session`, what the session spent, its subagents included — all of it, then per model, then per turn — and `all time`, the turns run on each model across runs. Each spend row gives the requests that reported usage, tokens in, the share of them read from the provider's prompt cache, tokens out and the price at models.dev's rates. A subagent's turn names its agent: `#2 @explore kimi-k3`; it shows once the turn ended and the session took its spend, at once while the main session is idle, else when its running turn ends (the subagent's own tab shows its requests as they come). The running turn's own spend shows as it goes. It scrolls like the chat.
 
 ```
 ▎ current session

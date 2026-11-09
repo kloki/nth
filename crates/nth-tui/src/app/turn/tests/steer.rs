@@ -9,7 +9,7 @@ async fn enter_while_busy_steers_the_prompt_into_the_turn() {
     send(&mut app, "next");
 
     assert!(app.prompt.is_empty());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     assert_eq!(app.inbox.prompts_waiting(), Some((1, "next".into())));
     assert_eq!(last_user(&app), Some("go"), "shown once the model gets it");
     let token = app.turn.token().expect("still running");
@@ -29,7 +29,7 @@ async fn prompts_sent_mid_turn_join_the_turn_that_picks_them_up() {
     assert_eq!(last_user(&app), Some("two\n\nthree"));
     end(&mut app).await;
     assert!(!app.is_busy());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     let session = app.session.as_ref().expect("session came back");
     let sent: Vec<_> = session
         .messages
@@ -62,7 +62,7 @@ async fn a_prompt_sent_mid_turn_preempts_the_tool_calls() {
     end(&mut app).await;
 
     assert!(!app.is_busy());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     let session = app.session.as_ref().expect("session came back");
     assert!(matches!(
         &session.messages[2],
@@ -110,7 +110,7 @@ async fn a_prompt_after_a_mode_switch_waits_for_its_own_turn() {
     app.set_mode(nth_protocol::Mode::Plan);
     send(&mut app, "plan it");
 
-    assert_eq!(app.queue, [Queued::Prompt("plan it".into())]);
+    assert_eq!(*app.turns.queued(), [Queued::Prompt("plan it".into())]);
     assert_eq!(app.inbox.prompts_waiting(), None, "not steered");
     end(&mut app).await;
     assert_eq!(last_user(&app), Some("plan it"));
@@ -127,7 +127,7 @@ async fn a_prompt_after_a_model_pick_waits_for_its_own_turn() {
     app.pick_model("kimi");
     send(&mut app, "you now");
 
-    assert_eq!(app.queue, [Queued::Prompt("you now".into())]);
+    assert_eq!(*app.turns.queued(), [Queued::Prompt("you now".into())]);
     end(&mut app).await;
     end(&mut app).await;
     let session = app.session.as_ref().expect("session came back");
@@ -146,7 +146,11 @@ async fn a_steered_prompt_runs_before_what_queued_behind_it() {
     end(&mut app).await;
     assert!(app.is_busy(), "the steered prompt's own turn");
     assert_eq!(last_user(&app), Some("next"));
-    assert_eq!(app.queue, [Queued::Shell("make".into())], "still waits");
+    assert_eq!(
+        *app.turns.queued(),
+        [Queued::Shell("make".into())],
+        "still waits"
+    );
 }
 
 #[tokio::test]
@@ -156,7 +160,7 @@ async fn a_prompt_sent_while_a_command_runs_waits_for_it() {
     command(&mut app, "echo hi");
     send(&mut app, "hello");
 
-    assert_eq!(app.queue, [Queued::Prompt("hello".into())]);
+    assert_eq!(*app.turns.queued(), [Queued::Prompt("hello".into())]);
     assert_eq!(
         app.inbox.prompts_waiting(),
         None,
@@ -198,7 +202,7 @@ async fn esc_gives_queued_prompts_back_instead_of_sending_them() {
     end(&mut app).await;
 
     assert!(!app.is_busy());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     assert_eq!(app.prompt.text(), "two\n\nthree\n\ntyping");
 }
 
@@ -206,18 +210,21 @@ async fn esc_gives_queued_prompts_back_instead_of_sending_them() {
 async fn esc_drops_queued_plan_edits_and_approval_with_a_hint() {
     let (mut app, _) = busy_app().await;
     app.plan_edited("# Plan\n", Ok("# Plan\nmore\n".into()));
-    assert!(matches!(app.queue.front(), Some(Queued::PlanEdits { .. })));
+    assert!(matches!(
+        app.turns.queued().front(),
+        Some(Queued::PlanEdits { .. })
+    ));
 
     app.on_key(KeyEvent::from(KeyCode::Esc));
     end(&mut app).await;
 
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     assert!(app.prompt.is_empty(), "{:?}", app.prompt.text());
     assert_eq!(app.hint.as_deref(), Some("plan edits discarded"));
 
     let (mut app, _) = busy_app().await;
-    app.queue.push_back(Queued::Approve(String::new()));
-    app.queue.push_back(Queued::Prompt("then this".into()));
+    app.turns.push(Queued::Approve(String::new()));
+    app.turns.push(Queued::Prompt("then this".into()));
     app.on_key(KeyEvent::from(KeyCode::Esc));
     end(&mut app).await;
 
@@ -228,10 +235,10 @@ async fn esc_drops_queued_plan_edits_and_approval_with_a_hint() {
 #[tokio::test]
 async fn esc_returns_queued_approval_instructions_to_the_prompt() {
     let (mut app, _) = busy_app().await;
-    app.queue.push_back(Queued::Prompt("earlier".into()));
-    app.queue
-        .push_back(Queued::Approve("Use SQLite\nand skip migration".into()));
-    app.queue.push_back(Queued::Prompt("later".into()));
+    app.turns.push(Queued::Prompt("earlier".into()));
+    app.turns
+        .push(Queued::Approve("Use SQLite\nand skip migration".into()));
+    app.turns.push(Queued::Prompt("later".into()));
     app.prompt.insert_str("typing");
     app.on_key(KeyEvent::from(KeyCode::Esc));
     end(&mut app).await;
@@ -301,5 +308,5 @@ async fn esc_after_the_reply_ended_still_holds_the_queue_back() {
 
     assert!(!app.is_busy());
     assert_eq!(app.prompt.text(), "two");
-    assert!(!app.interrupted, "the next turn starts clean");
+    assert!(!app.turns.interrupted(), "the next turn starts clean");
 }

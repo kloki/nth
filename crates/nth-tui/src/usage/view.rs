@@ -356,17 +356,15 @@ mod tests {
     #[test]
     fn totals_then_per_model_then_per_turn() {
         let mut ledger = Ledger::default();
-        let mine = ledger.open(nth_session::Spend::new("glm", None));
-        ledger.add(
-            mine,
-            Usage {
-                input: 1_000_000,
-                output: 20_000,
-                cache_read: Some(800_000),
-                cache_write: None,
-                reasoning: None,
-            },
-        );
+        let mut mine = Spend::new("glm", None);
+        mine.count(Usage {
+            input: 1_000_000,
+            output: 20_000,
+            cache_read: Some(800_000),
+            cache_write: None,
+            reasoning: None,
+        });
+        ledger.record(mine);
         let mut theirs = Spend::new("kimi", Some("explore".into()));
         theirs.steps = 3;
         theirs.tokens = Usage {

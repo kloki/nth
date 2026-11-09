@@ -318,7 +318,7 @@ mod tests {
             id: 1,
             event: tool_finished("work_todo"),
         });
-        assert_eq!(app.notices_due, None, "a tick alone wakes nobody");
+        assert_eq!(app.turns.due(), None, "a tick alone wakes nobody");
 
         app.inbox
             .post_work(notice(nth_session::work::WorkState::Returned {
@@ -330,7 +330,7 @@ mod tests {
             id: 1,
             quiet: std::time::Duration::from_secs(1),
         });
-        assert!(app.notices_due.is_some());
+        assert!(app.turns.due().is_some());
     }
 
     #[tokio::test]

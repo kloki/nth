@@ -519,7 +519,7 @@ mod tests {
         assert!(!app.inbox.wakes());
         send(&store, &c);
         app.poll_curios_through().await;
-        assert!(app.notices_due.is_some());
+        assert!(app.turns.due().is_some());
         app.notices_due();
         let ended = app.turn.join().await.unwrap();
         app.end_turn(ended);
@@ -582,7 +582,7 @@ mod tests {
             dir.path().join("sessions"),
         )));
         app.poll_curios_through().await;
-        assert!(app.notices_due.is_none());
+        assert!(app.turns.due().is_none());
         assert!(!app.inbox.wakes());
         assert!(store.batches(true).unwrap().is_empty());
     }
@@ -619,13 +619,13 @@ mod tests {
     #[tokio::test]
     async fn held_and_busy_feedback_does_not_preempt() {
         let (_dir, mut app, store, c) = fixture().await;
-        app.hold_notices = true;
+        app.turns.set_hold_notices(true);
         send(&store, &c);
         app.poll_curios_through().await;
         app.notices_due();
         assert!(!app.is_busy());
         assert!(app.inbox.wakes());
-        app.hold_notices = false;
+        app.turns.set_hold_notices(false);
         let provider = Arc::new(Scripted::replying([Reply::Hang]));
         app.provider = provider.clone();
         app.start_turn("work".into());

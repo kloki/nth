@@ -175,7 +175,6 @@ impl App {
                 return;
             }
         };
-        self.hold_notices = false;
         self.send(Queued::PlanEdits {
             original: original.to_string(),
             edited,
