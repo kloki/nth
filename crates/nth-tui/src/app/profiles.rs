@@ -37,13 +37,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use nth_config::{Profile, Selection, Slots};
     use nth_protocol::{Effort, Llm, Mode};
+    use nth_session::Session;
 
     use super::*;
     use crate::app::{
+        AppConfig,
         keys::Action,
-        tests::{app, rows},
+        tests::{Scripted, rows, test_app},
     };
 
     fn llm(model: &str) -> Llm {
@@ -69,7 +73,17 @@ mod tests {
 
     /// An app whose chat started on `profiles[0]`, as `chat.rs` starts one.
     fn profiled_with(profiles: Vec<Profile>) -> App {
-        app().with_selection(Selection::same(llm("unused")).with_profiles(profiles))
+        App::new(profiled_config(profiles))
+    }
+
+    /// What [`profiled_with`] starts from: the session on the first
+    /// profile's act model, as the selection puts it.
+    fn profiled_config(profiles: Vec<Profile>) -> AppConfig {
+        let selection = Selection::same(llm("unused")).with_profiles(profiles);
+        let session = Session::new(&selection.current().model, "/repo".into());
+        let mut config = AppConfig::test(session, Arc::new(Scripted::idle()));
+        config.runtime.selection = selection;
+        config
     }
 
     fn profiled() -> App {
@@ -168,8 +182,10 @@ mod tests {
         let store = nth_auth::Store::at(dir.path().join("auth.json"));
         let mut codex = profile("codex", "chatgpt/gpt-5.5");
         codex.needs_chatgpt = true;
-        let mut app = profiled_with(vec![profile("go", "go"), codex])
-            .with_chatgpt(ChatGpt::new(store.clone()).expect("client"));
+        let mut app = App::new(AppConfig {
+            chatgpt: Some(ChatGpt::new(store.clone()).expect("client")),
+            ..profiled_config(vec![profile("go", "go"), codex])
+        });
 
         app.apply(Action::NextProfile);
         assert_eq!(app.selection.current().model, "go-act");
@@ -195,7 +211,7 @@ mod tests {
 
     #[test]
     fn no_profiles_is_said_not_cycled() {
-        let mut app = app();
+        let mut app = test_app();
         app.apply(Action::NextProfile);
 
         assert_eq!(app.hint.as_deref(), Some("no profiles configured"));

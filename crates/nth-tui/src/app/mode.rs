@@ -42,13 +42,6 @@ impl App {
         (selection.mode, selection.agent.clone(), selection.current())
     }
 
-    /// What each kind of turn runs with.
-    #[cfg(test)]
-    pub fn with_selection(mut self, selection: Selection) -> Self {
-        self.selection = selection;
-        self
-    }
-
     /// Switches to `mode`, leaving the agent that ran in its place. The
     /// next turn runs in it; one running now keeps its mode.
     pub(super) fn set_mode(&mut self, mode: Mode) {
@@ -86,7 +79,7 @@ mod tests {
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{app, prompt_row, rows, status_row},
+        tests::{app_on, prompt_row, rows, status_row, test_config},
     };
 
     fn llm(model: &str, effort: Effort) -> Llm {
@@ -98,12 +91,14 @@ mod tests {
 
     /// Plan on kimi at high effort, act on glm.
     fn kimi_and_glm() -> App {
-        app().with_selection(Selection::new(Slots {
+        let mut config = test_config();
+        config.runtime.selection = Selection::new(Slots {
             plan: llm("kimi", Effort::High),
             act: llm("glm", Effort::Default),
             subagent: None,
             clerk: None,
-        }))
+        });
+        App::new(config)
     }
 
     #[test]
@@ -211,7 +206,7 @@ mod tests {
         )
         .expect("writes");
         let session = nth_session::Session::new("zen/kimi", "/repo".into());
-        let mut app = App::new(crate::app::tests::runtime(session, Arc::new(Zen)));
+        let mut app = app_on(session, Arc::new(Zen));
         app.context = Arc::new(nth_context::Context::discover(
             dir.path(),
             &nth_context::Paths::default(),

@@ -146,13 +146,13 @@ mod tests {
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{app, rows, tab_colour},
+        tests::{rows, tab_colour, test_app},
     };
 
     /// An app whose session's work plan is in a fresh directory.
     fn app_with_work() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = app();
+        let mut app = test_app();
         // Under the working directory, so the header names it short on
         // any platform's temporary directory.
         app.cwd = dir.path().to_path_buf();
@@ -304,7 +304,7 @@ mod tests {
 
     #[tokio::test]
     async fn todo_ticks_wait_for_a_wake_and_a_return_is_one() {
-        let mut app = app();
+        let mut app = test_app();
         let notice = |state| nth_session::work::WorkNotice {
             cycle: "01-a".into(),
             item: "store".into(),
@@ -353,9 +353,9 @@ mod tests {
         write(&app, "01-a", "store", Status::Pending, None).await;
         read(&mut app).await;
 
-        let screen = Screen::new(app.screen_tx.clone());
+        let screen = Screen::new(app.channels.screen.tx.clone());
         assert!(screen.show(Panel::Work).await);
-        let show = app.screen_rx.recv().await.unwrap();
+        let show = app.channels.screen.rx.recv().await.unwrap();
         app.show(show);
         assert_eq!(app.content.active(), Tab::Work);
 

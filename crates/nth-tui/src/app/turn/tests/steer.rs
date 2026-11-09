@@ -19,7 +19,7 @@ async fn enter_while_busy_steers_the_prompt_into_the_turn() {
 #[tokio::test]
 async fn prompts_sent_mid_turn_join_the_turn_that_picks_them_up() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "one");
     send(&mut app, "two");
     send(&mut app, "three");
@@ -54,7 +54,7 @@ async fn a_prompt_sent_mid_turn_preempts_the_tool_calls() {
     let provider = Scripted::replying([Reply::HangUntil(gate.clone(), vec![call])])
         .with_fallback(Reply::text("changed plans"));
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(provider), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(provider));
     send(&mut app, "go");
     send(&mut app, "stop, just name them");
 
@@ -105,7 +105,7 @@ async fn a_prompt_sent_mid_turn_preempts_the_tool_calls() {
 #[tokio::test]
 async fn a_prompt_after_a_mode_switch_waits_for_its_own_turn() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "go");
     app.set_mode(nth_protocol::Mode::Plan);
     send(&mut app, "plan it");
@@ -122,7 +122,7 @@ async fn a_prompt_after_a_mode_switch_waits_for_its_own_turn() {
 #[tokio::test]
 async fn a_prompt_after_a_model_pick_waits_for_its_own_turn() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "go");
     app.pick_model("kimi");
     send(&mut app, "you now");
@@ -137,7 +137,7 @@ async fn a_prompt_after_a_model_pick_waits_for_its_own_turn() {
 #[tokio::test]
 async fn a_steered_prompt_runs_before_what_queued_behind_it() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "go");
     send(&mut app, "next");
     command(&mut app, "make");
@@ -252,7 +252,7 @@ async fn esc_returns_queued_approval_instructions_to_the_prompt() {
 #[tokio::test]
 async fn a_usage_report_at_the_tail_of_a_turn_still_counts() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "one");
     settle(&app).await;
     let usage = Usage {
@@ -260,7 +260,11 @@ async fn a_usage_report_at_the_tail_of_a_turn_still_counts() {
         output: 2,
         ..Usage::default()
     };
-    app.events_tx.try_send(Event::Usage(usage)).expect("room");
+    app.channels
+        .events
+        .tx
+        .try_send(Event::Usage(usage))
+        .expect("room");
 
     end(&mut app).await;
 
@@ -298,7 +302,7 @@ async fn a_turn_task_that_panics_leaves_the_app_running() {
 #[tokio::test]
 async fn esc_after_the_reply_ended_still_holds_the_queue_back() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "one");
     send(&mut app, "two");
     settle(&app).await;

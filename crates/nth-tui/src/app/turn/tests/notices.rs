@@ -37,11 +37,7 @@ const NOTICE: &str =
     "<monitor id=\"1\" description=\"ci\" log=\"/tmp/logs/1.log\">\nbuild failed\n</monitor>";
 
 fn app_logging_to_tmp(provider: Arc<dyn Provider>) -> App {
-    let app = App::bare(
-        Session::new("glm", "/repo".into()),
-        provider,
-        Arc::new(Vec::new()),
-    );
+    let app = app_on(Session::new("glm", "/repo".into()), provider);
     app.monitors.set_log_dir("/tmp/logs".into());
     app
 }
@@ -141,7 +137,7 @@ async fn a_skill_that_cannot_be_read_keeps_the_notices() {
     let context = crate::app::tests::with_fix_skill(dir.path());
     std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
     let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::hang()));
     app.monitors.set_log_dir("/tmp/logs".into());
     monitor_says(&mut app, "build failed").await;
 
@@ -234,12 +230,18 @@ async fn a_task_answer_lands_in_the_inbox_it_was_built_with() {
             stall: None,
         },
     );
-    let mut app = App::new(crate::PreparedRuntime {
-        inbox,
-        model_tools: Arc::new(vec![Box::new(task)]),
-        ..crate::app::tests::runtime(session, provider)
-    })
-    .with_subagents(subagents, rx);
+    let mut config = AppConfig::new(
+        crate::PreparedRuntime {
+            inbox,
+            model_tools: Arc::new(vec![Box::new(task)]),
+            ..crate::app::tests::runtime(session, provider)
+        },
+        subagents,
+        rx,
+    );
+    config.clipboard = |_| Ok(());
+    config.opener = |_| Ok(());
+    let mut app = App::new(config);
 
     send(&mut app, "go");
     // The answer may come before the turn ends, and go with the next one,

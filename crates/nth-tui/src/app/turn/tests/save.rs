@@ -31,8 +31,14 @@ fn queued_row(app: &mut App) -> String {
 }
 
 fn hang_app() -> App {
-    let session = Session::new("glm", "/repo".into());
-    App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
+    App::new(hang_config())
+}
+
+fn hang_config() -> AppConfig {
+    AppConfig::test(
+        Session::new("glm", "/repo".into()),
+        Arc::new(Scripted::hang()),
+    )
 }
 
 #[tokio::test]
@@ -184,7 +190,10 @@ async fn esc_on_a_held_wake_leaves_the_notices_to_wake_the_model() {
 #[tokio::test]
 async fn a_turn_waits_for_a_save_asked_for_during_the_one_it_waited_for() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = hang_app().with_store(nth_session::Store::at(dir.path()));
+    let mut app = App::new(AppConfig {
+        store: Some(nth_session::Store::at(dir.path())),
+        ..hang_config()
+    });
     let open = gate_save(&mut app);
     send(&mut app, "go");
     // As `/add-dir` mid-save does: the save runs again once this one ends.

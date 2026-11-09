@@ -123,7 +123,7 @@ mod tests {
     use super::*;
     use crate::app::{
         keys::Action,
-        tests::{app, rows},
+        tests::{rows, test_app},
     };
 
     async fn read(app: &mut App) {
@@ -136,7 +136,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("notes.md");
         std::fs::write(&path, "# Notes\nfirst\n").expect("writes");
-        let mut app = app();
+        let mut app = test_app();
 
         app.show_file(path.clone());
         read(&mut app).await;
@@ -158,7 +158,7 @@ mod tests {
         let (a, b) = (dir.path().join("a.rs"), dir.path().join("b.md"));
         std::fs::write(&a, "fn a() {}\n").expect("writes");
         std::fs::write(&b, "b\n").expect("writes");
-        let mut app = app();
+        let mut app = test_app();
 
         app.show_file(a.clone());
         app.show_file(b);
@@ -173,7 +173,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a.rs");
         std::fs::write(&path, "fn a() {}\n").expect("writes");
-        let mut app = app();
+        let mut app = test_app();
         app.show_file(path);
 
         app.apply(Action::CloseContent);
@@ -196,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn memory_opens_the_index_once_there_is_one() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = app();
+        let mut app = test_app();
         with_memory(&mut app, dir.path());
 
         app.run_command(crate::command::Command::Memory);
@@ -219,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_says_when_it_is_off() {
-        let mut app = app();
+        let mut app = test_app();
 
         app.run_command(crate::command::Command::Memory);
 

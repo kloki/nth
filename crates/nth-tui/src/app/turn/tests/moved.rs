@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn a_turn_that_moved_the_session_moves_the_app() {
-    let mut app = crate::app::tests::app();
+    let mut app = crate::app::tests::test_app();
     let mut session = app.session.take().expect("idle");
     let original_plan = session.plan_path();
     let worktree = app.cwd.join(".nth/worktrees/x");
@@ -58,7 +58,7 @@ async fn the_status_bar_follows_a_move_while_the_turn_runs() {
         "x",
         &worktree.to_string_lossy(),
     ]);
-    let mut app = crate::app::tests::app();
+    let mut app = crate::app::tests::test_app();
     // Mid-turn the session is in the turn's task.
     app.session = None;
 

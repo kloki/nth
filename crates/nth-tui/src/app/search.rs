@@ -213,11 +213,11 @@ mod tests {
     use nth_session::Session;
 
     use super::*;
-    use crate::app::tests::{Scripted, app, rows, rows_of};
+    use crate::app::tests::{Scripted, app_on, rows, rows_of, split_at, test_app};
 
     #[test]
     fn chat_search_jumps_and_preserves_draft_and_focus() {
-        let mut app = app().with_split_width(60);
+        let mut app = split_at(60);
         for i in 0..40 {
             app.chat.transcript.push_user(format!(
                 "message {i} {}",
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn plan_search_includes_removed_lines_and_closes_when_gone() {
-        let mut app = app();
+        let mut app = test_app();
         app.plan.view.settle(Some(format!(
             "{}removed needle\n{}",
             "before\n".repeat(20),
@@ -279,7 +279,7 @@ mod tests {
     async fn escape_in_search_leaves_a_running_turn_alone() {
         let hang = Arc::new(Scripted::hang());
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
+        let mut app = app_on(session, hang.clone());
         app.chat.transcript.push_user("needle".into());
         app.prompt.insert_str("go");
         app.apply(Action::Submit);
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn empty_search_and_escape_keep_the_prompt() {
-        let mut app = app();
+        let mut app = test_app();
         app.prompt.insert_str("draft");
         rows(&mut app);
         app.apply(Action::Search);
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_plan_result_survives_the_source_gaining_the_full_width() {
-        let mut app = app().with_split_width(60);
+        let mut app = split_at(60);
         let line = format!("needle {}", "x ".repeat(30));
         app.plan
             .view
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn search_elsewhere_only_hints() {
-        let mut app = app();
+        let mut app = test_app();
         app.chat.transcript.push_user("needle".into());
         app.content.open(Tab::Usage);
         rows(&mut app);

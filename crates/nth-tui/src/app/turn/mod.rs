@@ -176,12 +176,6 @@ impl App {
     /// a bash call so the model sees it next turn. It runs as a turn does,
     /// so Esc stops it and what you send meanwhile waits for it.
     pub(super) fn start_shell(&mut self, command: String) {
-        let Some(shell) = self.shell.clone() else {
-            self.chat
-                .transcript
-                .push_error("no shell to run commands with".into());
-            return;
-        };
         if self.session_saving.is_running() {
             return self.after_save(Queued::Shell(command));
         }
@@ -191,7 +185,8 @@ impl App {
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
         self.turns.started_without_model();
-        let events = self.events_tx.clone();
+        let shell = self.shell.clone();
+        let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let front_end = self.front_end();
@@ -232,7 +227,7 @@ impl App {
         self.turns.started_without_model();
         let provider = self.provider.clone();
         let tools = self.tools.clone();
-        let events = self.events_tx.clone();
+        let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let front_end = self.front_end();
@@ -307,7 +302,7 @@ impl App {
 
         let provider = self.provider.clone();
         let tools = self.tools.clone();
-        let events = self.events_tx.clone();
+        let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let front_end = self.front_end();
@@ -361,8 +356,8 @@ impl App {
     /// The handles the session's tools reach the app through.
     fn front_end(&self) -> FrontEnd {
         FrontEnd {
-            asker: Asker::new(self.asks_tx.clone()),
-            screen: Screen::new(self.screen_tx.clone()),
+            asker: Asker::new(self.channels.asks.tx.clone()),
+            screen: Screen::new(self.channels.screen.tx.clone()),
             monitors: self.monitors.clone(),
             inbox: self.inbox.clone(),
             context_preview: self.context_tab.slot.clone(),
@@ -545,7 +540,7 @@ impl App {
     /// they belong above the footer. Through `on_session`, so a usage
     /// report at the tail counts too.
     fn drain_events(&mut self) {
-        while let Ok(event) = self.events_rx.try_recv() {
+        while let Ok(event) = self.channels.events.rx.try_recv() {
             self.on_session(event);
         }
     }

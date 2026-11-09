@@ -113,16 +113,16 @@ mod tests {
 
     use super::*;
     use crate::app::{
+        AppConfig,
         keys::Action,
-        tests::{Scripted, rows},
+        tests::{Scripted, app_on, rows},
     };
 
     /// An idle app in `dir`, which exists.
     fn app_in(dir: &Path) -> App {
-        App::bare(
+        app_on(
             Session::new("glm", dir.to_path_buf()),
             Arc::new(Scripted::idle()),
-            Arc::new(Vec::new()),
         )
     }
 
@@ -397,8 +397,10 @@ mod tests {
         // A session nothing was asked in yet is never saved.
         let mut session = Session::new("glm", dir(base.path(), "repo"));
         session.messages.push(Message::User("go".into()));
-        let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()))
-            .with_store(Store::at(&sessions));
+        let mut app = App::new(AppConfig {
+            store: Some(Store::at(&sessions)),
+            ..AppConfig::test(session, Arc::new(Scripted::idle()))
+        });
 
         app.add_dir("../other");
         let saved = app.session_saving.join().await.expect("saves");

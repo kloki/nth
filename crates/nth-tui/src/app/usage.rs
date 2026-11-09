@@ -65,7 +65,7 @@ mod tests {
     use super::*;
     use crate::app::{
         Tab,
-        tests::{Scripted, rows},
+        tests::{Scripted, app_on, rows},
     };
 
     fn usage(input: u64) -> StreamEvent {
@@ -90,18 +90,14 @@ mod tests {
     /// An idle app whose requests get `replies` in turn, then "ok".
     fn app(replies: impl IntoIterator<Item = Vec<StreamEvent>>) -> App {
         let session = Session::new("glm", "/repo".into());
-        App::bare(
-            session,
-            Arc::new(Scripted::new(replies)),
-            Arc::new(Vec::new()),
-        )
+        app_on(session, Arc::new(Scripted::new(replies)))
     }
 
     /// Hears what the turn sent, as the loop does before the turn's end
     /// arrives, and what the app drew as spent after each spend report.
     fn hear(app: &mut App) -> Vec<Total> {
         let mut drawn = Vec::new();
-        while let Ok(event) = app.events_rx.try_recv() {
+        while let Ok(event) = app.channels.events.rx.try_recv() {
             let spend = matches!(event, Event::Spend(_));
             app.on_session(event);
             if spend {

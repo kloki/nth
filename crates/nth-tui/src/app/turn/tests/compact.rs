@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn a_compaction_summarizes_the_session_and_shows_a_divider() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "go");
     end(&mut app).await;
 
@@ -43,7 +43,7 @@ async fn a_compaction_after_a_model_pick_asks_the_picked_model_and_limits() {
     let mut session = Session::new("old", "/repo".into());
     session.set_limits(Some(10_000), Some(2_000));
     session.messages.push(Message::User("old history".into()));
-    let mut app = App::bare(session, provider.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, provider.clone());
     app.llms = Some(Listing::from(vec![listed("new", 3_000, 1_000)]));
     app.pick_model("new");
 
@@ -67,7 +67,7 @@ async fn a_compaction_after_a_model_pick_asks_the_picked_model_and_limits() {
 #[tokio::test]
 async fn a_compaction_sent_while_busy_runs_after_the_turn() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     send(&mut app, "go");
     send(&mut app, "/compact");
 
@@ -92,7 +92,7 @@ async fn a_compaction_sent_while_busy_runs_after_the_turn() {
 async fn esc_interrupts_a_compaction_and_keeps_the_session() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, hang, Arc::new(Vec::new()));
+    let mut app = app_on(session, hang);
     app.session
         .as_mut()
         .expect("idle")
@@ -134,7 +134,7 @@ async fn an_interrupted_turn_discards_a_queued_compaction() {
 async fn compacting_nothing_asks_nothing_and_says_nothing() {
     let provider = Arc::new(Scripted::default());
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, provider.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, provider.clone());
 
     send(&mut app, "/compact");
     assert!(app.is_busy(), "a compaction runs as a turn");
@@ -159,7 +159,7 @@ async fn a_manual_compaction_shows_only_the_summarys_first_line() {
         )],
     ]));
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, provider, Arc::new(Vec::new()));
+    let mut app = app_on(session, provider);
     send(&mut app, "go");
     end(&mut app).await;
 
@@ -193,7 +193,7 @@ async fn a_request_after_a_compaction_starts_at_the_checkpoint() {
         vec![StreamEvent::TextDelta("second answer".into())],
     ]));
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, provider.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, provider.clone());
     send(&mut app, "go");
     end(&mut app).await;
     send(&mut app, "/compact");
@@ -233,7 +233,7 @@ async fn a_request_after_a_compaction_starts_at_the_checkpoint() {
 async fn esc_during_a_compaction_leaves_a_session_that_still_runs() {
     let provider = Arc::new(Scripted::replying([Reply::Hang]));
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, provider, Arc::new(Vec::new()));
+    let mut app = app_on(session, provider);
     app.session
         .as_mut()
         .expect("idle")
@@ -275,7 +275,7 @@ async fn a_queued_compaction_shows_its_label_until_the_turn_ends() {
         vec![StreamEvent::TextDelta("the summary".into())],
     ]));
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, provider, Arc::new(Vec::new()));
+    let mut app = app_on(session, provider);
     send(&mut app, "go");
     send(&mut app, "/compact");
 

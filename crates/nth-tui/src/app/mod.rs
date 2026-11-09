@@ -256,18 +256,11 @@ pub struct App {
     session: Option<Session>,
     provider: Arc<dyn Provider>,
     tools: Arc<Vec<Box<dyn Tool>>>,
-    /// Runs the commands typed after `!`; `None` leaves them unrun.
-    shell: Option<Arc<dyn Tool>>,
-    events_tx: mpsc::Sender<Event>,
-    events_rx: mpsc::Receiver<Event>,
-    /// Where the running turn's tools send their questions.
-    asks_tx: mpsc::Sender<Ask>,
-    asks_rx: mpsc::Receiver<Ask>,
+    /// Runs the commands typed after `!`.
+    shell: Arc<dyn Tool>,
+    channels: TurnChannels,
     /// Questions waiting behind the ones in the input panel.
     asks: VecDeque<Ask>,
-    /// Where the running turn's tools switch the content panel.
-    screen_tx: mpsc::Sender<Show>,
-    screen_rx: mpsc::Receiver<Show>,
     turn: Job<Ended>,
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
@@ -317,6 +310,88 @@ pub struct App {
     /// What the exit could not do, said on stderr once the terminal is
     /// back, as the chat is no longer drawn by then.
     pub(crate) exit_notes: Vec<String>,
+}
+
+/// Everything the chat starts with: the runtime, installed as `/resume`
+/// installs one, and what outlives a `/resume`: the process's subagents,
+/// where sessions are saved, the account `/connect` signs in to, how
+/// `/resume` prepares another runtime, what earlier runs recalled, and how
+/// text reaches the clipboard and links the desktop.
+pub struct AppConfig {
+    pub runtime: PreparedRuntime,
+    /// The subagents the task tool starts, which report over `subagent_rx`.
+    pub subagents: Subagents,
+    pub subagent_rx: mpsc::Receiver<SubagentEvent>,
+    /// Where sessions are saved after every turn and monitors log; `None`
+    /// keeps sessions in memory only.
+    pub store: Option<Store>,
+    /// The ChatGPT login `/connect` signs in through; `None` leaves
+    /// nothing to connect.
+    pub chatgpt: Option<nth_auth::ChatGpt>,
+    /// What `/resume` prepares another session's runtime with; `None`
+    /// keeps the current runtime for a resumed session.
+    pub reload: Option<Reload>,
+    pub history: History,
+    pub llm_usage: LlmUsage,
+    /// How a right click's text reaches the clipboard.
+    pub clipboard: fn(&str) -> std::io::Result<()>,
+    /// How a link reaches the desktop's opener.
+    pub opener: fn(&str) -> std::io::Result<()>,
+}
+
+impl AppConfig {
+    /// `runtime` with the process's subagents, and nothing saved, recalled,
+    /// connected or resumed; text and links go to the desktop.
+    pub fn new(
+        runtime: PreparedRuntime,
+        subagents: Subagents,
+        subagent_rx: mpsc::Receiver<SubagentEvent>,
+    ) -> Self {
+        Self {
+            runtime,
+            subagents,
+            subagent_rx,
+            store: None,
+            chatgpt: None,
+            reload: None,
+            history: History::default(),
+            llm_usage: LlmUsage::default(),
+            clipboard: crate::terminal::copy,
+            opener: mouse::open,
+        }
+    }
+}
+
+/// One channel whose two ends the app keeps: every turn gets a clone of the
+/// sender, and the loop reads the one receiver.
+struct Channel<T> {
+    tx: mpsc::Sender<T>,
+    rx: mpsc::Receiver<T>,
+}
+
+impl<T> Channel<T> {
+    fn new(capacity: usize) -> Self {
+        let (tx, rx) = mpsc::channel(capacity);
+        Self { tx, rx }
+    }
+}
+
+/// Where a running turn reaches the app: the session's events, the tools'
+/// questions and the tabs they show.
+struct TurnChannels {
+    events: Channel<Event>,
+    asks: Channel<Ask>,
+    screen: Channel<Show>,
+}
+
+impl TurnChannels {
+    fn new() -> Self {
+        Self {
+            events: Channel::new(256),
+            asks: Channel::new(4),
+            screen: Channel::new(4),
+        }
+    }
 }
 
 /// A grey thumb in the right margin of `content`, so the view keeps its
@@ -383,77 +458,47 @@ enum Step {
 }
 
 impl App {
-    /// The chat on `runtime`, installed as `/resume` installs one, so the
-    /// two cannot set up a runtime differently.
-    pub fn new(runtime: PreparedRuntime) -> Self {
-        let mut app = Self::around(
-            &runtime.session,
-            runtime.provider.clone(),
-            runtime.model_tools.clone(),
-        );
-        let (session, warnings) = app.install(runtime);
-        app.session = Some(session);
-        app.chat.warn(&warnings);
-        app
-    }
-
-    /// The chat on `session` alone: no shell, checkers, paths or profiles,
-    /// and each mode on the session's llm. What tests that need none of a
-    /// runtime start from.
-    #[cfg(test)]
-    pub(crate) fn bare(
-        session: Session,
-        provider: Arc<dyn Provider>,
-        tools: Arc<Vec<Box<dyn Tool>>>,
-    ) -> Self {
-        let mut app = Self::around(&session, provider, tools);
-        app.session = Some(session);
-        app
-    }
-
-    /// `bare` before the session is placed: what `new` installs a runtime
-    /// over, so the session moves in once, from the runtime.
-    fn around(
-        session: &Session,
-        provider: Arc<dyn Provider>,
-        tools: Arc<Vec<Box<dyn Tool>>>,
-    ) -> Self {
-        let (events_tx, events_rx) = mpsc::channel(256);
-        let (asks_tx, asks_rx) = mpsc::channel(4);
-        let (screen_tx, screen_rx) = mpsc::channel(4);
+    /// The chat on `config`'s runtime, installed as `/resume` installs one,
+    /// so the two cannot set up a runtime differently.
+    pub fn new(config: AppConfig) -> Self {
+        let AppConfig {
+            runtime,
+            subagents,
+            subagent_rx,
+            store,
+            chatgpt,
+            reload,
+            history,
+            llm_usage,
+            clipboard,
+            opener,
+        } = config;
+        let session = &runtime.session;
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
-        // Replaced by `with_subagents`; until then no subagent reports here.
-        let (_, subagent_rx) = mpsc::channel(1);
-        // `install` puts the runtime's in, the one its tools post to. A
-        // `bare` App, in tests only, keeps this one of its own, so tools
-        // built with another inbox would lose their answers there.
-        let inbox = Inbox::new();
-        // `with_store` puts each session's monitor logs beside its save; a
-        // chat without one, as in tests, logs in a temporary folder rather
-        // than the working directory.
-        let monitors = Monitors::new(monitor_tx, std::env::temp_dir().join("nth-monitors"));
+        // Each session's monitors log beside its save; a chat that saves
+        // nothing, as in tests, logs in a temporary folder rather than the
+        // working directory.
+        let log_dir = store.as_ref().map_or_else(
+            || std::env::temp_dir().join("nth-monitors"),
+            |store| store.monitor_dir(session.id),
+        );
+        let monitors = Monitors::new(monitor_tx, log_dir);
         let home = std::env::var("HOME").ok();
-        // Replaced by the config `new` installs.
+        // `install` below takes the runtime's config, which turns it on.
         let notifier = Notifier::off();
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
         let mut chat = Chat::replay(session.cwd.clone(), &session.messages);
         chat.warn(&session.context().warnings);
-        Self {
+        let mut app = Self {
             chat,
             prompt: Prompt::default(),
-            // `install` puts a runtime's in; until then, as `bare` leaves
-            // it, every slot is on the session's llm.
-            selection: mode::of_session(
-                Selection::same(Llm {
-                    model: session.model.clone(),
-                    effort: session.effort,
-                }),
-                session,
-            ),
-            history: History::default(),
+            // `install` below puts the runtime's in, on what the session
+            // runs as and on.
+            selection: runtime.selection.clone(),
+            history,
             history_saving: Job::default(),
-            llm_usage: LlmUsage::default(),
+            llm_usage,
             llm_usage_saving: Job::default(),
             settings: ChatSettings::default(),
             config: None,
@@ -492,34 +537,29 @@ impl App {
             running: None,
             llms: None,
             llm_listing: Job::default(),
-            chatgpt: None,
+            chatgpt,
             login: Job::default(),
             connect_url: None,
-            store: None,
+            store: store.map(Arc::new),
             paths: Paths::default(),
-            reload: None,
+            reload,
             context: session.context().clone(),
             env: configured(&session.env),
             session_listing: Job::default(),
             session_loading: Job::default(),
             session_saving: Job::default(),
             session: None,
-            provider,
-            tools,
-            shell: None,
-            events_tx,
-            events_rx,
-            asks_tx,
-            asks_rx,
+            provider: runtime.provider.clone(),
+            tools: runtime.model_tools.clone(),
+            shell: runtime.shell.clone(),
+            channels: TurnChannels::new(),
             asks: VecDeque::new(),
-            screen_tx,
-            screen_rx,
             turn: Job::default(),
             monitors,
-            inbox,
+            inbox: runtime.inbox.clone(),
             monitor_rx,
             monitor_tabs: monitor::MonitorTabs::default(),
-            subagents: Subagents::default(),
+            subagents,
             subagent_rx,
             subagent_views: BTreeMap::new(),
             file_tabs: file::FileTabs::new(),
@@ -527,8 +567,8 @@ impl App {
             work: work::WorkTab::new(work_dir),
             hint: None,
             areas: mouse::Areas::default(),
-            clipboard: crate::terminal::copy,
-            opener: mouse::open,
+            clipboard,
+            opener,
             pending_editor: None,
             editing: None,
             editor: Job::default(),
@@ -539,7 +579,11 @@ impl App {
             quit: false,
             quitting: false,
             exit_notes: Vec::new(),
-        }
+        };
+        let (session, warnings) = app.install(runtime);
+        app.session = Some(session);
+        app.chat.warn(&warnings);
+        app
     }
 
     /// Takes on `runtime`, all but its session and warnings, which it
@@ -569,7 +613,7 @@ impl App {
         self.tools = model_tools;
         // The one those tools post to, so their answers wake this chat.
         self.inbox = inbox;
-        self.shell = Some(shell);
+        self.shell = shell;
         // Whatever prepared it, it runs as and on what the session does.
         self.selection = mode::of_session(selection, &session);
         let mut lsp = checkers.lsp.status();
@@ -601,50 +645,6 @@ impl App {
         }
         self.split_width = config.layout.split_width;
         self.config = Some(config);
-    }
-
-    /// Runs the commands typed after `!` on `shell`.
-    #[cfg(test)]
-    pub fn with_shell(mut self, shell: Arc<dyn Tool>) -> Self {
-        self.shell = Some(shell);
-        self
-    }
-
-    /// Hears from the subagents in `subagents`, which the task tool starts,
-    /// over `rx`.
-    pub fn with_subagents(
-        mut self,
-        subagents: Subagents,
-        rx: mpsc::Receiver<SubagentEvent>,
-    ) -> Self {
-        self.subagents = subagents;
-        self.subagent_rx = rx;
-        self
-    }
-
-    /// Saves sessions to `store`, and logs monitors next to them.
-    pub fn with_store(mut self, store: Store) -> Self {
-        self.store = Some(Arc::new(store));
-        self.log_monitors_for_session();
-        self
-    }
-
-    pub fn with_history(mut self, history: History) -> Self {
-        self.history = history;
-        self
-    }
-
-    pub fn with_llm_usage(mut self, usage: LlmUsage) -> Self {
-        self.llm_usage = usage;
-        self
-    }
-
-    /// The terminal width from which the chat gets the left half of the
-    /// content panel, over the config's; 0 never splits.
-    #[cfg(test)]
-    pub fn with_split_width(mut self, width: u16) -> Self {
-        self.split_width = width;
-        self
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -684,10 +684,10 @@ impl App {
                 event = next_input(&mut input) => Step::Terminal(event),
                 step = self.curios.next() => Step::Curio(step),
                 ended = self.editor.join() => Step::EditorClosed(ended),
-                Some(event) = self.events_rx.recv() => Step::Session(event),
-                Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
+                Some(event) = self.channels.events.rx.recv() => Step::Session(event),
+                Some(ask) = self.channels.asks.rx.recv() => Step::Asked(ask),
                 Ok(()) = self.notify_errors.changed() => Step::NotifyFailed,
-                Some(show) = self.screen_rx.recv() => Step::Show(show),
+                Some(show) = self.channels.screen.rx.recv() => Step::Show(show),
                 Some(read) = self.file_tabs.next() => Step::FileRead(read),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),

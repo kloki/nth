@@ -144,7 +144,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
-    use crate::app::tests::{app, buffer, rows};
+    use crate::app::tests::{buffer, rows, test_app};
 
     /// A hint said `ago`, as the clock would have it by now.
     fn said(text: &str, ago: Duration) -> Hint {
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_hint_waves_in_then_waves_out_and_goes() {
-        let mut app = app();
+        let mut app = test_app();
         app.hint = Some(said("copied", WAVE));
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         let at = u16::try_from(row.find("copied").expect("the hint shows")).unwrap();
