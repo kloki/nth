@@ -51,7 +51,7 @@ Seed the todo with the steps you expect; the subagent ticks them and adds its ow
 
 ## Pick the agent
 
-`work_assign` takes `subagent_type`, an agent from your agents list. Choose the one that fits the work:
+`work_assign` takes `subagent_type`, an agent from your agents list, and a short distinctive `name` you choose for each new subagent. A continued subagent keeps its name. Choose the agent that fits the work:
 
 - `general` for implementation, fixes, tests and tasks needing several steps or judgement.
 - `explore` for read-only codebase investigation and surveys.

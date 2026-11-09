@@ -207,6 +207,7 @@ async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
         store,
         at,
         task,
+        name,
         agent,
         ..
     } = assignment;
@@ -244,6 +245,7 @@ async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
         cycle: at.cycle.clone(),
         item: at.item.clone(),
         task: *task,
+        name: name.clone(),
         agent: agent.clone(),
         state: WorkState::Returned {
             outcome,
@@ -262,6 +264,7 @@ struct Assignment {
     store: Store,
     at: ItemRef,
     task: SubagentId,
+    name: String,
     agent: String,
     /// The orchestrator's.
     inbox: Inbox,
@@ -402,6 +405,7 @@ pub(crate) mod tests {
             store: store.clone(),
             at: at.clone(),
             task: 3,
+            name: "worker".into(),
             agent: "general".into(),
             inbox: Inbox::default(),
             parent: Subagents::default().reserve().parent(),

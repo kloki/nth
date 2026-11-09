@@ -381,6 +381,7 @@ mod tests {
     fn task() -> TaskNotice {
         TaskNotice {
             id: 1,
+            name: "Atlas".into(),
             agent: "explore".into(),
             description: "find tabs".into(),
             outcome: TaskOutcome::Completed("in content.rs".into()),
@@ -442,7 +443,7 @@ mod tests {
             inbox.take_notices().unwrap(),
             "<monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nbuild ok\ntests ok\n</monitor>\n\
              <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\" ended=\"exited with code 0\" events=\"2\"/>\n\
-             <task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
+             <task id=\"1\" name=\"Atlas\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n\
              <task_result>\nin content.rs\n</task_result>\n</task>\n\
              <monitor id=\"1\" description=\"ci\" log=\"/logs/1.log\">\nlate\n</monitor>",
             "an ended notice is closed; a later line starts a new one"
@@ -492,6 +493,7 @@ mod tests {
             cycle: "01-a".into(),
             item: item.into(),
             task: 1,
+            name: "Atlas".into(),
             agent: "general".into(),
             state,
         }
@@ -562,6 +564,7 @@ mod tests {
     fn stall(id: SubagentId, secs: u64) -> TaskStall {
         TaskStall {
             id,
+            name: "Atlas".into(),
             agent: "explore".into(),
             description: "find tabs".into(),
             quiet: std::time::Duration::from_secs(secs),
@@ -579,8 +582,8 @@ mod tests {
 
         assert_eq!(
             inbox.take_notices().unwrap(),
-            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"2m0s\"/>\n\
-             <task id=\"2\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"1m0s\"/>",
+            "<task id=\"1\" name=\"Atlas\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"2m0s\"/>\n\
+             <task id=\"2\" name=\"Atlas\" agent=\"explore\" description=\"find tabs\" state=\"stalled\" quiet=\"1m0s\"/>",
             "the later stall took the earlier one's place"
         );
 
@@ -589,6 +592,7 @@ mod tests {
         assert_eq!(
             split_notices(&inbox.take_notices().unwrap()).0,
             [NoticeSummary::Task {
+                name: Some("Atlas".into()),
                 id: 1,
                 agent: "explore".into(),
                 description: "find tabs".into(),
@@ -625,6 +629,6 @@ mod tests {
             2,
             "y's stall went with its return: {text}"
         );
-        assert!(text.starts_with("<work_item cycle=\"01-a\" item=\"x\" task=\"1\" agent=\"general\" state=\"stalled\" quiet=\"2m0s\"/>"), "{text}");
+        assert!(text.starts_with("<work_item cycle=\"01-a\" item=\"x\" task=\"1\" name=\"Atlas\" agent=\"general\" state=\"stalled\" quiet=\"2m0s\"/>"), "{text}");
     }
 }

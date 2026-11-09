@@ -29,7 +29,7 @@ use nth_context::Agent;
 use nth_protocol::{Event, Provider, Tool, Writable, tool_names};
 pub(crate) use parent::Parent;
 use parent::Spending;
-pub(crate) use spawn::{Spawner, find_agent};
+pub(crate) use spawn::{Spawner, find_agent, validate_name};
 pub use stop::TaskStop;
 pub(crate) use task::TaskIdArg;
 pub use task::{Limits, Task};
@@ -48,6 +48,7 @@ pub enum SubagentEvent {
     /// else arrives for it.
     Started {
         id: SubagentId,
+        name: String,
         agent: String,
         description: String,
         model: String,
@@ -230,6 +231,7 @@ struct Registry {
 /// never change, and the handles to reach it.
 struct Child {
     agent: String,
+    name: String,
     description: String,
     session_id: uuid::Uuid,
     /// Whether its tools can change files, which a planning parent may not
@@ -276,6 +278,29 @@ impl Subagents {
         provider: Arc<dyn Provider>,
         tools: Vec<Arc<dyn Tool>>,
     ) -> SubagentId {
+        self.spawn_named(
+            reserved,
+            agent,
+            &agent.name,
+            description,
+            session,
+            provider,
+            tools,
+        )
+    }
+
+    /// Starts a subagent with its stable instance name.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_named(
+        &self,
+        reserved: Reserved,
+        agent: &Agent,
+        name: &str,
+        description: &str,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> SubagentId {
         let writes = tools
             .iter()
             .any(|tool| tool_names::writes_files(tool.spec().name));
@@ -292,6 +317,7 @@ impl Subagents {
         let session_id = session.id;
         let actor = tokio::spawn(actor::run(actor::Actor {
             id,
+            name: name.to_string(),
             agent: agent.name.clone(),
             description: description.to_string(),
             session,
@@ -306,6 +332,7 @@ impl Subagents {
             id,
             Child {
                 agent: agent.name.clone(),
+                name: name.to_string(),
                 description: description.to_string(),
                 session_id,
                 writes,
@@ -369,6 +396,11 @@ impl Subagents {
         let registry = self.0.lock();
         let child = registry.children.get(&id)?;
         Some((child.agent.clone(), child.description.clone()))
+    }
+
+    /// The stable instance name of a subagent.
+    pub fn name(&self, id: SubagentId) -> Option<String> {
+        Some(self.0.lock().children.get(&id)?.name.clone())
     }
 
     /// The task number and agent name associated with a child session.
@@ -740,6 +772,7 @@ pub(crate) mod tests {
             events[0],
             SubagentEvent::Started {
                 id: 1,
+                name: "explore".into(),
                 agent: "explore".into(),
                 description: "find tabs".into(),
                 model: "glm-5.3".into(),
@@ -799,7 +832,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             inbox.take_notices().unwrap(),
-            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n<task_result>\ndone\n</task_result>\n</task>"
+            "<task id=\"1\" name=\"explore\" agent=\"explore\" description=\"find tabs\" state=\"completed\">\n<task_result>\ndone\n</task_result>\n</task>"
         );
     }
 
@@ -906,7 +939,7 @@ pub(crate) mod tests {
         assert_eq!(subagents.state(id), Some(State::Failed));
         assert_eq!(
             inbox.take_notices().unwrap(),
-            "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"failed\">\n<task_error>\nthe model answered nothing\n</task_error>\n</task>"
+            "<task id=\"1\" name=\"explore\" agent=\"explore\" description=\"find tabs\" state=\"failed\">\n<task_error>\nthe model answered nothing\n</task_error>\n</task>"
         );
     }
 

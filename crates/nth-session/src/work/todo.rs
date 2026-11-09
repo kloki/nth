@@ -103,6 +103,7 @@ impl Tool for WorkTodo {
                     cycle: a.at.cycle.clone(),
                     item: a.at.item.clone(),
                     task: a.task,
+                    name: a.name.clone(),
                     agent: a.agent.clone(),
                     state: WorkState::Todo(todos),
                 });

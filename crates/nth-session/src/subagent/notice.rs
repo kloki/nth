@@ -12,6 +12,7 @@ pub type SubagentId = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskNotice {
     pub id: SubagentId,
+    pub name: String,
     pub agent: String,
     pub description: String,
     pub outcome: TaskOutcome,
@@ -23,6 +24,7 @@ pub struct TaskNotice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStall {
     pub id: SubagentId,
+    pub name: String,
     pub agent: String,
     pub description: String,
     pub quiet: Duration,

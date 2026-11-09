@@ -205,6 +205,7 @@ async fn a_task_answer_lands_in_the_inbox_it_was_built_with() {
         id: "1".into(),
         name: "task".into(),
         arguments: serde_json::json!({
+            "name": "Atlas",
             "description": "find tabs",
             "prompt": "where?",
             "subagent_type": "explore",
@@ -246,7 +247,7 @@ async fn a_task_answer_lands_in_the_inbox_it_was_built_with() {
     send(&mut app, "go");
     // The answer may come before the turn ends, and go with the next one,
     // or after, and wake the model on its own.
-    let answer = "<task id=\"1\" agent=\"explore\" description=\"find tabs\" state=\"completed\">";
+    let answer = "<task id=\"1\" name=\"Atlas\" agent=\"explore\" description=\"find tabs\" state=\"completed\">";
     let heard = |app: &App| {
         app.session.as_ref().is_some_and(|session| {
             session

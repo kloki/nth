@@ -911,7 +911,7 @@ impl App {
                     None => self.busy_since,
                 };
                 let spinner = since.map(|since| spinner::frame(since.elapsed()));
-                let target = target.map(|view| view.agent.as_str());
+                let target = target.map(|view| view.name.as_str());
                 prompt::draw(
                     frame,
                     input,
