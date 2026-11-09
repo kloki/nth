@@ -9,12 +9,12 @@ use std::{
 };
 
 use nth_curios::Store;
-use nth_protocol::{Event, Mode, Provider, Tool};
+use nth_protocol::{Event, Provider, Tool};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::CurioNotice;
-use crate::{Error, FrontEnd, Session, agent_loop::emit, plan, session::TurnInput};
+use crate::{Error, FrontEnd, Session, agent_loop::emit, session::TurnInput};
 
 /// The batches a session recorded, as a turn adds to them: a batch is
 /// recorded in the same step that puts its notice in the history, so the
@@ -107,11 +107,7 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(Error::Interrupted);
         }
-        if self.tools_mode() == Mode::Plan {
-            plan::ensure_dir(&self.state_root())
-                .await
-                .map_err(Error::State)?;
-        }
+        self.ready_state().await?;
         self.ready_curios().await;
         let Some(notices) = self.take_curios(front_end, events, cancel).await else {
             return Ok(());

@@ -966,7 +966,9 @@ fn snapshot_says_whether_a_session_listens() {
         false => Ok(()),
     })
     .unwrap();
-    assert!(store.claim_delivery().is_ok());
+    // Each snapshot opened the lock file too, so a child forked meanwhile
+    // can hold its shared lock past the loop above.
+    assert!(released(|| store.claim_delivery()).is_ok());
 }
 
 #[test]
