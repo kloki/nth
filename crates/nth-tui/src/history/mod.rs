@@ -1,10 +1,19 @@
 //! Prompt history: what was sent before, recalled with Up and Down and
 //! kept across runs in one JSONL file, one prompt per line.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+};
 
 /// Prompts kept; older ones are dropped on the next save.
 pub const LIMIT: usize = 100;
+
+/// Lines the file may hold before a save cuts it back to [`LIMIT`]. Saves
+/// append so that instances running at once never drop each other's
+/// prompts; only the cut rewrites the file, where a prompt another
+/// instance appends in that moment can be lost, so it is kept rare.
+const TRIM_PAST: usize = 2 * LIMIT;
 
 #[derive(Debug, Default)]
 pub struct History {
@@ -17,6 +26,8 @@ pub struct History {
     draft: String,
     /// Where it is saved; `None` keeps it in memory only.
     path: Option<PathBuf>,
+    /// Pushed since the last save took them, oldest first.
+    unsaved: Vec<String>,
 }
 
 impl History {
@@ -43,7 +54,7 @@ impl History {
     }
 
     /// Skips lines that aren't a JSON string, so a damaged file loses only
-    /// those; the next save rewrites it whole.
+    /// those; the next cut drops them from the file.
     fn parse(text: &str) -> Self {
         let mut entries: Vec<String> = text
             .lines()
@@ -56,11 +67,9 @@ impl History {
         }
     }
 
-    pub fn to_jsonl(&self) -> String {
-        self.entries
-            .iter()
-            .map(|entry| serde_json::Value::from(entry.as_str()).to_string() + "\n")
-            .collect()
+    /// The prompts pushed since the last call, as the lines a save appends.
+    pub fn take_unsaved(&mut self) -> String {
+        to_jsonl(&std::mem::take(&mut self.unsaved))
     }
 
     pub fn saved_at(&self) -> Option<&Path> {
@@ -78,6 +87,9 @@ impl History {
         self.at = None;
         self.draft.clear();
         if self.entries.last() != Some(&text) {
+            self.unsaved.push(text.clone());
+            self.unsaved
+                .drain(..self.unsaved.len().saturating_sub(LIMIT));
             self.entries.push(text);
             self.entries
                 .drain(..self.entries.len().saturating_sub(LIMIT));
@@ -113,6 +125,60 @@ impl History {
     }
 }
 
+fn to_jsonl(entries: &[String]) -> String {
+    entries
+        .iter()
+        .map(|entry| serde_json::Value::from(entry.as_str()).to_string() + "\n")
+        .collect()
+}
+
+/// Appends `jsonl` to the history at `path`, then cuts the file back to the
+/// newest [`LIMIT`] prompts once it holds more than [`TRIM_PAST`] lines.
+/// Blocking, for a blocking thread: std's `write_all` hands a short buffer
+/// to one `write`, which tokio's file, writing from a pool, does not
+/// promise.
+pub fn append(path: &Path, jsonl: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    // A file whose last line was cut short, by a crash or by hand, would
+    // otherwise run that line into the first of these.
+    let mut last = [0u8];
+    let len = file.metadata()?.len();
+    let cut_short = len > 0 && {
+        file.seek(SeekFrom::Start(len - 1))?;
+        file.read_exact(&mut last)?;
+        last[0] != b'\n'
+    };
+    let mut lines = String::with_capacity(jsonl.len() + 1);
+    if cut_short {
+        lines.push('\n');
+    }
+    lines.push_str(jsonl);
+    // Opened to append, each write lands at the end of the file, so in one
+    // write another instance's line never lands inside these.
+    file.write_all(lines.as_bytes())?;
+    drop(file);
+
+    let text = std::fs::read_to_string(path)?;
+    if text.lines().count() <= TRIM_PAST {
+        return Ok(());
+    }
+    let kept = to_jsonl(&History::parse(&text).entries);
+    // Written aside and renamed over, so a reader never sees half a file.
+    let aside = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
+    let written = std::fs::write(&aside, kept).and_then(|()| std::fs::rename(&aside, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&aside);
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,7 +196,10 @@ mod tests {
         let mut text = String::from("\"one\"\nnot json\n42\n\"two\\nlines\"\n");
         let history = History::parse(&text);
         assert_eq!(history.entries, ["one", "two\nlines"]);
-        assert_eq!(History::parse(&history.to_jsonl()).entries, history.entries);
+        assert_eq!(
+            History::parse(&to_jsonl(&history.entries)).entries,
+            history.entries
+        );
 
         for i in 0..LIMIT {
             text.push_str(&format!("\"{i}\"\n"));
@@ -138,6 +207,40 @@ mod tests {
         let history = History::parse(&text);
         assert_eq!(history.entries.len(), LIMIT);
         assert_eq!(history.entries[0], "0");
+    }
+
+    #[tokio::test]
+    async fn appending_past_the_cut_keeps_the_newest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nth/prompt-history.jsonl");
+        let lines: Vec<String> = (0..TRIM_PAST).map(|i| i.to_string()).collect();
+        append(&path, &to_jsonl(&lines)).expect("appends");
+        assert_eq!(History::load(path.clone()).await.entries.len(), LIMIT);
+
+        append(&path, &to_jsonl(&["new".into()])).expect("appends");
+
+        let text = std::fs::read_to_string(&path).expect("reads");
+        assert_eq!(text.lines().count(), LIMIT);
+        assert_eq!(text.lines().last(), Some("\"new\""));
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("nth"))
+                .expect("lists")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_cut_short_is_not_joined_by_the_next() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt-history.jsonl");
+        std::fs::write(&path, "\"old\"\n\"cut sh").expect("writes");
+
+        append(&path, &to_jsonl(&["new".into()])).expect("appends");
+
+        let mut history = History::load(path).await;
+        assert_eq!(history.prev("").as_deref(), Some("new"));
+        assert_eq!(history.prev("new").as_deref(), Some("old"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::mpsc;
 
 use super::{App, Tab};
-use crate::file::{FileId, FileRead, FileView};
+use crate::file::{Contents, FileId, FileRead, FileView};
 
 /// The file tabs' views and where their watchers report.
 pub(super) struct FileTabs {
@@ -56,7 +56,7 @@ impl FileTabs {
     }
 
     /// A tab's watcher read its file; one closed since is gone.
-    fn read(&mut self, id: FileId, text: Option<String>) {
+    fn read(&mut self, id: FileId, text: Option<Contents>) {
         if let Some(view) = self.views.get_mut(&id) {
             view.update(text);
         }
@@ -103,7 +103,7 @@ impl App {
     }
 
     /// A file tab's watcher read its file.
-    pub(super) fn file_read(&mut self, id: FileId, text: Option<String>) {
+    pub(super) fn file_read(&mut self, id: FileId, text: Option<Contents>) {
         self.file_tabs.read(id, text);
     }
 

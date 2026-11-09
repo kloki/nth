@@ -167,8 +167,7 @@ impl App {
             self.hint = Some(gone.into());
         }
         self.index_files();
-        self.load_git();
-        self.load_pr();
+        self.reload_git();
     }
 }
 
