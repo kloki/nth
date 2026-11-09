@@ -154,7 +154,9 @@ pub struct Status {
     /// Where it is between prompts; `None` until its first one.
     pub state: Option<State>,
     /// Prompts waiting behind the running one, the stopped ones left out:
-    /// they will be skipped.
+    /// they will be skipped. A prompt counts once the actor has read it,
+    /// and a job whose own token is cancelled from outside stays counted
+    /// until the actor next publishes.
     pub queued: usize,
 }
 
@@ -420,7 +422,8 @@ impl Subagents {
     }
 
     /// Prompts waiting for subagent `id`, the stopped ones left out: they
-    /// will be skipped.
+    /// will be skipped. As [`Status::queued`]: a prompt counts once the
+    /// actor has read it.
     pub fn queued(&self, id: SubagentId) -> usize {
         let registry = self.0.lock();
         registry

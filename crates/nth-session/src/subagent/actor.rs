@@ -193,7 +193,12 @@ pub(super) async fn run(actor: Actor) {
     }
     loop {
         queue.take_sent();
-        who.settle_stopped(&mut queue).await;
+        while !queue.stopped.is_empty() {
+            who.settle_stopped(&mut queue).await;
+            // A stop that came while settling still skips what waits,
+            // rather than interrupting it once it has started.
+            queue.take_sent();
+        }
         let Some(job) = queue.waiting.pop_front() else {
             if queue.open && queue.wait().await {
                 continue;
@@ -735,6 +740,61 @@ mod tests {
             !inbox.has_notices(),
             "silent through the grace, not stalled"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_forgotten_task_that_stalls_tells_no_model() {
+        let subagents = Subagents::default();
+        let who = Who {
+            parent: subagents.reserve().parent(),
+            ..who()
+        };
+        subagents.forget_all();
+        let inbox = Inbox::new();
+        let (done, cancel) = (Done::Notify(inbox.clone()), CancellationToken::new());
+        let (_commands, mut queue) = queue();
+        let mut watch = watch(&who, &done, &None, &mut queue, &cancel);
+        watch.stall = Some(Duration::from_millis(5));
+        watch.timeout = Some(Duration::from_millis(20));
+        let (_tx, mut rx) = mpsc::channel(1);
+
+        let ended = watch.turn(deaf(), &mut rx).await;
+
+        assert!(
+            ended.is_none() && watch.timed_out,
+            "it stalled, then ran out"
+        );
+        assert!(
+            !inbox.has_notices(),
+            "the session after the one that asked hears nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_registry_mid_turn_stops_the_turns_token() {
+        let (tx, _rx) = mpsc::channel(64);
+        let subagents = Subagents::new(tx);
+        let id = subagents.spawn(
+            subagents.reserve(),
+            &explore(),
+            "d",
+            session(),
+            Arc::new(Scripted::stalled()),
+            Vec::new(),
+        );
+        let (hanging, cancel) = job("go", Done::Nothing);
+        subagents.prompt(id, hanging);
+        let mut status = subagents.status(id).expect("registered");
+        status
+            .wait_for(|s| s.state == Some(State::Running))
+            .await
+            .expect("the actor runs");
+
+        drop(subagents);
+
+        tokio::time::timeout(Duration::from_secs(5), cancel.cancelled())
+            .await
+            .expect("the aborted actor cancels what its turn started");
     }
 
     #[test]

@@ -709,3 +709,44 @@ async fn a_todo_tick_after_forgetting_tells_no_model() {
         "the item still keeps it"
     );
 }
+
+#[test]
+fn a_forgotten_work_subagent_that_stalls_tells_no_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let subagents = Subagents::default();
+    let inbox = Inbox::new();
+    let work = work_with(
+        Vec::new(),
+        Vec::new(),
+        subagents.clone(),
+        inbox.clone(),
+        LIMITS,
+    );
+    let reserved = subagents.reserve();
+    let assigned = Assigned {
+        assignment: Assignment {
+            files: work.0.files.clone(),
+            store: Store::new(work_dir(dir.path(), "s1")),
+            at: ItemRef {
+                cycle: "01-c1".into(),
+                item: "a".into(),
+            },
+            task: reserved.id(),
+            agent: "general".into(),
+            inbox: inbox.clone(),
+            parent: reserved.parent(),
+        },
+        reply: None,
+    };
+    assigned.stalled(Duration::from_secs(60));
+    assert!(inbox.has_notices(), "heard while its session lasts");
+    inbox.clear();
+
+    subagents.forget_all();
+    assigned.stalled(Duration::from_secs(120));
+
+    assert!(
+        !inbox.has_notices(),
+        "the session after the one that assigned it hears nothing"
+    );
+}
