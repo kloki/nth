@@ -8,7 +8,7 @@ use tokio::task::{JoinError, JoinHandle};
 /// quitting never leaves the agent running tools or a walk going. Dropping
 /// cancels the task's token, for blocking work that can't be aborted, and
 /// aborts it.
-pub(super) struct Job<T> {
+pub(crate) struct Job<T> {
     running: Option<(JoinHandle<T>, CancellationToken)>,
     /// Asked for again while running; the handler starts it once more.
     again: bool,
@@ -24,12 +24,12 @@ impl<T> Default for Job<T> {
 }
 
 impl<T> Job<T> {
-    pub(super) fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.running.is_some()
     }
 
     /// Starts the task `spawn` makes, stopping the one running.
-    pub(super) fn start(&mut self, spawn: impl FnOnce(CancellationToken) -> JoinHandle<T>) {
+    pub(crate) fn start(&mut self, spawn: impl FnOnce(CancellationToken) -> JoinHandle<T>) {
         self.stop();
         let cancel = CancellationToken::new();
         self.running = Some((spawn(cancel.clone()), cancel));
@@ -37,7 +37,7 @@ impl<T> Job<T> {
 
     /// Starts the task `spawn` makes, or while one runs, marks the job to
     /// run again rather than racing it.
-    pub(super) fn start_or_queue(
+    pub(crate) fn start_or_queue(
         &mut self,
         spawn: impl FnOnce(CancellationToken) -> JoinHandle<T>,
     ) {
@@ -50,21 +50,21 @@ impl<T> Job<T> {
 
     /// Asks the running task to stop on its own, so it can hand back what
     /// it holds.
-    pub(super) fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         if let Some((_, cancel)) = &self.running {
             cancel.cancel();
         }
     }
 
     /// Whether the job was asked for again while it ran; clears the mark.
-    pub(super) fn take_again(&mut self) -> bool {
+    pub(crate) fn take_again(&mut self) -> bool {
         std::mem::take(&mut self.again)
     }
 
     /// Resolves when the task ends, leaving the job idle. Never resolves
     /// while idle, so a `select!` arm needs no guard. Cancel-safe: dropped
     /// unfinished, the task keeps running.
-    pub(super) async fn join(&mut self) -> Result<T, JoinError> {
+    pub(crate) async fn join(&mut self) -> Result<T, JoinError> {
         let Some((handle, _)) = &mut self.running else {
             return std::future::pending().await;
         };
@@ -82,17 +82,17 @@ impl<T> Job<T> {
 
     /// The running task's handle, leaving the job idle without stopping it.
     #[cfg(test)]
-    pub(super) fn take(&mut self) -> Option<JoinHandle<T>> {
+    pub(crate) fn take(&mut self) -> Option<JoinHandle<T>> {
         self.running.take().map(|(handle, _)| handle)
     }
 
     #[cfg(test)]
-    pub(super) fn token(&self) -> Option<CancellationToken> {
+    pub(crate) fn token(&self) -> Option<CancellationToken> {
         self.running.as_ref().map(|(_, cancel)| cancel.clone())
     }
 
     #[cfg(test)]
-    pub(super) fn abort_handle(&self) -> Option<tokio::task::AbortHandle> {
+    pub(crate) fn abort_handle(&self) -> Option<tokio::task::AbortHandle> {
         self.running
             .as_ref()
             .map(|(handle, _)| handle.abort_handle())

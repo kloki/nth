@@ -434,7 +434,7 @@ async fn diagnostics_that_overflow_have_a_scrollbar() {
     let bar = scrollbar(&rows(&mut app));
     assert!(bar.starts_with('┃'), "at the top: {bar:?}");
 
-    app.diagnostics.pager.jump_bottom();
+    app.diagnostics.view.pager.jump_bottom();
     let bar = scrollbar(&rows(&mut app));
     assert!(
         bar.ends_with('┃') && !bar.starts_with('┃'),
@@ -545,7 +545,7 @@ fn the_minute_wake_lands_within_the_minute() {
 #[test]
 fn a_narrow_status_line_cuts_the_right_first() {
     let mut app = app();
-    app.git = Some(crate::git::GitStatus {
+    app.git.status = Some(crate::git::GitStatus {
         branch: Some("a-very-long-branch-name".into()),
         modified: 1,
         ..Default::default()
@@ -683,7 +683,7 @@ async fn tool_output_stays_in_the_transcript() {
     assert_eq!(finished[4].trim_end(), " ▎ $ bash   cargo test");
     assert_eq!(finished[5].trim_end(), " ▎   running 3 tests", "kept");
     assert!(
-        app.git_loading.is_running(),
+        app.git.loading.is_running(),
         "bash may have changed the tree"
     );
 }
@@ -695,14 +695,15 @@ async fn a_panicking_job_is_a_hint_not_an_exit() {
         branch: Some("main".into()),
         ..Default::default()
     };
-    app.git = Some(before.clone());
-    app.git_loading
+    app.git.status = Some(before.clone());
+    app.git
+        .loading
         .start(|_| tokio::spawn(async { panic!("git exploded") }));
 
-    let status = app.git_loading.join().await;
-    app.job_finished(super::Finished::GitLoaded(status));
+    let loaded = app.git.next().await;
+    app.job_finished(super::Finished::Git(loaded));
 
-    assert_eq!(app.git, Some(before), "left as it was");
+    assert_eq!(app.git.status, Some(before), "left as it was");
     let shown = rows_of(&mut app, 120).join("\n");
     assert!(
         shown.contains("reading git status failed: task")

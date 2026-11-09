@@ -8,8 +8,8 @@ use nth_protocol::Mode;
 use nth_session::plan;
 use tokio::task::JoinError;
 
-use super::{App, Queued, Tab, content::Change, job::Job};
-use crate::plan::PlanView;
+use super::{App, Queued, Tab, content::Change};
+use crate::{job::Job, plan::PlanView};
 
 /// The session's plan file and what the plan tab shows of it.
 pub(super) struct PlanTab {

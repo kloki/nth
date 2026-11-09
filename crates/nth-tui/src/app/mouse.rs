@@ -163,7 +163,7 @@ impl App {
         match target {
             Target::Place => self.copy(self.cwd.display().to_string()),
             Target::Branch => {
-                if let Some(branch) = self.git.as_ref().and_then(|git| git.branch.clone()) {
+                if let Some(branch) = self.git.status.as_ref().and_then(|git| git.branch.clone()) {
                     self.copy(branch);
                 }
             }
@@ -265,7 +265,7 @@ impl App {
 
     /// The branch's pull request, which the link on the status bar names.
     fn open_pr(&mut self) {
-        let Some(url) = self.pr.as_ref().map(|pr| pr.url.clone()) else {
+        let Some(url) = self.git.pr.as_ref().map(|pr| pr.url.clone()) else {
             return;
         };
         self.open_url(&url);
@@ -513,11 +513,11 @@ mod tests {
     #[test]
     fn hovering_the_pull_request_link_whitens_its_number() {
         let mut app = app();
-        app.git = Some(crate::git::GitStatus {
+        app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
         });
-        app.pr = Some(crate::git::Pr {
+        app.git.pr = Some(crate::git::Pr {
             number: 123,
             url: "https://x.y/repo/pull/123".into(),
             state: crate::git::State::Open,
@@ -563,7 +563,7 @@ mod tests {
             assert_eq!(text, "main");
             Ok(())
         };
-        app.git = Some(crate::git::GitStatus {
+        app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
         });
@@ -759,11 +759,11 @@ mod tests {
     #[test]
     fn a_click_on_the_pull_request_link_opens_it() {
         let mut app = app();
-        app.git = Some(crate::git::GitStatus {
+        app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
         });
-        app.pr = Some(crate::git::Pr {
+        app.git.pr = Some(crate::git::Pr {
             number: 123,
             url: "https://x.y/repo/pull/123".into(),
             state: crate::git::State::Merged,

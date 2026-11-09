@@ -124,7 +124,9 @@ impl App {
         self.env = super::configured(&session.env);
         self.resume(session);
         self.chat.warn(&warnings);
-        if self.content.active() == super::Tab::Diagnostics {
+        // Shown in the split's side pane counts too: the reset look would
+        // otherwise say `checking…` there until the tab is opened again.
+        if self.panes().shows(super::Tab::Diagnostics) {
             self.diagnose();
         }
     }

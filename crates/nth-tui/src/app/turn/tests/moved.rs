@@ -63,12 +63,19 @@ async fn the_status_bar_follows_a_move_while_the_turn_runs() {
     app.session = None;
 
     app.on_session(Event::Moved(worktree.clone()));
-    let status = app.git_loading.join().await.expect("loads");
-    app.git_loaded(status);
+    // The pull request loads beside the status, and may end first.
+    while app.git.loading.is_running() {
+        let loaded = app.git.next().await;
+        app.git_finished(loaded);
+    }
 
     assert_eq!(app.cwd, worktree);
     assert!(app.place.ends_with(".nth/worktrees/x"), "{}", app.place);
     // What the status bar's git summary shows.
-    let branch = app.git.as_ref().and_then(|git| git.branch.as_deref());
+    let branch = app
+        .git
+        .status
+        .as_ref()
+        .and_then(|git| git.branch.as_deref());
     assert_eq!(branch, Some("x"));
 }

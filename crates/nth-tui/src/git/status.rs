@@ -4,6 +4,8 @@ use std::{path::Path, process::Stdio};
 
 use tokio::process::Command;
 
+use super::LOAD_TIMEOUT;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GitStatus {
     /// `None` on a detached head.
@@ -33,16 +35,29 @@ pub async fn load(cwd: &Path) -> Result<Option<GitStatus>, String> {
 }
 
 async fn git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("git")
+    run("git", cwd, args).await
+}
+
+/// `program`'s output; `Err` when it cannot run or takes past
+/// `LOAD_TIMEOUT`, so a git stuck on a lock fails the load rather than
+/// keeping it running for good.
+async fn run(program: &str, cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let output = Command::new(program)
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        // Quitting mid-load aborts the task; git must not outlive it.
+        // Quitting mid-load aborts the task and a timeout drops the
+        // future; either way git must not outlive it.
         .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|e| format!("running git failed: {e}"))
+        .output();
+    match tokio::time::timeout(LOAD_TIMEOUT, output).await {
+        Ok(output) => output.map_err(|e| format!("running {program} failed: {e}")),
+        Err(_) => Err(format!(
+            "{program} took longer than {} s",
+            LOAD_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 /// Parses `git status --porcelain=v2 --branch`.
@@ -142,6 +157,19 @@ mod tests {
     fn a_detached_head_has_no_branch() {
         let status = parse("# branch.oid 1234\n# branch.head (detached)\n");
         assert_eq!(status.branch, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_git_that_hangs_times_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let started = tokio::time::Instant::now();
+        let ran = run("sleep", dir.path(), &["60"]).await;
+        assert_eq!(ran.err().as_deref(), Some("sleep took longer than 10 s"));
+        assert!(started.elapsed() >= LOAD_TIMEOUT, "it waited the timeout");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "and no longer"
+        );
     }
 
     #[tokio::test]

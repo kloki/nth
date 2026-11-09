@@ -16,40 +16,13 @@ impl App {
         self
     }
 
-    /// Looks again at what applies, for the diagnostics tab: servers and
-    /// formatters may have been installed since the last time.
+    /// Looks again at what applies, for the diagnostics tab: servers,
+    /// formatters and programs may have been installed since the last time.
     pub(super) fn diagnose(&mut self) {
         self.list_llms();
-        let Some(checkers) = &self.checkers else {
-            return;
-        };
-        self.diagnostics.servers = None;
-        self.diagnostics.formatters = None;
-        self.diagnostics.rtk = None;
-        self.diagnostics.browser = None;
-        self.diagnostics.tea = None;
-        self.diagnostics.gh = None;
-        // Finding programs and roots walks PATH and the directory tree.
-        let (lsp, cwd) = (checkers.lsp.clone(), self.cwd.clone());
-        self.servers_lookup
-            .start(|_| tokio::task::spawn_blocking(move || lsp.servers_for(&cwd)));
-        let (formatters, cwd) = (checkers.formatters.clone(), self.cwd.clone());
-        self.formatters_lookup
-            .start(|_| tokio::spawn(async move { formatters.status(&cwd).await }));
-        // Where the `rtk` bash would rewrite through; the config may turn
-        // rewriting off, and then where it is does not matter.
-        if checkers.rtk {
-            self.rtk_lookup
-                .start(|_| tokio::task::spawn_blocking(|| nth_context::which("rtk")));
+        if let Some(checkers) = &self.checkers {
+            self.diagnostics.diagnose(checkers, self.cwd.clone());
         }
-        // Where the browser skill would drive a browser through; nothing
-        // in the config turns that off, so it is always worth knowing.
-        self.browser_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("agent-browser")));
-        self.tea_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("tea")));
-        self.gh_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("gh")));
     }
 
     /// Takes the servers' new states, or stops listening once the sender
@@ -173,6 +146,23 @@ mod tests {
             row.starts_with(" > 1 queued · fix the build "),
             "the servers are cut first: {row:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn installing_a_runtime_drops_the_look_and_what_it_found() {
+        let mut app = app();
+        app.diagnose();
+        let found = app.diagnostics.next().await.expect("looks");
+        app.diagnostics.found(found);
+        app.diagnose();
+        let looking = app.diagnostics.looking();
+
+        let session = nth_session::Session::new("m", "/repo".into());
+        let provider = std::sync::Arc::new(crate::app::tests::Scripted::idle());
+        app.install(crate::app::tests::runtime(session, provider));
+        assert!(looking, "a look ran before");
+        assert!(!app.diagnostics.looking(), "the old runtime's look is gone");
+        assert!(app.diagnostics.shown().is_none(), "and what it found");
     }
 
     #[tokio::test]

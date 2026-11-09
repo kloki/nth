@@ -20,7 +20,6 @@ mod git;
 mod hint;
 mod history;
 mod input;
-mod job;
 mod keys;
 mod llm_picker;
 mod mode;
@@ -60,20 +59,18 @@ use diagnostics::lsp_changed;
 use finished::Finished;
 use futures::StreamExt;
 use input::Input;
-use job::Job;
 use mode::Steerable;
 use monitor::due;
 use nth_config::{Selection, Target};
 use nth_context::{Context as ProjectContext, Paths};
-use nth_format::FormatterStatus;
-use nth_lsp::{ProcessUsage, ServerInfo, ServerStatus};
+use nth_lsp::{ProcessUsage, ServerStatus};
 use nth_notify::Notifier;
 use nth_protocol::{
     Ask, BoxError, ContextSnapshot, Event, Listing, Llm, Mode, MonitorEvent, Monitors, Provider,
     Show, Tool, Usage, tool_names,
 };
 use nth_session::{
-    Inbox, Session, Store, Subagents, Summary, ToolUse, TurnEnv, store,
+    Inbox, Session, Store, Subagents, Summary, TurnEnv, store,
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
@@ -94,18 +91,19 @@ use crate::{
     Checkers, PreparedRuntime, Reload,
     chat::Chat,
     command::Command,
-    diagnostics::Diagnostics,
+    diagnostics::DiagnosticsTab,
     file::FileRead,
-    git::{GitStatus, Pr},
+    git::GitBar,
     header, hero,
     history::History,
+    job::Job,
     keymaps::Keymaps,
     llm_picker::usage::LlmUsage,
     prompt::{self, Prompt},
     settings::ChatSettings,
     spinner, status,
     subagent::SubagentView,
-    usage::UsageView,
+    usage::UsageTab,
 };
 
 /// How often the app redraws with nothing else happening, while a turn
@@ -172,24 +170,13 @@ pub struct App {
     last_turn: TabState,
     /// The content panel's tabs, and which one fills it.
     content: Content,
-    diagnostics: Diagnostics,
+    diagnostics: DiagnosticsTab,
     context_tab: context::ContextTab,
-    usage_view: UsageView,
+    usage_tab: UsageTab,
     keymaps: Keymaps,
-    /// Every saved session's tool totals, most called first; empty until
-    /// the usage tab is opened.
-    all_time_tools: Vec<(String, ToolUse)>,
-    /// Reads every saved session's tool totals for the usage tab.
-    tools_lookup: Job<Result<Vec<(String, ToolUse)>, store::Error>>,
     /// What checks the tools' writes, for the diagnostics tab to look up;
     /// `None` when nothing does.
     pub(crate) checkers: Option<Checkers>,
-    servers_lookup: Job<Vec<ServerInfo>>,
-    formatters_lookup: Job<Vec<FormatterStatus>>,
-    rtk_lookup: Job<Option<PathBuf>>,
-    browser_lookup: Job<Option<PathBuf>>,
-    tea_lookup: Job<Option<PathBuf>>,
-    gh_lookup: Job<Option<PathBuf>>,
     /// What fills the input panel.
     input: Input,
     /// The row Enter chose in search, waiting for the source to be shown
@@ -226,12 +213,9 @@ pub struct App {
     /// Queued again when a turn ends mid-walk, so its files get picked up
     /// by one more walk rather than a second one racing the first.
     indexing: Job<Vec<String>>,
-    /// The working tree's git state; `None` outside a repository or until
-    /// the first load lands.
-    pub git: Option<GitStatus>,
-    /// The current branch's pull request, as gh or tea found it; `None`
-    /// until a load lands, and whenever the branch has none.
-    pub pr: Option<Pr>,
+    /// The working tree's git state and the branch's pull request, for
+    /// the status bar.
+    pub git: GitBar,
     /// The language servers the tools started, as last reported.
     pub servers: Vec<ServerStatus>,
     /// Where `servers` comes from; `None` once its sender is gone.
@@ -241,10 +225,6 @@ pub struct App {
     pub usage: Option<Usage>,
     /// What the session spent, its subagents included, as heard so far.
     pub spent: Spent,
-    /// Queued again when the tree may have changed mid-load, like `indexing`.
-    git_loading: Job<Result<Option<GitStatus>, String>>,
-    /// The pull request on the branch, loaded with the git status.
-    pr_loading: Job<Option<Pr>>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Listing>,
@@ -498,19 +478,11 @@ impl App {
             interrupted: false,
             last_turn: TabState::Idle,
             content: Content::default(),
-            diagnostics: Diagnostics::default(),
-            usage_view: UsageView::default(),
+            diagnostics: DiagnosticsTab::default(),
+            usage_tab: UsageTab::default(),
             context_tab: context::ContextTab::default(),
             keymaps: Keymaps::default(),
-            all_time_tools: Vec::new(),
-            tools_lookup: Job::default(),
             checkers: None,
-            servers_lookup: Job::default(),
-            formatters_lookup: Job::default(),
-            rtk_lookup: Job::default(),
-            browser_lookup: Job::default(),
-            tea_lookup: Job::default(),
-            gh_lookup: Job::default(),
             input: Input::Prompt,
             search_jump: None,
             cwd: session.cwd.clone(),
@@ -527,15 +499,12 @@ impl App {
             completion: None,
             files: Vec::new(),
             indexing: Job::default(),
-            git: None,
-            pr: None,
+            git: GitBar::default(),
             servers: Vec::new(),
             lsp: None,
             lsp_usage: None,
             usage: None,
             spent: Spent::new(session.usage.clone()),
-            git_loading: Job::default(),
-            pr_loading: Job::default(),
             llms: None,
             llm_listing: Job::default(),
             chatgpt: None,
@@ -628,8 +597,7 @@ impl App {
         if let Some(old) = self.checkers.replace(checkers) {
             tokio::spawn(async move { old.lsp.shutdown().await });
         }
-        self.servers_lookup = Default::default();
-        self.formatters_lookup = Default::default();
+        // What the last look found applies to the runtime being left.
         self.diagnostics = Default::default();
         (session, warnings)
     }
@@ -749,8 +717,7 @@ impl App {
                 ended = self.turn.join() => Step::TurnEnded(Box::new(ended)),
                 snapshot = self.context_tab.next() => Step::Preview(snapshot),
                 files = self.indexing.join() => Step::Job(Finished::Indexed(files)),
-                status = self.git_loading.join() => Step::Job(Finished::GitLoaded(status)),
-                pr = self.pr_loading.join() => Step::Job(Finished::PrLoaded(pr)),
+                loaded = self.git.next() => Step::Job(Finished::Git(loaded)),
                 llms = self.llm_listing.join() => Step::Job(Finished::LlmsListed(llms)),
                 Some(url) = login_url(&mut self.connect_url) => Step::LoginUrl(url),
                 account = self.login.join() => Step::Job(Finished::Connected(account)),
@@ -761,13 +728,8 @@ impl App {
                 saved = self.llm_usage_saving.join() => Step::Job(Finished::LlmUsageSaved(saved)),
                 plan = self.plan.next() => Step::Job(Finished::PlanRead(plan)),
                 plan = self.work.next() => Step::Job(Finished::WorkRead(plan)),
-                servers = self.servers_lookup.join() => Step::Job(Finished::ServersFound(servers)),
-                tools = self.tools_lookup.join() => Step::Job(Finished::ToolsFound(tools)),
-                formatters = self.formatters_lookup.join() => Step::Job(Finished::FormattersFound(formatters)),
-                rtk = self.rtk_lookup.join() => Step::Job(Finished::RtkFound(rtk)),
-                browser = self.browser_lookup.join() => Step::Job(Finished::BrowserFound(browser)),
-                tea = self.tea_lookup.join() => Step::Job(Finished::TeaFound(tea)),
-                gh = self.gh_lookup.join() => Step::Job(Finished::GhFound(gh)),
+                found = self.diagnostics.next() => Step::Job(Finished::Diagnosed(found)),
+                tools = self.usage_tab.next() => Step::Job(Finished::ToolsFound(tools)),
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
@@ -1113,7 +1075,7 @@ impl App {
                     home: self.home.as_deref(),
                 };
                 self.diagnostics.draw(frame, area, &facts);
-                if let Some(state) = self.diagnostics.pager.scrollbar() {
+                if let Some(state) = self.diagnostics.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }
@@ -1121,15 +1083,14 @@ impl App {
                 // The listing alone, so the view can be drawn into.
                 let llms = self.llms.as_ref();
                 let cost = |model: &str| llms?.cost_of(model);
-                self.usage_view.draw(
+                self.usage_tab.draw(
                     frame,
                     area,
                     &self.spent.ledger,
                     &self.llm_usage.ranked(),
-                    &self.all_time_tools,
                     &cost,
                 );
-                if let Some(state) = self.usage_view.pager.scrollbar() {
+                if let Some(state) = self.usage_tab.view.pager.scrollbar() {
                     draw_scrollbar(frame, area, state);
                 }
             }

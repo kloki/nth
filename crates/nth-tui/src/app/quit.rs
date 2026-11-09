@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use nth_protocol::{Message, StoppedBy};
 
-use super::{App, job::Job};
+use super::App;
+use crate::job::Job;
 
 /// How long quitting waits for the stopped monitors to report back.
 const EXIT_WAIT: Duration = Duration::from_secs(2);
@@ -214,8 +215,8 @@ mod tests {
             ("plan read", app.plan.reading.is_running()),
             ("work read", app.work.reading.is_running()),
             ("file index", app.indexing.is_running()),
-            ("git status", app.git_loading.is_running()),
-            ("pull request", app.pr_loading.is_running()),
+            ("git status", app.git.loading.is_running()),
+            ("pull request", app.git.pr_loading.is_running()),
         ]
         .into_iter()
         .filter_map(|(job, running)| running.then_some(job))

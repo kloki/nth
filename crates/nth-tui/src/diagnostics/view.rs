@@ -5,7 +5,7 @@
 //! formatters that check writes, the rtk the bash tool would rewrite
 //! commands through, agent-browser, tea and gh.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nth_context::Context;
 use nth_format::FormatterStatus;
@@ -19,33 +19,13 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use super::{Lookup, Program};
 use crate::{pager::Pager, status, theme};
 
-/// What the tab knows beyond what the app shows elsewhere: which servers
-/// and formatters apply, looked up each time the tab opens.
+/// Where the tab is scrolled, as of the last draw.
 #[derive(Debug, Default)]
-pub struct Diagnostics {
-    /// `None` while being looked up.
-    pub servers: Option<Vec<ServerInfo>>,
-    pub formatters: Option<Vec<FormatterStatus>>,
-    /// The `rtk` on PATH, looked up each time the tab opens; `None` while
-    /// being looked up.
-    pub rtk: Option<Program>,
-    /// The `agent-browser` on PATH, the same way.
-    pub browser: Option<Program>,
-    /// The Forgejo and GitHub command-line tools on PATH.
-    pub tea: Option<Program>,
-    pub gh: Option<Program>,
+pub struct DiagnosticsView {
     pub pager: Pager,
-}
-
-/// What looking a program up on PATH found.
-#[derive(Debug)]
-pub enum Program {
-    /// On PATH.
-    Found(PathBuf),
-    /// Not on PATH.
-    Missing,
 }
 
 /// The model a mode, the subagents or the clerk run with.
@@ -84,128 +64,132 @@ pub struct Facts<'a> {
     pub home: Option<&'a str>,
 }
 
-impl Diagnostics {
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, facts: &Facts) {
-        let lines = self
-            .lines(facts)
+impl DiagnosticsView {
+    /// `found` is what the last look at the project found; `None` while
+    /// it looks.
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, found: Option<&Lookup>, facts: &Facts) {
+        let lines = lines(found, facts)
             .into_iter()
             .flat_map(|line| crate::rich::wrap(line, usize::from(area.width).max(1)))
             .collect();
         self.pager.render(frame, area, lines);
     }
+}
 
-    fn lines(&self, facts: &Facts) -> Vec<Line<'static>> {
-        theme::sections(vec![
-            section(|l| lsp_usage(l, facts)),
-            section(|l| model(l, facts)),
-            section(|l| instructions(l, facts)),
-            section(|l| skills(l, facts)),
-            section(|l| agents(l, facts)),
-            section(|l| self.tools(l, facts)),
-            section(|l| self.servers(l, facts)),
-            section(|l| self.formatters(l, facts)),
-        ])
-    }
+fn lines(found: Option<&Lookup>, facts: &Facts) -> Vec<Line<'static>> {
+    theme::sections(vec![
+        section(|l| lsp_usage(l, facts)),
+        section(|l| model(l, facts)),
+        section(|l| instructions(l, facts)),
+        section(|l| skills(l, facts)),
+        section(|l| agents(l, facts)),
+        section(|l| tools(l, found, facts)),
+        section(|l| servers(l, found, facts)),
+        section(|l| formatters(l, found, facts)),
+    ])
+}
 
-    /// Every server nth knows, the ones that can run here first. A server
-    /// the tools started shows its state's dot in place of the tick.
-    fn servers(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
-        lines.push(title("language servers"));
-        let Some(servers) = checked(lines, facts.checks, self.servers.as_ref()) else {
-            return;
+/// Every server nth knows, the ones that can run here first. A server
+/// the tools started shows its state's dot in place of the tick.
+fn servers(lines: &mut Vec<Line<'static>>, found: Option<&Lookup>, facts: &Facts) {
+    lines.push(title("language servers"));
+    let Some(servers) = checked(lines, facts.checks, found.map(|f| &f.servers)) else {
+        return;
+    };
+    let mut servers: Vec<&ServerInfo> = servers.iter().collect();
+    servers.sort_by_key(|s| s.program.is_none());
+    let width = servers.iter().map(|s| s.id.len()).max().unwrap_or(0);
+    for server in servers {
+        let id = format!("{:width$}", server.id);
+        let Some(program) = &server.program else {
+            lines.push(unavailable(id, "not on PATH".into()));
+            continue;
         };
-        let mut servers: Vec<&ServerInfo> = servers.iter().collect();
-        servers.sort_by_key(|s| s.program.is_none());
-        let width = servers.iter().map(|s| s.id.len()).max().unwrap_or(0);
-        for server in servers {
-            let id = format!("{:width$}", server.id);
-            let Some(program) = &server.program else {
-                lines.push(unavailable(id, "not on PATH".into()));
-                continue;
-            };
-            let root = match &server.root {
-                Some(root) => format!("{} {}", icons().to, path(root, facts.home)),
-                None => "no project root here".into(),
-            };
-            let about = format!("{}  {root}", path(program, facts.home));
-            let running = facts.running.iter().find(|s| s.id == server.id);
-            let mut line = match running {
-                Some(status) => row(
-                    Span::styled(
-                        icons().dot,
-                        Style::new().fg(status::state_colour(&status.state)),
-                    ),
-                    id,
-                    about,
+        let root = match &server.root {
+            Some(root) => format!("{} {}", icons().to, path(root, facts.home)),
+            None => "no project root here".into(),
+        };
+        let about = format!("{}  {root}", path(program, facts.home));
+        let running = facts.running.iter().find(|s| s.id == server.id);
+        let mut line = match running {
+            Some(status) => row(
+                Span::styled(
+                    icons().dot,
+                    Style::new().fg(status::state_colour(&status.state)),
                 ),
-                None => row(tick(), id, about),
-            };
-            line.spans[2].style = Style::new().fg(Color::Cyan);
-            if let Some(ServerStatus {
-                state: ServerState::Broken(reason),
-                ..
-            }) = running
-            {
-                line.spans.push(Span::styled(
-                    format!("  {reason}"),
-                    Style::new().fg(Color::Red),
-                ));
-            }
-            lines.push(line);
-        }
-    }
-
-    /// Every formatter nth knows, the ones that run here first.
-    fn formatters(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
-        lines.push(title("formatters"));
-        let Some(formatters) = checked(lines, facts.checks, self.formatters.as_ref()) else {
-            return;
+                id,
+                about,
+            ),
+            None => row(tick(), id, about),
         };
-        let mut formatters: Vec<&FormatterStatus> = formatters.iter().collect();
-        formatters.sort_by_key(|f| f.command.is_err());
-        let width = formatters.iter().map(|f| f.name.len()).max().unwrap_or(0);
-        for formatter in formatters {
-            let name = format!("{:width$}", formatter.name);
-            lines.push(match &formatter.command {
-                Ok(command) => {
-                    let mut line = row(tick(), name, command.join(" "));
-                    line.spans[2].style = Style::new().fg(Color::Cyan);
-                    line
-                }
-                Err(reason) => unavailable(name, reason.clone()),
-            });
+        line.spans[2].style = Style::new().fg(Color::Cyan);
+        if let Some(ServerStatus {
+            state: ServerState::Broken(reason),
+            ..
+        }) = running
+        {
+            line.spans.push(Span::styled(
+                format!("  {reason}"),
+                Style::new().fg(Color::Red),
+            ));
         }
+        lines.push(line);
     }
+}
 
-    /// The programs the tools run through, and why one would not: the
-    /// `rtk` bash rewrites the model's commands through, and the
-    /// `agent-browser` the browser skill drives a browser with, and the
-    /// `tea` and `gh` command-line tools.
-    fn tools(&self, lines: &mut Vec<Line<'static>>, facts: &Facts) {
-        lines.push(title("tools"));
-        if !facts.checks {
-            lines.push(note("not checked in this session".into()));
-            return;
-        }
-        let width = "agent-browser".len();
-        match (facts.rtk, &self.rtk) {
-            (false, _) => lines.push(unavailable(
-                format!("{:width$}", "rtk"),
-                "disabled in the config".into(),
-            )),
-            (true, rtk) => program(lines, "rtk", width, rtk, "not on PATH", facts.home),
-        }
-        program(
-            lines,
-            "agent-browser",
-            width,
-            &self.browser,
-            "not on PATH, the browser skill installs it",
-            facts.home,
-        );
-        program(lines, "tea", width, &self.tea, "not on PATH", facts.home);
-        program(lines, "gh", width, &self.gh, "not on PATH", facts.home);
+/// Every formatter nth knows, the ones that run here first.
+fn formatters(lines: &mut Vec<Line<'static>>, found: Option<&Lookup>, facts: &Facts) {
+    lines.push(title("formatters"));
+    let Some(formatters) = checked(lines, facts.checks, found.map(|f| &f.formatters)) else {
+        return;
+    };
+    let mut formatters: Vec<&FormatterStatus> = formatters.iter().collect();
+    formatters.sort_by_key(|f| f.command.is_err());
+    let width = formatters.iter().map(|f| f.name.len()).max().unwrap_or(0);
+    for formatter in formatters {
+        let name = format!("{:width$}", formatter.name);
+        lines.push(match &formatter.command {
+            Ok(command) => {
+                let mut line = row(tick(), name, command.join(" "));
+                line.spans[2].style = Style::new().fg(Color::Cyan);
+                line
+            }
+            Err(reason) => unavailable(name, reason.clone()),
+        });
     }
+}
+
+/// The programs the tools run through, and why one would not: the
+/// `rtk` bash rewrites the model's commands through, and the
+/// `agent-browser` the browser skill drives a browser with, and the
+/// `tea` and `gh` command-line tools.
+fn tools(lines: &mut Vec<Line<'static>>, found: Option<&Lookup>, facts: &Facts) {
+    lines.push(title("tools"));
+    if !facts.checks {
+        lines.push(note("not checked in this session".into()));
+        return;
+    }
+    let width = "agent-browser".len();
+    let programs = found.map(|found| &found.programs);
+    match (facts.rtk, programs.and_then(|p| p.rtk.as_ref())) {
+        (false, _) => lines.push(unavailable(
+            format!("{:width$}", "rtk"),
+            "disabled in the config".into(),
+        )),
+        (true, rtk) => program(lines, "rtk", width, rtk, "not on PATH", facts.home),
+    }
+    program(
+        lines,
+        "agent-browser",
+        width,
+        programs.map(|p| &p.browser),
+        "not on PATH, the browser skill installs it",
+        facts.home,
+    );
+    let tea = programs.map(|p| &p.tea);
+    program(lines, "tea", width, tea, "not on PATH", facts.home);
+    let gh = programs.map(|p| &p.gh);
+    program(lines, "gh", width, gh, "not on PATH", facts.home);
 }
 
 fn elapsed(since: std::time::SystemTime) -> String {
@@ -302,7 +286,7 @@ fn program(
     lines: &mut Vec<Line<'static>>,
     name: &str,
     width: usize,
-    found: &Option<Program>,
+    found: Option<&Program>,
     missing: &str,
     home: Option<&str>,
 ) {
@@ -501,10 +485,10 @@ fn origin(source: &str, dir: Option<&Path>, home: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::Programs;
 
-    fn text(diagnostics: &Diagnostics, facts: &Facts) -> Vec<String> {
-        diagnostics
-            .lines(facts)
+    fn text(found: Option<&Lookup>, facts: &Facts) -> Vec<String> {
+        lines(found, facts)
             .iter()
             .map(|line| line.to_string())
             .collect()
@@ -515,6 +499,15 @@ mod tests {
         text.iter()
             .position(|l| *l == format!("▎ {title}"))
             .unwrap_or_else(|| panic!("{title} section"))
+    }
+
+    /// A look that found no servers or formatters, only `programs`.
+    fn lookup(programs: Programs) -> Lookup {
+        Lookup {
+            servers: Vec::new(),
+            formatters: Vec::new(),
+            programs,
+        }
     }
 
     fn facts<'a>(context: &'a Context, running: &'a [ServerStatus]) -> Facts<'a> {
@@ -592,7 +585,7 @@ mod tests {
         }];
         let mut facts = facts(&context, &[]);
         facts.lsp_usage = &usage;
-        let lines = text(&Diagnostics::default(), &facts).join("\n");
+        let lines = text(None, &facts).join("\n");
         assert_eq!(lines.matches("pid 42").count(), 1);
         assert!(lines.contains("12.5% CPU · 2.0 MiB RSS"));
         assert!(lines.contains("main  rust → /repo · 1 active"));
@@ -607,8 +600,8 @@ mod tests {
             root: "/repo".into(),
             state: ServerState::Broken("exited".into()),
         }];
-        let diagnostics = Diagnostics {
-            servers: Some(vec![
+        let found = Lookup {
+            servers: vec![
                 ServerInfo {
                     id: "gopls".into(),
                     extensions: vec![],
@@ -621,18 +614,21 @@ mod tests {
                     program: Some("/bin/rust-analyzer".into()),
                     root: Some("/repo".into()),
                 },
-            ]),
-            formatters: Some(vec![FormatterStatus {
+            ],
+            formatters: vec![FormatterStatus {
                 name: "rustfmt".into(),
                 extensions: vec![],
                 command: Ok(vec!["rustfmt".into(), "$FILE".into()]),
-            }]),
-            rtk: Some(Program::Found("/bin/rtk".into())),
-            browser: Some(Program::Found("/bin/agent-browser".into())),
-            ..Diagnostics::default()
+            }],
+            programs: Programs {
+                rtk: Some(Program::Found("/bin/rtk".into())),
+                browser: Program::Found("/bin/agent-browser".into()),
+                tea: Program::Missing,
+                gh: Program::Missing,
+            },
         };
 
-        let text = text(&diagnostics, &facts(&context, &running));
+        let text = text(Some(&found), &facts(&context, &running));
         assert_eq!(text[section(&text, "model") + 5], "▎   3 models served");
         let servers = section(&text, "language servers");
         assert!(servers > section(&text, "agents"), "checks come last");
@@ -655,7 +651,7 @@ mod tests {
     #[test]
     fn sections_carry_the_grey_bar() {
         let context = Context::default();
-        let lines = Diagnostics::default().lines(&facts(&context, &[]));
+        let lines = lines(None, &facts(&context, &[]));
         let bar = &lines[0].spans[0];
         assert_eq!(bar.content, theme::BAR);
         assert_eq!(bar.style.fg, Some(Color::DarkGray));
@@ -667,7 +663,7 @@ mod tests {
     fn shows_the_model_of_each_mode() {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
-        let acting = text(&Diagnostics::default(), &facts);
+        let acting = text(None, &facts);
         let model = section(&acting, "model");
         assert_eq!(
             acting[model + 1..model + 5],
@@ -697,7 +693,7 @@ mod tests {
             current: false,
             inherits: None,
         };
-        let planning = text(&Diagnostics::default(), &facts);
+        let planning = text(None, &facts);
         let model = section(&planning, "model");
         assert_eq!(
             planning[model + 1..model + 5],
@@ -718,7 +714,7 @@ mod tests {
             &nth_context::Paths::default(),
         );
 
-        let text = text(&Diagnostics::default(), &facts(&context, &[]));
+        let text = text(None, &facts(&context, &[]));
         let agents = text
             .iter()
             .position(|l| l == "▎ agents")
@@ -761,7 +757,7 @@ mod tests {
         let mut facts = facts(&context, &[]);
         facts.home = Some(&home);
 
-        let text = text(&Diagnostics::default(), &facts);
+        let text = text(None, &facts);
 
         // The built-in skills sort in among the others by name.
         let skills = section(&text, "skills");
@@ -787,7 +783,7 @@ mod tests {
     fn says_why_there_is_nothing_yet() {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
-        let checking = text(&Diagnostics::default(), &facts);
+        let checking = text(None, &facts);
         let servers = section(&checking, "language servers");
         assert_eq!(checking[servers + 1], "▎   checking…");
         let tools = section(&checking, "tools");
@@ -797,7 +793,7 @@ mod tests {
         assert_eq!(checking[tools + 4], "▎   gh             checking…");
 
         facts.checks = false;
-        let unchecked = text(&Diagnostics::default(), &facts);
+        let unchecked = text(None, &facts);
         assert_eq!(unchecked[servers + 1], "▎   not checked in this session");
         assert_eq!(unchecked[tools + 1], "▎   not checked in this session");
     }
@@ -807,28 +803,26 @@ mod tests {
         let context = Context::default();
         let mut facts = facts(&context, &[]);
 
-        let found = Diagnostics {
+        let found = lookup(Programs {
             rtk: Some(Program::Found("/bin/rtk".into())),
-            browser: Some(Program::Found("/bin/agent-browser".into())),
-            tea: Some(Program::Found("/bin/tea".into())),
-            gh: Some(Program::Found("/bin/gh".into())),
-            ..Diagnostics::default()
-        };
-        let lines = text(&found, &facts);
+            browser: Program::Found("/bin/agent-browser".into()),
+            tea: Program::Found("/bin/tea".into()),
+            gh: Program::Found("/bin/gh".into()),
+        });
+        let lines = text(Some(&found), &facts);
         let tools = section(&lines, "tools");
         assert_eq!(lines[tools + 1], "▎   ✓ rtk            /bin/rtk");
         assert_eq!(lines[tools + 2], "▎   ✓ agent-browser  /bin/agent-browser");
         assert_eq!(lines[tools + 3], "▎   ✓ tea            /bin/tea");
         assert_eq!(lines[tools + 4], "▎   ✓ gh             /bin/gh");
 
-        let missing = Diagnostics {
+        let missing = lookup(Programs {
             rtk: Some(Program::Missing),
-            browser: Some(Program::Missing),
-            tea: Some(Program::Missing),
-            gh: Some(Program::Missing),
-            ..Diagnostics::default()
-        };
-        let lines = text(&missing, &facts);
+            browser: Program::Missing,
+            tea: Program::Missing,
+            gh: Program::Missing,
+        });
+        let lines = text(Some(&missing), &facts);
         assert_eq!(lines[tools + 1], "▎   ✗ rtk            not on PATH");
         assert_eq!(
             lines[tools + 2],
@@ -839,7 +833,7 @@ mod tests {
         assert_eq!(lines[tools + 3], "▎   ✗ tea            not on PATH");
         assert_eq!(lines[tools + 4], "▎   ✗ gh             not on PATH");
         facts.rtk = false;
-        let lines = text(&missing, &facts);
+        let lines = text(Some(&missing), &facts);
         assert_eq!(
             lines[tools + 1],
             "▎   ✗ rtk            disabled in the config"
