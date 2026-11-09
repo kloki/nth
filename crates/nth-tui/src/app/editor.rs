@@ -228,7 +228,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        app::{Tab, keys::Action, tests::Scripted},
+        app::{
+            Tab,
+            keys::Action,
+            tests::{Scripted, app_on},
+        },
         chat::Entry,
     };
 
@@ -254,7 +258,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let blocker = dir.path().join("file");
         std::fs::write(&blocker, "not a directory").expect("writes");
-        let mut app = crate::app::tests::app();
+        let mut app = crate::app::tests::test_app();
         app.prompt.insert_str("draft");
         app.edit();
         let mut input = Some("original input");
@@ -276,7 +280,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let copy = dir.path().join("prompt.md");
         std::fs::write(&copy, "changed").expect("writes");
-        let mut app = crate::app::tests::app();
+        let mut app = crate::app::tests::test_app();
         app.prompt.insert_str("draft");
         app.editing = Some(Editing {
             target: Target::Prompt,
@@ -313,7 +317,7 @@ mod tests {
     async fn app_with_plan() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::idle()));
         std::fs::create_dir_all(app.plan.path().parent().expect("dir")).expect("dirs");
         std::fs::write(app.plan.path(), "# Plan\n").expect("writes");
         app.plan.read();
@@ -325,7 +329,7 @@ mod tests {
 
     #[test]
     fn ctrl_g_on_the_plan_tab_without_a_plan_only_hints() {
-        let mut app = crate::app::tests::app();
+        let mut app = crate::app::tests::test_app();
         app.content.open(Tab::Plan);
         app.apply(Action::Edit);
         assert_eq!(app.hint.as_deref(), Some("no plan yet"));
@@ -334,7 +338,7 @@ mod tests {
 
     #[test]
     fn ctrl_g_off_the_plan_tab_edits_the_prompt() {
-        let mut app = crate::app::tests::app();
+        let mut app = crate::app::tests::test_app();
         app.apply(Action::Edit);
         assert_eq!(
             app.pending_editor,
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn prompt_edits_become_the_prompt() {
-        let mut app = crate::app::tests::app();
+        let mut app = crate::app::tests::test_app();
         app.prompt.insert_str("draft");
 
         app.prompt_edited(Ok("edited\nmore\n".into()));
@@ -367,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn edits_go_to_the_model_and_show_as_one_row() {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::idle()));
 
         app.plan_edited("# Plan\n", Ok("# Plan\n".into()));
         assert_eq!(app.hint.as_deref(), Some("no changes to the plan"));

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use nth_curios::{self as core, Comment, Publish, Send, Target, TargetKind};
 use nth_protocol::{StreamEvent, ToolCall};
 
-use super::{App, Message, Reply, Scripted, Session, rows_of};
+use super::{App, Message, Reply, Scripted, Session, app_on, rows_of};
 
 async fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Store, core::Curio) {
     let dir = tempfile::tempdir().unwrap();
@@ -28,7 +28,7 @@ async fn fixture(provider: Arc<Scripted>) -> (tempfile::TempDir, App, core::Stor
         })
         .unwrap()
         .curio;
-    let mut app = App::bare(session, provider, Arc::new(Vec::new()));
+    let mut app = app_on(session, provider);
     app.poll_curios_through().await;
     (dir, app, store, curio)
 }
@@ -216,7 +216,7 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
     let blocked = dir.path().join("blocked-sessions");
     std::fs::write(&blocked, "not a directory").unwrap();
     let saves = nth_session::Store::at(&blocked);
-    app = app.with_store(saves.clone());
+    app.store = Some(Arc::new(saves.clone()));
     let thread = comment(&store, &c);
     let batch = submit(&store, &c, &thread);
     app.poll_curios_through().await;
@@ -246,7 +246,7 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
     assert_eq!(review_text(&resumed.messages).len(), 1);
     assert!(store.batches(true).unwrap().is_empty());
     drop(app);
-    let mut restarted = App::bare(resumed, provider.clone(), Arc::new(Vec::new()));
+    let mut restarted = app_on(resumed, provider.clone());
     restarted.poll_curios_through().await;
     restarted.notices_due();
     assert!(!restarted.is_busy());
@@ -261,7 +261,6 @@ async fn failed_session_save_leaves_batch_pending_then_restart_deduplicates_save
 async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let provider = Arc::new(Scripted::default());
     let (dir, mut app, _first_store, first) = fixture(provider).await;
-    app.opener = |_| Ok(());
     let publish = |owner: &str, title: &str| {
         let store = core::Store::new(dir.path(), owner).unwrap();
         let curio = store

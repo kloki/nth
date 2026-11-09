@@ -15,7 +15,10 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::{
-    app::tests::{Reply, Scripted},
+    app::{
+        AppConfig,
+        tests::{Reply, Scripted, app_on},
+    },
     chat::Entry,
 };
 
@@ -34,7 +37,7 @@ async fn busy_app() -> (App, Arc<AtomicBool>) {
     let hang = Arc::new(Scripted::hang());
     let dropped = hang.dropped.clone();
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, hang, Arc::new(Vec::new()));
+    let mut app = app_on(session, hang);
     app.prompt.insert_str("go");
     app.submit();
     tokio::task::yield_now().await;
@@ -56,11 +59,15 @@ async fn end_turn_drains_tail_events_before_finishing_transcript() {
     let (mut app, _) = busy_app().await;
     app.interrupt();
     let ended = app.turn.join().await.expect("turn ends");
-    app.events_tx
+    app.channels
+        .events
+        .tx
         .send(Event::TextDelta("tail reply".into()))
         .await
         .expect("event queued");
-    app.events_tx
+    app.channels
+        .events
+        .tx
         .send(Event::Usage(Usage {
             input: 123,
             ..Usage::default()
@@ -72,7 +79,9 @@ async fn end_turn_drains_tail_events_before_finishing_transcript() {
         input: 123,
         ..Usage::default()
     });
-    app.events_tx
+    app.channels
+        .events
+        .tx
         .send(Event::Spend(Box::new(spend)))
         .await
         .expect("spend queued");
@@ -80,7 +89,7 @@ async fn end_turn_drains_tail_events_before_finishing_transcript() {
     let entries: Vec<_> = app.chat.transcript.entries().collect();
     assert!(format!("{entries:?}").contains("tail reply"), "{entries:?}");
     assert!(matches!(entries.last(), Some(Entry::Interrupted { .. })));
-    assert!(app.events_rx.try_recv().is_err());
+    assert!(app.channels.events.rx.try_recv().is_err());
     assert_eq!(app.usage.map(|usage| usage.input), Some(123));
     assert_eq!(
         app.running, None,
@@ -112,7 +121,7 @@ async fn a_skill_command_sends_the_filled_in_skill() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", dir.path().to_path_buf())
         .with_context(crate::app::tests::with_fix_skill(dir.path()));
-    let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, hang.clone());
 
     app.prompt.insert_str("/fix the build");
     app.submit();
@@ -145,7 +154,7 @@ async fn a_skill_that_cannot_be_read_fails_the_turn() {
     let context = crate::app::tests::with_fix_skill(dir.path());
     std::fs::remove_file(dir.path().join(".agents/skills/fix/SKILL.md")).expect("removes");
     let session = Session::new("glm", dir.path().to_path_buf()).with_context(context);
-    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::hang()));
 
     app.prompt.insert_str("/fix it");
     app.submit();
@@ -166,8 +175,10 @@ async fn a_sent_prompt_is_saved_to_the_history_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("nth/prompt-history.jsonl");
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
-        .with_history(crate::history::History::load(path.clone()).await);
+    let mut app = App::new(AppConfig {
+        history: crate::history::History::load(path.clone()).await,
+        ..AppConfig::test(session, Arc::new(Scripted::hang()))
+    });
 
     app.prompt.insert_str("two\nlines");
     app.submit();
@@ -220,8 +231,9 @@ fn listed(id: &str, context: u64, output: u64) -> ModelInfo {
 /// An idle app in `dir` that runs commands with the real bash.
 fn shell_app(dir: &std::path::Path) -> App {
     let session = Session::new("glm", dir.to_path_buf());
-    App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()))
-        .with_shell(Arc::new(nth_tools::Bash::untimed(Default::default())))
+    let mut config = AppConfig::test(session, Arc::new(Scripted::default()));
+    config.runtime.shell = Arc::new(nth_tools::Bash::untimed(Default::default()));
+    App::new(config)
 }
 
 fn command(app: &mut App, text: &str) {

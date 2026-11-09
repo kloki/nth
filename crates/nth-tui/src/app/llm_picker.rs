@@ -208,8 +208,9 @@ mod tests {
     use super::*;
     use crate::{
         app::{
+            AppConfig,
             keys::Action,
-            tests::{app, rows},
+            tests::{app_on, rows, test_app, test_config},
         },
         llm_picker::{tests::model, usage::LlmUsage},
     };
@@ -217,7 +218,11 @@ mod tests {
     /// An idle app whose model list is already in, so opening the picker
     /// asks the provider for nothing.
     fn llm_listed_app() -> App {
-        let mut app = app();
+        listed(test_app())
+    }
+
+    /// `app` with two models listed.
+    fn listed(mut app: App) -> App {
         app.llms = Some(vec![model("glm", true), model("plain", false)].into());
         app
     }
@@ -338,7 +343,10 @@ mod tests {
     async fn a_turn_counts_for_its_model_and_is_saved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nth/llm-usage.json");
-        let mut app = llm_listed_app().with_llm_usage(LlmUsage::load(path.clone()).await);
+        let mut app = listed(App::new(AppConfig {
+            llm_usage: LlmUsage::load(path.clone()).await,
+            ..test_config()
+        }));
 
         app.prompt.insert_str("go");
         app.submit();
@@ -365,7 +373,7 @@ mod tests {
     /// session keeps the limits it saved, so its compaction still fires.
     #[tokio::test]
     async fn a_turn_before_the_listing_keeps_the_sessions_limits() {
-        let mut app = app();
+        let mut app = test_app();
         app.session
             .as_mut()
             .expect("idle")
@@ -387,7 +395,7 @@ mod tests {
     /// model the listing does not name leaves the limits unknown.
     #[tokio::test]
     async fn switching_to_an_unlisted_model_drops_the_old_limits() {
-        let mut app = app();
+        let mut app = test_app();
         app.session
             .as_mut()
             .expect("idle")
@@ -407,7 +415,7 @@ mod tests {
     /// it), and then the old model's price and image support go with it.
     #[tokio::test]
     async fn switching_models_without_a_listing_drops_the_old_price() {
-        let mut app = app();
+        let mut app = test_app();
         let mut glm = model("glm", true);
         glm.cost = Some(Cost {
             input: 1.0,
@@ -441,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_puts_the_listed_limits_on_the_session() {
-        let mut app = app();
+        let mut app = test_app();
         let mut glm = model("glm", true);
         glm.context = Some(200_000);
         glm.output = Some(64_000);
@@ -459,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_without_a_listing_leaves_the_limits_unknown() {
-        let mut app = app();
+        let mut app = test_app();
 
         app.prompt.insert_str("go");
         app.submit();
@@ -605,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_list_loads_into_the_open_picker() {
-        let mut app = app();
+        let mut app = test_app();
         app.apply(Action::LlmPicker);
         assert!(picker(&app).chosen().is_none(), "still loading");
 
@@ -619,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_provider_that_could_not_list_shows_why_after_the_models() {
-        let mut app = app();
+        let mut app = test_app();
         app.apply(Action::LlmPicker);
         let listing = app.llm_listing.take().expect("listing");
         listing.abort();
@@ -641,7 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_a_provider_is_missing_from_is_asked_for_again() {
-        let mut app = app();
+        let mut app = test_app();
         app.llms = Some(Listing {
             models: vec![model("glm", true)],
             failed: vec![Failed {
@@ -676,7 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_list_is_asked_for_again() {
-        let mut app = app();
+        let mut app = test_app();
         app.apply(Action::LlmPicker);
         let listing = app.llm_listing.take().expect("listing");
         listing.abort();
@@ -723,11 +731,7 @@ mod tests {
     async fn dropping_the_app_aborts_the_listing() {
         let dropped = Arc::new(AtomicBool::new(false));
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::bare(
-            session,
-            Arc::new(SlowList(dropped.clone())),
-            Arc::new(Vec::new()),
-        );
+        let mut app = app_on(session, Arc::new(SlowList(dropped.clone())));
         app.apply(Action::LlmPicker);
         tokio::task::yield_now().await;
 

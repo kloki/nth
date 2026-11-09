@@ -91,7 +91,7 @@ impl App {
     /// are gone, so there is nobody left to answer.
     pub(super) fn drop_asks(&mut self) {
         self.asks.clear();
-        while self.asks_rx.try_recv().is_ok() {}
+        while self.channels.asks.rx.try_recv().is_ok() {}
         if matches!(self.input, Input::Question(_)) {
             self.input = Input::Prompt;
         }
@@ -107,7 +107,7 @@ mod tests {
     use crate::{
         app::{
             keys::Action,
-            tests::{app, rows, tab_colour},
+            tests::{rows, tab_colour, test_app},
         },
         question::tests::question,
     };
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn a_question_turns_the_chat_tab_magenta() {
-        let mut app = app();
+        let mut app = test_app();
         assert_eq!(tab_colour(&mut app, "› chat"), Color::Reset);
         let (ask, _replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
         app.on_ask(ask);
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_question_takes_the_prompts_place_and_answers_the_tool() {
-        let mut app = app();
+        let mut app = test_app();
         app.prompt.insert_str("half typed");
         let (ask, mut replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
         app.on_ask(ask);
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn esc_declines_and_the_next_question_follows() {
-        let mut app = app();
+        let mut app = test_app();
         let (first, mut declined) = ask(vec![question("auth", false, &["a", "b"])]);
         let (second, _) = ask(vec![question("checks", true, &["a", "b"])]);
         app.on_ask(first);

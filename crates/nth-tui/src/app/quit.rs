@@ -167,17 +167,20 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::app::{
-        Queued,
-        keys::Action,
-        monitor::tests::start,
-        tests::{Reply, Scripted, app},
+    use crate::{
+        app::{
+            AppConfig, Queued,
+            keys::Action,
+            monitor::tests::start,
+            tests::{Reply, Scripted, app_on, test_app},
+        },
+        history::History,
     };
 
     /// An app whose turn waits on a model that never answers.
     fn busy_app() -> App {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::hang()));
         app.prompt.insert_str("go");
         app.submit();
         assert!(app.is_busy());
@@ -265,8 +268,10 @@ mod tests {
                 .with_fallback(Reply::Hang);
             let called = Arc::new(Notify::new());
             let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stuck(name, called.clone()))];
-            let mut app =
-                App::bare(session, Arc::new(provider), Arc::new(tools)).with_store(store.clone());
+            let mut config = AppConfig::test(session, Arc::new(provider));
+            config.runtime.model_tools = Arc::new(tools);
+            config.store = Some(store.clone());
+            let mut app = App::new(config);
             app.prompt.insert_str("go");
             app.submit();
             called.notified().await;
@@ -292,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn quitting_starts_nothing_queued_behind_the_turn() {
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.prompt.insert_str("go");
         app.submit();
         app.turns.push(Queued::Prompt("then".into()));
@@ -316,10 +321,22 @@ mod tests {
         store: &Store,
         saved: impl Future<Output = Result<(), nth_session::store::Error>> + Send + 'static,
     ) -> App {
+        saving_with(History::default(), store, saved)
+    }
+
+    /// [`saving`], recalling `history`.
+    fn saving_with(
+        history: History,
+        store: &Store,
+        saved: impl Future<Output = Result<(), nth_session::store::Error>> + Send + 'static,
+    ) -> App {
         let mut session = Session::new("glm", "/repo".into());
         session.messages.push(Message::User("hi".into()));
-        let mut app = App::bare(session, Arc::new(Scripted::hang()), Arc::new(Vec::new()))
-            .with_store(store.clone());
+        let mut app = App::new(AppConfig {
+            store: Some(store.clone()),
+            history,
+            ..AppConfig::test(session, Arc::new(Scripted::hang()))
+        });
         // An older clone's save, still writing as you quit; it writes
         // nothing, so the file holds only what the exit saves.
         app.session_saving.start(|_| {
@@ -373,8 +390,8 @@ mod tests {
     async fn quitting_writes_the_history_of_a_prompt_it_dropped() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nth/prompt-history.jsonl");
-        let history = crate::history::History::load(path.clone()).await;
-        let mut app = saving(&Store::at(dir.path()), async { Ok(()) }).with_history(history);
+        let history = History::load(path.clone()).await;
+        let mut app = saving_with(history, &Store::at(dir.path()), async { Ok(()) });
         app.prompt.insert_str("go");
         app.submit();
         assert!(app.turns.held().is_some(), "held for the save");
@@ -387,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_task_that_panicked_leaves_a_note() {
-        let mut app = app();
+        let mut app = test_app();
         app.turn
             .start(|_| tokio::spawn(async { panic!("turn exploded") }));
 
@@ -402,7 +419,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_that_will_not_stop_is_aborted_with_a_note() {
-        let mut app = app();
+        let mut app = test_app();
         app.turn.start(|_| tokio::spawn(std::future::pending()));
         let turn = app.turn.abort_handle().expect("running");
 
@@ -419,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn quitting_with_monitors_running_asks_twice() {
-        let mut app = app();
+        let mut app = test_app();
         start(&mut app, "ci").await;
 
         app.apply(Action::ClearOrQuit);
@@ -439,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn quitting_stops_the_monitors_and_tells_the_session() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         // The monitor's task, which reports once stopped.
         let monitors = app.monitors.clone();
@@ -466,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn quitting_saves_an_end_the_app_had_not_heard_yet() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         let end = MonitorEnd::Exited(Some(0));
         app.monitors

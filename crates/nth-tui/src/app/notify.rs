@@ -11,12 +11,6 @@ use nth_protocol::{Ask, Message, Mode};
 use super::{App, TabState};
 
 impl App {
-    #[cfg(test)]
-    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
-        self.set_notifier(notifier);
-        self
-    }
-
     /// Sends through `notifier` from now on, and hears of its failures
     /// rather than the last one's.
     pub(super) fn set_notifier(&mut self, notifier: Notifier) {
@@ -138,7 +132,7 @@ mod tests {
     use tokio::sync::{mpsc, oneshot};
 
     use super::*;
-    use crate::app::tests::{Reply, Scripted};
+    use crate::app::tests::{Reply, Scripted, app_on};
 
     struct Recording(mpsc::UnboundedSender<Notification>);
 
@@ -159,8 +153,9 @@ mod tests {
     ) -> (App, mpsc::UnboundedReceiver<Notification>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let session = Session::new("glm", cwd);
-        let mut app = App::bare(session, Arc::new(provider), Arc::new(Vec::new()))
-            .with_notifier(Notifier::new(Box::new(Recording(tx))));
+        let mut app = app_on(session, Arc::new(provider));
+        // A backend no config names: the one that records what it was sent.
+        app.set_notifier(Notifier::new(Box::new(Recording(tx))));
         // Looking elsewhere, or nothing would be sent.
         app.on_terminal(TermEvent::FocusLost);
         (app, rx)
@@ -457,8 +452,8 @@ mod tests {
             )
             .config
         };
-        // `bare` installed no config, and a first one is always taken.
-        app.config = Some(config());
+        // The app was built on this config, so the recording notifier set
+        // after it stays while [notify] says the same.
         let note = |summary: &str| Notification {
             summary: summary.into(),
             body: String::new(),

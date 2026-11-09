@@ -31,11 +31,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::tests::app;
+    use crate::app::tests::test_app;
 
     #[tokio::test]
     async fn a_second_walk_waits_for_the_first() {
-        let mut app = app();
+        let mut app = test_app();
         app.index_files();
         app.index_files();
 
@@ -47,7 +47,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_app_cancels_the_walk() {
-        let mut app = app();
+        let mut app = test_app();
         app.index_files();
         let cancel = app.indexing.token().expect("walking");
 

@@ -152,8 +152,9 @@ pub(super) mod tests {
 
     use super::*;
     use crate::app::{
+        AppConfig,
         keys::Action,
-        tests::{app, rows, tab_colour},
+        tests::{rows, tab_colour, test_app, test_config},
     };
 
     /// Starts a monitor as the tool would, and lets the app hear of it.
@@ -192,7 +193,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_monitor_opens_a_tab_without_showing_it() {
-        let mut app = app();
+        let mut app = test_app();
         start(&mut app, "ci").await;
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(1)]);
@@ -204,7 +205,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn the_tab_closes_once_the_process_exits() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         start(&mut app, "logs").await;
         app.apply(Action::Content(1));
@@ -217,7 +218,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn the_tab_shows_the_command_and_its_lines() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         say(&mut app, m.id, "step 1 ok", Stream::Stdout).await;
         say(&mut app, m.id, "warning", Stream::Stderr).await;
@@ -236,7 +237,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_running_monitor_tab_does_not_close() {
-        let mut app = app();
+        let mut app = test_app();
         start(&mut app, "ci").await;
         app.apply(Action::Content(1));
 
@@ -253,7 +254,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn ctrl_w_stops_the_monitor_then_closes_its_tab() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         app.apply(Action::Content(1));
 
@@ -269,7 +270,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn clear_closes_the_tabs_as_their_processes_stop() {
-        let mut app = app();
+        let mut app = test_app();
         let running = start(&mut app, "ci").await;
 
         app.run_command(crate::command::Command::Clear);
@@ -283,7 +284,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_stdout_line_reaches_the_inbox_and_stderr_does_not() {
-        let mut app = app();
+        let mut app = test_app();
         app.monitors.set_log_dir("/logs".into());
         let m = start(&mut app, "errors \"in\" log").await;
         say(&mut app, m.id, "ERROR one", Stream::Stdout).await;
@@ -301,7 +302,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn an_ended_monitor_closes_its_notice() {
-        let mut app = app();
+        let mut app = test_app();
         app.monitors.set_log_dir("/logs".into());
         let m = start(&mut app, "ci").await;
         say(&mut app, m.id, "build ok", Stream::Stdout).await;
@@ -324,7 +325,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_forgotten_monitors_late_end_posts_nothing() {
-        let mut app = app();
+        let mut app = test_app();
         let m = start(&mut app, "ci").await;
         say(&mut app, m.id, "before", Stream::Stdout).await;
 
@@ -340,7 +341,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_monitor_whose_start_was_still_queued_stays_with_its_session() {
-        let mut app = app();
+        let mut app = test_app();
         // Started and printing before the app heard of it, then the
         // session is left: the old registry forgot it under its lock, so
         // nothing it says may reach the next session's model.
@@ -367,7 +368,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_left_sessions_monitor_is_not_waited_for() {
-        let mut app = app();
+        let mut app = test_app();
         start(&mut app, "ci").await;
         assert!(app.awaits_monitor_ends(), "this session's");
 
@@ -384,7 +385,10 @@ pub(super) mod tests {
     async fn monitors_log_beside_the_session_save() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = nth_session::Store::at(dir.path());
-        let mut app = app().with_store(store.clone());
+        let mut app = App::new(AppConfig {
+            store: Some(store.clone()),
+            ..test_config()
+        });
         let first = start(&mut app, "ci").await;
         assert_eq!(first.log, store.monitor_dir(app.session_id).join("1.log"));
 

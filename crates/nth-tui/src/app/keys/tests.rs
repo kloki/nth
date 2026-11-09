@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     app::{
         completion::Completion,
-        tests::{app, buffer, prompt_row, rows},
+        tests::{buffer, prompt_row, rows, test_app},
     },
     command::{Command, Entry},
 };
@@ -61,7 +61,7 @@ fn maps_keys_to_actions() {
 }
 
 fn typed(text: &str) -> App {
-    let mut app = app();
+    let mut app = test_app();
     for c in text.chars() {
         app.apply(Action::Insert(c));
     }
@@ -87,7 +87,7 @@ fn names(app: &App) -> Vec<&str> {
 
 /// An app whose project has the `fix` skill, with `text` typed.
 fn skilled(dir: &std::path::Path, text: &str) -> App {
-    let mut app = app();
+    let mut app = test_app();
     app.context = crate::app::tests::with_fix_skill(dir);
     for c in text.chars() {
         app.apply(Action::Insert(c));
@@ -96,7 +96,7 @@ fn skilled(dir: &std::path::Path, text: &str) -> App {
 }
 
 fn with_files(text: &str) -> App {
-    let mut app = app();
+    let mut app = test_app();
     app.files = vec!["crates/nth-tui/src/app/keys.rs".into(), "README.md".into()];
     for c in text.chars() {
         app.apply(Action::Insert(c));
@@ -296,7 +296,7 @@ fn esc_closes_the_file_popup() {
 
 /// An app that sent `sent`, oldest first, with `draft` typed.
 fn recalling(sent: &[&str], draft: &str) -> App {
-    let mut app = app();
+    let mut app = test_app();
     for prompt in sent {
         app.history.push(prompt.to_string());
     }
@@ -352,7 +352,7 @@ fn a_recalled_command_does_not_open_the_popup() {
 
 #[test]
 fn ctrl_c_clears_the_prompt_before_quitting() {
-    let mut app = app();
+    let mut app = test_app();
     app.prompt.insert_str("draft");
 
     app.apply(Action::ClearOrQuit);
@@ -401,7 +401,7 @@ fn backspace_at_the_start_and_esc_leave_command_mode() {
 #[test]
 fn tab_keeps_command_mode() {
     // Plan, since act is the default and a switch to it would pass too.
-    let mut app = app();
+    let mut app = test_app();
     app.set_mode(nth_protocol::Mode::Plan);
     app.apply(Action::Insert('!'));
     app.apply(Action::NextTab);

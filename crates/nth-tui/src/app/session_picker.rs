@@ -15,11 +15,6 @@ pub(super) enum Loaded {
 }
 
 impl App {
-    pub fn with_reload(mut self, reload: Option<super::Reload>) -> Self {
-        self.reload = reload;
-        self
-    }
-
     /// A key while the session picker is open.
     pub(super) fn key_session_picker(&mut self, action: Action) {
         let Input::SessionPicker(picker) = &mut self.input else {
@@ -188,8 +183,9 @@ mod tests {
     use super::*;
     use crate::{
         app::{
+            AppConfig,
             keys::Action,
-            tests::{app, runtime},
+            tests::{runtime, test_app, test_config},
         },
         chat::Entry,
     };
@@ -206,7 +202,10 @@ mod tests {
             ..Default::default()
         }));
         store.save(&saved).await.expect("saves");
-        let mut app = app().with_store(store);
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            ..test_config()
+        });
         let configured = nth_protocol::Compaction {
             auto: false,
             ..nth_protocol::Compaction::default()
@@ -249,7 +248,10 @@ mod tests {
         let mut saved = Session::new("kimi", project.clone());
         saved.messages.push(Message::User("fix it".into()));
         store.save(&saved).await.expect("saves");
-        let mut app = app().with_store(store);
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            ..test_config()
+        });
 
         app.open_session_picker();
         let sessions = app.session_listing.join().await.expect("lists");
@@ -301,7 +303,11 @@ mod tests {
         let mut saved = Session::new("saved-model", dir.path().into());
         saved.messages.push(Message::User("hello".into()));
         store.save(&saved).await.unwrap();
-        let mut app = app().with_store(store).with_reload(Some(reload(false)));
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            reload: Some(reload(false)),
+            ..test_config()
+        });
         let old_provider = app.provider.clone();
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();
@@ -353,9 +359,11 @@ mod tests {
             async move { Ok(runtime(session, Arc::new(Lists("new/model")))) }.boxed()
         });
         let session = Session::new("glm", "/repo".into());
-        let mut app = App::new(runtime(session, Arc::new(Lists("old/model"))))
-            .with_store(store)
-            .with_reload(Some(reload));
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            reload: Some(reload),
+            ..AppConfig::test(session, Arc::new(Lists("old/model")))
+        });
         app.list_llms();
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();
@@ -374,10 +382,9 @@ mod tests {
     fn the_chat_starts_with_its_runtimes_warnings() {
         // As `/resume` shows the ones its runtime came with.
         let session = Session::new("glm", "/repo".into());
-        let app = App::new(crate::PreparedRuntime {
-            warnings: vec!["no model set, picked zen/glm".into()],
-            ..runtime(session, Arc::new(crate::app::tests::Scripted::idle()))
-        });
+        let mut config = AppConfig::test(session, Arc::new(crate::app::tests::Scripted::idle()));
+        config.runtime.warnings = vec!["no model set, picked zen/glm".into()];
+        let app = App::new(config);
 
         assert!(
             app.chat
@@ -394,7 +401,11 @@ mod tests {
         let mut saved = Session::new("saved", dir.path().into());
         saved.messages.push(Message::User("hello".into()));
         store.save(&saved).await.unwrap();
-        let mut app = app().with_store(store).with_reload(Some(reload(true)));
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            reload: Some(reload(true)),
+            ..test_config()
+        });
         let original = app.session_id;
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();
@@ -445,7 +456,11 @@ mod tests {
             }
             .boxed()
         });
-        let mut app = app().with_store(store).with_reload(Some(reload));
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            reload: Some(reload),
+            ..test_config()
+        });
         app.open_content(super::super::Tab::Diagnostics);
         app.open_session_picker();
         let listed = app.session_listing.join().await.unwrap();
@@ -505,7 +520,7 @@ mod tests {
 
     #[test]
     fn only_a_changed_chat_config_starts_the_settings_over() {
-        let mut app = app();
+        let mut app = test_app();
         // As `/settings` flips it for the run.
         app.settings.thinking = false;
 
@@ -521,7 +536,7 @@ mod tests {
 
     #[test]
     fn without_a_store_the_picker_says_so() {
-        let mut app = app();
+        let mut app = test_app();
         let id = app.session_id;
 
         app.open_session_picker();

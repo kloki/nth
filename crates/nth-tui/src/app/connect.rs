@@ -32,12 +32,6 @@ impl App {
         }
     }
 
-    /// The account handle sign-ins go through, from the config's store.
-    pub fn with_chatgpt(mut self, chatgpt: ChatGpt) -> Self {
-        self.chatgpt = Some(chatgpt);
-        self
-    }
-
     pub(super) fn open_connect(&mut self) {
         let connected = Connectable::ALL.map(|to| match to {
             Connectable::ChatGpt => self.chatgpt.as_ref().is_some_and(ChatGpt::connected),
@@ -152,8 +146,9 @@ mod tests {
     use super::*;
     use crate::{
         app::{
+            AppConfig,
             keys::Action,
-            tests::{app, rows},
+            tests::{rows, test_app, test_config},
         },
         command::Command,
     };
@@ -173,15 +168,15 @@ mod tests {
             };
             store.save(ChatGpt::ID, &oauth).await.expect("saves");
         }
-        let mut app = app().with_chatgpt(ChatGpt::new(store).expect("client"));
-        app.clipboard = |_| Ok(());
-        app.opener = |_| Ok(());
-        app
+        App::new(AppConfig {
+            chatgpt: Some(ChatGpt::new(store).expect("client")),
+            ..test_config()
+        })
     }
 
     #[tokio::test]
     async fn connect_completes_in_the_popup() {
-        let mut app = app();
+        let mut app = test_app();
         for c in "/con".chars() {
             app.apply(Action::Insert(c));
         }

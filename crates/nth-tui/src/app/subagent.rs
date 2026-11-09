@@ -218,31 +218,22 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use nth_protocol::{Event, Message};
-    use nth_session::{Session, Subagents, subagent::TaskOutcome};
+    use nth_session::{Session, subagent::TaskOutcome};
     use ratatui::style::Color;
-    use tokio::sync::mpsc;
 
     use super::*;
     use crate::{
         app::{
+            AppConfig,
             keys::Action,
-            tests::{Scripted, app, rows, tab_colour},
+            tests::{Scripted, rows, tab_colour, test_app, test_config},
         },
         chat::Entry,
     };
-
-    /// An app with a front-end for subagents, as the chat has.
-    fn fronted() -> App {
-        let mut app = app();
-        let (tx, rx) = mpsc::channel(64);
-        app.subagents = Subagents::new(tx);
-        app.subagent_rx = rx;
-        app
-    }
 
     fn started(app: &mut App, id: SubagentId, agent: &str) {
         app.on_subagent(SubagentEvent::Started {
@@ -276,7 +267,7 @@ mod tests {
     }
 
     /// A real subagent in the registry, whose provider answers nothing.
-    fn spawn(app: &mut App) -> SubagentId {
+    pub(in crate::app) fn spawn(app: &mut App) -> SubagentId {
         let agents = nth_context::Context::discover(
             std::path::Path::new("/nowhere"),
             &nth_context::Paths::default(),
@@ -296,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_subagent_opens_a_tab_without_showing_it() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "where do tabs open?");
 
@@ -316,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_tab_shows_the_header_and_its_chat_and_the_prompt_names_it() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "where do tabs open?");
         app.on_subagent(SubagentEvent::Session {
@@ -374,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn enter_on_its_tab_prompts_the_subagent_not_the_chat() {
-        let mut app = fronted();
+        let mut app = test_app();
         let id = spawn(&mut app);
         tokio::task::yield_now().await;
         hear(&mut app);
@@ -407,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_task_answer_wakes_the_model_through_the_inbox() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         assert!(app.turns.due().is_none());
@@ -425,7 +416,7 @@ mod tests {
 
     #[test]
     fn a_running_subagent_tab_does_not_close_and_esc_stops_it() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         app.apply(Action::Content(1));
@@ -455,7 +446,7 @@ mod tests {
 
     #[test]
     fn a_subagents_own_compaction_reaches_its_tab() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         app.on_subagent(SubagentEvent::Session {
             id: 1,
@@ -476,11 +467,13 @@ mod tests {
             static COPIED: std::cell::RefCell<Option<String>> =
                 const { std::cell::RefCell::new(None) };
         }
-        let mut app = fronted();
-        app.clipboard = |text| {
-            COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
-            Ok(())
-        };
+        let mut app = App::new(AppConfig {
+            clipboard: |text| {
+                COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+                Ok(())
+            },
+            ..test_config()
+        });
         app.chat
             .transcript
             .apply(&Event::TextDelta("parent answer".into()));
@@ -510,7 +503,7 @@ mod tests {
 
     #[test]
     fn an_answered_tab_closes_by_itself() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
@@ -522,7 +515,7 @@ mod tests {
 
     #[test]
     fn an_answered_tab_showing_closes_once_left() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         app.apply(Action::Content(1));
@@ -537,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_continued_subagent_opens_again_with_its_turns() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "first question");
         ended(&mut app, 1, TaskOutcome::Completed("found".into()));
@@ -563,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_closes_the_tabs_as_their_turns_end() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
         started(&mut app, 2, "general");
@@ -579,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_tab_opens_again_when_its_subagent_is_prompted() {
-        let mut app = fronted();
+        let mut app = test_app();
         let id = spawn(&mut app);
         tokio::task::yield_now().await;
         hear(&mut app);
@@ -595,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_subagent_started_before_clear_gets_no_tab() {
-        let mut app = fronted();
+        let mut app = test_app();
         let id = spawn(&mut app);
 
         app.run_command(crate::command::Command::Clear);
@@ -608,7 +601,7 @@ mod tests {
 
     #[test]
     fn quitting_with_a_subagent_running_asks_twice() {
-        let mut app = app();
+        let mut app = test_app();
         started(&mut app, 1, "explore");
         prompted(&mut app, 1, "go");
 
@@ -661,7 +654,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_finished_subagent_turn_is_counted_in_the_session_and_saved() {
-        let mut app = fronted();
+        let mut app = test_app();
         let agents = nth_context::Context::discover(
             std::path::Path::new("/nowhere"),
             &nth_context::Paths::default(),
@@ -704,7 +697,7 @@ mod tests {
 
     #[tokio::test]
     async fn quitting_stops_the_subagents_and_tells_the_session() {
-        let mut app = fronted();
+        let mut app = test_app();
         let id = spawn(&mut app);
         // The provider errs at once, so the task ends failed rather than
         // interrupted; either way its notice reaches the session.

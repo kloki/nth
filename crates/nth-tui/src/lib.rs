@@ -131,13 +131,14 @@ pub async fn run(
         Err(_) => llm_picker::usage::LlmUsage::default(),
     };
     let mut terminal = terminal::enter()?;
-    let mut app = app::App::new(runtime)
-        .with_subagents(subagents, subagent_rx)
-        .with_store(store)
-        .with_reload(loader)
-        .with_history(history)
-        .with_llm_usage(llm_usage)
-        .with_chatgpt(chatgpt);
+    let mut app = app::App::new(app::AppConfig {
+        store: Some(store),
+        chatgpt: Some(chatgpt),
+        reload: loader,
+        history,
+        llm_usage,
+        ..app::AppConfig::new(runtime, subagents, subagent_rx)
+    });
     let result = app.run(&mut terminal).await;
     terminal::restore();
     for note in &app.exit_notes {

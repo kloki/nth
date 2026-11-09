@@ -285,7 +285,7 @@ mod tests {
         *,
     };
     use crate::{
-        app::tests::{Reply, Scripted, rows_of},
+        app::tests::{Reply, Scripted, app_on, rows_of},
         curios::Root,
     };
 
@@ -301,7 +301,7 @@ mod tests {
                 .success()
         );
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         app.poll_curios_through().await;
         assert!(!dir.path().join(".nth/curios").exists());
@@ -384,7 +384,7 @@ mod tests {
         let mut session = Session::new("glm", dir.path().to_path_buf());
         session.curio_root = Some(stale.path().to_path_buf());
         let state_root = session.state_root();
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         // Finding it runs git, which the loop never waits on.
         assert_eq!(*app.curios.root(), Root::Unknown(state_root));
         app.poll_curios_through().await;
@@ -401,7 +401,7 @@ mod tests {
         let mut session = Session::new("glm", dir.path().to_path_buf());
         session.prepare_curios().unwrap();
         session.curio_root = Some(stale.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         assert!(app.curios.delivery().store().is_some(), "claimed");
         assert_eq!(
@@ -415,7 +415,7 @@ mod tests {
         let first = repository();
         let second = repository();
         let session = Session::new("glm", first.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         assert_eq!(
             *app.curios.root(),
@@ -436,7 +436,7 @@ mod tests {
     async fn opening_a_curio_before_the_first_poll_lands_says_so() {
         let dir = repository();
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.open_curio(app.session_id.to_string(), "review".into(), None);
         assert_eq!(
             app.hint.as_deref(),
@@ -449,7 +449,7 @@ mod tests {
     async fn a_session_outside_a_repository_stops_polling() {
         let dir = tempfile::tempdir().unwrap();
         let session = Session::new("glm", dir.path().to_path_buf());
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         assert_eq!(*app.curios.root(), Root::Outside);
         app.poll_curios();
@@ -478,8 +478,7 @@ mod tests {
             })
             .unwrap()
             .curio;
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
-        app.opener = |_| Ok(());
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         (dir, app, store, c)
     }
@@ -602,7 +601,7 @@ mod tests {
         session.prepare_curios().unwrap();
         let _other =
             nth_session::curios::CurioDelivery::claim(session.curio_store().unwrap()).unwrap();
-        let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+        let mut app = app_on(session, Arc::new(Scripted::default()));
         app.poll_curios_through().await;
         assert!(app.curios.delivery().store().is_none());
         assert_eq!(
@@ -788,7 +787,7 @@ mod tests {
     async fn successful_session_save_acknowledges_receipt() {
         let (dir, mut app, store, c) = fixture().await;
         let saved = nth_session::Store::at(dir.path().join("sessions"));
-        app = app.with_store(saved);
+        app.store = Some(Arc::new(saved));
         send(&store, &c);
         app.poll_curios_through().await;
         app.notices_due();

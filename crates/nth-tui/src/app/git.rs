@@ -68,13 +68,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        app::tests::{app, rows},
+        app::tests::{rows, test_app},
         git::{self, State},
     };
 
     #[test]
     fn status_shows_the_branch_in_the_git_summary() {
-        let mut app = app();
+        let mut app = test_app();
         app.git.status = Some(GitStatus {
             branch: Some("main".into()),
             ahead: 2,
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn the_branchs_pull_request_shows_after_the_branch_as_a_link() {
-        let mut app = app();
+        let mut app = test_app();
         app.git.status = Some(GitStatus {
             branch: Some("main".into()),
             ahead: 2,
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn a_link_a_narrow_line_cuts_off_is_not_clickable() {
-        let mut app = app();
+        let mut app = test_app();
         app.git.status = Some(GitStatus {
             branch: Some("a-very-long-branch-name".into()),
             ..GitStatus::default()
@@ -149,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_git_load_waits_for_the_first() {
-        let mut app = app();
+        let mut app = test_app();
         app.load_git();
         app.load_git();
 
@@ -161,7 +161,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_pr_load_waits_for_the_first() {
-        let mut app = app();
+        let mut app = test_app();
         app.load_pr();
         app.load_pr();
 
@@ -173,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_git_load_reruns_on_the_next_change() {
-        let mut app = app();
+        let mut app = test_app();
         let timeout = format!("git took longer than {} s", git::LOAD_TIMEOUT.as_secs());
         app.git
             .loading
@@ -189,7 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_app_aborts_the_git_load() {
-        let mut app = app();
+        let mut app = test_app();
         app.load_git();
         let loading = app.git.loading.abort_handle().expect("loading");
 
@@ -200,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_app_aborts_the_pr_load() {
-        let mut app = app();
+        let mut app = test_app();
         app.load_pr();
         let loading = app.git.pr_loading.abort_handle().expect("loading");
 

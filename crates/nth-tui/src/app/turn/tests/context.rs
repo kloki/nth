@@ -18,7 +18,7 @@ use crate::{
 /// An idle app with the context tab open and shown, built once.
 fn open_tab() -> App {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::idle()));
     app.run_command(Command::Context);
     assert_eq!(app.context_tab.rebuilds, 1, "opening it builds once");
     app
@@ -53,7 +53,7 @@ fn has_user(preview: &Preview, text: &str) -> bool {
 async fn the_tab_follows_the_turn_and_refreshes_on_events() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, hang.clone());
 
     send(&mut app, "one");
     hang.asked.notified().await;
@@ -158,9 +158,7 @@ async fn a_tab_that_comes_into_view_without_input_is_rebuilt_on_the_tick() {
     assert_eq!(app.context_tab.rebuilds, 2);
 
     // A resize that splits the panel puts it beside the chat.
-    let session = Session::new("glm", "/repo".into());
-    let mut app =
-        App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new())).with_split_width(80);
+    let mut app = crate::app::tests::split_at(80);
     app.run_command(Command::Context);
     app.content.select(0);
     rows_of(&mut app, 40);
@@ -180,7 +178,7 @@ async fn a_tab_that_comes_into_view_without_input_is_rebuilt_on_the_tick() {
 async fn closing_the_tab_mid_turn_stops_the_turn_building() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, hang.clone());
     app.run_command(Command::Context);
     send(&mut app, "go");
     hang.asked.notified().await;
@@ -194,7 +192,7 @@ async fn closing_the_tab_mid_turn_stops_the_turn_building() {
 async fn opening_the_tab_mid_turn_shows_the_turn_so_far() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, hang.clone(), Arc::new(Vec::new()));
+    let mut app = app_on(session, hang.clone());
     app.run_command(Command::Context);
     assert!(app.context_tab.view.preview().is_some());
     app.close_content();
@@ -231,8 +229,9 @@ async fn a_context_tool_call_asks_for_snapshots_for_its_turn_only() {
     });
     let provider = Scripted::new([vec![call], vec![StreamEvent::TextDelta("done".into())]]);
     let tools: Vec<Box<dyn Tool>> = vec![Box::new(nth_tools::ContextPreview)];
-    let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(provider), Arc::new(tools));
+    let mut config = AppConfig::test(Session::new("glm", "/repo".into()), Arc::new(provider));
+    config.runtime.model_tools = Arc::new(tools);
+    let mut app = App::new(config);
 
     send(&mut app, "what do you see");
     end(&mut app).await;
@@ -255,8 +254,9 @@ async fn a_later_turns_first_context_call_reads_nothing_of_the_last() {
         vec![StreamEvent::TextDelta("done".into())],
     ]);
     let tools: Vec<Box<dyn Tool>> = vec![Box::new(nth_tools::ContextPreview)];
-    let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(provider), Arc::new(tools));
+    let mut config = AppConfig::test(Session::new("glm", "/repo".into()), Arc::new(provider));
+    config.runtime.model_tools = Arc::new(tools);
+    let mut app = App::new(config);
     app.run_command(Command::Context);
     send(&mut app, "one");
     end(&mut app).await;
@@ -331,7 +331,7 @@ async fn a_command_has_no_snapshots_to_follow() {
 #[tokio::test]
 async fn a_turn_opened_before_its_task_runs_shows_nothing_of_the_last() {
     let session = Session::new("glm", "/repo".into());
-    let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::default()));
     app.run_command(Command::Context);
     send(&mut app, "one");
     end(&mut app).await;

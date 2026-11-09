@@ -187,12 +187,12 @@ impl App {
 mod tests {
     use crate::app::{
         keys::Action,
-        tests::{app, rows},
+        tests::{rows, test_app},
     };
 
     #[test]
     fn completion_pops_over_the_content_panel() {
-        let mut app = app();
+        let mut app = test_app();
         app.apply(Action::Insert('/'));
         let rows = rows(&mut app);
 
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn at_lists_the_agents_first_and_fills_one_in() {
-        let mut app = app();
+        let mut app = test_app();
         app.context = std::sync::Arc::new(nth_context::Context::discover(
             std::path::Path::new("/nowhere"),
             &nth_context::Paths::default(),
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn file_popup_opens_mid_prompt() {
-        let mut app = app();
+        let mut app = test_app();
         app.files = vec!["src/app/keys.rs".into(), "src/lib.rs".into()];
         for c in "see @ke".chars() {
             app.apply(Action::Insert(c));
@@ -261,7 +261,7 @@ mod tests {
         std::fs::create_dir_all(&repo).expect("mkdir");
         std::fs::create_dir_all(&other).expect("mkdir");
         std::fs::write(other.join("main.rs"), "").expect("file");
-        let mut app = app();
+        let mut app = test_app();
         app.cwd = repo;
         for c in "see @../o".chars() {
             app.apply(Action::Insert(c));
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn popup_follows_the_cursor_down_and_shifts_left_at_the_edge() {
-        let mut app = app();
+        let mut app = test_app();
         app.files = vec!["src/app/keys.rs".into()];
         app.apply(Action::Newline);
         app.apply(Action::Newline);

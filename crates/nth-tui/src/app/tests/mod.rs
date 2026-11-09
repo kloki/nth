@@ -18,13 +18,50 @@ use nth_session::Session;
 pub(crate) use provider::{Reply, Scripted};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 
-use super::{App, Panes, Queued, Tab, input::Input, keys::Action};
+use super::{App, AppConfig, Panes, Queued, Tab, input::Input, keys::Action};
 use crate::{PreparedRuntime, llm_picker::tests::model};
 
 /// An idle app whose provider must never be asked for anything.
-pub(crate) fn app() -> App {
-    let session = Session::new("glm", "/repo".into());
-    App::new(runtime(session, Arc::new(Scripted::idle())))
+pub(crate) fn test_app() -> App {
+    App::new(test_config())
+}
+
+/// What [`test_app`] starts from, for a test that changes some of it.
+pub(crate) fn test_config() -> AppConfig {
+    AppConfig::test(
+        Session::new("glm", "/repo".into()),
+        Arc::new(Scripted::idle()),
+    )
+}
+
+/// [`test_app`] splitting its content panel from `width` columns.
+pub(crate) fn split_at(width: u16) -> App {
+    let mut config = test_config();
+    config.runtime.config.layout.split_width = width;
+    App::new(config)
+}
+
+/// The chat on `session` and `provider`, as [`AppConfig::test`] starts it.
+pub(crate) fn app_on(session: Session, provider: Arc<dyn Provider>) -> App {
+    App::new(AppConfig::test(session, provider))
+}
+
+impl AppConfig {
+    /// The chat on [`runtime`]'s `session` and `provider`, its subagents
+    /// reporting to it, saving and recalling nothing, and with nowhere for
+    /// text or links to go, so no test reaches your clipboard or desktop.
+    pub(crate) fn test(session: Session, provider: Arc<dyn Provider>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        Self {
+            clipboard: |_| Ok(()),
+            opener: |_| Ok(()),
+            ..Self::new(
+                runtime(session, provider),
+                nth_session::Subagents::new(tx),
+                rx,
+            )
+        }
+    }
 }
 
 /// `session` on `provider` with no tools, an inbox of its own, a shell, idle checkers and each
@@ -147,7 +184,7 @@ fn context_preview(app: &App, body: usize) -> Arc<Preview> {
 
 #[test]
 fn context_document_scrolls_and_keeps_its_position_on_update() {
-    let mut app = app();
+    let mut app = test_app();
     let idle = rows(&mut app);
     app.run_command(crate::command::Command::Context);
     app.context_tab.view.update(Some(context_preview(&app, 30)));
@@ -172,7 +209,7 @@ async fn context_wheel_and_prompt_keys_keep_their_normal_routing() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
     for (width, column) in [(40, 5), (120, 90)] {
-        let mut app = app().with_split_width(80);
+        let mut app = split_at(80);
         app.run_command(crate::command::Command::Context);
         app.context_tab.view.update(Some(context_preview(&app, 50)));
         rows_of(&mut app, width);
@@ -206,7 +243,7 @@ async fn context_wheel_and_prompt_keys_keep_their_normal_routing() {
 
 #[tokio::test]
 async fn context_projects_idle_session_and_live_snapshots() {
-    let mut app = app();
+    let mut app = test_app();
     app.session
         .as_mut()
         .unwrap()
@@ -242,7 +279,7 @@ async fn context_projects_idle_session_and_live_snapshots() {
 
 #[test]
 fn context_refresh_uses_selected_settings_without_mutating_session() {
-    let mut app = app();
+    let mut app = test_app();
     app.run_command(crate::command::Command::Context);
     app.selection.mode = nth_protocol::Mode::Plan;
     app.pick_model("chosen-model");
@@ -259,7 +296,7 @@ fn context_refresh_uses_selected_settings_without_mutating_session() {
 
 #[test]
 fn an_empty_chat_shows_the_field_until_something_is_said() {
-    let mut app = app();
+    let mut app = test_app();
     assert!(app.showing_hero(), "it keeps moving");
     let content = |app: &mut App| rows(app)[2..8].concat();
     assert!(
@@ -279,7 +316,7 @@ fn an_empty_chat_shows_the_field_until_something_is_said() {
 
 #[test]
 fn tiny_terminal_draws_without_overflow() {
-    let mut app = app();
+    let mut app = test_app();
     let buffer = buffer_sized(&mut app, 40, 4);
     assert_eq!(buffer.area, ratatui::layout::Rect::new(0, 0, 40, 4));
     let rows: Vec<String> = (0..4)
@@ -295,7 +332,7 @@ fn tiny_terminal_draws_without_overflow() {
 
 #[test]
 fn a_tiny_terminal_draws_an_empty_picker_without_overflow() {
-    let mut app = app();
+    let mut app = test_app();
     let mut picker = crate::session_picker::SessionPicker::new(uuid::Uuid::new_v4());
     picker.load(Ok(Vec::new()));
     app.input = Input::SessionPicker(picker);
@@ -311,7 +348,7 @@ fn a_tiny_terminal_draws_an_empty_picker_without_overflow() {
 fn a_tiny_terminal_draws_a_question_without_overflow() {
     use crate::question::tests::{panel, question};
 
-    let mut app = app();
+    let mut app = test_app();
     let (panel, _reply) = panel(vec![question("auth", false, &["OAuth", "API key"])]);
     app.input = Input::Question(panel);
 
@@ -324,7 +361,7 @@ fn a_tiny_terminal_draws_a_question_without_overflow() {
 
 #[test]
 fn prompt_and_status_rows_never_move() {
-    let mut app = app();
+    let mut app = test_app();
     let idle = rows(&mut app);
     assert!(idle[0].starts_with(" [› chat] "), "tabs on the left");
     assert!(
@@ -389,7 +426,7 @@ fn prompt_and_status_rows_never_move() {
 
 #[test]
 fn the_prompt_shows_the_model_with_its_provider_and_effort_coloured() {
-    let mut app = app();
+    let mut app = test_app();
     app.selection.set_current(nth_protocol::Llm {
         model: "opencode/glm-5.3".into(),
         effort: Effort::High,
@@ -429,7 +466,7 @@ fn scrollbar(rows: &[String]) -> String {
 
 #[tokio::test]
 async fn diagnostics_that_overflow_have_a_scrollbar() {
-    let mut app = app();
+    let mut app = test_app();
     app.open_content(Tab::Diagnostics);
     let bar = scrollbar(&rows(&mut app));
     assert!(bar.starts_with('┃'), "at the top: {bar:?}");
@@ -444,7 +481,7 @@ async fn diagnostics_that_overflow_have_a_scrollbar() {
 
 #[test]
 fn a_scrollbar_shows_only_while_scrolled_up() {
-    let mut app = app();
+    let mut app = test_app();
     for i in 0..20 {
         app.chat.transcript.push_user(format!("message {i}"));
     }
@@ -472,7 +509,7 @@ fn a_scrollbar_shows_only_while_scrolled_up() {
 
 #[test]
 fn the_status_bar_shows_the_queue_on_its_second_line() {
-    let mut app = app();
+    let mut app = test_app();
     app.turns.set_queued([
         Queued::Prompt("\nfix the build\nand the tests".into()),
         Queued::Prompt("then lint".into()),
@@ -492,7 +529,7 @@ fn the_status_bar_shows_the_queue_on_its_second_line() {
 
 #[test]
 fn the_status_bar_shows_the_session_time() {
-    let mut app = app();
+    let mut app = test_app();
     app.session_since = SystemTime::now() - Duration::from_secs(24 * 60);
     let rows = rows(&mut app);
 
@@ -502,7 +539,7 @@ fn the_status_bar_shows_the_session_time() {
 #[test]
 fn status_widgets_show_directories_and_worst_lsp_state() {
     use nth_lsp::{ServerState, ServerStatus};
-    let mut app = app();
+    let mut app = test_app();
     app.extra_dirs = vec!["/a/docs".into(), "/b/docs".into()];
     app.servers = vec![
         ServerStatus {
@@ -543,7 +580,7 @@ fn the_minute_wake_lands_within_the_minute() {
 
 #[test]
 fn a_narrow_status_line_cuts_the_right_first() {
-    let mut app = app();
+    let mut app = test_app();
     app.git.status = Some(crate::git::GitStatus {
         branch: Some("a-very-long-branch-name".into()),
         modified: 1,
@@ -559,7 +596,7 @@ fn a_narrow_status_line_cuts_the_right_first() {
 
 #[test]
 fn the_context_usage_shows_a_coloured_percentage() {
-    let mut app = app();
+    let mut app = test_app();
     let place = status_row(&rows(&mut app), 0).trim_end().to_string();
     assert!(
         place.ends_with("/repo 0m"),
@@ -611,7 +648,7 @@ fn the_context_usage_shows_a_coloured_percentage() {
 
 #[test]
 fn the_status_bar_shows_what_the_session_spent() {
-    let mut app = app();
+    let mut app = test_app();
     let place = status_row(&rows(&mut app), 0).trim_end().to_string();
     let mut running = nth_session::Spend::new("glm", None);
     running.count(Usage {
@@ -660,7 +697,7 @@ fn the_status_bar_shows_what_the_session_spent() {
 
 #[tokio::test]
 async fn tool_output_stays_in_the_transcript() {
-    let mut app = app();
+    let mut app = test_app();
     app.chat.transcript.push_user("test it".into());
     let bash = ToolCall {
         id: "1".into(),
@@ -693,7 +730,7 @@ async fn tool_output_stays_in_the_transcript() {
 
 #[tokio::test]
 async fn a_panicking_job_is_a_hint_not_an_exit() {
-    let mut app = app();
+    let mut app = test_app();
     let before = crate::git::GitStatus {
         branch: Some("main".into()),
         ..Default::default()
@@ -717,7 +754,7 @@ async fn a_panicking_job_is_a_hint_not_an_exit() {
 
 #[tokio::test]
 async fn a_panicking_session_listing_shows_in_the_picker() {
-    let mut app = app();
+    let mut app = test_app();
     app.input = Input::SessionPicker(crate::session_picker::SessionPicker::new(app.session_id));
     app.session_listing
         .start(|_| tokio::spawn(async { panic!("listing exploded") }));
@@ -737,7 +774,7 @@ async fn a_panicking_session_listing_shows_in_the_picker() {
 #[tokio::test]
 async fn a_panicking_save_still_runs_the_one_asked_for_meanwhile() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = app();
+    let mut app = test_app();
     app.store = Some(Arc::new(nth_session::Store::at(dir.path())));
     app.session_saving
         .start(|_| tokio::spawn(async { panic!("save exploded") }));
@@ -753,7 +790,7 @@ async fn a_panicking_save_still_runs_the_one_asked_for_meanwhile() {
 
 #[test]
 fn exit_command_quits() {
-    let mut app = app();
+    let mut app = test_app();
     app.prompt.insert_str("/exit");
     app.submit();
     assert!(app.quit);
@@ -761,7 +798,7 @@ fn exit_command_quits() {
 
 #[tokio::test]
 async fn clear_command_starts_a_fresh_session() {
-    let mut app = app();
+    let mut app = test_app();
     let old = app.session.as_ref().expect("idle").id;
     app.session
         .as_mut()
@@ -795,7 +832,7 @@ async fn a_fresh_session_leaves_the_old_models_listing_behind() {
         cache_write: None,
     });
     session.env.max_steps = 9;
-    let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::idle()));
 
     app.prompt.insert_str("/clear");
     app.submit();
@@ -810,7 +847,7 @@ async fn a_fresh_session_leaves_the_old_models_listing_behind() {
 fn adopting_the_llm_hands_over_the_images_folder() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(nth_session::Store::at(dir.path()));
-    let mut app = app();
+    let mut app = test_app();
     let mut session = Session::new("glm", "/repo".into());
 
     app.adopt_llm(&mut session);
@@ -830,7 +867,7 @@ async fn a_fresh_session_takes_the_configured_compaction() {
     };
     let mut session = Session::new("glm", "/repo".into());
     session.env.compaction = configured;
-    let mut app = App::bare(session, Arc::new(Scripted::idle()), Arc::new(Vec::new()));
+    let mut app = app_on(session, Arc::new(Scripted::idle()));
 
     app.prompt.insert_str("/clear");
     app.submit();
@@ -844,7 +881,7 @@ async fn a_fresh_session_takes_the_configured_compaction() {
 
 #[tokio::test]
 async fn usage_opens_a_tab_of_what_the_session_spent() {
-    let mut app = app();
+    let mut app = test_app();
     let mut running = nth_session::Spend::new("glm", None);
     running.count(Usage {
         input: 2_000,
@@ -868,7 +905,7 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
 
 #[tokio::test]
 async fn keymaps_command_opens_a_scrollable_reference_tab_once() {
-    let mut app = app();
+    let mut app = test_app();
     app.prompt.insert_str("/keymaps");
     app.submit();
 
@@ -906,7 +943,7 @@ async fn keymaps_command_opens_a_scrollable_reference_tab_once() {
 
 #[tokio::test]
 async fn tabs_open_switch_and_close() {
-    let mut app = app();
+    let mut app = test_app();
     app.prompt.insert_str("/diagnostics");
     app.submit();
     let opened = rows(&mut app);
@@ -943,7 +980,12 @@ async fn tabs_open_switch_and_close() {
 /// An app whose chat says `hello there`, splitting from 80 columns, with
 /// the diagnostics tab open.
 fn split_app() -> App {
-    let mut app = app().with_split_width(80);
+    split_app_at(80)
+}
+
+/// [`split_app`], splitting from `width` columns.
+fn split_app_at(width: u16) -> App {
+    let mut app = split_at(width);
     app.chat.apply(&Event::TextDelta("hello there".into()));
     app.chat
         .transcript
@@ -1007,7 +1049,7 @@ async fn a_lone_chat_keeps_the_whole_width() {
 
 #[tokio::test]
 async fn a_zero_split_width_never_splits() {
-    let mut app = split_app().with_split_width(0);
+    let mut app = split_app_at(0);
     app.apply(Action::Content(0));
     let rows = rows_of(&mut app, 200);
     assert_eq!(app.panes(), Panes::Single(Tab::Chat));
@@ -1016,7 +1058,7 @@ async fn a_zero_split_width_never_splits() {
 
 #[tokio::test]
 async fn tabs_switch_with_an_input_panel_open() {
-    let mut app = app();
+    let mut app = test_app();
     app.open_content(Tab::Diagnostics);
     app.open_llm_picker();
     app.apply(Action::Content(0));
@@ -1026,11 +1068,11 @@ async fn tabs_switch_with_an_input_panel_open() {
 
 #[tokio::test]
 async fn the_agent_switches_the_tab() {
-    let mut app = app();
-    let screen = Screen::new(app.screen_tx.clone());
+    let mut app = test_app();
+    let screen = Screen::new(app.channels.screen.tx.clone());
     assert!(screen.show(Panel::Diagnostics).await);
 
-    let Some(show) = app.screen_rx.recv().await else {
+    let Some(show) = app.channels.screen.rx.recv().await else {
         panic!("sent a panel");
     };
     app.show(show);
@@ -1040,7 +1082,7 @@ async fn the_agent_switches_the_tab() {
 
 #[tokio::test]
 async fn a_tab_you_switch_to_does_not_flash() {
-    let mut app = app();
+    let mut app = test_app();
     app.open_content(Tab::Diagnostics);
     app.apply(Action::Content(0));
     assert!(app.flash.is_none());
@@ -1048,7 +1090,7 @@ async fn a_tab_you_switch_to_does_not_flash() {
 
 #[test]
 fn a_large_paste_collapses_and_a_small_one_does_not() {
-    let mut app = app();
+    let mut app = test_app();
     let pasted = (1..=5)
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
@@ -1072,7 +1114,7 @@ fn a_large_paste_collapses_and_a_small_one_does_not() {
 
 #[tokio::test]
 async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
-    let mut app = app();
+    let mut app = test_app();
     app.prompt.insert_str("half typed");
     app.run_command(crate::command::Command::Settings);
     let shown = rows(&mut app);
@@ -1103,10 +1145,10 @@ async fn settings_toggle_for_this_run_and_hand_back_to_the_prompt() {
 #[test]
 fn chat_settings_start_from_the_config() {
     let session = Session::new("glm", "/repo".into());
-    let mut runtime = runtime(session, Arc::new(Scripted::idle()));
-    runtime.config.chat.thinking = false;
-    runtime.config.chat.tool_output = false;
-    let mut app = App::new(runtime);
+    let mut config = AppConfig::test(session, Arc::new(Scripted::idle()));
+    config.runtime.config.chat.thinking = false;
+    config.runtime.config.chat.tool_output = false;
+    let mut app = App::new(config);
     app.run_command(crate::command::Command::Settings);
     let shown = rows(&mut app);
     assert!(
@@ -1127,11 +1169,13 @@ async fn copy_id_copies_the_session_id_even_mid_turn() {
         static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     let copied = || COPIED.with(|c| c.borrow().clone());
-    let mut app = app();
-    app.clipboard = |text| {
-        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
-        Ok(())
-    };
+    let mut app = App::new(AppConfig {
+        clipboard: |text| {
+            COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+            Ok(())
+        },
+        ..test_config()
+    });
     let first = app.session.as_ref().expect("idle").id;
 
     app.run_command(crate::command::Command::CopyId);
@@ -1160,11 +1204,13 @@ fn copy_takes_the_last_completed_answer_as_markdown() {
         static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     let copied = || COPIED.with(|c| c.borrow().clone());
-    let mut app = app();
-    app.clipboard = |text| {
-        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
-        Ok(())
-    };
+    let mut app = App::new(AppConfig {
+        clipboard: |text| {
+            COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+            Ok(())
+        },
+        ..test_config()
+    });
     let transcript = &mut app.chat.transcript;
     transcript.push_user("first".into());
     transcript.apply(&Event::TextDelta("**old** answer".into()));
@@ -1184,11 +1230,13 @@ fn copy_takes_a_compaction_summary_as_the_latest_answer() {
     thread_local! {
         static COPIED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
-    let mut app = app();
-    app.clipboard = |text| {
-        COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
-        Ok(())
-    };
+    let mut app = App::new(AppConfig {
+        clipboard: |text| {
+            COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+            Ok(())
+        },
+        ..test_config()
+    });
     let transcript = &mut app.chat.transcript;
     transcript.push_user("first".into());
     transcript.apply(&Event::TextDelta("an answer".into()));
@@ -1209,11 +1257,13 @@ fn copy_says_when_there_is_nothing_to_copy() {
     thread_local! {
         static COPIED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let mut app = app();
-    app.clipboard = |text| {
-        COPIED.with(|c| c.borrow_mut().push(text.to_string()));
-        Ok(())
-    };
+    let mut app = App::new(AppConfig {
+        clipboard: |text| {
+            COPIED.with(|c| c.borrow_mut().push(text.to_string()));
+            Ok(())
+        },
+        ..test_config()
+    });
 
     app.run_command(crate::command::Command::Copy);
     assert_eq!(app.hint.as_deref(), Some("nothing to copy"));
@@ -1227,8 +1277,10 @@ fn copy_says_when_there_is_nothing_to_copy() {
 
 #[test]
 fn copy_reports_a_clipboard_failure() {
-    let mut app = app();
-    app.clipboard = |_| Err(std::io::Error::other("no clipboard"));
+    let mut app = App::new(AppConfig {
+        clipboard: |_| Err(std::io::Error::other("no clipboard")),
+        ..test_config()
+    });
     app.chat
         .transcript
         .apply(&Event::TextDelta("an answer".into()));
@@ -1246,11 +1298,13 @@ async fn typing_copy_runs_the_command() {
         static COPIED: std::cell::RefCell<Option<String>> =
             const { std::cell::RefCell::new(None) };
     }
-    let mut app = app();
-    app.clipboard = |text| {
-        COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
-        Ok(())
-    };
+    let mut app = App::new(AppConfig {
+        clipboard: |text| {
+            COPIED.with(|c| *c.borrow_mut() = Some(text.to_string()));
+            Ok(())
+        },
+        ..test_config()
+    });
     app.chat
         .transcript
         .apply(&Event::TextDelta("the **answer**".into()));
@@ -1270,7 +1324,7 @@ async fn typing_copy_runs_the_command() {
 fn a_draw_changes_no_tab() {
     use nth_session::subagent::{SubagentEvent, TaskOutcome};
 
-    let mut app = app();
+    let mut app = test_app();
     app.on_subagent(SubagentEvent::Started {
         id: 1,
         agent: "explore".into(),
@@ -1297,7 +1351,7 @@ fn a_draw_changes_no_tab() {
 fn the_frame_after_a_step_closes_an_answered_tab_before_drawing() {
     use nth_session::subagent::{SubagentEvent, TaskOutcome};
 
-    let mut app = app();
+    let mut app = test_app();
     app.on_subagent(SubagentEvent::Started {
         id: 1,
         agent: "explore".into(),
@@ -1318,4 +1372,22 @@ fn the_frame_after_a_step_closes_an_answered_tab_before_drawing() {
         .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
         .collect();
     assert!(!header.contains('@'), "nor drawn: {header:?}");
+}
+
+#[tokio::test]
+async fn test_app_builds_without_placeholders() {
+    use nth_session::subagent::SubagentEvent;
+
+    let mut app = test_app();
+    let id = crate::app::subagent::tests::spawn(&mut app);
+
+    // The registry the task tool starts subagents in reports to the very
+    // receiver the loop reads, with nothing swapped in after `App::new`.
+    let heard = tokio::time::timeout(Duration::from_secs(5), app.subagent_rx.recv())
+        .await
+        .expect("heard in time");
+    assert!(
+        matches!(heard, Some(SubagentEvent::Started { id: started, .. }) if started == id),
+        "{heard:?}"
+    );
 }

@@ -56,11 +56,11 @@ mod tests {
     use nth_protocol::Mode;
 
     use super::*;
-    use crate::app::tests::{app, rows};
+    use crate::app::tests::{rows, test_app};
 
     #[test]
     fn ctrl_a_toggles_picker_preserving_draft_and_clearing_completion() {
-        let mut app = app();
+        let mut app = test_app();
         for c in "/ag".chars() {
             app.apply(Action::Insert(c));
         }
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn ctrl_a_can_select_the_builtin_review_agent() {
-        let mut app = app();
+        let mut app = test_app();
         app.context = std::sync::Arc::new(nth_context::Context::discover(
             std::path::Path::new("/nowhere"),
             &nth_context::Paths::default(),
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn picking_an_agent_runs_it_until_tab_goes_back_to_the_mode() {
-        let mut app = app();
+        let mut app = test_app();
         app.selection.mode = Mode::Plan;
         app.run_command(crate::command::Command::Agents);
         assert!(matches!(app.input, Input::AgentPicker(_)));

@@ -8,14 +8,6 @@ use tokio::sync::watch;
 use super::App;
 
 impl App {
-    /// Shows the states `lsp` sends on the status bar.
-    #[cfg(test)]
-    pub fn with_lsp(mut self, mut lsp: watch::Receiver<Vec<ServerStatus>>) -> Self {
-        self.servers = lsp.borrow_and_update().clone();
-        self.lsp = Some(lsp);
-        self
-    }
-
     /// Looks again at what applies, for the diagnostics tab: servers,
     /// formatters and programs may have been installed since the last time.
     pub(super) fn diagnose(&mut self) {
@@ -63,11 +55,19 @@ mod tests {
     use super::*;
     use crate::app::{
         Queued,
-        tests::{app, buffer, rows},
+        tests::{buffer, rows, test_app},
     };
 
     fn server(id: &str, state: ServerState) -> ServerStatus {
         server_in(id, "/repo", state)
+    }
+
+    /// An app whose status bar shows the states `lsp` sends.
+    fn showing(lsp: watch::Receiver<Vec<ServerStatus>>) -> App {
+        let mut app = test_app();
+        app.lsp = Some(lsp);
+        app.servers_changed(true);
+        app
     }
 
     fn server_in(id: &str, root: &str, state: ServerState) -> ServerStatus {
@@ -90,7 +90,7 @@ mod tests {
                 .expect("a dot on the row")
         };
         let (tx, rx) = watch::channel(vec![server("rust", ServerState::Starting)]);
-        let mut app = app().with_lsp(rx);
+        let mut app = showing(rx);
         let starting = buffer(&mut app);
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert_eq!(row.trim(), "● lsp");
@@ -151,7 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn installing_a_runtime_drops_the_look_and_what_it_found() {
-        let mut app = app();
+        let mut app = test_app();
         app.diagnose();
         let found = app.diagnostics.next().await.expect("looks");
         app.diagnostics.found(found);
@@ -169,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn the_status_bar_follows_the_servers_until_the_sender_is_gone() {
         let (tx, rx) = watch::channel(Vec::new());
-        let mut app = app().with_lsp(rx);
+        let mut app = showing(rx);
         tx.send_replace(vec![server("rust", ServerState::Connected)]);
         assert!(lsp_changed(&mut app.lsp).await);
 

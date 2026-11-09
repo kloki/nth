@@ -341,7 +341,10 @@ mod tests {
     use nth_protocol::Event;
 
     use super::{
-        super::tests::{app, buffer, rows, rows_of},
+        super::{
+            AppConfig,
+            tests::{buffer, rows, rows_of, split_at, test_app, test_config},
+        },
         *,
     };
 
@@ -365,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn hovering_a_pane_of_the_split_gives_it_the_focus() {
-        let mut app = app().with_split_width(80);
+        let mut app = split_at(80);
         app.open_content(Tab::Diagnostics);
         app.apply(super::super::keys::Action::Content(0));
         rows_of(&mut app, 100);
@@ -383,8 +386,7 @@ mod tests {
 
     /// An app whose chat shows one answer, drawn once so clicks can land.
     fn with_answer(text: &str) -> App {
-        let mut app = app();
-        app.clipboard = |_| Ok(());
+        let mut app = test_app();
         app.chat.apply(&Event::TextDelta(text.into()));
         app.chat
             .transcript
@@ -413,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn hovering_a_tab_colours_it_alone() {
-        let mut app = app();
+        let mut app = test_app();
         app.open_content(Tab::Diagnostics);
         rows(&mut app);
         let tab = app.areas.find(&Target::Tab(1)).expect("the tab shows");
@@ -434,7 +436,7 @@ mod tests {
 
     #[test]
     fn hovering_a_link_colours_it_and_shades_its_entry() {
-        let mut app = app();
+        let mut app = test_app();
         app.chat.transcript.push_user("hi".into());
         app.chat
             .apply(&Event::TextDelta("see [docs](https://x.y) now".into()));
@@ -469,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_bare_address_is_marked_without_its_full_stop() {
-        let mut app = app();
+        let mut app = test_app();
         app.chat
             .apply(&Event::TextDelta("go to https://a.b.".into()));
         let rows = rows(&mut app);
@@ -488,7 +490,7 @@ mod tests {
 
     #[test]
     fn a_code_block_keeps_its_background_in_a_shaded_entry() {
-        let mut app = app();
+        let mut app = test_app();
         app.chat.apply(&Event::TextDelta(
             "look:\n\n```rust\nlet x = 1;\n```".into(),
         ));
@@ -512,7 +514,7 @@ mod tests {
 
     #[test]
     fn hovering_the_pull_request_link_whitens_its_number() {
-        let mut app = app();
+        let mut app = test_app();
         app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
@@ -538,11 +540,13 @@ mod tests {
 
     #[test]
     fn a_right_click_on_the_working_directory_copies_it() {
-        let mut app = app();
-        app.clipboard = |text| {
-            assert_eq!(text, "/repo");
-            Ok(())
-        };
+        let mut app = App::new(AppConfig {
+            clipboard: |text| {
+                assert_eq!(text, "/repo");
+                Ok(())
+            },
+            ..test_config()
+        });
         rows(&mut app);
         let place = app.areas.find(&Target::Place).expect("the place shows");
 
@@ -558,11 +562,13 @@ mod tests {
 
     #[test]
     fn a_right_click_on_the_branch_copies_it() {
-        let mut app = app();
-        app.clipboard = |text| {
-            assert_eq!(text, "main");
-            Ok(())
-        };
+        let mut app = App::new(AppConfig {
+            clipboard: |text| {
+                assert_eq!(text, "main");
+                Ok(())
+            },
+            ..test_config()
+        });
         app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
@@ -585,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_click_on_a_tab_shows_it() {
-        let mut app = app();
+        let mut app = test_app();
         app.open_content(Tab::Diagnostics);
         let header = rows(&mut app)[0].clone();
         assert!(header.starts_with("  › chat ["), "{header:?}");
@@ -604,7 +610,7 @@ mod tests {
 
     /// An app with more tabs than the header has room for, the chat focused.
     fn overflowing_header() -> App {
-        let mut app = app();
+        let mut app = test_app();
         for tab in [
             Tab::Diagnostics,
             Tab::Usage,
@@ -662,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_split_overflowing_header_keeps_the_side_tab_clickable() {
-        let mut app = app().with_split_width(80);
+        let mut app = split_at(80);
         for tab in [
             Tab::Diagnostics,
             Tab::Usage,
@@ -758,7 +764,7 @@ mod tests {
 
     #[test]
     fn a_click_on_the_pull_request_link_opens_it() {
-        let mut app = app();
+        let mut app = test_app();
         app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
