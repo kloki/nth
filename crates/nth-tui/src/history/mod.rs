@@ -2,11 +2,9 @@
 //! kept across runs in one JSONL file, one prompt per line.
 
 use std::{
-    io,
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
-
-use tokio::io::AsyncWriteExt;
 
 /// Prompts kept; older ones are dropped on the next save.
 pub const LIMIT: usize = 100;
@@ -136,33 +134,47 @@ fn to_jsonl(entries: &[String]) -> String {
 
 /// Appends `jsonl` to the history at `path`, then cuts the file back to the
 /// newest [`LIMIT`] prompts once it holds more than [`TRIM_PAST`] lines.
-pub async fn append(path: &Path, jsonl: &str) -> io::Result<()> {
+/// Blocking, for a blocking thread: std's `write_all` hands a short buffer
+/// to one `write`, which tokio's file, writing from a pool, does not
+/// promise.
+pub fn append(path: &Path, jsonl: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await?;
+        std::fs::create_dir_all(dir)?;
     }
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
-        .open(path)
-        .await?;
-    // One write, so another instance's line never lands inside these.
-    file.write_all(jsonl.as_bytes()).await?;
-    file.flush().await?;
+        .open(path)?;
+    // A file whose last line was cut short, by a crash or by hand, would
+    // otherwise run that line into the first of these.
+    let mut last = [0u8];
+    let len = file.metadata()?.len();
+    let cut_short = len > 0 && {
+        file.seek(SeekFrom::Start(len - 1))?;
+        file.read_exact(&mut last)?;
+        last[0] != b'\n'
+    };
+    let mut lines = String::with_capacity(jsonl.len() + 1);
+    if cut_short {
+        lines.push('\n');
+    }
+    lines.push_str(jsonl);
+    // Opened to append, each write lands at the end of the file, so in one
+    // write another instance's line never lands inside these.
+    file.write_all(lines.as_bytes())?;
     drop(file);
 
-    let text = tokio::fs::read_to_string(path).await?;
+    let text = std::fs::read_to_string(path)?;
     if text.lines().count() <= TRIM_PAST {
         return Ok(());
     }
     let kept = to_jsonl(&History::parse(&text).entries);
     // Written aside and renamed over, so a reader never sees half a file.
     let aside = path.with_extension(format!("jsonl.{}.tmp", std::process::id()));
-    let written = match tokio::fs::write(&aside, kept).await {
-        Ok(()) => tokio::fs::rename(&aside, path).await,
-        Err(e) => Err(e),
-    };
+    let written = std::fs::write(&aside, kept).and_then(|()| std::fs::rename(&aside, path));
     if written.is_err() {
-        let _ = tokio::fs::remove_file(&aside).await;
+        let _ = std::fs::remove_file(&aside);
     }
     written
 }
@@ -202,12 +214,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nth/prompt-history.jsonl");
         let lines: Vec<String> = (0..TRIM_PAST).map(|i| i.to_string()).collect();
-        append(&path, &to_jsonl(&lines)).await.expect("appends");
+        append(&path, &to_jsonl(&lines)).expect("appends");
         assert_eq!(History::load(path.clone()).await.entries.len(), LIMIT);
 
-        append(&path, &to_jsonl(&["new".into()]))
-            .await
-            .expect("appends");
+        append(&path, &to_jsonl(&["new".into()])).expect("appends");
 
         let text = std::fs::read_to_string(&path).expect("reads");
         assert_eq!(text.lines().count(), LIMIT);
@@ -218,6 +228,19 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_line_cut_short_is_not_joined_by_the_next() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt-history.jsonl");
+        std::fs::write(&path, "\"old\"\n\"cut sh").expect("writes");
+
+        append(&path, &to_jsonl(&["new".into()])).expect("appends");
+
+        let mut history = History::load(path).await;
+        assert_eq!(history.prev("").as_deref(), Some("new"));
+        assert_eq!(history.prev("new").as_deref(), Some("old"));
     }
 
     #[test]

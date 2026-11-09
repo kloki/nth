@@ -73,9 +73,15 @@ impl App {
 mod tests {
     use std::time::Instant;
 
+    use nth_session::Session;
+
     use super::*;
     use crate::{
-        app::tests::{rows, test_app},
+        app::{
+            App,
+            session_picker::Loaded,
+            tests::{rows, test_app},
+        },
         git::{self, State},
     };
 
@@ -194,9 +200,10 @@ mod tests {
         assert!(app.git.loading.is_running(), "the change loads again");
     }
 
-    #[tokio::test]
-    async fn a_move_drops_the_old_directorys_pr_load() {
-        let mut app = test_app();
+    /// Loads for the old directory that never end, each with another
+    /// asked for behind it; their abort handles, git's then the pull
+    /// request's.
+    fn hanging_loads(app: &mut App) -> [tokio::task::AbortHandle; 2] {
         let old = Pr {
             number: 1,
             url: "https://x.y/old/pull/1".into(),
@@ -211,16 +218,49 @@ mod tests {
         app.git
             .loading
             .start(|_| tokio::spawn(std::future::pending()));
-        let pr_loading = app.git.pr_loading.abort_handle().expect("loading");
-        let loading = app.git.loading.abort_handle().expect("loading");
+        app.load_git();
+        app.load_pr();
+        [
+            app.git.loading.abort_handle().expect("loading"),
+            app.git.pr_loading.abort_handle().expect("loading"),
+        ]
+    }
 
-        app.follow("/elsewhere".into());
+    /// The old directory's loads are stopped, the new one's run, and
+    /// nothing asked for the old one runs after them.
+    async fn assert_reloaded(app: &mut App, [loading, pr_loading]: [tokio::task::AbortHandle; 2]) {
         tokio::task::yield_now().await;
-
         assert!(pr_loading.is_finished(), "the old pull request load stops");
         assert!(loading.is_finished(), "the old git load stops");
         assert!(app.git.pr_loading.is_running(), "the new directory loads");
-        assert!(!app.git.pr_loading.take_again(), "nothing queued after");
+        assert!(app.git.loading.is_running(), "the new directory loads");
+        assert!(
+            !app.git.pr_loading.take_again(),
+            "the queued load is dropped"
+        );
+        assert!(!app.git.loading.take_again(), "the queued load is dropped");
+    }
+
+    #[tokio::test]
+    async fn a_move_drops_the_old_directorys_pr_load() {
+        let mut app = test_app();
+        let old = hanging_loads(&mut app);
+
+        app.follow("/elsewhere".into());
+
+        assert_reloaded(&mut app, old).await;
+    }
+
+    #[tokio::test]
+    async fn a_resume_drops_the_old_directorys_loads() {
+        let mut app = test_app();
+        let old = hanging_loads(&mut app);
+
+        let session = Session::new("kimi", "/elsewhere".into());
+        app.session_loaded(Ok(Loaded::Session(Box::new(session))));
+
+        assert_eq!(app.cwd, std::path::Path::new("/elsewhere"));
+        assert_reloaded(&mut app, old).await;
     }
 
     #[tokio::test]

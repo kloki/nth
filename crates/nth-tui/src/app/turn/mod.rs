@@ -476,7 +476,8 @@ impl App {
         }
         // `Moved` has normally been followed already; this catches a move
         // whose event never arrived.
-        if session.cwd != self.cwd {
+        let moved = session.cwd != self.cwd;
+        if moved {
             self.cwd = session.cwd.clone();
             self.follow_place();
         }
@@ -491,8 +492,12 @@ impl App {
         }
         self.refresh_context();
         self.index_files();
-        self.load_git();
-        self.load_pr();
+        if moved {
+            self.reload_git();
+        } else {
+            self.load_git();
+            self.load_pr();
+        }
         // Reload the session's plan; it stays in the shared state directory.
         match plan_path != self.plan.path() {
             true => self.plan.for_session(plan_path),

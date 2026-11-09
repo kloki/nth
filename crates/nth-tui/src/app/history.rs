@@ -17,7 +17,7 @@ impl App {
         let history = &mut self.history;
         self.history_saving.start_or_queue(|_| {
             let jsonl = history.take_unsaved();
-            tokio::spawn(async move { history::append(&path, &jsonl).await })
+            tokio::task::spawn_blocking(move || history::append(&path, &jsonl))
         });
     }
 

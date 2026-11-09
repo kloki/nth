@@ -196,7 +196,9 @@ async fn read_head(path: &Path) -> std::io::Result<Option<Contents>> {
         .await?;
     let cut = bytes.len() as u64 > MAX_FILE_BYTES;
     if cut {
-        let end = bytes
+        // Only within the cap: a newline just past it would keep the
+        // whole of `bytes`, one more than the cap.
+        let end = bytes[..MAX_FILE_BYTES as usize]
             .iter()
             .rposition(|&b| b == b'\n')
             .map_or(MAX_FILE_BYTES as usize, |newline| newline + 1);
