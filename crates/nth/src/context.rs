@@ -217,11 +217,13 @@ fn write_entry(out: &mut impl Write, entry: &Entry) -> Result<()> {
             call_id,
             content,
             images,
-            ..
+            is_error,
         } => {
+            // The text alone cannot say: a success may start with `Error: `.
+            let failed = if *is_error { " · failed" } else { "" };
             writeln!(
                 out,
-                "\nTool result · {call_id}{checkpoint} · ~{} tokens\n{content}",
+                "\nTool result · {call_id}{failed}{checkpoint} · ~{} tokens\n{content}",
                 entry.estimated_tokens
             )?;
             for (index, image) in images.iter().enumerate() {
@@ -290,6 +292,7 @@ mod tests {
         let mut text = Vec::new();
         write_text(&mut text, &session, &preview).unwrap();
         let text = String::from_utf8(text).unwrap();
+        assert!(!text.contains("· failed"), "the read succeeded: {text}");
         for expected in [
             "saved system",
             "hello",
@@ -313,6 +316,32 @@ mod tests {
         assert_eq!(json["source"], "saved_state");
         assert_eq!(json["preview"]["entries"][3]["images_available"][0], true);
         assert!(!json.to_string().contains("secret-base64"));
+    }
+
+    #[test]
+    fn a_failed_result_is_marked_in_the_text() {
+        let mut session = Session::new("example/model", "/repo".into());
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "grep".into(),
+            arguments: "{}".into(),
+        };
+        session.messages = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage {
+                tool_calls: vec![call("ok"), call("bad")],
+                ..AssistantMessage::default()
+            }),
+            Message::tool_result("ok", "Error: disk full"),
+            Message::tool_failed("bad", "no such file"),
+        ];
+        let preview = session.context_preview(&[], &Inbox::default());
+        let mut text = Vec::new();
+        write_text(&mut text, &session, &preview).unwrap();
+        let text = String::from_utf8(text).unwrap();
+
+        assert!(text.contains("Tool result · ok · ~"), "{text}");
+        assert!(text.contains("Tool result · bad · failed · ~"), "{text}");
     }
 
     #[tokio::test]

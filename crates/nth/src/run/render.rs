@@ -8,6 +8,10 @@ use nth_protocol::{Event, retry_label};
 use owo_colors::OwoColorize;
 
 pub struct Printer {
+    /// Every call the model made that printed a row, those a guard of the
+    /// loop answered without running included, so it can exceed the calls
+    /// the usage ledger counts. The ledger is no better source: it drops a
+    /// turn the provider reported no usage for, tools and all.
     pub tool_calls: usize,
     cwd: PathBuf,
     /// Which stream the cursor is mid-line on, so the next write from the
