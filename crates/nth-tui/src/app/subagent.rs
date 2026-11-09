@@ -218,7 +218,7 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use nth_protocol::{Event, Message};
@@ -267,7 +267,7 @@ mod tests {
     }
 
     /// A real subagent in the registry, whose provider answers nothing.
-    fn spawn(app: &mut App) -> SubagentId {
+    pub(in crate::app) fn spawn(app: &mut App) -> SubagentId {
         let agents = nth_context::Context::discover(
             std::path::Path::new("/nowhere"),
             &nth_context::Paths::default(),

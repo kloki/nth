@@ -1379,16 +1379,7 @@ async fn test_app_builds_without_placeholders() {
     use nth_session::subagent::SubagentEvent;
 
     let mut app = test_app();
-    let agents =
-        ProjectContext::discover(std::path::Path::new("/nowhere"), &Paths::default()).agents;
-    let id = app.subagents.spawn(
-        app.subagents.reserve(),
-        agents.get("explore").expect("built in"),
-        "find tabs",
-        Session::new("glm", "/repo".into()).as_subagent(None),
-        Arc::new(Scripted::idle()),
-        Vec::new(),
-    );
+    let id = crate::app::subagent::tests::spawn(&mut app);
 
     // The registry the task tool starts subagents in reports to the very
     // receiver the loop reads, with nothing swapped in after `App::new`.
