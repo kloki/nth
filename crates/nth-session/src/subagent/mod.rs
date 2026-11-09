@@ -134,7 +134,7 @@ pub(crate) fn tools_for(
     all: &[Arc<dyn Tool>],
     agent: &Agent,
     writable: &Writable,
-) -> Vec<Box<dyn Tool>> {
+) -> Vec<Arc<dyn Tool>> {
     let planning = writable.planning();
     all.iter()
         .filter(|tool| {
@@ -144,7 +144,7 @@ pub(crate) fn tools_for(
                 && !(planning && tool_names::writes_files(name))
                 && agent.allows(name)
         })
-        .map(|tool| Box::new(tool.clone()) as Box<dyn Tool>)
+        .cloned()
         .collect()
 }
 
@@ -274,7 +274,7 @@ impl Subagents {
         description: &str,
         session: Session,
         provider: Arc<dyn Provider>,
-        tools: Vec<Box<dyn Tool>>,
+        tools: Vec<Arc<dyn Tool>>,
     ) -> SubagentId {
         let writes = tools
             .iter()
@@ -830,7 +830,7 @@ pub(crate) mod tests {
         let same =
             |id: &str| StreamEvent::ToolCall(crate::agent_loop::tests::call(id, "noop", "{}"));
         let provider = Arc::new(Scripted::new(vec![vec![same("1"), same("2"), same("3")]]));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Noop)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Noop)];
         let id = subagents.spawn(
             subagents.reserve(),
             &explore(),

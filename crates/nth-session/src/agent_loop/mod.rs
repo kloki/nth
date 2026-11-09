@@ -121,7 +121,7 @@ impl<'a> Route<'a> {
 pub struct Turn<'a> {
     pub provider: &'a dyn Provider,
     pub route: Route<'a>,
-    pub tools: &'a [Box<dyn Tool>],
+    pub tools: &'a [Arc<dyn Tool>],
     /// What the tool calls run with.
     pub ctx: &'a ToolContext,
     /// What waits for the model: the turn hands it over between steps, and
@@ -339,7 +339,7 @@ impl Turn<'_> {
 }
 
 pub(crate) fn offered_tools<'a>(
-    tools: &'a [Box<dyn Tool>],
+    tools: &'a [Arc<dyn Tool>],
     subagent: bool,
     agent: Option<&nth_context::Agent>,
 ) -> Vec<(ToolSpec, &'a dyn Tool)> {

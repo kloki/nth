@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use nth_protocol::{Message, StreamEvent, Tool, ToolContext};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -292,7 +294,7 @@ async fn plan_mode_lets_tools_write_only_the_plan() {
         ],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Probe)];
     let (tx, _rx) = mpsc::channel(64);
 
     session
@@ -347,7 +349,7 @@ async fn plan_mode_in_linked_worktree_allows_shared_plan() {
         ],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Probe)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Probe)];
     let (tx, _rx) = mpsc::channel(64);
     session
         .prompt(

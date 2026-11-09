@@ -2,7 +2,7 @@
 //! returns at once and the item's changes come back as notices; headless
 //! it waits for the subagent's answer, as the task tool does.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
@@ -200,7 +200,7 @@ impl Tool for WorkAssign {
             // Started only once the file says running, so a write that
             // fails leaves no idle subagent behind.
             let fresh = fresh.map(|reserved| {
-                let todo: Box<dyn Tool> = Box::new(WorkTodo::new(assignment.clone()));
+                let todo: Arc<dyn Tool> = Arc::new(WorkTodo::new(assignment.clone()));
                 (reserved, todo)
             });
             let before = item.clone();

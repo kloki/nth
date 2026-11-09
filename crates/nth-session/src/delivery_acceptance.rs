@@ -1,4 +1,6 @@
 //! Persistence and filesystem boundaries exercised independently of the builders.
+use std::sync::Arc;
+
 use nth_curios::Publish;
 use nth_protocol::{Message, Writable};
 
@@ -62,7 +64,7 @@ async fn planning_turn_passes_only_owner_source_to_file_writer() {
         .prompt(
             "Draft review",
             &provider,
-            &[Box::new(ScopedWrite)],
+            &[Arc::new(ScopedWrite)],
             &FrontEnd::default(),
             &tx,
             &crate::CancellationToken::new(),
@@ -114,7 +116,7 @@ async fn subagent_and_restricted_primary_cannot_call_unoffered_curios_tools() {
             .prompt(
                 "Review",
                 &provider,
-                &[Box::new(Named("curio_publish"))],
+                &[Arc::new(Named("curio_publish"))],
                 &FrontEnd::default(),
                 &tx,
                 &crate::CancellationToken::new(),

@@ -3,6 +3,8 @@
 //! Token counts use compaction's byte-based heuristic (serialized bytes / 4,
 //! plus 2,500 per image), not a tokenizer or provider accounting.
 
+use std::sync::Arc;
+
 use nth_protocol::{
     Budget, Compaction, Effort, Entry, Message, Mode, Phase, Preview, Tool, ToolDefinition,
     ToolSpec, Usage,
@@ -13,14 +15,14 @@ use crate::{Inbox, Session, agent_loop::offered_tools, compaction};
 impl Session {
     /// Project committed history and offered tools without changing session or inbox.
     /// No unsent prompt or conditional turn reminder is invented.
-    pub fn context_preview(&self, tools: &[Box<dyn Tool>], inbox: &Inbox) -> Preview {
+    pub fn context_preview(&self, tools: &[Arc<dyn Tool>], inbox: &Inbox) -> Preview {
         self.context_preview_for(tools, inbox, false)
     }
 
     /// As `context_preview`, with whether the front-end can approve a plan.
     pub fn context_preview_for(
         &self,
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         inbox: &Inbox,
         can_approve: bool,
     ) -> Preview {
@@ -195,7 +197,7 @@ mod tests {
         });
         let inbox = Inbox::new();
         inbox.post_prompt("steer".into());
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let before = session.messages.clone();
         let preview = session.context_preview(&tools, &inbox);
         assert_eq!(preview, session.context_preview(&tools, &inbox));
@@ -246,7 +248,7 @@ mod tests {
         use crate::FrontEnd;
 
         let mut session = Session::new("model", ".".into());
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let front_end = FrontEnd::default();
         // The last turn's, which this one must not leave readable.
         front_end.context_preview.publish(std::sync::Arc::new(
@@ -274,7 +276,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let mut session = Session::new("model", ".".into());
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let (front_end, mut rx) = watching();
         let (tx, _events) = mpsc::channel(64);
         session
@@ -327,7 +329,7 @@ mod tests {
     async fn a_pre_empted_step_goes_on_to_the_next_request_without_ready() {
         use nth_protocol::ToolContext;
 
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let inbox = Inbox::new();
         let _watching = ctx.context_preview.subscribe();
@@ -388,7 +390,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "want", "{}"))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Want)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Want)];
         let front_end = FrontEnd::default();
         let (tx, _rx) = mpsc::channel(64);
         session
@@ -457,7 +459,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("id", "inspect", "{}"))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Inspect)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Inspect)];
         let (front_end, _watching) = watching();
         let (tx, _rx) = mpsc::channel(64);
         session
@@ -612,7 +614,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "change", "{}"))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Change(path))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Change(path))];
         let (front_end, _watching) = watching();
         let (tx, _rx) = mpsc::channel(64);
         session

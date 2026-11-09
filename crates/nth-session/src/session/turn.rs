@@ -29,7 +29,7 @@ impl Session {
         &mut self,
         text: impl Into<String>,
         provider: &dyn Provider,
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
@@ -65,7 +65,7 @@ impl Session {
         &mut self,
         input: TurnInput,
         provider: &dyn Provider,
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
@@ -178,7 +178,7 @@ impl Session {
         &'a mut self,
         held: &'a Held,
         provider: &'a dyn Provider,
-        tools: &'a [Box<dyn Tool>],
+        tools: &'a [Arc<dyn Tool>],
         events: &'a mpsc::Sender<Event>,
         cancel: &'a CancellationToken,
     ) -> Turn<'a> {
@@ -309,7 +309,7 @@ impl Session {
     pub async fn compact(
         &mut self,
         provider: &dyn Provider,
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
@@ -411,7 +411,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "claim", ""))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Claim)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Claim)];
         let (tx, _rx) = mpsc::channel(64);
 
         session
@@ -471,7 +471,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("2", "move", r#""pwd""#))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Move)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Move)];
         let (tx, mut rx) = mpsc::channel(64);
 
         session
@@ -544,7 +544,7 @@ mod tests {
             },
         }));
         let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo), Box::new(Named("bash"))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo), Arc::new(Named("bash"))];
         let (tx, _rx) = mpsc::channel(64);
         session
             .deliver_curios(
@@ -709,7 +709,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "rewrite", ""))],
             vec![StreamEvent::TextDelta("noted".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Rewrite)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Rewrite)];
         let (tx, mut rx) = mpsc::channel(64);
 
         session
@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(ctx.agent.as_ref().map(|a| a.name.as_str()), Some("review"));
 
         let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo), Box::new(Named("bash"))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo), Arc::new(Named("bash"))];
         let (tx, _rx) = mpsc::channel(64);
         session
             .prompt(

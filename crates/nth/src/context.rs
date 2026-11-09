@@ -43,7 +43,7 @@ pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()
 async fn reconstruct(
     session: Session,
     runtime: &Runtime,
-) -> Result<(Session, Arc<Vec<Box<dyn Tool>>>, Vec<String>)> {
+) -> Result<(Session, Vec<Arc<dyn Tool>>, Vec<String>)> {
     let (model, messages) = (session.model.clone(), session.messages.clone());
     let start = Start::Saved(Box::new(session));
     let config = runtime.config_for(&start)?;

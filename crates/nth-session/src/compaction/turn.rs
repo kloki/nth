@@ -189,7 +189,7 @@ impl Turn<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use nth_protocol::{AssistantMessage, Phase, StreamEvent, Tool, ToolContext, Usage};
     use tokio::sync::mpsc;
@@ -510,7 +510,7 @@ mod tests {
             Reply::Events(vec![StreamEvent::TextDelta("second summary".into())]),
             Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, _rx) = mpsc::channel(64);
@@ -600,7 +600,7 @@ mod tests {
     /// summary before every one of its steps.
     #[tokio::test]
     async fn a_floor_over_the_window_stops_the_turn_instead_of_compacting_every_step() {
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, _rx) = mpsc::channel(64);
@@ -669,7 +669,7 @@ mod tests {
                 StreamEvent::Usage(full),
             ]),
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, _rx) = mpsc::channel(64);
@@ -723,7 +723,7 @@ mod tests {
             Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
             Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel(64);
@@ -788,7 +788,7 @@ mod tests {
             Reply::Events(vec![StreamEvent::TextDelta("the summary".into())]),
             Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let cancel = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel(64);

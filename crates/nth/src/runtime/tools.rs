@@ -17,32 +17,25 @@ pub(crate) fn tools(
     provider: Arc<dyn Provider>,
     subagents: Subagents,
     inbox: Inbox,
-) -> Vec<Box<dyn Tool>> {
-    let shared: Vec<Arc<dyn Tool>> = nth_tools::all(&config.tools, post_write)
-        .into_iter()
-        .map(Arc::from)
-        .collect();
+) -> Vec<Arc<dyn Tool>> {
+    let mut tools = nth_tools::all(&config.tools, post_write);
     let stop = nth_session::TaskStop::new(subagents.clone());
     let work = nth_session::Work::new(
         provider.clone(),
-        shared.clone(),
+        tools.clone(),
         subagents.clone(),
         inbox.clone(),
         config.work.limits(),
     );
     let task = nth_session::Task::new(
         provider,
-        shared.clone(),
+        tools.clone(),
         subagents,
         inbox,
         config.task.limits(),
     );
-    let mut tools: Vec<Box<dyn Tool>> = shared
-        .into_iter()
-        .map(|tool| Box::new(tool) as Box<dyn Tool>)
-        .collect();
-    tools.push(Box::new(task));
-    tools.push(Box::new(stop));
+    tools.push(Arc::new(task));
+    tools.push(Arc::new(stop));
     tools.extend(work.tools());
     tools
 }

@@ -233,7 +233,7 @@ async fn a_task_answer_lands_in_the_inbox_it_was_built_with() {
     let mut config = AppConfig::new(
         crate::PreparedRuntime {
             inbox,
-            model_tools: Arc::new(vec![Box::new(task)]),
+            model_tools: vec![Arc::new(task)],
             ..crate::app::tests::runtime(session, provider)
         },
         subagents,
