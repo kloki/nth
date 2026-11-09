@@ -276,6 +276,26 @@ mod tests {
         );
     }
 
+    /// An executable `name` in `bin` that runs `name.sh` beside it with `sh`,
+    /// so a test changes what it does by rewriting the script, never the
+    /// program it execs.
+    ///
+    /// A child process writes the program: a write fd held here leaks into
+    /// whatever another test thread forks meanwhile, and exec'ing the program
+    /// while that child still holds it fails with ETXTBSY.
+    fn launcher(bin: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(bin).unwrap();
+        let program = bin.join(name);
+        let status = std::process::Command::new("sh")
+            .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh"])
+            .arg("#!/bin/sh\nexec sh \"$0.sh\" \"$@\"\n")
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(status.success(), "write {name}");
+        program
+    }
+
     #[tokio::test]
     async fn help_checks_exit_status_arguments_and_first_line() {
         let dir = tempfile::tempdir().unwrap();
@@ -286,29 +306,22 @@ mod tests {
             search_path: Some(bin.as_os_str()),
         };
         let builtin = crate::registry::find("air").unwrap();
-        let program = executable(
+        let program = launcher(&bin, "air");
+        write(
             &bin,
-            "air",
-            "#!/bin/sh\n[ \"$1\" = --help ] || exit 1\nprintf 'R language formatter\nextra\n'\n",
+            "air.sh",
+            "[ \"$1\" = --help ] || exit 1\nprintf 'R language formatter\nextra\n'\n",
         );
         assert_eq!(
             check(builtin, &env).await.unwrap()[0],
             program.to_string_lossy()
         );
-        executable(
-            &bin,
-            "air",
-            "#!/bin/sh\nprintf 'other\nR language formatter\n'\n",
-        );
+        write(&bin, "air.sh", "printf 'other\nR language formatter\n'\n");
         assert_eq!(
             check(builtin, &env).await.unwrap_err(),
             "air is not the expected program"
         );
-        executable(
-            &bin,
-            "air",
-            "#!/bin/sh\nprintf 'R language formatter\n'\nexit 1\n",
-        );
+        write(&bin, "air.sh", "printf 'R language formatter\n'\nexit 1\n");
         assert_eq!(check(builtin, &env).await.unwrap_err(), "air --help failed");
     }
 
