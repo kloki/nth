@@ -1,11 +1,14 @@
 //! The freedesktop notification daemon, through `notify-send` (libnotify).
 
-use std::{io::ErrorKind, process::Stdio};
+use std::process::Stdio;
 
 use futures::future::BoxFuture;
 use tokio::process::Command;
 
-use crate::{Backend, BoxError, Notification};
+use crate::{
+    Backend, BoxError, Notification,
+    command::{self, SEND_TIMEOUT},
+};
 
 pub struct NotifySend;
 
@@ -15,24 +18,9 @@ impl Backend for NotifySend {
     }
 
     fn send<'a>(&'a self, notification: &'a Notification) -> BoxFuture<'a, Result<(), BoxError>> {
-        Box::pin(async move {
-            let output = Command::new("notify-send")
-                .args(args(notification))
-                .stdin(Stdio::null())
-                .output()
-                .await
-                .map_err(|e| match e.kind() {
-                    ErrorKind::NotFound => "not found on PATH".into(),
-                    _ => BoxError::from(e),
-                })?;
-            match output.status.success() {
-                true => Ok(()),
-                false => Err(String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_string()
-                    .into()),
-            }
-        })
+        let mut send = Command::new("notify-send");
+        send.args(args(notification)).stdin(Stdio::null());
+        Box::pin(command::run(send, SEND_TIMEOUT))
     }
 }
 
