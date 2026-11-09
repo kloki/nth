@@ -139,7 +139,9 @@ pub async fn run(
         llm_usage,
         ..app::AppConfig::new(runtime, subagents, subagent_rx)
     });
-    let result = app.run(&mut terminal).await;
+    let result = app
+        .run(&mut terminal, crossterm::event::EventStream::new())
+        .await;
     terminal::restore();
     for note in &app.exit_notes {
         eprintln!("{} {note}", icons().warn.yellow().bold());

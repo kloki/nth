@@ -50,11 +50,7 @@ use std::{
 use anyhow::{Context, Result};
 use completion::Completion;
 pub(crate) use content::{Content, Panes, Tab, TabState};
-use crossterm::{
-    event::{Event as TermEvent, EventStream, KeyEventKind},
-    execute, queue,
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
-};
+use crossterm::event::{Event as TermEvent, KeyEventKind};
 use diagnostics::lsp_changed;
 use finished::Finished;
 use futures::StreamExt;
@@ -73,7 +69,7 @@ use nth_session::{
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
-    DefaultTerminal, Frame, Terminal,
+    Frame, Terminal,
     backend::Backend,
     layout::{Constraint, Layout, Margin, Position, Rect},
     style::{Color, Style},
@@ -102,6 +98,7 @@ use crate::{
     settings::ChatSettings,
     spinner, status,
     subagent::SubagentView,
+    terminal::Screen,
     usage::UsageTab,
 };
 
@@ -287,6 +284,8 @@ pub struct App {
     clipboard: fn(&str) -> std::io::Result<()>,
     /// How a link reaches the desktop's opener; tests put it nowhere.
     opener: fn(&str) -> std::io::Result<()>,
+    /// Where ctrl+g writes the copy your editor opens.
+    editor_dir: PathBuf,
     /// ctrl+g asked for the editor, on this target; the loop opens it
     /// after this step.
     pending_editor: Option<editor::Target>,
@@ -337,6 +336,8 @@ pub struct AppConfig {
     pub clipboard: fn(&str) -> std::io::Result<()>,
     /// How a link reaches the desktop's opener.
     pub opener: fn(&str) -> std::io::Result<()>,
+    /// Where ctrl+g writes the copy your editor opens.
+    pub editor_dir: PathBuf,
 }
 
 impl AppConfig {
@@ -358,6 +359,7 @@ impl AppConfig {
             llm_usage: LlmUsage::default(),
             clipboard: crate::terminal::copy,
             opener: mouse::open,
+            editor_dir: std::env::temp_dir().join("nth"),
         }
     }
 }
@@ -423,7 +425,10 @@ async fn login_url(rx: &mut Option<oneshot::Receiver<String>>) -> Option<String>
 }
 
 /// The next terminal event, or never while there is no stream.
-async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<TermEvent>> {
+async fn next_input<I>(input: &mut Option<I>) -> Option<std::io::Result<TermEvent>>
+where
+    I: futures::Stream<Item = std::io::Result<TermEvent>> + Unpin,
+{
     match input {
         Some(input) => input.next().await,
         None => std::future::pending().await,
@@ -472,6 +477,7 @@ impl App {
             llm_usage,
             clipboard,
             opener,
+            editor_dir,
         } = config;
         let session = &runtime.session;
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
@@ -569,6 +575,7 @@ impl App {
             areas: mouse::Areas::default(),
             clipboard,
             opener,
+            editor_dir,
             pending_editor: None,
             editing: None,
             editor: Job::default(),
@@ -647,9 +654,11 @@ impl App {
         self.config = Some(config);
     }
 
-    pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    /// Runs the chat on `screen`, reading `input`, until you quit or the
+    /// input ends; what runs in the background is stopped on the way out.
+    pub async fn run<S: Screen>(&mut self, screen: &mut S, input: S::Input) -> Result<()> {
         // `None` while your editor has the terminal.
-        let mut input = Some(EventStream::new());
+        let mut input = Some(input);
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.index_files();
@@ -669,10 +678,10 @@ impl App {
                 self.lsp_usage = None;
             }
             if self.pending_editor.is_some() {
-                self.open_editor(&mut input).await;
+                self.open_editor(screen, &mut input).await;
             }
             if !self.is_editing() {
-                self.draw_frame(terminal)?;
+                screen.draw(self)?;
             }
             let ticking = self.is_busy()
                 || self.running_monitors() > 0
@@ -741,9 +750,7 @@ impl App {
                 Step::Preview(snapshot) => self.context_tab.show(snapshot),
                 Step::Job(finished) => self.job_finished(finished),
                 Step::LoginUrl(url) => self.login_url(url),
-                Step::EditorClosed(ended) => {
-                    self.editor_closed(terminal, &mut input, ended).await?
-                }
+                Step::EditorClosed(ended) => self.editor_closed(screen, &mut input, ended).await?,
                 Step::LspChanged(changed) => self.servers_changed(changed),
                 Step::LspUsageChanged(changed) => {
                     if changed {
@@ -763,7 +770,7 @@ impl App {
         // asking for another ctrl+c, would sit through frozen.
         if self.is_busy() && !self.is_editing() {
             self.hint = Some(hint::Hint::at_once("stopping the turn…"));
-            self.draw_frame(terminal)?;
+            screen.draw(self)?;
         }
         self.stop_background_for_exit().await;
         Ok(())
@@ -784,19 +791,9 @@ impl App {
         self.refresh_stale_context();
     }
 
-    /// Draws the screen once. The terminal holds the frame until it is all
-    /// written, so a screen that changes everywhere at once (the empty
-    /// chat's field) never shows half old, half new.
-    fn draw_frame(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
-        self.frame(terminal)?;
-        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        Ok(())
-    }
-
     /// One frame after a step: what the step leads to is settled first,
     /// then drawn, so a draw only draws.
-    fn frame<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+    pub(crate) fn frame<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
         self.settle();
         terminal.draw(|frame| self.draw(frame))?;
         Ok(())

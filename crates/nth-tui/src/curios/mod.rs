@@ -146,6 +146,9 @@ pub(crate) struct CuriosTab {
     /// How many acknowledging jobs started, so a test sees the back-off.
     #[cfg(test)]
     acknowledgments: usize,
+    /// How many polls started, so a test sees that none stacks.
+    #[cfg(test)]
+    pub(crate) polls: usize,
     polling: Job<Tick>,
     acknowledging: Job<core::Result<()>>,
     hosts: BTreeMap<(String, String), Host>,
@@ -175,6 +178,8 @@ impl CuriosTab {
             stores: Stores::default(),
             #[cfg(test)]
             acknowledgments: 0,
+            #[cfg(test)]
+            polls: 0,
             polling: Default::default(),
             acknowledging: Default::default(),
             hosts: BTreeMap::new(),
@@ -259,6 +264,10 @@ impl CuriosTab {
         let mut poll = self.delivery.poll(me, self.stores.clone(), Instant::now());
         if !claim {
             poll = poll.without_claim();
+        }
+        #[cfg(test)]
+        {
+            self.polls += usize::from(!self.polling.is_running());
         }
         let discovery = &mut self.discovery;
         self.polling.start_or_queue(|_| {
