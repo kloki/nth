@@ -79,7 +79,7 @@ pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> Prepared
         inbox: nth_session::Inbox::new(),
         paths: Paths::default(),
         provider,
-        model_tools: Arc::new(Vec::new()),
+        model_tools: Vec::new(),
         shell: Arc::new(nth_tools::Bash::new(Default::default())),
         checkers: crate::Checkers {
             lsp: nth_lsp::Lsp::new(&Default::default()),

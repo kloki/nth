@@ -228,21 +228,6 @@ pub trait Tool: Send + Sync {
     ) -> BoxFuture<'a, ToolResult>;
 }
 
-/// A shared tool is a tool, so one list can be handed to several sessions.
-impl<T: Tool + ?Sized> Tool for Arc<T> {
-    fn spec(&self) -> ToolSpec {
-        (**self).spec()
-    }
-
-    fn call<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a ToolContext,
-    ) -> BoxFuture<'a, ToolResult> {
-        (**self).call(args, ctx)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;

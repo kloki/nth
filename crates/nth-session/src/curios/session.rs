@@ -5,6 +5,7 @@
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use nth_curios::Store;
@@ -98,7 +99,7 @@ impl Session {
     pub async fn deliver_curios(
         &mut self,
         provider: &dyn Provider,
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         front_end: &FrontEnd,
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,

@@ -228,9 +228,9 @@ async fn a_context_tool_call_asks_for_snapshots_for_its_turn_only() {
         arguments: "{}".into(),
     });
     let provider = Scripted::new([vec![call], vec![StreamEvent::TextDelta("done".into())]]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(nth_tools::ContextPreview)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(nth_tools::ContextPreview)];
     let mut config = AppConfig::test(Session::new("glm", "/repo".into()), Arc::new(provider));
-    config.runtime.model_tools = Arc::new(tools);
+    config.runtime.model_tools = tools;
     let mut app = App::new(config);
 
     send(&mut app, "what do you see");
@@ -253,9 +253,9 @@ async fn a_later_turns_first_context_call_reads_nothing_of_the_last() {
         vec![call],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(nth_tools::ContextPreview)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(nth_tools::ContextPreview)];
     let mut config = AppConfig::test(Session::new("glm", "/repo".into()), Arc::new(provider));
-    config.runtime.model_tools = Arc::new(tools);
+    config.runtime.model_tools = tools;
     let mut app = App::new(config);
     app.run_command(Command::Context);
     send(&mut app, "one");

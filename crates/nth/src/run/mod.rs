@@ -203,7 +203,7 @@ async fn work(
     session: &mut Session,
     prompt: String,
     provider: &dyn Provider,
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
     subagents: &Subagents,
     store: Result<Store, store::Error>,
     interrupt: &Interrupt,
@@ -391,7 +391,7 @@ mod tests {
         let sessions = dir.path().join("sessions");
         let mut session = Session::new("stalling", dir.path().to_path_buf());
         let interrupt = Interrupt::default();
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stall(interrupt.cancel.clone()))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Stall(interrupt.cancel.clone()))];
         let subagents = Subagents::default();
 
         let worked = work(

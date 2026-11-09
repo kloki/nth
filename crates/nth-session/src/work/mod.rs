@@ -93,12 +93,12 @@ impl Work {
     }
 
     /// The orchestrator's tools.
-    pub fn tools(&self) -> Vec<Box<dyn Tool>> {
+    pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![
-            Box::new(WorkItem::new(self.clone())),
-            Box::new(WorkAssign::new(self.clone())),
-            Box::new(WorkClose::new(self.clone())),
-            Box::new(WorkStatus::new(self.clone())),
+            Arc::new(WorkItem::new(self.clone())),
+            Arc::new(WorkAssign::new(self.clone())),
+            Arc::new(WorkClose::new(self.clone())),
+            Arc::new(WorkStatus::new(self.clone())),
         ]
     }
 

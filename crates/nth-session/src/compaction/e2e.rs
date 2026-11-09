@@ -2,6 +2,8 @@
 //! the saved history keeps, and how a resumed session carries on. The policy
 //! itself is tested in `tests`; these go through the agent loop.
 
+use std::sync::Arc;
+
 use futures::{FutureExt, future::BoxFuture};
 use nth_context::{Context, Paths};
 use nth_protocol::{
@@ -37,7 +39,7 @@ async fn prompt(
     session: &mut Session,
     text: &str,
     provider: &dyn Provider,
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
 ) -> Result<(), Error> {
     let (tx, _rx) = mpsc::channel(64);
     session
@@ -114,7 +116,7 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpo
         vec![StreamEvent::TextDelta("the summary".into())],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -540,7 +542,7 @@ async fn a_child_session_inherits_the_limits_and_compacts_on_its_own() {
         vec![StreamEvent::TextDelta("child summary".into())],
         vec![StreamEvent::TextDelta("child done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut child, "go", &provider, &tools)
         .await
@@ -680,7 +682,7 @@ async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
         ],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -781,7 +783,7 @@ async fn the_last_allowed_step_still_asks_the_model_after_compacting() {
         vec![StreamEvent::TextDelta("the summary".into())],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     let result = prompt(&mut session, "go", &provider, &tools).await;
 
@@ -840,7 +842,7 @@ async fn a_turn_whose_own_tool_result_overflows_goes_on_with_it_cut() {
         Reply::Events(vec![StreamEvent::TextDelta("a summary".into())]),
         Reply::Events(vec![StreamEvent::TextDelta("done".into())]),
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoHuge)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(EchoHuge)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -890,7 +892,7 @@ async fn two_auto_compactions_in_a_turn_start_at_the_newest_summary() {
         vec![StreamEvent::TextDelta("second summary".into())],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -1000,7 +1002,7 @@ async fn last_usage_holds_the_last_replys_usage_not_the_turn_sum() {
             StreamEvent::Usage(usage(200, 20)),
         ],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -1064,7 +1066,7 @@ async fn the_summary_request_carries_no_tools() {
         vec![StreamEvent::TextDelta("the summary".into())],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await
@@ -1107,7 +1109,7 @@ async fn a_configured_reserved_buffer_sizes_the_trigger() {
         vec![StreamEvent::TextDelta("the summary".into())],
         vec![StreamEvent::TextDelta("done".into())],
     ]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
 
     prompt(&mut session, "go", &provider, &tools)
         .await

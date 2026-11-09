@@ -252,7 +252,7 @@ pub struct App {
     /// Held here between turns; moved into the turn task while one runs.
     session: Option<Session>,
     provider: Arc<dyn Provider>,
-    tools: Arc<Vec<Box<dyn Tool>>>,
+    tools: Vec<Arc<dyn Tool>>,
     /// Runs the commands typed after `!`.
     shell: Arc<dyn Tool>,
     channels: TurnChannels,
@@ -556,7 +556,8 @@ impl App {
             session_saving: Job::default(),
             session: None,
             provider: runtime.provider.clone(),
-            tools: runtime.model_tools.clone(),
+            // `install` moves the runtime's list in.
+            tools: Vec::new(),
             shell: runtime.shell.clone(),
             channels: TurnChannels::new(),
             asks: VecDeque::new(),

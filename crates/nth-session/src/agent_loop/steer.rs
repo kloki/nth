@@ -106,6 +106,7 @@ fn steered(prompts: &str, ctx: &ToolContext) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
 
     use futures::{FutureExt, future::BoxFuture};
     use nth_protocol::{
@@ -154,7 +155,7 @@ mod tests {
             vec![StreamEvent::TextDelta("on it".into())],
         ]);
         let inbox = Inbox::new();
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Watch(inbox.clone()))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Watch(inbox.clone()))];
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];
@@ -235,7 +236,7 @@ mod tests {
             vec![StreamEvent::TextDelta("on it".into())],
         ]);
         let inbox = Inbox::new();
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Review(inbox.clone()))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Review(inbox.clone()))];
         let mut recorded = std::collections::BTreeSet::new();
         let ctx = ToolContext {
             session: "s1".into(),
@@ -278,7 +279,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
             vec![StreamEvent::TextDelta("changed plans".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let inbox = Inbox::new();
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
@@ -384,7 +385,7 @@ mod tests {
             vec![StreamEvent::TextDelta("ok".into())],
         ]);
         let inbox = Inbox::new();
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Shout("meanwhile", inbox.clone()))];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Shout("meanwhile", inbox.clone()))];
         let ctx = ToolContext::new(".".into());
         let mut messages = vec![Message::User("go".into())];
 
@@ -409,8 +410,8 @@ mod tests {
             vec![StreamEvent::TextDelta("ok".into())],
         ]);
         let inbox = Inbox::new();
-        let tools: Vec<Box<dyn Tool>> =
-            vec![Box::new(Shout("@explore find the tabs", inbox.clone()))];
+        let tools: Vec<Arc<dyn Tool>> =
+            vec![Arc::new(Shout("@explore find the tabs", inbox.clone()))];
         let ctx = ToolContext {
             context: std::sync::Arc::new(context),
             ..ToolContext::new(dir.path().to_path_buf())
@@ -466,7 +467,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let inbox = Inbox::new();
         assert!(inbox.post_prompt("@explore find the tabs".into()));
         let ctx = ToolContext {

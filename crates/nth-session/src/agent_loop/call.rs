@@ -109,6 +109,7 @@ fn parse_arguments(raw: &str) -> Result<serde_json::Value, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
 
     use futures::{FutureExt, future::BoxFuture};
     use nth_protocol::{
@@ -260,7 +261,7 @@ mod tests {
             vec![StreamEvent::ToolCall(call("7", "question", ""))],
             vec![StreamEvent::TextDelta("done".into())],
         ]);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Pick)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Pick)];
         let (asks, mut asked) = mpsc::channel(1);
         let ctx = ToolContext {
             asker: Asker::new(asks),
@@ -386,7 +387,7 @@ mod tests {
             StreamEvent::ToolCall(call("2", "echo", r#"{"say":"hi"}"#)),
         ]]);
         let cancel = CancellationToken::new();
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stall(cancel.clone())), Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Stall(cancel.clone())), Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let (tx, mut rx) = mpsc::channel(16);
         let mut messages = vec![Message::User("go".into())];

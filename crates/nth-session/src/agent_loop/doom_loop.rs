@@ -116,6 +116,7 @@ async fn confirm_doom_loop(ctx: &ToolContext, call: &ToolCall) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
 
     use nth_protocol::{
         Answer, Asker, AssistantMessage, Message, Reply, StreamEvent, Tool, ToolContext,
@@ -161,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn the_same_call_three_times_asks_before_running() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let (asker, answering) = answering(run_it());
         let ctx = ToolContext {
             asker,
@@ -186,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn running_a_loop_on_asks_again_only_after_another_full_run() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD + 1));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let (asker, answering) = answering(run_it());
         let ctx = ToolContext {
             asker,
@@ -206,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn declining_the_doom_loop_stops_the_turn() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let (asker, answering) = answering(Reply::Declined);
         let ctx = ToolContext {
             asker,
@@ -233,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_at_the_doom_loop_question_interrupts() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let cancel = CancellationToken::new();
         // Cancels once asked, and never answers.
         let (asks, mut asked) = mpsc::channel::<nth_protocol::Ask>(1);
@@ -283,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn with_nobody_to_ask_a_loop_stops_the_turn() {
         let provider = Scripted::new(looping_reply(DOOM_LOOP_THRESHOLD));
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Echo)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
         let ctx = ToolContext::new(".".into());
         let mut messages = vec![Message::User("go".into())];
 

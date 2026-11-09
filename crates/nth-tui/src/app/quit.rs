@@ -267,9 +267,9 @@ mod tests {
             let provider = Scripted::replying([Reply::Events(vec![StreamEvent::ToolCall(call)])])
                 .with_fallback(Reply::Hang);
             let called = Arc::new(Notify::new());
-            let tools: Vec<Box<dyn Tool>> = vec![Box::new(Stuck(name, called.clone()))];
+            let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Stuck(name, called.clone()))];
             let mut config = AppConfig::test(session, Arc::new(provider));
-            config.runtime.model_tools = Arc::new(tools);
+            config.runtime.model_tools = tools;
             config.store = Some(store.clone());
             let mut app = App::new(config);
             app.prompt.insert_str("go");

@@ -79,7 +79,7 @@ pub struct PreparedRuntime {
     pub inbox: Inbox,
     pub paths: Paths,
     pub provider: Arc<dyn Provider>,
-    pub model_tools: Arc<Vec<Box<dyn Tool>>>,
+    pub model_tools: Vec<Arc<dyn Tool>>,
     pub shell: Arc<dyn Tool>,
     pub checkers: Checkers,
     pub selection: nth_config::Selection,

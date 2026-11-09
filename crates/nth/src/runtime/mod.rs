@@ -242,13 +242,13 @@ impl Runtime {
         let post_write = post_write(&config);
         let checkers = tools::checkers(&post_write, &config);
         let provider: Arc<dyn Provider> = providers;
-        let model_tools = Arc::new(tools(
+        let model_tools = tools(
             &config,
             post_write,
             provider.clone(),
             subagents,
             inbox.clone(),
-        ));
+        );
         Ok(PreparedRuntime {
             session,
             inbox,
