@@ -75,8 +75,15 @@ impl Tool for ApplyPatch {
                         .map(|p| crate::path::resolve(&ctx.cwd, p))
                 })
                 .collect();
-            let writing = self.post_write.lock(&paths).await;
-            let mut plan = Plan::new(&ctx.cwd, identities(paths.clone()).await?);
+            let identities = identities(paths.clone()).await?;
+            // A symlink's own identity too, since a delete or a move takes
+            // the link itself.
+            let locked = identities
+                .values()
+                .flat_map(|identity| [identity.file.clone(), identity.own.clone()])
+                .collect();
+            let writing = self.post_write.lock_identities(locked).await;
+            let mut plan = Plan::new(&ctx.cwd, identities);
             let mut summary = Vec::with_capacity(sections.len());
             for section in &sections {
                 let line = plan
@@ -188,6 +195,9 @@ struct Planned {
     name: PathBuf,
     /// Its new content, or `None` to delete it.
     content: Option<String>,
+    /// A symlink that goes before anything is written: deleted, and then
+    /// perhaps added again as a file of its own.
+    unlink: bool,
 }
 
 /// A file the patch named: the path as named, and the file it is.
@@ -224,26 +234,39 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// Where the plan keeps `file`: under the symlink itself once a section
+    /// planned the link gone, so later sections see it gone, or added anew
+    /// as a file of its own; else under the file it names.
+    fn key(&self, file: &Named) -> PathBuf {
+        if file.own != file.identity && self.files.contains_key(&file.own) {
+            file.own.clone()
+        } else {
+            file.identity.clone()
+        }
+    }
+
     /// Plans `file` gone. A symlink goes itself, as `rm` and git remove
     /// one, never the file it names, which may lie outside what this
     /// session may write.
     async fn remove(&mut self, file: Named) {
-        if file.own != file.identity && tokio::fs::symlink_metadata(&file.own).await.is_ok() {
-            self.on_disk.insert(file.own.clone());
-            let link = Named {
-                identity: file.own.clone(),
-                ..file
+        let link = file.own != file.identity && !self.files.contains_key(&file.own);
+        if link && tokio::fs::symlink_metadata(&file.own).await.is_ok() {
+            let planned = Planned {
+                name: file.name,
+                content: None,
+                unlink: true,
             };
-            self.set(link, None);
+            self.files.insert(file.own, planned);
         } else {
             self.set(file, None);
         }
     }
 
     fn set(&mut self, file: Named, content: Option<String>) {
-        let entry = self.files.entry(file.identity).or_insert(Planned {
+        let entry = self.files.entry(self.key(&file)).or_insert(Planned {
             name: file.name,
             content: None,
+            unlink: false,
         });
         entry.content = content;
     }
@@ -307,7 +330,7 @@ impl<'a> Plan<'a> {
 
     /// A file as the sections so far leave it; `None` if it does not exist.
     async fn read(&mut self, file: &Named) -> Result<Option<String>, String> {
-        if let Some(planned) = self.files.get(&file.identity) {
+        if let Some(planned) = self.files.get(&self.key(file)) {
             return Ok(planned.content.clone());
         }
         match tokio::fs::read_to_string(&file.identity).await {
@@ -327,44 +350,39 @@ impl<'a> Plan<'a> {
         kept.map(|file| file.name.clone()).collect()
     }
 
-    /// Deletes first, so a file may give way to a directory of its name.
-    /// A write goes through a symlink to the file it names; a delete was
-    /// keyed on the link itself by [`Plan::remove`].
+    /// Deletes first, so a file may give way to a directory of its name
+    /// and a symlink to a file of its own. A write goes through a symlink to
+    /// the file it names; a link to delete was keyed on itself by
+    /// [`Plan::remove`].
     async fn write(self) -> Result<(), String> {
-        let deletes = self
-            .files
-            .iter()
-            .filter(|(identity, file)| file.content.is_none() && self.on_disk.contains(*identity));
+        let deletes = self.files.iter().filter(|(key, file)| {
+            file.unlink || (file.content.is_none() && self.on_disk.contains(*key))
+        });
         let writes = self.files.iter().filter(|(_, file)| file.content.is_some());
-        let operations: Vec<_> = deletes.chain(writes).collect();
+        let operations: Vec<_> = (deletes.map(|(key, file)| ("delete", key, file)))
+            .chain(writes.map(|(key, file)| ("write", key, file)))
+            .collect();
         let mut completed = Vec::new();
-        for (index, (identity, file)) in operations.iter().enumerate() {
-            let (verb, result) = match &file.content {
-                None => ("delete", tokio::fs::remove_file(identity).await),
-                Some(content) => (
-                    "write",
-                    write_atomic(identity, content.clone().into_bytes()).await,
-                ),
+        for (index, (verb, key, file)) in operations.iter().enumerate() {
+            let result = match (*verb, &file.content) {
+                ("write", Some(content)) => write_atomic(key, content.clone().into_bytes()).await,
+                _ => tokio::fs::remove_file(key).await,
             };
             let path = &file.name;
             if let Err(e) = result {
                 let pending: Vec<_> = operations[index + 1..]
                     .iter()
-                    .map(|(_, file)| {
-                        format!(
-                            "{} {}",
-                            if file.content.is_some() {
-                                "write"
-                            } else {
-                                "delete"
-                            },
-                            file.name.display()
-                        )
-                    })
+                    .map(|(verb, _, file)| format!("{verb} {}", file.name.display()))
                     .collect();
+                // A write is atomic unless it had to go in place, whose
+                // error already says the file may be partly written.
+                let left = if post_write::partly_written(&e) {
+                    ""
+                } else {
+                    "\nThe failing file is as it was."
+                };
                 return Err(format!(
-                    // Each write is atomic, so the failing one changed nothing.
-                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}\nThe failing file is as it was.",
+                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}{left}",
                     path.display(),
                     if completed.is_empty() {
                         "none".into()
@@ -475,6 +493,57 @@ mod tests {
         assert_eq!(contents(&dir.path().join("moved.txt")), "two\n");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_planned_gone_stays_gone_until_added_as_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = file(dir.path(), "target.txt", "target\n");
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+
+        // Gone, a later update finds no file, and the patch changes nothing.
+        let err = patch(
+            dir.path(),
+            "*** Begin Patch
+*** Delete File: link.txt
+*** Update File: link.txt
+@@
+-target
++changed
+*** End Patch",
+        )
+        .await
+        .expect_err("the link was planned gone");
+        assert!(err.contains("no such file"), "{err}");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(contents(&target), "target\n");
+
+        // Added again, it is a file of its own and the target is untouched.
+        patch(
+            dir.path(),
+            "*** Begin Patch
+*** Delete File: link.txt
+*** Add File: link.txt
++own
+*** End Patch",
+        )
+        .await
+        .expect("the link replaced by a file");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert_eq!(contents(&link), "own\n");
+        assert_eq!(contents(&target), "target\n");
+    }
+
     #[tokio::test]
     async fn write_failure_reports_completed_and_unattempted_operations() {
         let dir = tempfile::tempdir().unwrap();
@@ -493,6 +562,7 @@ mod tests {
             let planned = Planned {
                 name: path.clone(),
                 content: content.map(String::from),
+                unlink: false,
             };
             plan.files.insert(path.clone(), planned);
         }

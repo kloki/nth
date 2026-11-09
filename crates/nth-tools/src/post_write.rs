@@ -91,7 +91,14 @@ impl PostWrite {
 
     /// Acquire all identities in order before reading or writing any of them.
     pub(crate) async fn lock(&self, paths: &[PathBuf]) -> Writing<'_> {
-        let mut identities: Vec<_> = paths.iter().map(|path| identity(path)).collect();
+        self.lock_identities(paths.iter().map(|path| identity(path)).collect())
+            .await
+    }
+
+    /// [`PostWrite::lock`] on identities already resolved, for a caller that
+    /// locks one that is not a path's `identity`: a symlink itself, which
+    /// apply_patch deletes.
+    pub(crate) async fn lock_identities(&self, mut identities: Vec<PathBuf>) -> Writing<'_> {
         identities.sort();
         identities.dedup();
         let locks: Vec<_> = {
@@ -200,7 +207,8 @@ impl Writing<'_> {
 /// permissions, and one that refuses to be written in place still refuses,
 /// though the rename itself asks only the folder. Where no rename can work,
 /// a file in a folder nth may not write in, or a file mounted on its own,
-/// the file is written in place.
+/// the file is written in place, and that alone can leave part of it: its
+/// error is then a [`PartlyWritten`], which [`partly_written`] tells.
 pub(crate) async fn write_atomic(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
     let path = path.to_path_buf();
     // One blocking job rather than a `tokio::fs` call per step: a call
@@ -232,16 +240,18 @@ fn write_aside(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "no parent folder"))?;
     let permissions = existing.as_ref().map(|meta| meta.permissions());
-    let (tmp, file) = match create_temp(parent, permissions.as_ref()) {
+    let next = || WRITES.fetch_add(1, Ordering::Relaxed);
+    let (tmp, file) = match create_temp(parent, permissions.as_ref(), next) {
         Ok(created) => created,
         Err(e) if e.kind() == ErrorKind::PermissionDenied && existing.is_some() => {
             return write_in_place(&target, bytes);
         }
         Err(e) => return Err(e),
     };
-    match replace(&tmp, file, bytes, &target) {
-        // A file bind-mounted on its own (a devcontainer's) cannot be
-        // renamed over, nor can one on another filesystem than its folder.
+    match replace(&tmp, file, bytes, permissions.as_ref(), &target) {
+        // A file bind-mounted on its own (a devcontainer's) answers EXDEV,
+        // being on another mount than its folder; EBUSY is what renaming
+        // onto a mount point gives where that is checked first.
         Err(e)
             if matches!(
                 e.kind(),
@@ -263,12 +273,20 @@ fn may_write(target: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
         return Err(io::Error::from(ErrorKind::IsADirectory));
     }
     // Asked rather than opened for writing, which a watcher would take for
-    // a write.
+    // a write; as the effective user, who would do the writing.
     let c_path = std::ffi::CString::new(target.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
     // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
-    // call, and access only reads it.
-    if unsafe { libc::access(c_path.as_ptr(), libc::W_OK) } != 0 {
+    // call, and faccessat only reads it.
+    let asked = unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+            libc::W_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if asked != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -279,19 +297,26 @@ fn may_write(target: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
 /// temporary one past the name limit.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// A new, empty file in `parent` to write aside in, with the folder made if
-/// it is missing. Given the permissions of the file it replaces, it has them
-/// before it holds a byte, so a private file's content is never readable by
-/// anyone it was not readable by.
-fn create_temp(parent: &Path, permissions: Option<&Permissions>) -> io::Result<(PathBuf, File)> {
+/// A name may be taken by a file a killed run of nth left behind, so this
+/// many more are tried.
+const TEMP_TRIES: usize = 16;
+
+/// A new, empty file in `parent` to write aside in, named by the numbers
+/// `next` hands out, with the folder made if it is missing. Given the
+/// permissions of the file it replaces, it has their read, write and
+/// execute bits before it holds a byte, so a private file's content is
+/// never readable by anyone it was not readable by.
+fn create_temp(
+    parent: &Path,
+    permissions: Option<&Permissions>,
+    mut next: impl FnMut() -> u64,
+) -> io::Result<(PathBuf, File)> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    // A name may be taken by a file a killed run of nth left behind.
-    const TRIES: usize = 16;
     let mut made_folder = false;
     let mut tries = 0;
     loop {
-        let n = WRITES.fetch_add(1, Ordering::Relaxed);
+        let n = next();
         let tmp = parent.join(format!(".nth-{}-{n}.tmp", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -302,10 +327,11 @@ fn create_temp(parent: &Path, permissions: Option<&Permissions>) -> io::Result<(
         }
         match options.open(&tmp) {
             Ok(file) => {
-                // Exactly as the file it replaces, bits the umask took
-                // included, still before any byte is written.
-                if let Some(permissions) = permissions
-                    && let Err(e) = file.set_permissions(permissions.clone())
+                // The bits the umask took put back, still before any byte
+                // is written. Setuid and setgid wait for [`replace`].
+                let bits = permissions.map(|p| Permissions::from_mode(p.mode() & 0o777));
+                if let Some(bits) = bits
+                    && let Err(e) = file.set_permissions(bits)
                 {
                     let _ = std::fs::remove_file(&tmp);
                     return Err(e);
@@ -316,17 +342,29 @@ fn create_temp(parent: &Path, permissions: Option<&Permissions>) -> io::Result<(
                 std::fs::create_dir_all(parent)?;
                 made_folder = true;
             }
-            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < TRIES => tries += 1,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists && tries < TEMP_TRIES => tries += 1,
             Err(e) => return Err(e),
         }
     }
 }
 
-/// Fills `tmp` with `bytes` and renames it over `target`; on any failure the
-/// temporary file goes and `target` is as it was.
-fn replace(tmp: &Path, mut file: File, bytes: &[u8], target: &Path) -> io::Result<()> {
+/// Fills `tmp` with `bytes`, gives it `permissions` whole and renames it
+/// over `target`; on any failure the temporary file goes and `target` is as
+/// it was.
+fn replace(
+    tmp: &Path,
+    mut file: File,
+    bytes: &[u8],
+    permissions: Option<&Permissions>,
+    target: &Path,
+) -> io::Result<()> {
     let written = (|| {
         file.write_all(bytes)?;
+        // After the bytes: a write by anyone but root clears setuid and
+        // setgid, which the file it replaces may have.
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions.clone())?;
+        }
         // On disk before the rename, so a power cut cannot leave the new
         // name pointing at an empty file.
         file.sync_all()?;
@@ -339,11 +377,38 @@ fn replace(tmp: &Path, mut file: File, bytes: &[u8], target: &Path) -> io::Resul
 }
 
 /// The last resort when no rename can replace `target`: truncated and
-/// written where it is, which keeps its permissions by itself.
+/// written where it is, which keeps its permissions by itself. Once it is
+/// open, and so truncated, a failure may leave part of the bytes.
 fn write_in_place(target: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new().write(true).truncate(true).open(target)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io::Error::new(e.kind(), PartlyWritten(e)))
+}
+
+/// An in-place write that failed after truncating its file, which may now
+/// hold only part of what was written.
+#[derive(Debug)]
+pub(crate) struct PartlyWritten(io::Error);
+
+impl std::fmt::Display for PartlyWritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; the file may be partly written", self.0)
+    }
+}
+
+impl std::error::Error for PartlyWritten {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Whether a [`write_atomic`] error left its file partly written, rather
+/// than as it was.
+pub(crate) fn partly_written(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<PartlyWritten>())
 }
 
 /// `result`, then each section that is not empty, a blank line apart. LSP
@@ -673,7 +738,7 @@ mod tests {
         // 0600 must never be wider; 0666 must not lose what the umask takes.
         for mode in [0o600, 0o666] {
             let permissions = Permissions::from_mode(mode);
-            let (tmp, _file) = create_temp(dir.path(), Some(&permissions)).unwrap();
+            let (tmp, _file) = create_temp(dir.path(), Some(&permissions), counter(0)).unwrap();
             let meta = std::fs::metadata(&tmp).unwrap();
             assert_eq!(meta.permissions().mode() & 0o777, mode);
             assert_eq!(meta.len(), 0);
@@ -688,8 +753,8 @@ mod tests {
         let target = dir.path().join("folder");
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("inside"), "kept").unwrap();
-        let (tmp, file) = create_temp(dir.path(), None).unwrap();
-        replace(&tmp, file, b"new", &target).unwrap_err();
+        let (tmp, file) = create_temp(dir.path(), None, counter(0)).unwrap();
+        replace(&tmp, file, b"new", None, &target).unwrap_err();
         assert!(!tmp.exists());
         assert_eq!(
             std::fs::read_to_string(target.join("inside")).unwrap(),
@@ -697,19 +762,74 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_leftover_temporary_file_is_stepped_over() {
-        let dir = tempfile::tempdir().unwrap();
-        // The next names this process will try, as a killed run that had
-        // the same pid would have left them.
-        let next = WRITES.load(Ordering::Relaxed);
-        for n in next..next + 3 {
-            let name = format!(".nth-{}-{n}.tmp", std::process::id());
-            std::fs::write(dir.path().join(name), "left").unwrap();
+    /// Numbers from `from` up, as [`WRITES`] hands them out but for this
+    /// test alone, which tests running beside would otherwise move along.
+    fn counter(from: u64) -> impl FnMut() -> u64 {
+        let mut n = from;
+        move || {
+            n += 1;
+            n - 1
         }
-        let path = dir.path().join("a");
+    }
+
+    #[test]
+    fn a_leftover_temporary_file_is_stepped_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let leftover = |n: u64| {
+            dir.path()
+                .join(format!(".nth-{}-{n}.tmp", std::process::id()))
+        };
+        // As a killed run that had the same pid would have left them.
+        for n in 0..3 {
+            std::fs::write(leftover(n), "left").unwrap();
+        }
+        let (tmp, _file) = create_temp(dir.path(), None, counter(0)).unwrap();
+        assert_eq!(tmp, leftover(3));
+        assert_eq!(std::fs::read_to_string(leftover(0)).unwrap(), "left");
+
+        // Past the tries it gives up rather than loop on.
+        for n in 3..=3 + TEMP_TRIES as u64 {
+            std::fs::write(leftover(n), "left").unwrap();
+        }
+        let err = create_temp(dir.path(), None, counter(3)).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setuid_and_setgid_survive_a_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, Permissions::from_mode(0o6755)).unwrap();
         write_atomic(&path, b"new".to_vec()).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o6755);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_failed_write_in_place_says_the_file_may_be_partly_written() {
+        // /dev/full opens and refuses every byte, and nth may not make a
+        // temporary file in /dev, so it is written in place. Root could,
+        // and would rename over the device, so it is not asked there.
+        let full = Path::new("/dev/full");
+        let in_place = write_in_place(full, b"x").unwrap_err();
+        assert!(partly_written(&in_place), "{in_place}");
+        assert!(
+            in_place
+                .to_string()
+                .ends_with("the file may be partly written")
+        );
+        if !is_root() {
+            let err = write_atomic(full, b"x".to_vec()).await.unwrap_err();
+            assert!(partly_written(&err), "{err}");
+        }
+        // Failing before anything was opened, the file is as it was.
+        let missing = write_in_place(Path::new("/nonexistent/a"), b"x").unwrap_err();
+        assert!(!partly_written(&missing));
     }
 
     #[cfg(unix)]
