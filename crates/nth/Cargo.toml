@@ -18,6 +18,7 @@ nth-llm.workspace = true
 nth-protocol.workspace = true
 nth-session.workspace = true
 nth-work.workspace = true
+nth-worktree.workspace = true
 nth-tools.workspace = true
 nth-tui.workspace = true
 anyhow.workspace = true

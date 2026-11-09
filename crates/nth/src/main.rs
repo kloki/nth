@@ -19,6 +19,7 @@ mod skills;
 mod text;
 mod usage;
 mod work;
+mod worktree;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -135,6 +136,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Remove clean nth-managed worktrees
+    Worktree {
+        #[command(subcommand)]
+        command: worktree::WorktreeCommand,
+    },
     /// List what the model saved in the project's memory, .nth/memory/
     Memory {
         /// Print JSON lines, the default when stdout is not a terminal
@@ -181,6 +187,9 @@ async fn main() -> ExitCode {
 /// summary as the one report and exits as a shell reports a process ctrl+c
 /// killed (128 + SIGINT); anything else says why and exits 1.
 fn failure(e: &anyhow::Error) -> ExitCode {
+    if e.is::<worktree::CleanupFailed>() {
+        return ExitCode::FAILURE;
+    }
     if let Some(nth_session::Error::Interrupted) = e.downcast_ref() {
         return ExitCode::from(130);
     }
@@ -220,6 +229,7 @@ async fn dispatch(
         }
         Command::Context { session, json } => context::run(session, json, &runtime).await,
         Command::Work { session, json } => work::run(session, json).await,
+        Command::Worktree { command } => worktree::run(command).await,
         Command::Memory { json } => memory::run(json, &config()?),
         Command::Session { command } => session::run(command).await,
         Command::Connect {
@@ -242,6 +252,23 @@ async fn context(cwd: PathBuf, paths: &Paths) -> Arc<nth_context::Context> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_cleanup_accepts_its_flags_and_requires_a_subcommand() {
+        let cli =
+            Cli::try_parse_from(["nth", "worktree", "cleanup", "--dry-run", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Worktree {
+                command: worktree::WorktreeCommand::Cleanup {
+                    dry_run: true,
+                    json: true
+                }
+            })
+        ));
+        assert!(Cli::try_parse_from(["nth", "worktree"]).is_err());
+        assert!(Cli::try_parse_from(["nth", "worktree", "cleanup", "--force"]).is_err());
+    }
 
     #[test]
     fn an_interrupted_run_exits_130_and_other_failures_1() {
