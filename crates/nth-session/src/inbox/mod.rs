@@ -63,17 +63,10 @@ impl Inbox {
         true
     }
 
-    /// Discard a wakeup that has not yet reached the model.
+    /// Discard a scheduled wakeup that has not yet reached the model.
     pub fn discard_wakeup(&self) {
         if let Some(pending) = &self.0 {
             lock(pending).retain(|item| !matches!(item, Pending::Wakeup));
-        }
-    }
-
-    /// Discard scheduled wakeups that have not yet reached the model.
-    pub fn clear_wakeups(&self) {
-        if let Some(pending) = &self.0 {
-            lock(pending).retain(|entry| !matches!(entry, Pending::Wakeup));
         }
     }
 

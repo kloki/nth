@@ -24,7 +24,6 @@ impl Turn<'_> {
         let Some(prompts) = self.inbox.take_prompts() else {
             return false;
         };
-        self.ctx.wakeup.clear();
         let answers = answer_unrun(calls, INTERRUPTED, self.events, self.cancel).await;
         self.messages.extend(answers);
         // The reminder hidden from the transcript, as the mention is.
@@ -57,7 +56,6 @@ impl Turn<'_> {
         let sent = [notices, prompts.map(|prompts| steered(&prompts, self.ctx))];
         let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
         if !sent.is_empty() {
-            self.ctx.wakeup.clear();
             self.messages.push(Message::User(sent));
             emit(self.events, self.cancel, Event::Notice(shown)).await;
         }
@@ -361,7 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wakeup_survives_tool_results_but_not_external_input() {
+    async fn wakeup_survives_what_is_handed_over_mid_turn() {
         use std::time::Duration;
 
         let wakeup = nth_protocol::Wakeup::new();
@@ -392,7 +390,8 @@ mod tests {
             .await
             .0
             .expect("turn completes");
-        assert!(wakeup.subscribe().unwrap().borrow().is_none());
+        // The model was awake to read it; only the next turn cancels it.
+        assert!(wakeup.subscribe().unwrap().borrow().is_some());
     }
 
     #[tokio::test]

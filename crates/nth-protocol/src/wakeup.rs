@@ -9,8 +9,17 @@ use tokio::{sync::watch, time::Instant};
 pub struct Wakeup(Option<watch::Sender<Option<Instant>>>);
 
 impl Wakeup {
+    /// The longest wait one schedule may ask for; a model still waiting
+    /// when it fires schedules another.
+    pub const MAX: Duration = Duration::from_secs(60 * 60);
+
     pub fn new() -> Self {
         Self(Some(watch::channel(None).0))
+    }
+
+    /// Whether a front-end owns this wakeup and will act on it.
+    pub fn enabled(&self) -> bool {
+        self.0.is_some()
     }
 
     /// Subscribe before inspecting the deadline to avoid missing changes.
@@ -24,9 +33,10 @@ impl Wakeup {
         if duration.is_zero() {
             return Err("duration must be positive");
         }
-        let deadline = Instant::now()
-            .checked_add(duration)
-            .ok_or("duration is too large")?;
+        if duration > Self::MAX {
+            return Err("duration must be at most one hour");
+        }
+        let deadline = Instant::now() + duration;
         sender.send_replace(Some(deadline));
         Ok(deadline)
     }
@@ -85,6 +95,12 @@ mod tests {
         let deadline = wakeup.schedule(Duration::from_secs(1)).unwrap();
         assert!(wakeup.schedule(Duration::ZERO).is_err());
         assert!(wakeup.schedule(Duration::MAX).is_err());
+        assert!(
+            wakeup
+                .schedule(Wakeup::MAX + Duration::from_millis(1))
+                .is_err()
+        );
         assert_eq!(*wakeup.subscribe().unwrap().borrow(), Some(deadline));
+        assert!(wakeup.schedule(Wakeup::MAX).is_ok());
     }
 }

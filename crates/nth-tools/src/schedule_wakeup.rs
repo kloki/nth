@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, parse_args};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, Wakeup, parse_args};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -17,8 +17,8 @@ impl Tool for ScheduleWakeup {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "schedule_wakeup",
-            description: "Schedule a one-shot wakeup for the main session after duration_ms milliseconds, as a failsafe while waiting for background work. This call returns immediately and replaces any pending wakeup. If the model resumes for another reason before it expires, the wakeup is cancelled; schedule another if still needed. The timer exists only while this session is open. Not available headless or to subagents.".into(),
-            parameters: json!({"type":"object", "additionalProperties":false, "properties":{"duration_ms":{"type":"integer", "minimum":1}}, "required":["duration_ms"]}),
+            description: "Schedule a one-shot wakeup for the main session after duration_ms milliseconds (at most one hour), as a failsafe while waiting for background work. This call returns immediately and replaces any pending wakeup. It lasts through the rest of this turn; if a later turn starts before it expires (the user's prompt or another notice waking you), the wakeup is cancelled, so schedule another if still needed. The timer exists only while this session is open. Not available headless or to subagents.".into(),
+            parameters: json!({"type":"object", "additionalProperties":false, "properties":{"duration_ms":{"type":"integer", "minimum":1, "maximum":Wakeup::MAX.as_millis()}}, "required":["duration_ms"]}),
         }
     }
 
@@ -26,6 +26,11 @@ impl Tool for ScheduleWakeup {
         async move {
             if ctx.is_subagent {
                 return Err("wakeups are available only to the main session".into());
+            }
+            if !ctx.wakeup.enabled() {
+                return Err(
+                    "there is no front-end to wake this session; wait for the work instead".into(),
+                );
             }
             let args: Args = parse_args(args)?;
             ctx.wakeup
@@ -38,8 +43,6 @@ impl Tool for ScheduleWakeup {
 
 #[cfg(test)]
 mod tests {
-    use nth_protocol::Wakeup;
-
     use super::*;
 
     #[tokio::test]
@@ -66,6 +69,7 @@ mod tests {
         assert!(second > first);
         for args in [
             json!({"duration_ms": 0}),
+            json!({"duration_ms": Wakeup::MAX.as_millis() + 1}),
             json!({"duration_ms": -1}),
             json!({}),
             json!({"duration_ms": 1, "extra": true}),

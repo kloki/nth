@@ -31,7 +31,7 @@ mod tests {
     use crate::app::tests::test_app;
 
     #[tokio::test(start_paused = true)]
-    async fn replacement_escape_and_leaving_discard_old_deadlines() {
+    async fn replacement_and_leaving_discard_old_deadlines() {
         let mut app = test_app();
         let old = app.wakeup.clone();
         old.schedule(Duration::from_secs(2)).unwrap();
@@ -39,15 +39,21 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         app.wakeup_due();
         assert!(!app.inbox.wakes());
-        app.interrupt();
-        assert!(app.wakeup_deadline().is_none());
-        old.schedule(Duration::from_secs(1)).unwrap();
         app.left_session();
+        assert!(app.wakeup_deadline().is_none());
         old.schedule(Duration::from_secs(1)).unwrap();
         tokio::time::advance(Duration::from_secs(2)).await;
         app.wakeup_due();
         assert!(!app.inbox.wakes());
         assert!(app.wakeup_deadline().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_escape_keeps_a_pending_wakeup() {
+        let mut app = test_app();
+        app.wakeup.schedule(Duration::from_secs(60)).unwrap();
+        app.interrupt();
+        assert!(app.wakeup_deadline().is_some());
     }
 
     #[tokio::test(start_paused = true)]
@@ -63,17 +69,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn escape_discards_expired_wakeup_but_preserves_other_notices() {
+    async fn idle_escape_keeps_a_fired_wakeup() {
         let mut app = test_app();
-        app.inbox
-            .monitor_line(1, "build", std::path::Path::new("/log"), "done".into());
         app.wakeup.schedule(Duration::from_secs(1)).unwrap();
         tokio::time::advance(Duration::from_secs(1)).await;
         app.wakeup_due();
         app.interrupt();
+        assert!(app.inbox.wakes());
         let notice = app.inbox.take_notices().unwrap();
-        assert!(notice.contains("done"));
-        assert!(!notice.contains("<wakeup"));
+        assert!(notice.contains("<wakeup"));
     }
 
     #[tokio::test]

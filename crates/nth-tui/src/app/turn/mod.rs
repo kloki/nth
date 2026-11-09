@@ -414,10 +414,13 @@ impl App {
 
     /// Esc cancels the turn cooperatively so the session comes back;
     /// aborting the task would drop the session with it.
+    /// Stopping a running turn also cancels its wakeup; Esc while idle
+    /// leaves one alone, since there was nothing to stop.
     pub(super) fn interrupt(&mut self) {
-        self.wakeup.clear();
-        self.inbox.discard_wakeup();
-        self.inbox.clear_wakeups();
+        if self.is_busy() {
+            self.wakeup.clear();
+            self.inbox.discard_wakeup();
+        }
         let prompts_waiting = self.inbox.prompts_waiting().is_some();
         let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
         self.turn.cancel();
@@ -450,13 +453,10 @@ impl App {
             .map_or(Duration::ZERO, |t| t.elapsed());
         self.running = None;
         let ending = self.turns.ended(&result);
+        // A tool of the stopped turn may have scheduled one after Esc.
         if ending.interrupted {
             self.wakeup.clear();
             self.inbox.discard_wakeup();
-        }
-        if ending.interrupted {
-            self.wakeup.clear();
-            self.inbox.clear_wakeups();
         }
         let transcript = &mut self.chat.transcript;
         let error = match &result {
