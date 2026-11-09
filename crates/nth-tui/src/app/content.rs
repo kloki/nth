@@ -460,8 +460,8 @@ impl App {
         Some(match tab {
             Tab::Chat => &mut self.chat.pager,
             Tab::Context => &mut self.context_tab.view.pager,
-            Tab::Diagnostics => &mut self.diagnostics.pager,
-            Tab::Usage => &mut self.usage_view.pager,
+            Tab::Diagnostics => &mut self.diagnostics.view.pager,
+            Tab::Usage => &mut self.usage_tab.view.pager,
             Tab::Monitor(id) => &mut self.monitor_tabs.views.get_mut(&id)?.pager,
             Tab::Subagent(id) => &mut self.subagent_views.get_mut(&id)?.chat.pager,
             Tab::Plan => &mut self.plan.view.pager,

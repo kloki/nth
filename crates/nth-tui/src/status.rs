@@ -64,14 +64,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
     // its number in yellow, where it falls among the summary's spans.
     let mut link = None;
     let mut branch_at = None;
-    if let Some(status) = &app.git {
+    if let Some(status) = &app.git.status {
         summary.push(Span::styled("git · ", bright_white()));
         if let Some(branch) = &status.branch {
             let at = summary.iter().map(Span::width).sum();
             branch_at = Some((at, branch.width()));
             summary.push(Span::styled(branch.clone(), Style::new().fg(Color::Green)));
         }
-        if let (Some(_), Some(pr)) = (&status.branch, &app.pr) {
+        if let (Some(_), Some(pr)) = (&status.branch, &app.git.pr) {
             summary.push(Span::raw(" "));
             let text = format!("#{}", pr.number);
             let at = summary.iter().map(Span::width).sum();

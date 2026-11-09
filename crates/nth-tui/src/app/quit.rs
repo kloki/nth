@@ -214,8 +214,8 @@ mod tests {
             ("plan read", app.plan.reading.is_running()),
             ("work read", app.work.reading.is_running()),
             ("file index", app.indexing.is_running()),
-            ("git status", app.git_loading.is_running()),
-            ("pull request", app.pr_loading.is_running()),
+            ("git status", app.git.loading.is_running()),
+            ("pull request", app.git.pr_loading.is_running()),
         ]
         .into_iter()
         .filter_map(|(job, running)| running.then_some(job))

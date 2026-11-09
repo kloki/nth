@@ -16,40 +16,13 @@ impl App {
         self
     }
 
-    /// Looks again at what applies, for the diagnostics tab: servers and
-    /// formatters may have been installed since the last time.
+    /// Looks again at what applies, for the diagnostics tab: servers,
+    /// formatters and programs may have been installed since the last time.
     pub(super) fn diagnose(&mut self) {
         self.list_llms();
-        let Some(checkers) = &self.checkers else {
-            return;
-        };
-        self.diagnostics.servers = None;
-        self.diagnostics.formatters = None;
-        self.diagnostics.rtk = None;
-        self.diagnostics.browser = None;
-        self.diagnostics.tea = None;
-        self.diagnostics.gh = None;
-        // Finding programs and roots walks PATH and the directory tree.
-        let (lsp, cwd) = (checkers.lsp.clone(), self.cwd.clone());
-        self.servers_lookup
-            .start(|_| tokio::task::spawn_blocking(move || lsp.servers_for(&cwd)));
-        let (formatters, cwd) = (checkers.formatters.clone(), self.cwd.clone());
-        self.formatters_lookup
-            .start(|_| tokio::spawn(async move { formatters.status(&cwd).await }));
-        // Where the `rtk` bash would rewrite through; the config may turn
-        // rewriting off, and then where it is does not matter.
-        if checkers.rtk {
-            self.rtk_lookup
-                .start(|_| tokio::task::spawn_blocking(|| nth_context::which("rtk")));
+        if let Some(checkers) = &self.checkers {
+            self.diagnostics.diagnose(checkers, self.cwd.clone());
         }
-        // Where the browser skill would drive a browser through; nothing
-        // in the config turns that off, so it is always worth knowing.
-        self.browser_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("agent-browser")));
-        self.tea_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("tea")));
-        self.gh_lookup
-            .start(|_| tokio::task::spawn_blocking(|| nth_context::which("gh")));
     }
 
     /// Takes the servers' new states, or stops listening once the sender

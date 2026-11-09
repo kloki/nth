@@ -10,9 +10,10 @@
 use std::collections::HashMap;
 
 use nth_protocol::Usage;
-use nth_session::{Ledger, Spend, SubagentId, ToolUse, store};
+use nth_session::{Ledger, Spend, SubagentId, store};
 
 use super::App;
+use crate::usage::ToolTotals;
 
 #[derive(Debug, Default)]
 pub struct Spent {
@@ -86,34 +87,16 @@ impl App {
     /// Re-reads every saved session's tool totals, for the usage tab's
     /// all-time section; the store's absence leaves what is shown.
     pub(super) fn load_tools(&mut self) {
-        let Some(store) = self.store.clone() else {
-            return;
-        };
-        if self.tools_lookup.is_running() {
-            return;
+        if let Some(store) = self.store.clone() {
+            self.usage_tab.load_tools(store);
         }
-        self.tools_lookup.start(|_| {
-            tokio::spawn(async move {
-                let spending = store.spending().await?;
-                let spends: Vec<&nth_session::Spend> = spending
-                    .iter()
-                    .flat_map(|session| session.usage.spends())
-                    .collect();
-                let mut tools: Vec<(String, ToolUse)> = nth_session::usage::tools(spends)
-                    .into_iter()
-                    .map(|(name, use_of)| (name.to_string(), use_of))
-                    .collect();
-                tools.sort_by(|a, b| b.1.calls.cmp(&a.1.calls).then_with(|| a.0.cmp(&b.0)));
-                Ok(tools)
-            })
-        });
     }
 
     /// The tool totals arrived; a failure keeps what was already shown and
     /// says why.
-    pub(super) fn tools_found(&mut self, tools: Result<Vec<(String, ToolUse)>, store::Error>) {
+    pub(super) fn tools_found(&mut self, tools: Result<ToolTotals, store::Error>) {
         match tools {
-            Ok(tools) => self.all_time_tools = tools,
+            Ok(tools) => self.usage_tab.found(tools),
             Err(e) => self.hint = Some(format!("tool usage: {e}").into()),
         }
     }

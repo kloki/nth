@@ -1076,11 +1076,11 @@ mod tests {
     async fn pr_and_curio_hit_areas_are_independent() {
         let (_dir, mut app, _store, _c) = fixture().await;
         app.place = "repo".into();
-        app.git = Some(crate::git::GitStatus {
+        app.git.status = Some(crate::git::GitStatus {
             branch: Some("main".into()),
             ..Default::default()
         });
-        app.pr = Some(crate::git::Pr {
+        app.git.pr = Some(crate::git::Pr {
             number: 123,
             url: "https://example.test/pull/123".into(),
             state: crate::git::State::Open,

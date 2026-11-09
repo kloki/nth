@@ -7,6 +7,8 @@ use std::{path::Path, process::Stdio};
 
 use tokio::process::Command;
 
+use super::LOAD_TIMEOUT;
+
 /// The pull request for the branch, whichever state it is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pr {
@@ -132,34 +134,35 @@ fn state(text: &str) -> Option<State> {
     }
 }
 
-/// git's stdout, or `None` when it fails.
+/// git's stdout, or `None` when it fails or takes past `LOAD_TIMEOUT`.
 async fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        // Quitting mid-load aborts the task; git must not outlive it.
-        .kill_on_drop(true)
-        .output()
-        .await
-        .ok()?;
-    stdout(out)
+    let mut git = Command::new("git");
+    git.args(args).current_dir(cwd);
+    output(git).await
 }
 
 /// A forge tool's stdout, or `None` when it fails: not installed, not
-/// logged in, or no pull request for the branch.
+/// logged in, no pull request for the branch, or waiting on the network
+/// past `LOAD_TIMEOUT`.
 async fn command(cwd: &Path, program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program)
-        .args(args)
+    let mut tool = Command::new(program);
+    tool.args(args)
         .current_dir(cwd)
         // No prompt can be answered from here, so none is asked.
-        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_PROMPT_DISABLED", "1");
+    output(tool).await
+}
+
+async fn output(mut command: Command) -> Option<String> {
+    command
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .output()
+        // Quitting mid-load aborts the task and a timeout drops the
+        // future; either way the child must not outlive it.
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(LOAD_TIMEOUT, command.output())
         .await
+        .ok()?
         .ok()?;
     stdout(out)
 }
@@ -172,6 +175,8 @@ fn stdout(out: std::process::Output) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -244,6 +249,15 @@ mod tests {
             })
         );
         assert_eq!(parse_tea(json, "main"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_forge_tool_that_hangs_times_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let started = tokio::time::Instant::now();
+        assert_eq!(command(dir.path(), "sleep", &["60"]).await, None);
+        assert!(started.elapsed() >= LOAD_TIMEOUT, "it waited the timeout");
+        assert!(started.elapsed() < Duration::from_secs(60), "and no longer");
     }
 
     #[tokio::test]
