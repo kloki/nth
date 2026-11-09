@@ -46,8 +46,12 @@ pub enum Stream {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorEnd {
-    /// The command exited by itself; `None` when a signal killed it.
+    /// The command exited by itself; `None` when its status was not to be
+    /// had.
     Exited(Option<i32>),
+    /// A signal killed the command: one it sent itself, or one from outside
+    /// nth, since a monitor nth stops ends as [`MonitorEnd::Stopped`].
+    Killed(i32),
     TimedOut {
         after_ms: u64,
     },
@@ -75,7 +79,8 @@ impl fmt::Display for MonitorEnd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MonitorEnd::Exited(Some(code)) => write!(f, "exited with code {code}"),
-            MonitorEnd::Exited(None) => write!(f, "killed by a signal"),
+            MonitorEnd::Exited(None) => write!(f, "ended with no exit status"),
+            MonitorEnd::Killed(signal) => write!(f, "killed by signal {signal}"),
             MonitorEnd::TimedOut { after_ms } => {
                 write!(
                     f,

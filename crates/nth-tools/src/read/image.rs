@@ -2,11 +2,7 @@
 //! read text in, kept in the session's image folder under its hash, and
 //! attached to the call beside a line saying what was read.
 
-use std::{
-    io::Cursor,
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{io::Cursor, path::Path};
 
 use base64::Engine;
 use image::{
@@ -16,6 +12,8 @@ use image::{
 };
 use nth_protocol::{Image, MAX_IMAGE_BYTES, ToolContext, image_unsupported};
 use sha2::{Digest, Sha256};
+
+use crate::post_write::write_atomic;
 
 /// The longest side an image is shown at: a 4K screen's size at 2× scale,
 /// where every model tested still read normal text, at about 2,500 tokens.
@@ -227,28 +225,13 @@ fn encode(image: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, String> 
 }
 
 /// Writes `bytes` to `file` unless it is there: named by the hash, the same
-/// name means the same bytes. Written aside and renamed over, so a read
-/// running beside never sees half a file.
+/// name means the same bytes. Written atomically, so a read running beside
+/// never sees half a file.
 async fn keep(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if tokio::fs::try_exists(file).await? {
         return Ok(());
     }
-    if let Some(dir) = file.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    // Unique per write, as two calls may keep the same image at once.
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-    let n = WRITES.fetch_add(1, Ordering::Relaxed);
-    let tmp = file.with_extension(format!("{}.{n}.tmp", std::process::id()));
-    let kept = match tokio::fs::write(&tmp, bytes).await {
-        Ok(()) => tokio::fs::rename(&tmp, file).await,
-        Err(e) => Err(e),
-    };
-    if kept.is_err() {
-        // A full disk or a folder gone mid-write leaves no stray half.
-        let _ = tokio::fs::remove_file(&tmp).await;
-    }
-    kept
+    write_atomic(file, bytes.to_vec()).await
 }
 
 #[cfg(test)]
