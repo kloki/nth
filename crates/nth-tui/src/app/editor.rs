@@ -61,10 +61,9 @@ impl App {
         screen: &mut S,
         input: &mut Option<S::Input>,
     ) {
-        self.open_editor_in(input, &std::env::temp_dir().join("nth"), |input| {
-            screen.suspend(input)
-        })
-        .await;
+        let dir = self.editor_dir.clone();
+        self.open_editor_in(input, &dir, |input| screen.suspend(input))
+            .await;
     }
 
     async fn open_editor_in<T>(

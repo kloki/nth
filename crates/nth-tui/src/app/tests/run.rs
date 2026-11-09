@@ -1,7 +1,7 @@
 //! The loop itself: `App::run` on a screen that draws into a buffer, fed
 //! terminal events through a channel, its frames read as they are drawn.
 
-use std::{future::Future, io, sync::Arc, time::Duration};
+use std::{future::Future, io, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::bail;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -11,7 +11,7 @@ use nth_session::{Session, Store};
 use ratatui::{Terminal, backend::TestBackend};
 use tokio::sync::{oneshot, watch};
 
-use super::{Scripted, test_app};
+use super::Scripted;
 use crate::{
     app::{App, AppConfig},
     terminal::Screen,
@@ -20,6 +20,24 @@ use crate::{
 /// How long a test waits for the loop to draw what it expects or to end:
 /// a guard against a hang, never a pause.
 const PATIENCE: Duration = Duration::from_secs(10);
+
+/// A directory that does not exist, under a temporary one already gone: a
+/// fixed path such as `/repo` may be where a CI mounts the checkout. The
+/// git and forge processes the loop starts in it fail at spawn, so none is
+/// in flight to race a paused clock.
+fn nowhere() -> PathBuf {
+    tempfile::tempdir().expect("tempdir").path().join("gone")
+}
+
+/// The chat on `provider` in [`nowhere`], as [`AppConfig::test`] starts it.
+fn config_on(provider: Scripted) -> AppConfig {
+    AppConfig::test(Session::new("glm", nowhere()), Arc::new(provider))
+}
+
+/// [`config_on`] an idle provider, built.
+fn idle_app() -> App {
+    App::new(config_on(Scripted::idle()))
+}
 
 /// Draws into a buffer and sends each frame's rows to the test.
 struct TestScreen {
@@ -120,7 +138,7 @@ where
 
 #[tokio::test]
 async fn a_key_is_drawn_once_the_loop_takes_it() {
-    let mut app = test_app();
+    let mut app = idle_app();
     drive(&mut app, |mut driver| async move {
         driver.type_text("hello loop");
         driver.shows("hello loop").await;
@@ -132,8 +150,8 @@ async fn a_key_is_drawn_once_the_loop_takes_it() {
 }
 
 #[tokio::test]
-async fn a_panicking_job_becomes_a_hint_not_an_exit() {
-    let mut app = test_app();
+async fn a_panicking_job_is_reported_not_an_exit() {
+    let mut app = idle_app();
     app.indexing
         .start(|_| tokio::spawn(async { panic!("the walk broke") }));
     drive(&mut app, |mut driver| async move {
@@ -149,8 +167,15 @@ async fn a_panicking_job_becomes_a_hint_not_an_exit() {
 
 #[tokio::test]
 async fn terminal_eof_ends_the_loop() {
-    let session = Session::new("glm", "/repo".into());
-    let mut app = super::app_on(session, Arc::new(Scripted::hang()));
+    let mut app = App::new(config_on(Scripted::hang()));
+    // A poll that runs until the end of the test unless the exit stops it.
+    let (_hold, held) = oneshot::channel::<()>();
+    app.curios.polling().start(|_| {
+        tokio::spawn(async move {
+            let _ = held.await;
+            panic!("the poll was let go");
+        })
+    });
     drive(&mut app, |mut driver| async move {
         driver.type_text("go on");
         driver.press(KeyCode::Enter, KeyModifiers::NONE);
@@ -170,7 +195,10 @@ async fn terminal_eof_ends_the_loop() {
 
 #[tokio::test]
 async fn ctrl_g_without_a_terminal_hints_rather_than_waits() {
-    let mut app = test_app();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = config_on(Scripted::idle());
+    config.editor_dir = dir.path().to_path_buf();
+    let mut app = App::new(config);
     drive(&mut app, |mut driver| async move {
         driver.type_text("draft");
         driver.ctrl('g');
@@ -183,6 +211,11 @@ async fn ctrl_g_without_a_terminal_hints_rather_than_waits() {
     .expect("runs");
     assert!(!app.is_editing());
     assert_eq!(app.prompt.text(), "draft");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("lists").count(),
+        0,
+        "the copy it wrote is gone"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -202,11 +235,11 @@ async fn the_curio_tick_starts_no_poll_while_one_runs() {
 /// How many polls the loop started with one already running for two and a
 /// half seconds, which then ended, and the loop running `after` that.
 ///
-/// The app's cwd, `/repo`, does not exist, so no git or forge process is
-/// in flight to race the paused clock: their spawns fail at once, and the
-/// rest of start-up runs on blocking threads, which hold the clock.
+/// The app is in [`nowhere`], so no git or forge process is in flight to
+/// race the paused clock, and the rest of start-up runs on blocking
+/// threads, which hold the clock.
 async fn curio_polls_until(after: Duration) -> usize {
-    let mut app = test_app();
+    let mut app = idle_app();
     let (release, released) = oneshot::channel::<()>();
     app.curios.polling().start(|_| {
         tokio::spawn(async move {
@@ -234,9 +267,8 @@ async fn curio_polls_until(after: Duration) -> usize {
 async fn quit_mid_turn_saves_the_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::at(dir.path());
-    let session = Session::new("glm", "/repo".into());
-    let id = session.id;
-    let mut config = AppConfig::test(session, Arc::new(Scripted::hang()));
+    let mut config = config_on(Scripted::hang());
+    let id = config.runtime.session.id;
     config.store = Some(store.clone());
     let mut app = App::new(config);
     drive(&mut app, |mut driver| async move {

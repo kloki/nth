@@ -284,6 +284,8 @@ pub struct App {
     clipboard: fn(&str) -> std::io::Result<()>,
     /// How a link reaches the desktop's opener; tests put it nowhere.
     opener: fn(&str) -> std::io::Result<()>,
+    /// Where ctrl+g writes the copy your editor opens.
+    editor_dir: PathBuf,
     /// ctrl+g asked for the editor, on this target; the loop opens it
     /// after this step.
     pending_editor: Option<editor::Target>,
@@ -334,6 +336,8 @@ pub struct AppConfig {
     pub clipboard: fn(&str) -> std::io::Result<()>,
     /// How a link reaches the desktop's opener.
     pub opener: fn(&str) -> std::io::Result<()>,
+    /// Where ctrl+g writes the copy your editor opens.
+    pub editor_dir: PathBuf,
 }
 
 impl AppConfig {
@@ -355,6 +359,7 @@ impl AppConfig {
             llm_usage: LlmUsage::default(),
             clipboard: crate::terminal::copy,
             opener: mouse::open,
+            editor_dir: std::env::temp_dir().join("nth"),
         }
     }
 }
@@ -472,6 +477,7 @@ impl App {
             llm_usage,
             clipboard,
             opener,
+            editor_dir,
         } = config;
         let session = &runtime.session;
         let (monitor_tx, monitor_rx) = mpsc::channel(256);
@@ -569,6 +575,7 @@ impl App {
             areas: mouse::Areas::default(),
             clipboard,
             opener,
+            editor_dir,
             pending_editor: None,
             editing: None,
             editor: Job::default(),
