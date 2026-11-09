@@ -65,7 +65,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn escape_discards_expired_wakeup_but_preserves_other_notices() {
         let mut app = test_app();
-        app.inbox.monitor_line(1, "build", std::path::Path::new("/log"), "done".into());
+        app.inbox
+            .monitor_line(1, "build", std::path::Path::new("/log"), "done".into());
         app.wakeup.schedule(Duration::from_secs(1)).unwrap();
         tokio::time::advance(Duration::from_secs(1)).await;
         app.wakeup_due();
