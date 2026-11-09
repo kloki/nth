@@ -7,12 +7,10 @@
 
 use std::{io, path::PathBuf, process::ExitStatus};
 
-use crossterm::event::EventStream;
-use ratatui::DefaultTerminal;
 use tokio::task::JoinError;
 
 use super::{App, Queued, Tab};
-use crate::terminal;
+use crate::terminal::Screen;
 
 /// What the editor is open on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,19 +54,24 @@ impl App {
         self.editing.is_some()
     }
 
-    /// Copies the target, hands the terminal to the editor and waits for
-    /// it in the background. `input` goes, so its reader thread stops
-    /// taking the keys meant for the editor.
-    pub(super) async fn open_editor(&mut self, input: &mut Option<EventStream>) {
-        self.open_editor_in(input, &std::env::temp_dir().join("nth"), terminal::suspend)
-            .await;
+    /// Copies the target, hands the terminal and `input` to the editor
+    /// and waits for it in the background.
+    pub(super) async fn open_editor<S: Screen>(
+        &mut self,
+        screen: &mut S,
+        input: &mut Option<S::Input>,
+    ) {
+        self.open_editor_in(input, &std::env::temp_dir().join("nth"), |input| {
+            screen.suspend(input)
+        })
+        .await;
     }
 
     async fn open_editor_in<T>(
         &mut self,
         input: &mut Option<T>,
         dir: &std::path::Path,
-        suspend: impl FnOnce(),
+        suspend: impl FnOnce(&mut Option<T>) -> anyhow::Result<()>,
     ) {
         let Some(target) = self.pending_editor.take() else {
             return;
@@ -95,8 +98,12 @@ impl App {
             self.hint = Some(format!("cannot open the editor: {e}").into());
             return;
         }
-        *input = None;
-        suspend();
+        if let Err(e) = suspend(input) {
+            self.hint = Some(format!("cannot open the editor: {e}").into());
+            // Best effort: a leftover in the temp folder is harmless.
+            let _ = tokio::fs::remove_file(&copy).await;
+            return;
+        }
         let editor = editor();
         let path = copy.clone();
         self.editor
@@ -110,30 +117,22 @@ impl App {
 
     /// Takes the terminal back however the editor ended, then sends the
     /// edits if there are any. A failed editor is a hint, never an exit.
-    pub(super) async fn editor_closed(
+    pub(super) async fn editor_closed<S: Screen>(
         &mut self,
-        terminal: &mut DefaultTerminal,
-        input: &mut Option<EventStream>,
+        screen: &mut S,
+        input: &mut Option<S::Input>,
         ended: Result<io::Result<ExitStatus>, JoinError>,
     ) -> anyhow::Result<()> {
-        self.finish_editor(
-            input,
-            ended,
-            || terminal::resume(terminal),
-            EventStream::new,
-        )
-        .await
+        self.finish_editor(input, ended, || screen.resume()).await
     }
 
     async fn finish_editor<T>(
         &mut self,
         input: &mut Option<T>,
         ended: Result<io::Result<ExitStatus>, JoinError>,
-        resume: impl FnOnce() -> anyhow::Result<()>,
-        create_input: impl FnOnce() -> T,
+        resume: impl FnOnce() -> anyhow::Result<T>,
     ) -> anyhow::Result<()> {
-        resume()?;
-        *input = Some(create_input());
+        *input = Some(resume()?);
         let Some(Editing {
             target,
             copy,
@@ -262,7 +261,7 @@ mod tests {
         app.prompt.insert_str("draft");
         app.edit();
         let mut input = Some("original input");
-        app.open_editor_in(&mut input, &blocker, || panic!("terminal suspended"))
+        app.open_editor_in(&mut input, &blocker, |_| panic!("terminal suspended"))
             .await;
         assert_eq!(input, Some("original input"));
         assert!(!app.is_editing());
@@ -272,6 +271,29 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .starts_with("cannot open the editor:")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_screen_that_will_not_suspend_keeps_input_and_drops_the_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = crate::app::tests::test_app();
+        app.prompt.insert_str("draft");
+        app.edit();
+        let mut input = Some("original input");
+        app.open_editor_in(&mut input, dir.path(), |_| anyhow::bail!("no terminal"))
+            .await;
+        assert_eq!(input, Some("original input"));
+        assert!(!app.is_editing());
+        assert!(!app.editor.is_running(), "no editor started");
+        assert_eq!(
+            app.hint.as_deref(),
+            Some("cannot open the editor: no terminal")
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("lists").count(),
+            0,
+            "the copy is gone"
         );
     }
 
@@ -288,23 +310,10 @@ mod tests {
             original: "draft".into(),
         });
         let mut input = None;
-        let restored = std::cell::Cell::new(false);
         let status = run_editor("false", &copy).await.expect("runs");
-        app.finish_editor(
-            &mut input,
-            Ok(Ok(status)),
-            || {
-                restored.set(true);
-                Ok(())
-            },
-            || {
-                assert!(restored.get(), "terminal resumed before input creation");
-                "restored input"
-            },
-        )
-        .await
-        .expect("restores");
-        assert!(restored.get());
+        app.finish_editor(&mut input, Ok(Ok(status)), || Ok("restored input"))
+            .await
+            .expect("restores");
         assert_eq!(input, Some("restored input"));
         assert!(!app.is_editing());
         assert!(!copy.exists());
