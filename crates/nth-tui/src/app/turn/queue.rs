@@ -88,6 +88,19 @@ pub(crate) enum AfterTurn {
     StartEmpty,
 }
 
+/// What Esc gives back when no turn runs.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Stop {
+    /// Nothing was held: a running turn, if any, is cancelled.
+    Nothing,
+    /// The turn held for a save goes back; the notices wait for your next
+    /// prompt.
+    GiveBack,
+    /// What was held was a wake for the notices alone: it goes, and they
+    /// still wake the model.
+    GiveBackWake,
+}
+
 /// What goes back to the prompt when the queue is given up: the prompts,
 /// commands and an approval's instructions, oldest first, and what was
 /// dropped, for the status bar.
@@ -181,20 +194,23 @@ impl TurnQueue {
     }
 
     /// Esc, with a turn `busy` or not, and whether prompts sent earlier
-    /// still wait in the inbox. Returns whether a turn held for a save goes
-    /// back as a running one would: nothing runs yet, but Esc still means
-    /// stop. The notices then wait for your next prompt, unless all that
-    /// was held was a wake for them, which was nobody's to stop.
-    pub fn interrupt(&mut self, busy: bool, prompts_waiting: bool) -> bool {
+    /// still wait in the inbox. A turn held for a save goes back as a
+    /// running one would: nothing runs yet, but Esc still means stop.
+    pub fn interrupt(&mut self, busy: bool, prompts_waiting: bool) -> Stop {
         if busy {
             self.interrupted = true;
-            return false;
+            return Stop::Nothing;
         }
-        let Some(held) = &self.held else {
-            return false;
-        };
-        self.hold_notices = !held.is_wake() || prompts_waiting;
-        true
+        match &self.held {
+            None => Stop::Nothing,
+            // A wake for notices alone was nobody's to stop, so they still
+            // wake the model on their own.
+            Some(held) if held.is_wake() && !prompts_waiting => Stop::GiveBackWake,
+            Some(_) => {
+                self.hold_notices = true;
+                Stop::GiveBack
+            }
+        }
     }
 
     /// The running turn ended with `result`; Esc after the reply ended
@@ -248,18 +264,25 @@ impl TurnQueue {
         unqueued.prompt_parts.extend(steered);
         let held = self.held.take().filter(|held| !held.is_wake());
         for next in held.into_iter().chain(self.queue.drain(..)) {
-            match next {
-                Queued::Prompt(_) | Queued::Shell(_) => unqueued.prompt_parts.push(next.label()),
-                Queued::Approve(instructions) if !instructions.is_empty() => {
-                    unqueued.prompt_parts.push(instructions);
-                    unqueued.dropped.push("plan approval discarded");
+            let dropped = match next {
+                Queued::Prompt(_) | Queued::Shell(_) => {
+                    unqueued.prompt_parts.push(next.label());
+                    continue;
                 }
-                Queued::Approve(_) => unqueued.dropped.push("plan approval discarded"),
-                Queued::Compact => unqueued.dropped.push("compaction discarded"),
-                Queued::PlanEdits { .. } => unqueued.dropped.push("plan edits discarded"),
+                Queued::Approve(instructions) => {
+                    if !instructions.is_empty() {
+                        unqueued.prompt_parts.push(instructions);
+                    }
+                    "plan approval discarded"
+                }
+                Queued::Compact => "compaction discarded",
+                Queued::PlanEdits { .. } => "plan edits discarded",
+            };
+            // The status bar names each kind once, however often it queued.
+            if !unqueued.dropped.contains(&dropped) {
+                unqueued.dropped.push(dropped);
             }
         }
-        unqueued.dropped.dedup();
         unqueued
     }
 
@@ -441,7 +464,6 @@ mod tests {
                     "plan approval discarded",
                     "compaction discarded",
                     "plan edits discarded",
-                    "plan approval discarded",
                 ],
             }
         );
@@ -533,9 +555,20 @@ mod tests {
         // Esc on a held wake alone leaves the notices free to wake the model.
         let mut queue = TurnQueue::default();
         queue.hold(prompt(""));
-        assert!(queue.interrupt(false, false));
+        assert_eq!(queue.interrupt(false, false), Stop::GiveBackWake);
         assert!(!queue.holds_notices());
         assert_eq!(queue.give_back(None), Unqueued::default());
+        // ... and never frees ones an earlier Esc held for your prompt.
+        queue.set_hold_notices(true);
+        queue.hold(prompt(""));
+        assert_eq!(queue.interrupt(false, false), Stop::GiveBackWake);
+        assert!(queue.holds_notices());
+        queue.give_back(None);
+        // A held turn of yours is stopped like a running one.
+        queue.set_hold_notices(false);
+        queue.hold(prompt(""));
+        assert_eq!(queue.interrupt(false, true), Stop::GiveBack, "prompts wait");
+        assert!(queue.holds_notices());
         assert_eq!(queue.label(None), None);
     }
 }

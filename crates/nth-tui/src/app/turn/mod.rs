@@ -11,7 +11,7 @@ use nth_notify::Event;
 use nth_protocol::{Asker, Llm, ModelSettings, Screen};
 use nth_session::{FrontEnd, Session, Store, Subagents, TurnEnv, plan, store};
 pub use queue::Queued;
-use queue::{AfterTurn, Sent, Unqueued};
+use queue::{AfterTurn, Sent, Stop, Unqueued};
 use tokio::task::JoinError;
 
 use super::{App, TabState};
@@ -420,13 +420,13 @@ impl App {
     /// aborting the task would drop the session with it.
     pub(super) fn interrupt(&mut self) {
         let prompts_waiting = self.inbox.prompts_waiting().is_some();
-        let give_back = self.turns.interrupt(self.is_busy(), prompts_waiting);
+        let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
         self.turn.cancel();
-        // A turn held for a save: nothing runs yet, but what you sent goes
-        // back as from a running turn.
-        if give_back {
-            self.unqueue();
-            if !self.turns.holds_notices() {
+        match stop {
+            Stop::Nothing => {}
+            Stop::GiveBack => self.unqueue(),
+            Stop::GiveBackWake => {
+                self.unqueue();
                 self.arm_notices();
             }
         }

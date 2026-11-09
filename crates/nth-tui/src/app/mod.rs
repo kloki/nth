@@ -69,11 +69,12 @@ use nth_protocol::{
     Show, Tool, Usage, tool_names,
 };
 use nth_session::{
-    Inbox, Ledger, Session, Spend, Store, Subagents, Summary, TurnEnv, store,
+    Inbox, Ledger, Session, Store, Subagents, Summary, TurnEnv, store,
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
-    DefaultTerminal, Frame,
+    DefaultTerminal, Frame, Terminal,
+    backend::Backend,
     layout::{Constraint, Layout, Margin, Position, Rect},
     style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -215,9 +216,9 @@ pub struct App {
     /// while the task holds it; while the session is here, its own ledger
     /// is (see `App::spent`).
     ledger: Ledger,
-    /// What the running turn, or compaction, has spent so far, as its
-    /// last `Event::Spend` said; `None` between turns.
-    running: Option<Spend>,
+    /// The ledger with what the running turn, or compaction, has spent so
+    /// far on top, as its last `Event::Spend` said; `None` between turns.
+    running: Option<Ledger>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Listing>,
@@ -672,7 +673,6 @@ impl App {
             if self.pending_editor.is_some() {
                 self.open_editor(&mut input).await;
             }
-            self.settle();
             if !self.is_editing() {
                 self.draw_frame(terminal)?;
             }
@@ -797,8 +797,16 @@ impl App {
     /// chat's field) never shows half old, half new.
     fn draw_frame(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
-        terminal.draw(|frame| self.draw(frame))?;
+        self.frame(terminal)?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+        Ok(())
+    }
+
+    /// One frame after a step: what the step leads to is settled first,
+    /// then drawn, so a draw only draws.
+    fn frame<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+        self.settle();
+        terminal.draw(|frame| self.draw(frame))?;
         Ok(())
     }
 
@@ -1077,7 +1085,7 @@ impl App {
                 self.usage_tab.draw(
                     frame,
                     area,
-                    &usage::spent(self.session.as_ref(), &self.ledger, self.running.as_ref()),
+                    usage::spent(self.session.as_ref(), &self.ledger, self.running.as_ref()),
                     &self.llm_usage.ranked(),
                     &cost,
                 );
@@ -1174,7 +1182,7 @@ impl App {
                 self.work.read()
             }
             Event::Usage(usage) => self.usage = Some(*usage),
-            Event::Spend(spend) => self.running = Some(spend.as_ref().clone()),
+            Event::Spend(spend) => self.spend_reported(spend.as_ref().clone()),
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }

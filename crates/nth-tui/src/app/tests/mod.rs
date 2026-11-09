@@ -1292,3 +1292,30 @@ fn a_draw_changes_no_tab() {
     app.settle();
     assert_eq!(app.content.tabs(), [Tab::Chat], "answered, and not shown");
 }
+
+#[test]
+fn the_frame_after_a_step_closes_an_answered_tab_before_drawing() {
+    use nth_session::subagent::{SubagentEvent, TaskOutcome};
+
+    let mut app = app();
+    app.on_subagent(SubagentEvent::Started {
+        id: 1,
+        agent: "explore".into(),
+        description: "find tabs".into(),
+        model: "glm".into(),
+    });
+    app.on_subagent(SubagentEvent::TurnEnded {
+        id: 1,
+        outcome: TaskOutcome::Completed("found".into()),
+        elapsed: Duration::from_secs(1),
+        model: "glm".into(),
+    });
+    // What `run` draws with after every step.
+    let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test backend");
+    app.frame(&mut terminal).expect("draws");
+    assert_eq!(app.content.tabs(), [Tab::Chat]);
+    let header: String = (0..60)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect();
+    assert!(!header.contains('@'), "nor drawn: {header:?}");
+}

@@ -5,8 +5,6 @@
 //! shows once its spend reaches that ledger, when the parent's turn ends,
 //! or at once while the parent is idle.
 
-use std::borrow::Cow;
-
 use nth_session::{Ledger, Session, Spend, store};
 
 use super::App;
@@ -15,8 +13,16 @@ use crate::usage::ToolTotals;
 impl App {
     /// What the session spent, its subagents' finished turns included,
     /// with the running turn so far.
-    pub(crate) fn spent(&self) -> Cow<'_, Ledger> {
+    pub(crate) fn spent(&self) -> &Ledger {
         spent(self.session.as_ref(), &self.ledger, self.running.as_ref())
+    }
+
+    /// The running turn reported what it spent so far. The ledger it adds
+    /// to is copied once here, per request, rather than on every draw.
+    pub(super) fn spend_reported(&mut self, spend: Spend) {
+        let mut ledger = spent(self.session.as_ref(), &self.ledger, None).clone();
+        ledger.record(spend);
+        self.running = Some(ledger);
     }
 
     /// Re-reads every saved session's tool totals, for the usage tab's
@@ -37,23 +43,16 @@ impl App {
     }
 }
 
-/// The session's ledger while it is here, else `ledger`, the copy taken
-/// when its turn's task took it, with `running` on top: apart from `App`,
-/// so a view on `App` can be drawn into beside it.
+/// `running` while a turn reports what it spends, else the session's
+/// ledger while it is here, else `ledger`, the copy taken when its turn's
+/// task took it: apart from `App`, so a view on `App` can be drawn into
+/// beside it.
 pub(super) fn spent<'a>(
     session: Option<&'a Session>,
     ledger: &'a Ledger,
-    running: Option<&Spend>,
-) -> Cow<'a, Ledger> {
-    let ledger = session.map_or(ledger, |session| &session.usage);
-    match running {
-        None => Cow::Borrowed(ledger),
-        Some(running) => {
-            let mut ledger = ledger.clone();
-            ledger.record(running.clone());
-            Cow::Owned(ledger)
-        }
-    }
+    running: Option<&'a Ledger>,
+) -> &'a Ledger {
+    running.unwrap_or_else(|| session.map_or(ledger, |session| &session.usage))
 }
 
 #[cfg(test)]
@@ -161,13 +160,13 @@ mod tests {
             ledger.spends().iter().map(|s| s.tokens.input).collect()
         };
         assert_eq!(
-            spends(&app.spent()),
+            spends(app.spent()),
             [100, 900],
             "not booked on the turn before it"
         );
         app.end_turn(ended);
         let session = app.session.as_ref().expect("session came back");
         assert_eq!(spends(&session.usage), [100, 900]);
-        assert_eq!(*app.spent(), session.usage);
+        assert_eq!(app.spent(), &session.usage);
     }
 }
