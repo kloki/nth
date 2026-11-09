@@ -20,7 +20,8 @@ use crate::{Error, Inbox, work::ORCHESTRATOR_TOOLS};
 /// Tools a subagent never gets: another task would nest without end, the
 /// work plan is its parent's to run, and the rest need the front-end,
 /// which belongs to the parent.
-pub(super) const WITHHELD: [&str; 14] = [
+pub(super) const WITHHELD: [&str; 15] = [
+    "schedule_wakeup",
     "curio_publish",
     "curio_read",
     "curio_reply",

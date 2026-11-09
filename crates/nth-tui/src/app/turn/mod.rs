@@ -359,6 +359,7 @@ impl App {
             asker: Asker::new(self.channels.asks.tx.clone()),
             screen: Screen::new(self.channels.screen.tx.clone()),
             monitors: self.monitors.clone(),
+            wakeup: self.wakeup.clone(),
             inbox: self.inbox.clone(),
             context_preview: self.context_tab.slot.clone(),
         }
@@ -414,6 +415,9 @@ impl App {
     /// Esc cancels the turn cooperatively so the session comes back;
     /// aborting the task would drop the session with it.
     pub(super) fn interrupt(&mut self) {
+        self.wakeup.clear();
+        self.inbox.discard_wakeup();
+        self.inbox.clear_wakeups();
         let prompts_waiting = self.inbox.prompts_waiting().is_some();
         let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
         self.turn.cancel();
@@ -446,6 +450,14 @@ impl App {
             .map_or(Duration::ZERO, |t| t.elapsed());
         self.running = None;
         let ending = self.turns.ended(&result);
+        if ending.interrupted {
+            self.wakeup.clear();
+            self.inbox.discard_wakeup();
+        }
+        if ending.interrupted {
+            self.wakeup.clear();
+            self.inbox.clear_wakeups();
+        }
         let transcript = &mut self.chat.transcript;
         let error = match &result {
             Err(nth_session::Error::Interrupted) | Ok(()) => None,

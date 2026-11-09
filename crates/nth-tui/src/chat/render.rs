@@ -155,6 +155,9 @@ fn render(entry: &Entry, cwd: &std::path::Path, width: u16, settings: ChatSettin
                 dim,
             ),
         ])],
+        Entry::Notice(NoticeSummary::Wakeup) => {
+            vec![Line::styled(format!("{INDENT}scheduled wakeup"), dim)]
+        }
         Entry::Notice(NoticeSummary::Monitor {
             id,
             description,
@@ -624,6 +627,20 @@ mod tests {
             ]
         );
         assert_eq!(lines[0].spans[1].style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn scheduled_wakeup_replays_as_a_notice_beside_user_text() {
+        let mut t = crate::chat::transcript::Transcript::replay(
+            "/repo".into(),
+            &[nth_protocol::Message::User(
+                "<wakeup type=\"scheduled\">\nScheduled wakeup.\n</wakeup>\n\ncontinue".into(),
+            )],
+        );
+        let total = t.layout(60, ChatSettings::default());
+        let lines = t.visible(0, total);
+        assert_eq!(text(&lines), ["  scheduled wakeup", "", "▎ continue"]);
+        assert!(lines[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

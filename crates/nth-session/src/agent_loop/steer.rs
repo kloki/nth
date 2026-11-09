@@ -24,6 +24,7 @@ impl Turn<'_> {
         let Some(prompts) = self.inbox.take_prompts() else {
             return false;
         };
+        self.ctx.wakeup.clear();
         let answers = answer_unrun(calls, INTERRUPTED, self.events, self.cancel).await;
         self.messages.extend(answers);
         // The reminder hidden from the transcript, as the mention is.
@@ -56,6 +57,7 @@ impl Turn<'_> {
         let sent = [notices, prompts.map(|prompts| steered(&prompts, self.ctx))];
         let sent = sent.into_iter().flatten().collect::<Vec<_>>().join("\n");
         if !sent.is_empty() {
+            self.ctx.wakeup.clear();
             self.messages.push(Message::User(sent));
             emit(self.events, self.cancel, Event::Notice(shown)).await;
         }
@@ -356,6 +358,41 @@ mod tests {
             }
             .boxed()
         }
+    }
+
+    #[tokio::test]
+    async fn wakeup_survives_tool_results_but_not_external_input() {
+        use std::time::Duration;
+
+        let wakeup = nth_protocol::Wakeup::new();
+        let ctx = ToolContext {
+            wakeup: wakeup.clone(),
+            ..ToolContext::new(".".into())
+        };
+        let inbox = Inbox::new();
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
+        wakeup.schedule(Duration::from_secs(60)).unwrap();
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let mut messages = vec![Message::User("go".into())];
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+            .await
+            .0
+            .expect("turn completes");
+        assert!(wakeup.subscribe().unwrap().borrow().is_some());
+
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("2", "shout", ""))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Shout("news", inbox.clone()))];
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+            .await
+            .0
+            .expect("turn completes");
+        assert!(wakeup.subscribe().unwrap().borrow().is_none());
     }
 
     #[tokio::test]

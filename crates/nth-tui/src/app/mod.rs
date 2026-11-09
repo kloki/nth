@@ -38,6 +38,7 @@ mod subagent;
 pub(crate) mod tests;
 mod turn;
 mod usage;
+mod wakeup;
 mod work;
 
 use std::{
@@ -261,6 +262,8 @@ pub struct App {
     turn: Job<Ended>,
     /// The commands the model left running, shared with every turn's tools.
     monitors: Monitors,
+    wakeup: nth_protocol::Wakeup,
+    wakeup_rx: watch::Receiver<Option<tokio::time::Instant>>,
     /// What the model has not heard yet from the monitors and subagents,
     /// and the prompts on their way into a running turn.
     pub(crate) inbox: Inbox,
@@ -445,6 +448,8 @@ enum Step {
     Monitor(MonitorEvent),
     Subagent(SubagentEvent),
     NoticesDue,
+    WakeupChanged,
+    WakeupDue,
     HintExpired,
     TurnEnded(Box<Result<Ended, JoinError>>),
     /// The running turn published a context preview.
@@ -489,6 +494,8 @@ impl App {
             |store| store.monitor_dir(session.id),
         );
         let monitors = Monitors::new(monitor_tx, log_dir);
+        let wakeup = nth_protocol::Wakeup::new();
+        let wakeup_rx = wakeup.subscribe().expect("enabled wakeup");
         let home = std::env::var("HOME").ok();
         // `install` below takes the runtime's config, which turns it on.
         let notifier = Notifier::off();
@@ -563,6 +570,8 @@ impl App {
             asks: VecDeque::new(),
             turn: Job::default(),
             monitors,
+            wakeup,
+            wakeup_rx,
             inbox: runtime.inbox.clone(),
             monitor_rx,
             monitor_tabs: monitor::MonitorTabs::default(),
@@ -690,6 +699,7 @@ impl App {
                 || self.showing_hero()
                 || self.flash.as_ref().is_some_and(flash::Flash::running)
                 || self.hint.as_ref().is_some_and(hint::Hint::moving);
+            let wakeup_deadline = *self.wakeup_rx.borrow_and_update();
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
                 step = self.curios.next() => Step::Curio(step),
@@ -702,6 +712,8 @@ impl App {
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
                 _ = due(self.turns.due()) => Step::NoticesDue,
+                _ = self.wakeup_rx.changed() => Step::WakeupChanged,
+                _ = due(wakeup_deadline) => Step::WakeupDue,
                 _ = due(self.hint.as_ref().map(hint::Hint::expires)) => Step::HintExpired,
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
@@ -743,6 +755,8 @@ impl App {
                 Step::Monitor(event) => self.on_monitor(event),
                 Step::Subagent(event) => self.on_subagent(event),
                 Step::NoticesDue => self.notices_due(),
+                Step::WakeupChanged => {}
+                Step::WakeupDue => self.wakeup_due(),
                 Step::HintExpired => self.hint_expired(),
                 Step::TurnEnded(ended) => match *ended {
                     Ok(ended) => self.end_turn(ended),

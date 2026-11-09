@@ -39,6 +39,7 @@ enum Pending {
     Task(TaskNotice),
     TaskStall(TaskStall),
     Work(WorkNotice),
+    Wakeup,
     /// A prompt sent while a turn runs, for its next step.
     Prompt(String),
 }
@@ -55,6 +56,27 @@ struct MonitorNotice {
 }
 
 impl Inbox {
+    /// Posts a scheduled wakeup, or returns false without an inbox.
+    pub fn post_wakeup(&self) -> bool {
+        let Some(pending) = &self.0 else { return false };
+        lock(pending).push(Pending::Wakeup);
+        true
+    }
+
+    /// Discard a wakeup that has not yet reached the model.
+    pub fn discard_wakeup(&self) {
+        if let Some(pending) = &self.0 {
+            lock(pending).retain(|item| !matches!(item, Pending::Wakeup));
+        }
+    }
+
+    /// Discard scheduled wakeups that have not yet reached the model.
+    pub fn clear_wakeups(&self) {
+        if let Some(pending) = &self.0 {
+            lock(pending).retain(|entry| !matches!(entry, Pending::Wakeup));
+        }
+    }
+
     pub fn post_curio(&self, notice: CurioNotice) -> bool {
         let Some(pending) = &self.0 else { return false };
         let mut pending = lock(pending);
@@ -330,6 +352,7 @@ fn monitor_notice<'a>(
         Pending::Task(_)
         | Pending::TaskStall(_)
         | Pending::Work(_)
+        | Pending::Wakeup
         | Pending::Prompt(_)
         | Pending::Curio(_) => {
             unreachable!("the index is a monitor's notice")
@@ -353,6 +376,7 @@ impl Pending {
             Pending::Task(task) => Some(notice::render_task(task)),
             Pending::TaskStall(stall) => Some(notice::render_task_stall(stall)),
             Pending::Work(work) => Some(notice::render_work(work)),
+            Pending::Wakeup => Some(notice::WAKEUP.into()),
             Pending::Prompt(_) => None,
             Pending::Curio(_) => None,
         }
@@ -366,6 +390,7 @@ impl Pending {
             | Pending::Task(_)
             | Pending::TaskStall(_)
             | Pending::Work(_)
+            | Pending::Wakeup
             | Pending::Curio(_) => None,
         }
     }
@@ -393,8 +418,25 @@ mod tests {
         assert!(!inbox.reaches_model());
         assert!(!inbox.post_task(task()));
         assert!(!inbox.post_prompt("hold on".into()));
+        assert!(!inbox.post_wakeup());
         inbox.monitor_line(1, "ci", Path::new("/l/1.log"), "x".into());
         assert!(!inbox.has_notices());
+        assert_eq!(inbox.take_notices(), None);
+    }
+
+    #[test]
+    fn scheduled_wakeup_is_a_wakeable_notice_not_a_prompt() {
+        let inbox = Inbox::new();
+        assert!(inbox.post_wakeup());
+        assert!(inbox.wakes());
+        assert_eq!(inbox.take_prompts(), None);
+        assert_eq!(
+            inbox.preview("owner"),
+            [("notice".into(), notice::WAKEUP.into())]
+        );
+        let text = inbox.take_notices().unwrap();
+        assert_eq!(split_notices(&text), (vec![NoticeSummary::Wakeup], ""));
+        assert!(!inbox.wakes());
         assert_eq!(inbox.take_notices(), None);
     }
 

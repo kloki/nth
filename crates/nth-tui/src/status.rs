@@ -192,7 +192,19 @@ fn queued(app: &App) -> Vec<Span<'static>> {
 /// The lower-right widgets reserve space for LSP and Curio before directories.
 fn widgets(app: &App, available: usize) -> (Vec<Span<'static>>, Option<(usize, usize)>) {
     let mut tail = Vec::new();
+    if let Some(deadline) = app.wakeup_deadline() {
+        let seconds = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_secs();
+        tail.push(Span::styled(
+            format!("wake in {}m{}s", seconds / 60, seconds % 60),
+            Style::new().fg(Color::Gray),
+        ));
+    }
     if let Some(state) = app.servers.iter().map(|s| &s.state).max_by_key(|s| rank(s)) {
+        if !tail.is_empty() {
+            tail.push(Span::raw(" "));
+        }
         tail.push(Span::styled(
             format!("{} ", icons().dot),
             Style::new().fg(state_colour(state)),

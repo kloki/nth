@@ -70,6 +70,9 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if !self.subagent {
+            front_end.wakeup.clear();
+        }
         // Feedback arrives already taken, by `deliver_curios`, which readied
         // the state before taking it.
         if matches!(input, TurnInput::Prompt(_)) {
@@ -219,6 +222,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             context_preview: front_end.context_preview.clone(),
+            wakeup: front_end.wakeup.clone(),
             writable,
             agent: self.primary().cloned(),
             child: ChildLlm {

@@ -57,6 +57,7 @@ impl App {
     /// gone when it is resumed.
     pub(super) async fn stop_background_for_exit(&mut self) {
         self.quitting = true;
+        self.wakeup.clear();
         // A turn whose own save failed hands back a session the file does
         // not hold yet.
         let mut unsaved = self.stop_turn_for_exit().await;
