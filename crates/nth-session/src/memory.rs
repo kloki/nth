@@ -21,7 +21,7 @@ pub(crate) async fn ensure_dir(dir: &Path, cwd: &Path) -> io::Result<()> {
         io::Error::new(
             error.kind(),
             format!(
-                "the memory folder {}: {error}; `enabled = false` under `[memory]` in the config runs without it",
+                "cannot create the memory folder {}: {error}; `enabled = false` under `[memory]` in the config runs without it",
                 dir.display()
             ),
         )

@@ -246,8 +246,6 @@ impl Session {
         }
     }
 
-    /// The memory folder this session keeps, when it keeps one: a subagent
-    /// works for another model, which keeps it.
     /// Makes the folders the model may write this turn: the plan's in plan
     /// mode, and the memory folder with the `.gitignore` that keeps what it
     /// saves out of git, so a turn that cannot have it never starts. Called
@@ -267,6 +265,8 @@ impl Session {
         Ok(())
     }
 
+    /// The memory folder this session keeps, when it keeps one: a subagent
+    /// works for another model, which keeps it.
     fn memory_dir(&self) -> Option<PathBuf> {
         let memory = self.context.memory.as_ref().filter(|_| !self.subagent)?;
         Some(memory.dir.clone())
