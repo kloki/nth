@@ -657,3 +657,55 @@ async fn a_failed_assign_write_reports_once() {
     assert!(work.files().0.lock().await.running.is_empty());
     assert_eq!(read(dir.path(), "01-c1", "a").await.status, Status::Pending);
 }
+
+#[tokio::test]
+async fn a_todo_tick_after_forgetting_tells_no_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx(dir.path());
+    let subagents = Subagents::default();
+    let inbox = Inbox::new();
+    let work = work_with(
+        Vec::new(),
+        Vec::new(),
+        subagents.clone(),
+        inbox.clone(),
+        LIMITS,
+    );
+    write(&work, &ctx, 1, "a").await;
+    let store = Work::store(&ctx).unwrap();
+    let at = ItemRef {
+        cycle: "01-c1".into(),
+        item: "a".into(),
+    };
+    let reserved = subagents.reserve();
+    let mut item = store.read(&at).await.unwrap().unwrap();
+    item.status = Status::Running;
+    item.task = Some(reserved.id());
+    store.write(&item).await.unwrap();
+    let todo = WorkTodo::new(Assignment {
+        files: work.0.files.clone(),
+        store,
+        at,
+        task: reserved.id(),
+        agent: "general".into(),
+        inbox: inbox.clone(),
+        parent: reserved.parent(),
+    });
+    let tick = |done: bool| json!({ "todos": [{ "text": "parse", "done": done }] });
+    todo.call(tick(false), &ctx).await.unwrap();
+    assert!(inbox.has_notices(), "heard while its session lasts");
+    inbox.clear();
+
+    subagents.forget_all();
+    let result = todo.call(tick(true), &ctx).await;
+
+    assert_eq!(result.unwrap(), "Todo updated: 1/1 done.");
+    assert!(
+        !inbox.has_notices(),
+        "the session after the one that assigned it hears nothing"
+    );
+    assert!(
+        read(dir.path(), "01-c1", "a").await.todos[0].done,
+        "the item still keeps it"
+    );
+}

@@ -35,8 +35,6 @@ pub struct SubagentView {
     tool_calls: usize,
     /// Its running turn has said nothing since it was reported stalled.
     stalled: bool,
-    /// Prompts waiting in its inbox, as last heard.
-    pub queued: usize,
     /// Its session was left: the tab closes once its turn has ended.
     pub closing: bool,
 }
@@ -52,7 +50,6 @@ impl SubagentView {
             took: None,
             tool_calls: 0,
             stalled: false,
-            queued: 0,
             closing: false,
         }
     }
@@ -143,18 +140,25 @@ impl SubagentView {
         }
     }
 
-    /// Draws the header and the chat, and returns where the chat went, for
+    /// Draws the header, with `queued` prompts waiting as the registry
+    /// reads them now, and the chat, and returns where the chat went, for
     /// its scrollbar.
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect, settings: ChatSettings) -> Rect {
+    pub fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        settings: ChatSettings,
+        queued: usize,
+    ) -> Rect {
         let [header, chat] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
-        frame.render_widget(Paragraph::new(self.header()), header);
+        frame.render_widget(Paragraph::new(self.header(queued)), header);
         self.chat.draw(frame, chat, settings);
         chat
     }
 
     /// `@explore · find tabs · running · 12s · 3 tool calls · 1 queued`.
-    fn header(&self) -> Line<'static> {
+    fn header(&self, queued: usize) -> Line<'static> {
         let dim = theme::dim();
         let (state, colour, elapsed) = match (self.state, self.running_since, self.took) {
             (_, Some(since), _) if self.stalled => ("stalled", Color::Red, since.elapsed()),
@@ -169,8 +173,8 @@ impl SubagentView {
             n => format!("{n} tool calls"),
         };
         let mut rest = format!(" · {}s · {calls}", elapsed.as_secs());
-        if self.queued > 0 {
-            rest.push_str(&format!(" · {} queued", self.queued));
+        if queued > 0 {
+            rest.push_str(&format!(" · {queued} queued"));
         }
         Line::from(vec![
             Span::styled(format!("@{}", self.agent), Style::new().fg(Color::Cyan)),
@@ -229,9 +233,8 @@ mod tests {
             name: "read".into(),
             arguments: "{}".into(),
         }));
-        view.queued = 1;
         let header: String = view
-            .header()
+            .header(1)
             .spans
             .iter()
             .map(|s| s.content.to_string())
@@ -246,9 +249,8 @@ mod tests {
             Duration::from_secs(3),
             "glm",
         );
-        view.queued = 0;
         let header: String = view
-            .header()
+            .header(0)
             .spans
             .iter()
             .map(|s| s.content.to_string())
@@ -257,7 +259,7 @@ mod tests {
     }
 
     fn state(view: &SubagentView) -> String {
-        view.header().spans[2].content.to_string()
+        view.header(0).spans[2].content.to_string()
     }
 
     #[test]

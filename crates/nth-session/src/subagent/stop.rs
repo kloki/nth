@@ -46,7 +46,7 @@ impl Tool for TaskStop {
         async move {
             let args: Args = nth_protocol::parse_args(args)?;
             let id = args.task_id.parse()?;
-            if self.subagents.cancel(id) {
+            if self.subagents.cancel(id).anything().await {
                 return Ok(format!(
                     "Stopped subagent {id}. Its interrupted notice follows; task_id {id} continues it if you need it again."
                 ));

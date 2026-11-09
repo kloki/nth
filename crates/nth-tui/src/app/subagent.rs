@@ -51,7 +51,6 @@ impl App {
                 }
                 if let Some(view) = self.subagent_views.get_mut(&id) {
                     view.prompted(text);
-                    view.queued = self.subagents.queued(id);
                 }
             }
             SubagentEvent::Session { id, event } => {
@@ -166,10 +165,6 @@ impl App {
         };
         if !self.subagents.prompt(id, job) {
             self.hint = Some("this subagent is gone".into());
-            return;
-        }
-        if let Some(view) = self.subagent_views.get_mut(&id) {
-            view.queued = self.subagents.queued(id);
         }
     }
 
@@ -177,9 +172,6 @@ impl App {
     /// you queued for it, never the parent's.
     pub(super) fn interrupt_subagent(&mut self, id: SubagentId) {
         self.subagents.cancel(id);
-        if let Some(view) = self.subagent_views.get_mut(&id) {
-            view.queued = self.subagents.queued(id);
-        }
     }
 
     /// Ends the subagents of a session that was left, after `/clear` or a
@@ -393,6 +385,61 @@ pub(super) mod tests {
         assert_eq!(
             app.history.prev(&app.prompt.entry()).as_deref(),
             Some("look again")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_subagent_tab_shows_the_queue_from_the_registry() {
+        let mut app = test_app();
+        let agents = nth_context::Context::discover(
+            std::path::Path::new("/nowhere"),
+            &nth_context::Paths::default(),
+        )
+        .agents;
+        let id = app.subagents.spawn(
+            app.subagents.reserve(),
+            agents.get("explore").expect("built in"),
+            "find tabs",
+            Session::new("glm", "/repo".into()).as_subagent(None),
+            Arc::new(Scripted::hang()),
+            Vec::new(),
+        );
+        let job = |text: &str| Job {
+            text: text.into(),
+            cancel: CancellationToken::new(),
+            done: Done::Nothing,
+            timeout: None,
+            stall: None,
+        };
+        let mut status = app.subagents.status(id).expect("registered");
+        app.subagents.prompt(id, job("go"));
+        let running = status.wait_for(|s| s.state == Some(nth_session::subagent::State::Running));
+        tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .expect("its turn starts")
+            .expect("the actor runs");
+        hear(&mut app);
+        app.apply(Action::Content(1));
+
+        // One typed on its tab, then one the model sends with the task
+        // tool, which the tab hears nothing of.
+        for c in "look again".chars() {
+            app.apply(Action::Insert(c));
+        }
+        app.apply(Action::Submit);
+        app.subagents.prompt(id, job("and this"));
+        let queued = status.wait_for(|s| s.queued == 2);
+        tokio::time::timeout(Duration::from_secs(5), queued)
+            .await
+            .expect("the actor reads both")
+            .expect("the actor runs");
+
+        let rows = crate::app::tests::rows_of(&mut app, 80);
+        assert!(
+            rows[2].starts_with(" @explore · find tabs · running · ")
+                && rows[2].contains(" · 2 queued"),
+            "{}",
+            rows[2]
         );
     }
 

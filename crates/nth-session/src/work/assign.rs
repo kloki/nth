@@ -28,28 +28,29 @@ pub struct Assigned {
 }
 
 impl Assigned {
-    /// The same, telling no model: the session that assigned it was left.
-    pub(crate) fn unheard(mut self) -> Self {
-        self.assignment.inbox = crate::Inbox::default();
-        self
-    }
-
     /// The subagent has said nothing for `quiet`.
     pub(crate) fn stalled(&self, quiet: Duration) {
         let a = &self.assignment;
-        a.inbox.post_work(WorkNotice {
-            cycle: a.at.cycle.clone(),
-            item: a.at.item.clone(),
-            task: a.task,
-            agent: a.agent.clone(),
-            state: WorkState::Stalled { quiet },
+        a.parent.tell(|| {
+            a.inbox.post_work(WorkNotice {
+                cycle: a.at.cycle.clone(),
+                item: a.at.item.clone(),
+                task: a.task,
+                agent: a.agent.clone(),
+                state: WorkState::Stalled { quiet },
+            });
         });
     }
 
-    /// The subagent's turn ended: the item returns and the model hears.
+    /// The subagent's turn ended: the item returns, and the model hears
+    /// unless the session that assigned it was left. The file returns
+    /// either way, or it would read as running forever.
     pub(crate) async fn settle(self, turn: Answer) {
-        let notice = returned(&self.assignment, outcome(&turn)).await;
-        self.assignment.inbox.post_work(notice.clone());
+        let a = &self.assignment;
+        let notice = returned(a, outcome(&turn)).await;
+        a.parent.tell(|| {
+            a.inbox.post_work(notice.clone());
+        });
         // A dropped receiver is a call that stopped waiting, which is fine.
         if let Some(reply) = self.reply {
             let _ = reply.send(notice);
@@ -155,7 +156,7 @@ impl Tool for WorkAssign {
             let path = at.path(store.dir());
             // A fresh subagent's number, taken first so its work_todo is
             // bound to the item from the start.
-            let (id, closed, fresh) = match continued {
+            let (id, parent, fresh) = match continued {
                 Some(id) => {
                     if live.worked.get(&path) != Some(&id) {
                         return Err(format!(
@@ -180,11 +181,11 @@ impl Tool for WorkAssign {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
                     shared.spawner.read_only(id, planning)?;
-                    (id, subagents.closed(id).unwrap_or_default(), None)
+                    (id, subagents.parent(id), None)
                 }
                 None => {
                     let reserved = subagents.reserve();
-                    (reserved.id(), reserved.closed(), Some(reserved))
+                    (reserved.id(), reserved.parent(), Some(reserved))
                 }
             };
             let assignment = Assignment {
@@ -194,7 +195,7 @@ impl Tool for WorkAssign {
                 task: id,
                 agent: agent.name.clone(),
                 inbox: shared.inbox.clone(),
-                closed,
+                parent,
             };
             // Started only once the file says running, so a write that
             // fails leaves no idle subagent behind.

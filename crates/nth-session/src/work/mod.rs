@@ -265,9 +265,10 @@ struct Assignment {
     agent: String,
     /// The orchestrator's.
     inbox: Inbox,
-    /// Cancelled once the subagent is forgotten with the session that
-    /// assigned it: what it says after goes to no model.
-    closed: tokio_util::sync::CancellationToken,
+    /// What it tells the orchestrator goes through this, which tells no
+    /// model once the subagent is forgotten with the session that
+    /// assigned it.
+    parent: crate::subagent::Parent,
 }
 
 /// `01-foundation/store: running` style lists of what keeps a cycle open.
@@ -403,7 +404,7 @@ pub(crate) mod tests {
             task: 3,
             agent: "general".into(),
             inbox: Inbox::default(),
-            closed: Default::default(),
+            parent: Subagents::default().reserve().parent(),
         };
         let cycle = path.parent().unwrap();
         let status = WorkStatus::new(work.clone());
