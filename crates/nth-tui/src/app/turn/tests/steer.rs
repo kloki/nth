@@ -68,11 +68,7 @@ async fn a_prompt_sent_mid_turn_preempts_the_tool_calls() {
         &session.messages[2],
         Message::Assistant(reply) if reply.tool_calls.len() == 1
     ));
-    assert!(matches!(
-        &session.messages[3],
-        Message::ToolResult { content, .. }
-            if *content == failed(INTERRUPTED)
-    ));
+    assert_eq!(failure_reason(&session.messages[3]), Some(INTERRUPTED));
     let Message::User(steered) = &session.messages[4] else {
         panic!("the prompt was steered in: {:?}", session.messages[4]);
     };

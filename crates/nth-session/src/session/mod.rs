@@ -760,11 +760,7 @@ pub(crate) mod tests {
                     arguments: r#"{"path":"x"}"#.into(),
                 }],
             }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("1", "hi"),
             Message::Compaction {
                 summary: "so far".into(),
                 recent: "[User]: go".into(),

@@ -160,11 +160,7 @@ async fn usage_at_the_window_compacts_and_the_next_request_starts_at_the_checkpo
                 tool_calls: vec![call("1", "echo", r#"{"say":"hi"}"#)],
                 ..AssistantMessage::default()
             }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("1", "hi"),
             Message::Compaction {
                 summary: "the summary".into(),
                 recent: recent.into(),
@@ -428,21 +424,9 @@ async fn a_split_turn_keeps_every_tool_call_with_its_result() {
         assistant(&"x".repeat(40_000)),
         Message::User("work".into()),
         calls.clone(),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "one".repeat(200),
-            images: Vec::new(),
-        },
-        Message::ToolResult {
-            call_id: "2".into(),
-            content: "two".repeat(200),
-            images: Vec::new(),
-        },
-        Message::ToolResult {
-            call_id: "3".into(),
-            content: "three".repeat(200),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "one".repeat(200)),
+        Message::tool_result("2", "two".repeat(200)),
+        Message::tool_result("3", "three".repeat(200)),
         assistant("done"),
     ]);
     // A budget that fits the results and the answer but not the calls
@@ -709,11 +693,7 @@ async fn automatic_compaction_off_nothing_fires_even_past_the_window() {
                 tool_calls: vec![call("1", "echo", r#"{"say":"hi"}"#)],
                 ..AssistantMessage::default()
             }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("1", "hi"),
         ],
         "the whole history goes to the provider untouched"
     );

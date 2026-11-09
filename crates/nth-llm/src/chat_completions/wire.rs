@@ -169,16 +169,8 @@ mod tests {
                     },
                 ],
             }),
-            Message::ToolResult {
-                call_id: "call_b".into(),
-                content: "B".into(),
-                images: Vec::new(),
-            },
-            Message::ToolResult {
-                call_id: "call_a".into(),
-                content: "A".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("call_b", "B"),
+            Message::tool_result("call_a", "A"),
             Message::Assistant(AssistantMessage {
                 text: "Done.".into(),
                 ..Default::default()
@@ -284,16 +276,13 @@ mod tests {
                 path: "/images/ab.png".into(),
                 data: Some("iVBO".into()),
             }],
+            is_error: false,
         }
     }
 
     #[test]
     fn tool_results_images_follow_them_in_a_user_message() {
-        let text_only = Message::ToolResult {
-            call_id: "call_2".into(),
-            content: "2 files".into(),
-            images: Vec::new(),
-        };
+        let text_only = Message::tool_result("call_2", "2 files");
         let messages = [read_an_image(), text_only, Message::User("and now?".into())];
         let out = body("glm", Effort::Default, None, &messages, &[])["messages"].clone();
         assert_eq!(

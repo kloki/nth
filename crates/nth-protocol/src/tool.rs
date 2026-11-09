@@ -10,7 +10,8 @@ use nth_context::{Agent, Context, instructions::Watch};
 use tokio::sync::mpsc;
 
 use crate::{
-    Asker, Attachments, Compaction, Event, ModelSettings, Monitors, Screen, Workdir, Writable,
+    Asker, Attachments, Compaction, Event, Message, ModelSettings, Monitors, Screen, Workdir,
+    Writable,
 };
 
 #[derive(Debug, Clone)]
@@ -207,15 +208,24 @@ pub fn timed_out(ceiling: Duration) -> String {
 /// The text the model reads, and the session saves, before why a call failed.
 const FAILED: &str = "Error: ";
 
-/// A tool result's content when the tool failed for `reason`: the shape
-/// [`failure_reason`] reads the reason back out of.
-pub fn failed(reason: &str) -> String {
+/// A failed tool result's content: why it failed, after the prefix the
+/// model reads. Only [`Message::tool_failed`] writes it, so the flag that
+/// marks a failure is never left off.
+pub(crate) fn failed(reason: &str) -> String {
     format!("{FAILED}{reason}")
 }
 
-/// Why the call failed, when `content` is a result [`failed`] wrote.
-pub fn failure_reason(content: &str) -> Option<&str> {
-    content.strip_prefix(FAILED)
+/// Why the call `message` answers failed; `None` when it succeeded, however
+/// its text starts.
+pub fn failure_reason(message: &Message) -> Option<&str> {
+    match message {
+        Message::ToolResult {
+            content,
+            is_error: true,
+            ..
+        } => Some(content.strip_prefix(FAILED).unwrap_or(content)),
+        _ => None,
+    }
 }
 
 pub trait Tool: Send + Sync {

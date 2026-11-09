@@ -53,7 +53,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use nth_protocol::{INTERRUPTED, ToolContext, failed};
+    use nth_protocol::{INTERRUPTED, ToolContext, failure_reason};
 
     use super::*;
 
@@ -263,9 +263,9 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(Error::Interrupted)));
-        assert!(matches!(
-            session.messages.last(),
-            Some(Message::ToolResult { content, .. }) if *content == failed(INTERRUPTED)
-        ));
+        assert_eq!(
+            session.messages.last().and_then(failure_reason),
+            Some(INTERRUPTED)
+        );
     }
 }

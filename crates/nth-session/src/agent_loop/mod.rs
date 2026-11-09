@@ -18,11 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use call::answer_unrun;
 pub(crate) use call::run_call;
 use doom_loop::DOOM_LOOP_THRESHOLD;
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Message, Phase, Provider, Request,
-    Tool, ToolContext, ToolSpec, Usage, failed,
+    Tool, ToolContext, ToolSpec, Usage,
 };
 pub(crate) use stream::Stop;
 use tokio::sync::mpsc;
@@ -294,12 +295,9 @@ impl Turn<'_> {
             // Told not to, the model called tools anyway; they don't run, and
             // every call is answered so the session stays valid.
             if last {
-                self.messages
-                    .extend(calls.into_iter().map(|call| Message::ToolResult {
-                        call_id: call.id,
-                        content: failed(MAX_STEPS_REACHED),
-                        images: Vec::new(),
-                    }));
+                let answers =
+                    answer_unrun(&calls, MAX_STEPS_REACHED, self.events, self.cancel).await;
+                self.messages.extend(answers);
                 return Err(Error::TooManySteps(max_steps));
             }
             // The next request's `pending_reply` shows the same history, as
@@ -389,11 +387,7 @@ pub(crate) fn settle_unanswered(messages: &mut Vec<Message>) {
         .tool_calls
         .iter()
         .filter(|call| !answered.contains(&call.id.as_str()))
-        .map(|call| Message::ToolResult {
-            call_id: call.id.clone(),
-            content: failed(nth_protocol::INTERRUPTED),
-            images: Vec::new(),
-        })
+        .map(|call| Message::tool_failed(call.id.clone(), nth_protocol::INTERRUPTED))
         .collect();
     messages.extend(unanswered);
 }
