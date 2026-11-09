@@ -31,7 +31,7 @@ async fn a_command_sent_while_busy_runs_after_the_turn() {
     let mut app = shell_app(dir.path());
     send(&mut app, "hello");
     command(&mut app, "echo later");
-    assert_eq!(app.queue, [Queued::Shell("echo later".into())]);
+    assert_eq!(*app.turns.queued(), [Queued::Shell("echo later".into())]);
 
     end(&mut app).await;
     assert!(app.is_busy(), "the command runs next");

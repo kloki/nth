@@ -122,7 +122,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) -> HitAreas {
 /// What the session spent at the catalogue's rates, once it spent
 /// anything and the price is known, as ` $3.10`.
 fn spent(app: &App) -> Vec<Span<'static>> {
-    if app.spent.ledger.total().steps == 0 {
+    if app.spent().total().steps == 0 {
         return Vec::new();
     }
     match app.price() {
@@ -177,29 +177,16 @@ fn link_rect(right: Rect, width: usize, at: usize, link: usize) -> Option<Rect> 
     })
 }
 
-/// Line 2, left: `> 2 queued · <first line of the next prompt>`. Prompts
-/// on their way into the running turn count too, and name the line: they
-/// are the next thing the model hears. So does a turn waiting for a save.
+/// Line 2, left: `> 2 queued · <first line of the next prompt>`, as
+/// `TurnQueue::label` counts it.
 fn queued(app: &App) -> Vec<Span<'static>> {
-    let waiting = app.inbox.prompts_waiting();
-    // A wake for notices is not something you sent.
-    let held = app.turn_after_save.as_ref().filter(|held| !held.is_wake());
-    let count = waiting.as_ref().map_or(0, |(count, _)| *count)
-        + usize::from(held.is_some())
-        + app.queue.len();
-    let first = match waiting {
-        Some((_, first)) => first,
-        None => match held.or(app.queue.front()) {
-            Some(next) => {
-                let next = next.label();
-                let first = next.lines().find(|line| !line.trim().is_empty());
-                first.unwrap_or_default().to_string()
-            }
-            None => return Vec::new(),
-        },
-    };
-    let line = format!("{} {count} queued · {first}", icons().queued);
-    vec![Span::styled(line, Style::new().fg(Color::Gray))]
+    match app.turns.label(app.inbox.prompts_waiting()) {
+        Some(label) => {
+            let line = format!("{} {label}", icons().queued);
+            vec![Span::styled(line, Style::new().fg(Color::Gray))]
+        }
+        None => Vec::new(),
+    }
 }
 
 /// The lower-right widgets reserve space for LSP and Curio before directories.

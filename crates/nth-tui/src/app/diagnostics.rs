@@ -132,7 +132,7 @@ mod tests {
         let changed = lsp_changed(&mut app.lsp).await;
         app.servers_changed(changed);
 
-        app.queue = [Queued::Prompt("lint".into())].into();
+        app.turns.set_queued([Queued::Prompt("lint".into())]);
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(row.starts_with(" > 1 queued · lint "), "{row:?}");
         assert!(
@@ -140,7 +140,8 @@ mod tests {
             "the queue shares it: {row:?}"
         );
 
-        app.queue = [Queued::Prompt("fix the build".into())].into();
+        app.turns
+            .set_queued([Queued::Prompt("fix the build".into())]);
         let row = crate::app::tests::status_row(&rows(&mut app), 1).to_string();
         assert!(
             row.starts_with(" > 1 queued · fix the build "),

@@ -94,7 +94,7 @@ impl App {
         if self.session_saving.take_again() {
             self.save_session();
         }
-        if let Some(next) = self.turn_after_save.take() {
+        if let Some(next) = self.turns.take_held() {
             self.start(next);
         }
     }

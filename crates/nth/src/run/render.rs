@@ -89,6 +89,7 @@ impl Printer {
             Event::ToolFinished { .. }
             | Event::ToolOutput { .. }
             | Event::Usage(_)
+            | Event::Spend(_)
             | Event::Notice(_) => {}
         }
     }

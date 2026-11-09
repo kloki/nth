@@ -295,7 +295,7 @@ mod tests {
         let mut app = App::bare(session, Arc::new(Scripted::default()), Arc::new(Vec::new()));
         app.prompt.insert_str("go");
         app.submit();
-        app.queue.push_back(Queued::Prompt("then".into()));
+        app.turns.push(Queued::Prompt("then".into()));
         // The reply ended before the cancel came: the turn ends well, which
         // would start what queued behind it.
         let handle = app.turn.abort_handle().expect("running");
@@ -307,7 +307,7 @@ mod tests {
 
         assert_eq!(running(&app), Vec::<&str>::new(), "left running");
         // Dropped with the app; the prompt history has it.
-        assert_eq!(app.queue, [Queued::Prompt("then".into())]);
+        assert_eq!(*app.turns.queued(), [Queued::Prompt("then".into())]);
     }
 
     /// An app with something to save, holding a save between turns that
@@ -360,13 +360,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = saving(&Store::at(dir.path()), async { Ok(()) });
         app.start_turn("go".into());
-        assert!(app.turn_after_save.is_some(), "held for the save");
+        assert!(app.turns.held().is_some(), "held for the save");
 
         app.stop_background_for_exit().await;
 
         assert!(!app.is_busy(), "the held turn started");
         // Dropped with the app; the prompt history has it.
-        assert_eq!(app.turn_after_save, Some(Queued::Prompt("go".into())));
+        assert_eq!(app.turns.held(), Some(&Queued::Prompt("go".into())));
     }
 
     #[tokio::test]
@@ -377,7 +377,7 @@ mod tests {
         let mut app = saving(&Store::at(dir.path()), async { Ok(()) }).with_history(history);
         app.prompt.insert_str("go");
         app.submit();
-        assert!(app.turn_after_save.is_some(), "held for the save");
+        assert!(app.turns.held().is_some(), "held for the save");
 
         app.stop_background_for_exit().await;
 

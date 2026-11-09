@@ -291,7 +291,7 @@ mod tests {
 
         assert!(matches!(app.input, Input::Prompt));
         assert!(app.is_busy(), "the turn still runs");
-        assert!(!app.interrupted, "Esc closed search, not the turn");
+        assert!(!app.turns.interrupted(), "Esc closed search, not the turn");
 
         app.on_key(KeyEvent::from(KeyCode::Esc));
         let ended = app.turn.join().await.expect("the turn ends");

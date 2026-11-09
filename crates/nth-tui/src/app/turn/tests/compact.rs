@@ -14,7 +14,7 @@ async fn a_compaction_summarizes_the_session_and_shows_a_divider() {
     end(&mut app).await;
 
     assert!(!app.is_busy());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     let session = app.session.as_ref().expect("session came back");
     assert!(
         matches!(session.messages.last(), Some(Message::Compaction { .. })),
@@ -71,7 +71,11 @@ async fn a_compaction_sent_while_busy_runs_after_the_turn() {
     send(&mut app, "go");
     send(&mut app, "/compact");
 
-    assert_eq!(app.queue, [Queued::Compact], "it waits for the turn");
+    assert_eq!(
+        *app.turns.queued(),
+        [Queued::Compact],
+        "it waits for the turn"
+    );
 
     end(&mut app).await;
     assert!(app.is_busy(), "the compaction runs next");
@@ -116,12 +120,12 @@ async fn esc_interrupts_a_compaction_and_keeps_the_session() {
 async fn an_interrupted_turn_discards_a_queued_compaction() {
     let (mut app, _) = busy_app().await;
     send(&mut app, "/compact");
-    assert_eq!(app.queue, [Queued::Compact]);
+    assert_eq!(*app.turns.queued(), [Queued::Compact]);
 
     app.on_key(KeyEvent::from(KeyCode::Esc));
     end(&mut app).await;
 
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     assert!(app.prompt.is_empty(), "no text of yours to give back");
     assert_eq!(app.hint.as_deref(), Some("compaction discarded"));
 }
@@ -137,7 +141,7 @@ async fn compacting_nothing_asks_nothing_and_says_nothing() {
     end(&mut app).await;
 
     assert!(!app.is_busy());
-    assert!(app.queue.is_empty());
+    assert!(app.turns.queued().is_empty());
     assert!(
         app.chat.transcript.entries().next().is_none(),
         "no divider and no footer for a session with nothing to summarize"

@@ -50,7 +50,7 @@ fn app_logging_to_tmp(provider: Arc<dyn Provider>) -> App {
 async fn notices_wake_an_idle_agent() {
     let mut app = app_logging_to_tmp(Arc::new(Scripted::default()));
     monitor_says(&mut app, "build failed").await;
-    assert!(app.notices_due.is_some(), "waits for more lines first");
+    assert!(app.turns.due().is_some(), "waits for more lines first");
 
     app.notices_due();
     assert!(app.is_busy());
@@ -128,7 +128,7 @@ async fn a_notice_during_a_failed_turn_wakes_the_model_after_it() {
     app.notices_due();
     end(&mut app).await;
 
-    assert!(app.notices_due.is_some(), "nothing else will arm it");
+    assert!(app.turns.due().is_some(), "nothing else will arm it");
     app.notices_due();
     assert!(app.is_busy());
     end(&mut app).await;
@@ -156,7 +156,7 @@ async fn a_skill_that_cannot_be_read_keeps_the_notices() {
         app.inbox.has_notices(),
         "not taken by a turn that never ran"
     );
-    assert!(app.notices_due.is_some(), "and still wake the model");
+    assert!(app.turns.due().is_some(), "and still wake the model");
     assert_eq!(sent(&app), Vec::<&str>::new());
 }
 

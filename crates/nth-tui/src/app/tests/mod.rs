@@ -473,11 +473,10 @@ fn a_scrollbar_shows_only_while_scrolled_up() {
 #[test]
 fn the_status_bar_shows_the_queue_on_its_second_line() {
     let mut app = app();
-    app.queue = [
+    app.turns.set_queued([
         Queued::Prompt("\nfix the build\nand the tests".into()),
         Queued::Prompt("then lint".into()),
-    ]
-    .into();
+    ]);
     let rows = rows(&mut app);
 
     assert_eq!(
@@ -614,11 +613,13 @@ fn the_context_usage_shows_a_coloured_percentage() {
 fn the_status_bar_shows_what_the_session_spent() {
     let mut app = app();
     let place = status_row(&rows(&mut app), 0).trim_end().to_string();
-    app.on_session(Event::Usage(Usage {
+    let mut running = nth_session::Spend::new("glm", None);
+    running.count(Usage {
         input: 1_000,
         output: 10,
         ..Usage::default()
-    }));
+    });
+    app.on_session(Event::Spend(Box::new(running.clone())));
     assert_eq!(
         status_row(&rows(&mut app), 0).trim_end(),
         place,
@@ -633,13 +634,15 @@ fn the_status_bar_shows_what_the_session_spent() {
         cache_write: None,
     });
     app.llms = Some(vec![glm].into());
-    app.on_session(Event::Usage(Usage {
+    // What the turn spent so far, its first request included.
+    running.count(Usage {
         input: 1_000,
         output: 10,
         cache_read: Some(1_000),
         cache_write: None,
         reasoning: None,
-    }));
+    });
+    app.on_session(Event::Spend(Box::new(running)));
     // 1000 fresh at 1000/M, 1000 read at 100/M, 20 out at 10000/M.
     assert!(
         status_row(&rows(&mut app), 0).contains(" $1.30 "),
@@ -842,13 +845,15 @@ async fn a_fresh_session_takes_the_configured_compaction() {
 #[tokio::test]
 async fn usage_opens_a_tab_of_what_the_session_spent() {
     let mut app = app();
-    app.on_session(Event::Usage(Usage {
+    let mut running = nth_session::Spend::new("glm", None);
+    running.count(Usage {
         input: 2_000,
         output: 30,
         cache_read: Some(1_500),
         cache_write: None,
         reasoning: None,
-    }));
+    });
+    app.on_session(Event::Spend(Box::new(running)));
     app.prompt.insert_str("/usage");
     app.submit();
     let opened = rows(&mut app);
@@ -1259,4 +1264,31 @@ async fn typing_copy_runs_the_command() {
         COPIED.with(|c| c.borrow().clone()),
         Some("the **answer**".to_string())
     );
+}
+
+#[test]
+fn a_draw_changes_no_tab() {
+    use nth_session::subagent::{SubagentEvent, TaskOutcome};
+
+    let mut app = app();
+    app.on_subagent(SubagentEvent::Started {
+        id: 1,
+        agent: "explore".into(),
+        description: "find tabs".into(),
+        model: "glm".into(),
+    });
+    app.on_subagent(SubagentEvent::TurnEnded {
+        id: 1,
+        outcome: TaskOutcome::Completed("found".into()),
+        elapsed: Duration::from_secs(1),
+        model: "glm".into(),
+    });
+    rows(&mut app);
+    assert_eq!(
+        app.content.tabs(),
+        [Tab::Chat, Tab::Subagent(1)],
+        "a draw only draws"
+    );
+    app.settle();
+    assert_eq!(app.content.tabs(), [Tab::Chat], "answered, and not shown");
 }

@@ -67,20 +67,24 @@ async fn end_turn_drains_tail_events_before_finishing_transcript() {
         }))
         .await
         .expect("usage queued");
+    let mut spend = nth_session::Spend::new("glm", None);
+    spend.count(Usage {
+        input: 123,
+        ..Usage::default()
+    });
+    app.events_tx
+        .send(Event::Spend(Box::new(spend)))
+        .await
+        .expect("spend queued");
     app.end_turn(ended);
     let entries: Vec<_> = app.chat.transcript.entries().collect();
     assert!(format!("{entries:?}").contains("tail reply"), "{entries:?}");
     assert!(matches!(entries.last(), Some(Entry::Interrupted { .. })));
     assert!(app.events_rx.try_recv().is_err());
+    assert_eq!(app.usage.map(|usage| usage.input), Some(123));
     assert_eq!(
-        app.spent
-            .ledger
-            .spends()
-            .last()
-            .expect("spend")
-            .tokens
-            .input,
-        123
+        app.running, None,
+        "the session's ledger is back, the running spend is not drawn on top"
     );
 }
 

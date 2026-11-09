@@ -59,7 +59,6 @@ use diagnostics::lsp_changed;
 use finished::Finished;
 use futures::StreamExt;
 use input::Input;
-use mode::Steerable;
 use monitor::due;
 use nth_config::{Selection, Target};
 use nth_context::{Context as ProjectContext, Paths};
@@ -70,7 +69,7 @@ use nth_protocol::{
     Show, Tool, Usage, tool_names,
 };
 use nth_session::{
-    Inbox, Session, Store, Subagents, Summary, TurnEnv, store,
+    Inbox, Ledger, Session, Spend, Store, Subagents, Summary, TurnEnv, store,
     subagent::{SubagentEvent, SubagentId},
 };
 use ratatui::{
@@ -84,8 +83,7 @@ use tokio::{
     task::JoinError,
     time::MissedTickBehavior,
 };
-use turn::{Ended, Queued};
-use usage::Spent;
+use turn::{Ended, Queued, TurnQueue};
 
 use crate::{
     Checkers, PreparedRuntime, Reload,
@@ -152,19 +150,9 @@ pub struct App {
     wide: bool,
     /// Saved like the history, one write at a time.
     llm_usage_saving: Job<std::io::Result<()>>,
-    /// Prompts sent while a turn runs, oldest first; each runs as its own
-    /// turn once the one before ends well. Empty while idle, unless a turn
-    /// waits in `turn_after_save`, which they queue behind.
-    pub queue: VecDeque<Queued>,
-    /// What was started while `session_saving` ran, held until it ends.
-    pub(crate) turn_after_save: Option<Queued>,
-    /// The mode, model and effort the running model turn has, which a
-    /// prompt sent mid-turn steers into only while they are still yours;
-    /// `None` while idle or running a command.
-    steerable: Option<Steerable>,
-    /// Esc was pressed during the running turn, which may have finished
-    /// before it saw the cancel.
-    interrupted: bool,
+    /// What waits for the running turn, or for the save between turns, and
+    /// whether notices may wake the model.
+    pub(crate) turns: TurnQueue,
     /// How the chat's last turn ended, for its tab: done, failed, or idle
     /// when you stopped it or there was none.
     last_turn: TabState,
@@ -223,8 +211,13 @@ pub struct App {
     lsp_usage: Option<watch::Receiver<Vec<ProcessUsage>>>,
     /// What the last model reply used; `None` until the first one.
     pub usage: Option<Usage>,
-    /// What the session spent, its subagents included, as heard so far.
-    pub spent: Spent,
+    /// What the session had spent when its turn's task took it, drawn
+    /// while the task holds it; while the session is here, its own ledger
+    /// is (see `App::spent`).
+    ledger: Ledger,
+    /// What the running turn, or compaction, has spent so far, as its
+    /// last `Event::Spend` said; `None` between turns.
+    running: Option<Spend>,
     /// The LLMs the endpoint serves, kept once listed; after a failure the
     /// next open asks again.
     llms: Option<Listing>,
@@ -291,11 +284,6 @@ pub struct App {
     file_tabs: file::FileTabs,
     plan: plan::PlanTab,
     work: work::WorkTab,
-    /// When the notices waiting start a turn, if the app is idle by then.
-    notices_due: Option<tokio::time::Instant>,
-    /// Notices wait for your next prompt rather than start a turn, after
-    /// you stopped one.
-    hold_notices: bool,
     /// A word on what the last key did or did not do, on the status bar
     /// until the next key or for a few seconds.
     pub hint: Option<hint::Hint>,
@@ -472,10 +460,7 @@ impl App {
             config: None,
             split_width: 0,
             wide: false,
-            queue: VecDeque::new(),
-            turn_after_save: None,
-            steerable: None,
-            interrupted: false,
+            turns: TurnQueue::default(),
             last_turn: TabState::Idle,
             content: Content::default(),
             diagnostics: DiagnosticsTab::default(),
@@ -504,7 +489,8 @@ impl App {
             lsp: None,
             lsp_usage: None,
             usage: None,
-            spent: Spent::new(session.usage.clone()),
+            ledger: Ledger::default(),
+            running: None,
             llms: None,
             llm_listing: Job::default(),
             chatgpt: None,
@@ -540,8 +526,6 @@ impl App {
             file_tabs: file::FileTabs::new(),
             plan: plan::PlanTab::new(plan_path),
             work: work::WorkTab::new(work_dir),
-            notices_due: None,
-            hold_notices: false,
             hint: None,
             areas: mouse::Areas::default(),
             clipboard: crate::terminal::copy,
@@ -688,6 +672,7 @@ impl App {
             if self.pending_editor.is_some() {
                 self.open_editor(&mut input).await;
             }
+            self.settle();
             if !self.is_editing() {
                 self.draw_frame(terminal)?;
             }
@@ -710,7 +695,7 @@ impl App {
                 Some(read) = self.file_tabs.next() => Step::FileRead(read),
                 Some(event) = self.monitor_rx.recv() => Step::Monitor(event),
                 Some(event) = self.subagent_rx.recv() => Step::Subagent(event),
-                _ = due(self.notices_due) => Step::NoticesDue,
+                _ = due(self.turns.due()) => Step::NoticesDue,
                 _ = due(self.hint.as_ref().map(hint::Hint::expires)) => Step::HintExpired,
                 // The status bar's session time changes on the minute.
                 _ = due(Some(next_minute())) => Step::Tick,
@@ -792,6 +777,13 @@ impl App {
         Ok(())
     }
 
+    /// What follows from the step just applied and must hold before the
+    /// next draw, which only draws: the tabs of subagents that answered
+    /// close once neither pane shows them.
+    pub(super) fn settle(&mut self) {
+        self.close_answered_subagents();
+    }
+
     /// The work of the loop's one-second tick. The context tab is rebuilt
     /// only when something marked it stale or it came into view, since
     /// each rebuild projects the whole history.
@@ -860,7 +852,6 @@ impl App {
         .spacing(if spacing == 3 { 1 } else { 0 })
         .areas(area);
 
-        self.close_answered_subagents();
         self.areas = mouse::Areas::default();
         self.wide = self.split_width != 0 && frame.area().width >= self.split_width;
         let panes = match self.panes() {
@@ -1086,7 +1077,7 @@ impl App {
                 self.usage_tab.draw(
                     frame,
                     area,
-                    &self.spent.ledger,
+                    &usage::spent(self.session.as_ref(), &self.ledger, self.running.as_ref()),
                     &self.llm_usage.ranked(),
                     &cost,
                 );
@@ -1182,10 +1173,8 @@ impl App {
             Event::ToolFinished { call, .. } if tool_names::touches_work(&call.name) => {
                 self.work.read()
             }
-            Event::Usage(usage) => {
-                self.usage = Some(*usage);
-                self.spent.usage(&self.selection.current().model, *usage);
-            }
+            Event::Usage(usage) => self.usage = Some(*usage),
+            Event::Spend(spend) => self.running = Some(spend.as_ref().clone()),
             Event::Moved(cwd) => self.follow(cwd.clone()),
             _ => {}
         }
@@ -1295,7 +1284,7 @@ impl App {
         self.context_tab.view.update(None);
         self.refresh_context();
         self.usage = None;
-        self.spent = Spent::default();
+        self.running = None;
         self.plan.for_session(plan_path);
         self.work.for_session(work_dir);
         self.left_session();
