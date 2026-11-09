@@ -139,6 +139,7 @@ mod tests {
             call_id: "1".into(),
             content: "Image read".into(),
             images,
+            is_error: false,
         }
     }
 
@@ -157,11 +158,10 @@ mod tests {
         let messages = prepare(&[result(vec![image("a", 4)])], Some(false)).expect("rewritten");
         assert_eq!(
             messages,
-            [Message::ToolResult {
-                call_id: "1".into(),
-                content: format!("Image read\n\n{}", image_unsupported("/images/a.png")),
-                images: Vec::new(),
-            }]
+            [Message::tool_result(
+                "1",
+                format!("Image read\n\n{}", image_unsupported("/images/a.png"))
+            )]
         );
     }
 

@@ -161,7 +161,7 @@ mod tests {
     use futures::future::BoxFuture;
     use nth_protocol::{
         INTERRUPTED, MonitorEnd, MonitorEvent, StreamEvent, Tool, ToolCall, ToolContext,
-        ToolResult, ToolSpec, failed,
+        ToolResult, ToolSpec,
     };
     use nth_session::{Session, Store};
     use tokio::sync::Notify;
@@ -285,11 +285,7 @@ mod tests {
             assert!(saved.messages.contains(&Message::User("go".into())));
             assert_eq!(
                 saved.messages.last(),
-                Some(&Message::ToolResult {
-                    call_id: "1".into(),
-                    content: failed(INTERRUPTED),
-                    images: Vec::new(),
-                })
+                Some(&Message::tool_failed("1", INTERRUPTED))
             );
         }
     }

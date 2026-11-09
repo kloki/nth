@@ -25,32 +25,14 @@ pub enum Created {
     ExistingBranch,
 }
 
-/// What a worktree has that the commit it started from has not.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Changes {
-    pub uncommitted: bool,
-    pub commits: usize,
-}
-
-impl Changes {
-    pub fn is_none(&self) -> bool {
-        !self.uncommitted && self.commits == 0
-    }
-}
-
 /// The top of the checkout `cwd` is in.
 pub async fn toplevel(cwd: &Path) -> Result<PathBuf, String> {
     git::toplevel(cwd).await
 }
 
 /// Where the worktrees of the checkout at `root` live, shared with its main checkout.
-pub fn dir(root: &Path) -> PathBuf {
+fn dir(root: &Path) -> PathBuf {
     nth_directories::Directories::discover(root).worktrees()
-}
-
-/// Whether `name` is taken, as a worktree or as a branch.
-pub async fn taken(root: &Path, name: &str) -> bool {
-    dir(root).join(name).exists() || git::branch_exists(root, name).await
 }
 
 /// The worktree `name` of the checkout at `root`, on the branch `name`:
@@ -81,24 +63,6 @@ pub async fn open(root: &Path, name: &str) -> Result<Worktree, String> {
         branch: name.to_string(),
         created,
     })
-}
-
-/// The commit the worktree's HEAD is on.
-pub async fn head(worktree: &Worktree) -> Result<String, String> {
-    git::head(&worktree.path).await
-}
-
-/// What changed in the worktree since `base`, a commit from [`head`].
-pub async fn changes(worktree: &Worktree, base: &str) -> Result<Changes, String> {
-    Ok(Changes {
-        uncommitted: git::dirty(&worktree.path).await?,
-        commits: git::commits_since(&worktree.path, base).await?,
-    })
-}
-
-/// Deletes the worktree and its branch, whatever is in them.
-pub async fn remove(root: &Path, worktree: &Worktree) -> Result<(), String> {
-    git::remove(root, &worktree.path, &worktree.branch).await
 }
 
 /// Makes `dir` with its `.gitignore`, unless it is there already.
@@ -181,8 +145,6 @@ mod tests {
         let worktree = open(&root, "x").await.expect("second");
 
         assert_eq!(worktree.created, None);
-        assert!(taken(&root, "x").await);
-        assert!(!taken(&root, "y").await);
     }
 
     #[tokio::test]
@@ -198,18 +160,10 @@ mod tests {
 
         let worktree = open(&linked, "feature").await.expect("opened");
         assert_eq!(worktree.path, root.join(".nth/worktrees/feature"));
-        assert_eq!(
-            head(&worktree).await.unwrap(),
-            run(&linked, &["rev-parse", "HEAD"])
-        );
-        assert_ne!(
-            head(&worktree).await.unwrap(),
-            run(&root, &["rev-parse", "HEAD"])
-        );
-        assert!(taken(&linked, "feature").await);
+        let head = run(&worktree.path, &["rev-parse", "HEAD"]);
+        assert_eq!(head, run(&linked, &["rev-parse", "HEAD"]));
+        assert_ne!(head, run(&root, &["rev-parse", "HEAD"]));
         assert_eq!(open(&root, "feature").await.unwrap().created, None);
-        remove(&linked, &worktree).await.unwrap();
-        assert!(!taken(&root, "feature").await);
     }
 
     #[tokio::test]
@@ -236,45 +190,5 @@ mod tests {
             out.expect_err("no repo")
                 .contains("not in a git repository")
         );
-    }
-
-    #[tokio::test]
-    async fn sees_uncommitted_changes_and_new_commits() {
-        let (_dir, root) = repo();
-        let worktree = open(&root, "x").await.expect("opened");
-        let base = head(&worktree).await.expect("head");
-        assert!(changes(&worktree, &base).await.expect("changes").is_none());
-
-        std::fs::write(worktree.path.join("a.txt"), "b").expect("write");
-        let dirty = changes(&worktree, &base).await.expect("changes");
-        assert_eq!(
-            dirty,
-            Changes {
-                uncommitted: true,
-                commits: 0
-            }
-        );
-
-        commit(&worktree.path);
-        let committed = changes(&worktree, &base).await.expect("changes");
-        assert_eq!(
-            committed,
-            Changes {
-                uncommitted: false,
-                commits: 1
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn remove_deletes_the_worktree_and_its_branch() {
-        let (_dir, root) = repo();
-        let worktree = open(&root, "x").await.expect("opened");
-        std::fs::write(worktree.path.join("new.txt"), "n").expect("write");
-
-        remove(&root, &worktree).await.expect("removed");
-
-        assert!(!worktree.path.exists());
-        assert!(!taken(&root, "x").await);
     }
 }

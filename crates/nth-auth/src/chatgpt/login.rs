@@ -270,12 +270,12 @@ enum Outcome {
         client_id: Option<String>,
     },
     NotFound,
-    /// The login is over: the issuer refused, or the request is not the one
-    /// nth is waiting for.
-    Failed {
-        status: &'static str,
-        message: String,
-    },
+    /// Not the redirect this login waits for: a stale tab of an earlier
+    /// login, or a page that guessed the port. It is answered and the login
+    /// goes on, so it cannot cut a real sign-in short.
+    Refused(&'static str),
+    /// The issuer refused this login.
+    Denied(String),
 }
 
 fn outcome(target: &str, state: &str) -> Outcome {
@@ -290,19 +290,17 @@ fn outcome(target: &str, state: &str) -> Outcome {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.into_owned())
     };
-    let failed = |status, message: &str| Outcome::Failed {
-        status,
-        message: message.to_string(),
-    };
+    // The state comes first: only a request carrying it is from the issuer,
+    // so only such a request may end the login, even with an `error`.
+    if param("state").as_deref() != Some(state) {
+        return Outcome::Refused("Invalid state - potential CSRF attack");
+    }
     if let Some(error) = param("error") {
-        return failed("200 OK", &param("error_description").unwrap_or(error));
+        return Outcome::Denied(param("error_description").unwrap_or(error));
     }
     let Some(code) = param("code") else {
-        return failed("400 Bad Request", "Missing authorization code");
+        return Outcome::Refused("Missing authorization code");
     };
-    if param("state").as_deref() != Some(state) {
-        return failed("400 Bad Request", "Invalid state - potential CSRF attack");
-    }
     Outcome::Code {
         code,
         client_id: param("client_id"),
@@ -334,8 +332,11 @@ async fn callback(listener: &TcpListener, state: &str) -> Result<(TcpStream, Cal
                 match outcome(&target, state) {
                     Outcome::Code { code, client_id } => return Ok((stream, Callback { code, client_id })),
                     Outcome::NotFound => respond(&mut stream, "404 Not Found", "Not found").await,
-                    Outcome::Failed { status, message } => {
-                        respond(&mut stream, status, &error_page(&message)).await;
+                    Outcome::Refused(message) => {
+                        respond(&mut stream, "400 Bad Request", &error_page(message)).await;
+                    }
+                    Outcome::Denied(message) => {
+                        respond(&mut stream, "200 OK", &error_page(&message)).await;
                         return Err(Error::Denied(message));
                     }
                 }
@@ -386,24 +387,24 @@ fn escape_html(text: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Opens `url` in your browser, where the platform has a way to. Whether it
-/// did is not known, so callers show the URL as well.
-pub fn open_browser(url: &str) {
+/// Hands `url` to the desktop's opener and comes back at once. `Ok` means
+/// the opener started, not that it found a browser, so callers show the URL
+/// as well. The browser it starts is meant to outlive nth.
+pub fn open_browser(url: &str) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
     };
-    let child = std::process::Command::new(opener)
+    let mut child = std::process::Command::new(opener)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()?;
     // Waited on aside, so it is reaped without holding up the caller.
-    if let Ok(mut child) = child {
-        std::thread::spawn(move || child.wait());
-    }
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -505,25 +506,20 @@ mod tests {
         );
         assert_eq!(outcome("/favicon.ico", "s"), Outcome::NotFound);
         assert_eq!(
+            outcome("/auth/callback?error=access_denied&state=s", "s"),
+            Outcome::Denied("access_denied".into())
+        );
+        assert_eq!(
             outcome("/auth/callback?error=access_denied", "s"),
-            Outcome::Failed {
-                status: "200 OK",
-                message: "access_denied".into()
-            }
+            Outcome::Refused("Invalid state - potential CSRF attack")
         );
         assert_eq!(
             outcome("/auth/callback?state=s", "s"),
-            Outcome::Failed {
-                status: "400 Bad Request",
-                message: "Missing authorization code".into()
-            }
+            Outcome::Refused("Missing authorization code")
         );
         assert_eq!(
             outcome("/auth/callback?code=abc&state=other", "s"),
-            Outcome::Failed {
-                status: "400 Bad Request",
-                message: "Invalid state - potential CSRF attack".into()
-            }
+            Outcome::Refused("Invalid state - potential CSRF attack")
         );
     }
 
@@ -851,7 +847,10 @@ mod tests {
         let login = Login::start(chatgpt(&issuer, Store::at(dir.path().join("auth.json")))).await;
 
         let (status, page) = login
-            .callback("error=access_denied&error_description=<you said no>")
+            .callback(&format!(
+                "error=access_denied&error_description=<you said no>&state={}",
+                login.url["state"]
+            ))
             .await;
         assert_eq!(status, 200);
         assert!(page.contains("&lt;you said no&gt;"), "{page}");
@@ -865,20 +864,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_state_ends_the_login() {
+    async fn a_request_with_the_wrong_state_is_refused_and_the_login_goes_on() {
         let issuer = Issuer::start(200, json!({})).await;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("auth.json"));
         let login = Login::start(chatgpt(&issuer, store.clone())).await;
 
-        let (status, page) = login.callback("code=the-code&state=forged").await;
-        assert_eq!(status, 400);
-        assert!(page.contains("Invalid state"), "{page}");
-
-        let error = login.task.await.unwrap().unwrap_err();
-        assert!(matches!(error, Error::Denied(_)), "{error}");
+        for query in [
+            "code=the-code&state=forged",
+            "code=the-code",
+            "error=access_denied&state=forged",
+            "error=access_denied",
+        ] {
+            let (status, page) = login.callback(query).await;
+            assert_eq!(status, 400, "{query}");
+            assert!(page.contains("Invalid state"), "{query}: {page}");
+        }
+        assert!(!login.task.is_finished());
         assert!(issuer.requests().is_empty());
-        assert_eq!(store.oauth(ChatGpt::ID).await.unwrap(), None);
+
+        let client_id = "oaiapp_issued";
+        issuer.respond(200, answer(&issuer, client_id, login.nonce()));
+        let (status, page) = login.sign_in(Some(client_id)).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("Authorization successful"), "{page}");
+        login.task.await.unwrap().unwrap();
+        assert!(store.oauth(ChatGpt::ID).await.unwrap().is_some());
     }
 
     #[tokio::test]

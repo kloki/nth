@@ -3,9 +3,9 @@
 //! calls, and what monitors said and you sent while the tools ran
 //! follows their results, after any instruction file that changed.
 
-use nth_protocol::{Event, INTERRUPTED, Message, ToolCall, ToolContext, failed};
+use nth_protocol::{Event, INTERRUPTED, Message, ToolCall, ToolContext};
 
-use super::{Turn, emit};
+use super::{Turn, answer_unrun, emit};
 use crate::inbox::instructions_notice;
 
 /// Appended to a prompt that pre-empted a reply's tool calls, so the model
@@ -24,24 +24,8 @@ impl Turn<'_> {
         let Some(prompts) = self.inbox.take_prompts() else {
             return false;
         };
-        for call in calls {
-            emit(self.events, self.cancel, Event::ToolStarted(call.clone())).await;
-            emit(
-                self.events,
-                self.cancel,
-                Event::ToolFinished {
-                    call: call.clone(),
-                    result: Err(INTERRUPTED.to_string()),
-                },
-            )
-            .await;
-        }
-        self.messages
-            .extend(calls.iter().map(|call| Message::ToolResult {
-                call_id: call.id.clone(),
-                content: failed(INTERRUPTED),
-                images: Vec::new(),
-            }));
+        let answers = answer_unrun(calls, INTERRUPTED, self.events, self.cancel).await;
+        self.messages.extend(answers);
         // The reminder hidden from the transcript, as the mention is.
         let text = steered(&prompts, self.ctx) + INTERRUPTED_REMINDER;
         self.messages.push(Message::User(text));
@@ -311,11 +295,7 @@ mod tests {
                     tool_calls: vec![call("1", "echo", r#"{"say":"hi"}"#)],
                     ..AssistantMessage::default()
                 }),
-                Message::ToolResult {
-                    call_id: "1".into(),
-                    content: failed(INTERRUPTED),
-                    images: Vec::new(),
-                },
+                Message::tool_failed("1", INTERRUPTED),
                 Message::User(format!("never mind, just wave{INTERRUPTED_REMINDER}")),
                 Message::Assistant(AssistantMessage {
                     text: "changed plans".into(),

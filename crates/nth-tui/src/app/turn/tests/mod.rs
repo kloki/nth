@@ -9,7 +9,7 @@ use std::sync::{
 use crossterm::event::{KeyCode, KeyEvent};
 use nth_protocol::{
     Event, INTERRUPTED, Listing, Message, ModelInfo, MonitorEvent, Provider, Stream, StreamEvent,
-    ToolCall, Usage, failed,
+    ToolCall, Usage, failure_reason,
 };
 use tokio::sync::Notify;
 
@@ -191,6 +191,57 @@ async fn a_sent_prompt_is_saved_to_the_history_file() {
     );
     let mut loaded = crate::history::History::load(path).await;
     assert_eq!(loaded.prev("").as_deref(), Some("two\nlines"));
+}
+
+#[tokio::test]
+async fn two_instances_appending_history_keep_both_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("nth/prompt-history.jsonl");
+    let mut apps = Vec::new();
+    // Both start before either saves, as two nth running side by side do.
+    for _ in 0..2 {
+        let session = Session::new("glm", "/repo".into());
+        apps.push(App::new(AppConfig {
+            history: crate::history::History::load(path.clone()).await,
+            ..AppConfig::test(session, Arc::new(Scripted::hang()))
+        }));
+    }
+
+    for (app, prompt) in apps.iter_mut().zip(["first", "second"]) {
+        app.prompt.insert_str(prompt);
+        app.submit();
+        let saved = app.history_saving.join().await.expect("save finished");
+        app.history_saved(saved);
+    }
+
+    let mut loaded = crate::history::History::load(path).await;
+    assert_eq!(loaded.prev("").as_deref(), Some("second"));
+    assert_eq!(loaded.prev("second").as_deref(), Some("first"));
+}
+
+#[tokio::test]
+async fn a_prompt_sent_while_saving_is_saved_once_that_ends() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("nth/prompt-history.jsonl");
+    let session = Session::new("glm", "/repo".into());
+    let mut app = App::new(AppConfig {
+        history: crate::history::History::load(path.clone()).await,
+        ..AppConfig::test(session, Arc::new(Scripted::hang()))
+    });
+    app.history.push("one".into());
+    app.save_history();
+    app.history.push("two".into());
+    app.save_history();
+
+    while app.history_saving.is_running() {
+        let saved = app.history_saving.join().await.expect("save finished");
+        app.history_saved(saved);
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("saved"),
+        "\"one\"\n\"two\"\n"
+    );
 }
 
 fn send(app: &mut App, text: &str) {

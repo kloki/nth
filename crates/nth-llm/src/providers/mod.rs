@@ -417,11 +417,7 @@ mod tests {
                     tool_calls: vec![call.clone()],
                     ..Default::default()
                 }),
-                Message::ToolResult {
-                    call_id: call.id.clone(),
-                    content: "[workspace]".into(),
-                    images: Vec::new(),
-                },
+                Message::tool_result(call.id.clone(), "[workspace]"),
             ];
             let qualified = format!("zen/{model}");
             let events: Vec<_> = providers

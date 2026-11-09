@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     text::{Line, Span},
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{io::AsyncReadExt, sync::mpsc, task::JoinHandle};
 
 use crate::{
     pager::{Cache, Pager},
@@ -21,17 +21,39 @@ use crate::{
 /// Which file tab a read is for.
 pub type FileId = u32;
 
-/// What the watcher read: the file's text, or `None` once it can't be.
-pub type FileRead = (FileId, Option<String>);
+/// What the watcher read: the file's head, or `None` once it can't be.
+pub type FileRead = (FileId, Option<Contents>);
 
 /// How often the watcher looks whether the file changed.
 const POLL: Duration = Duration::from_millis(500);
+
+/// The most of a file a tab reads. A log the model shows can grow without
+/// end, and the tab reads it again on every change and lays all of it out.
+pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A file's text as the watcher read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contents {
+    /// The whole file, or its lines up to [`MAX_FILE_BYTES`].
+    pub text: String,
+    /// The file goes on past `text`.
+    pub cut: bool,
+}
+
+impl From<&str> for Contents {
+    fn from(text: &str) -> Self {
+        Self {
+            text: text.into(),
+            cut: false,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct FileView {
     path: PathBuf,
     /// `None` until first read, and once the file is gone.
-    text: Option<String>,
+    text: Option<Contents>,
     /// The watcher has reported at least once.
     read: bool,
     pub pager: Pager,
@@ -58,7 +80,7 @@ impl FileView {
 
     /// The file now reads `text`, or can't be read with `None`. The view
     /// stays where it was, so a reload does not jump.
-    pub fn update(&mut self, text: Option<String>) {
+    pub fn update(&mut self, text: Option<Contents>) {
         self.read = true;
         if text != self.text {
             self.text = text;
@@ -92,7 +114,7 @@ impl FileView {
             _ => place.to_string(),
         };
         let mut lines = vec![Line::styled(header, theme::dim()), Line::default()];
-        let Some(text) = &self.text else {
+        let Some(Contents { text, cut }) = &self.text else {
             return lines;
         };
         let path = self.path.to_string_lossy();
@@ -100,6 +122,11 @@ impl FileView {
             lines.extend(rich::markdown(text, width).lines);
         } else {
             lines.extend(numbered(rich::code(text, &path, width), width));
+        }
+        if *cut {
+            lines.push(Line::default());
+            let mib = MAX_FILE_BYTES / (1024 * 1024);
+            lines.push(Line::styled(format!("(cut at {mib} MiB)"), theme::dim()));
         }
         lines
     }
@@ -146,7 +173,7 @@ impl Watcher {
                     seen = Some(stamp);
                     // A file that can't be read shows as gone, and comes
                     // back once it can.
-                    let text = tokio::fs::read_to_string(&path).await.ok();
+                    let text = read_head(&path).await.ok().flatten();
                     if reads.send((id, text)).await.is_err() {
                         return;
                     }
@@ -155,6 +182,42 @@ impl Watcher {
             }
         }))
     }
+}
+
+/// Reads `path` up to [`MAX_FILE_BYTES`]; a file cut there ends at its last
+/// whole line. `None` for a file that is not UTF-8, which has no text to
+/// show.
+async fn read_head(path: &Path) -> std::io::Result<Option<Contents>> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    // One byte past the cap tells a file that ends there from a longer one.
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    let cut = bytes.len() as u64 > MAX_FILE_BYTES;
+    if cut {
+        // Only within the cap: a newline just past it would keep the
+        // whole of `bytes`, one more than the cap.
+        let end = bytes[..MAX_FILE_BYTES as usize]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(MAX_FILE_BYTES as usize, |newline| newline + 1);
+        bytes.truncate(end);
+    }
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => {
+            // A single line past the cap may end inside a character.
+            let valid = e.utf8_error().valid_up_to();
+            if !cut || e.utf8_error().error_len().is_some() {
+                return Ok(None);
+            }
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(std::io::Error::other)?
+        }
+    };
+    Ok(Some(Contents { text, cut }))
 }
 
 impl Drop for Watcher {
@@ -236,7 +299,7 @@ mod tests {
         view.pager.scroll_down(5);
         assert!(view.pager.scrollbar().is_some());
 
-        view.update(Some("more\n".repeat(40)));
+        view.update(Some(Contents::from("more\n".repeat(40).as_str())));
         terminal
             .draw(|frame| view.draw(frame, frame.area(), "a.txt"))
             .expect("draws");
@@ -266,5 +329,48 @@ mod tests {
         assert_eq!(rx.recv().await, Some((7, Some("one\ntwo\n".into()))));
         std::fs::remove_file(&path).expect("removes");
         assert_eq!(rx.recv().await, Some((7, None)));
+    }
+
+    #[tokio::test]
+    async fn a_file_past_the_cap_shows_its_head_and_a_note() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("big.log");
+        let line = "0123456789abcdef\n";
+        let lines = MAX_FILE_BYTES as usize / line.len() + 10;
+        std::fs::write(&path, line.repeat(lines)).expect("writes");
+        let (tx, mut rx) = mpsc::channel(4);
+        let _watching = FileView::new(7, path, tx);
+
+        let Some((7, Some(read))) = rx.recv().await else {
+            panic!("the watcher reads the file");
+        };
+        assert!(read.cut, "past the cap");
+        assert!(read.text.len() as u64 <= MAX_FILE_BYTES);
+        assert!(read.text.ends_with(line), "ends on a whole line");
+
+        // Laid out small: the note is what matters, not 4 MiB of lines.
+        let mut view = view("/p/big.log", "");
+        view.update(Some(Contents {
+            text: "head\n".into(),
+            cut: true,
+        }));
+        let shown: Vec<String> = text(&view.lines("big.log", 40))
+            .into_iter()
+            .map(|l| l.trim_end().to_string())
+            .collect();
+        assert_eq!(shown, ["big.log", "", "1 head", "", "(cut at 4 MiB)"]);
+    }
+
+    #[tokio::test]
+    async fn a_single_line_past_the_cap_is_cut_on_a_character() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("one.txt");
+        // Three-byte characters, so the cap lands inside one.
+        let text = "€".repeat(MAX_FILE_BYTES as usize / 3 + 1);
+        std::fs::write(&path, text).expect("writes");
+
+        let read = read_head(&path).await.expect("reads").expect("text");
+        assert!(read.cut);
+        assert_eq!(read.text.len() as u64, MAX_FILE_BYTES - MAX_FILE_BYTES % 3);
     }
 }

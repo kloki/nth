@@ -59,6 +59,20 @@ impl GitBar {
             .start_or_queue(|_| tokio::spawn(async move { load_pr(&cwd).await }));
     }
 
+    /// Loads both afresh for a new working directory, stopping any load
+    /// still running for the old one (its child dies with it), so what it
+    /// finds can't land after the move. A load queued for the old one is
+    /// covered by the fresh one.
+    pub fn reload(&mut self, cwd: PathBuf) {
+        self.loading.take_again();
+        self.pr_loading.take_again();
+        let pr_cwd = cwd.clone();
+        self.loading
+            .start(|_| tokio::spawn(async move { load(&cwd).await }));
+        self.pr_loading
+            .start(|_| tokio::spawn(async move { load_pr(&pr_cwd).await }));
+    }
+
     /// Resolves when either load ends. Never resolves while both are idle,
     /// so a `select!` arm needs no guard; cancel-safe, as both joins are.
     pub async fn next(&mut self) -> Loaded {

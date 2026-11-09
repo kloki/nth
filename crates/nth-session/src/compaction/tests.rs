@@ -25,11 +25,7 @@ fn calls(name: &str) -> Message {
 }
 
 fn result(content: &str) -> Message {
-    Message::ToolResult {
-        call_id: "1".into(),
-        content: content.into(),
-        images: Vec::new(),
-    }
+    Message::tool_result("1", content)
 }
 
 #[test]
@@ -137,6 +133,7 @@ fn read_an_image() -> Message {
             path: "/images/ab.png".into(),
             data: Some("A".repeat(400_000).into()),
         }],
+        is_error: false,
     }
 }
 
@@ -193,6 +190,7 @@ fn transcript_lines_name_who_spoke_and_cut_tool_results() {
             path: "/images/ab.png".into(),
             data: None,
         }],
+        is_error: false,
     };
     assert_eq!(
         entry(&shown),

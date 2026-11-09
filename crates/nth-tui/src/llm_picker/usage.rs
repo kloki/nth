@@ -4,12 +4,18 @@
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
+    io,
     path::{Path, PathBuf},
 };
 
+pub type Turns = BTreeMap<String, u64>;
+
 #[derive(Debug, Default)]
 pub struct LlmUsage {
-    turns: BTreeMap<String, u64>,
+    /// What was saved at load, plus this run's turns.
+    turns: Turns,
+    /// This run's turns since the last save took them.
+    unsaved: Turns,
     /// Where it is saved; `None` keeps it in memory only.
     path: Option<PathBuf>,
 }
@@ -29,6 +35,7 @@ impl LlmUsage {
                 Ok(turns) => Self {
                     turns,
                     path: Some(path),
+                    ..Self::default()
                 },
                 Err(_) => Self::default(),
             },
@@ -40,8 +47,9 @@ impl LlmUsage {
         }
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(&self.turns).unwrap_or_default()
+    /// The turns counted since the last call, for a save to add.
+    pub fn take_unsaved(&mut self) -> Turns {
+        std::mem::take(&mut self.unsaved)
     }
 
     pub fn saved_at(&self) -> Option<&Path> {
@@ -56,6 +64,7 @@ impl LlmUsage {
     /// Records a turn on `model`.
     pub fn count(&mut self, model: &str) {
         *self.turns.entry(model.to_string()).or_default() += 1;
+        *self.unsaved.entry(model.to_string()).or_default() += 1;
     }
 
     /// The models that ran a turn, most used first, then by name.
@@ -69,6 +78,35 @@ impl LlmUsage {
         ranked.sort_by_key(|(_, turns)| Reverse(*turns));
         ranked
     }
+}
+
+/// Adds `turns` to the counts saved at `path`, reading them again first so
+/// that another instance's saves since this one loaded are kept. Written
+/// aside and renamed over, so a reader never sees half a file. Two saves at
+/// the same moment can still lose one's turns; the counts only order the
+/// picker, which a lost turn barely moves.
+pub async fn add(path: &Path, turns: Turns) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let mut saved: Turns = match tokio::fs::read_to_string(path).await {
+        Ok(text) => serde_json::from_str(&text).map_err(io::Error::other)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Turns::new(),
+        Err(e) => return Err(e),
+    };
+    for (model, n) in turns {
+        *saved.entry(model).or_default() += n;
+    }
+    let json = serde_json::to_string_pretty(&saved).map_err(io::Error::other)?;
+    let aside = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let written = match tokio::fs::write(&aside, json).await {
+        Ok(()) => tokio::fs::rename(&aside, path).await,
+        Err(e) => Err(e),
+    };
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&aside).await;
+    }
+    written
 }
 
 #[cfg(test)]
@@ -99,9 +137,10 @@ mod tests {
         let missing = LlmUsage::load(path.clone()).await;
         assert_eq!(missing.saved_at(), Some(path.as_path()));
 
-        let usage = usage(&[("glm", 2)]);
-        std::fs::write(&path, usage.to_json()).expect("write");
+        let mut usage = usage(&[("glm", 2)]);
+        add(&path, usage.take_unsaved()).await.expect("saves");
         assert_eq!(LlmUsage::load(path.clone()).await.ranked(), [("glm", 2)]);
+        assert!(usage.take_unsaved().is_empty(), "taken once");
     }
 
     #[tokio::test]

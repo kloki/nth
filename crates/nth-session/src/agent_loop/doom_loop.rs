@@ -2,11 +2,9 @@
 //! input: it asks before running the call again, or stops the turn when
 //! there is nobody to ask.
 
-use nth_protocol::{
-    INTERRUPTED, Message, Question, QuestionOption, Reply, ToolCall, ToolContext, failed,
-};
+use nth_protocol::{INTERRUPTED, Message, Question, QuestionOption, Reply, ToolCall, ToolContext};
 
-use super::{Error, Turn};
+use super::{Error, Turn, answer_unrun};
 
 /// How many times the same call in a row trips the doom-loop guard.
 pub(super) const DOOM_LOOP_THRESHOLD: usize = 3;
@@ -43,12 +41,8 @@ impl Turn<'_> {
         let Some((reason, error)) = stopped else {
             return Ok(());
         };
-        self.messages
-            .extend(calls.iter().map(|call| Message::ToolResult {
-                call_id: call.id.clone(),
-                content: failed(reason),
-                images: Vec::new(),
-            }));
+        let answers = answer_unrun(calls, reason, self.events, cancel).await;
+        self.messages.extend(answers);
         Err(error)
     }
 }
@@ -222,11 +216,7 @@ mod tests {
         assert!(matches!(result, Err(Error::DoomLoop(name)) if name == "echo"));
         assert_eq!(
             messages[2..],
-            ["1", "2", "3"].map(|id| Message::ToolResult {
-                call_id: id.into(),
-                content: failed(STOPPED),
-                images: Vec::new(),
-            }),
+            ["1", "2", "3"].map(|id| Message::tool_failed(id, STOPPED)),
             "every call is answered, so the session stays valid"
         );
     }
@@ -272,11 +262,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Interrupted)));
         assert_eq!(
             messages[2..],
-            ["1", "2", "3"].map(|id| Message::ToolResult {
-                call_id: id.into(),
-                content: failed(INTERRUPTED),
-                images: Vec::new(),
-            }),
+            ["1", "2", "3"].map(|id| Message::tool_failed(id, INTERRUPTED)),
             "every call is answered, so the session stays valid"
         );
     }
@@ -293,11 +279,7 @@ mod tests {
         assert!(matches!(result, Err(Error::DoomLoop(name)) if name == "echo"));
         assert_eq!(
             messages[2..],
-            ["1", "2", "3"].map(|id| Message::ToolResult {
-                call_id: id.into(),
-                content: failed(UNASKED),
-                images: Vec::new(),
-            }),
+            ["1", "2", "3"].map(|id| Message::tool_failed(id, UNASKED)),
             "stopped without blocking on a question nobody would answer"
         );
     }

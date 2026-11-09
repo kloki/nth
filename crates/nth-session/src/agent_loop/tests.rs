@@ -15,7 +15,7 @@ use futures::{
 };
 use nth_protocol::{
     AssistantMessage, BoxError, ContextOverflow, Effort, Event, Listing, Message, Provider,
-    Request, Retry, StreamEvent, Tool, ToolCall, ToolContext, ToolResult, ToolSpec, failed,
+    Request, Retry, StreamEvent, Tool, ToolCall, ToolContext, ToolResult, ToolSpec,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -318,16 +318,8 @@ async fn runs_tools_until_the_model_answers() {
     assert_eq!(
         messages[2..],
         [
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into(),
-                images: Vec::new(),
-            },
-            Message::ToolResult {
-                call_id: "2".into(),
-                content: "Error: unknown tool: nope".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("1", "hi"),
+            Message::tool_failed("2", "unknown tool: nope"),
             Message::Assistant(AssistantMessage {
                 text: "done".into(),
                 ..Default::default()
@@ -472,19 +464,96 @@ async fn tools_called_on_the_last_step_do_not_run() {
     assert!(matches!(result, Err(Error::TooManySteps(1))));
     assert_eq!(
         messages.last(),
-        Some(&Message::ToolResult {
-            call_id: "1".into(),
-            content: failed(MAX_STEPS_REACHED),
-            images: Vec::new(),
-        })
+        Some(&Message::tool_failed("1", MAX_STEPS_REACHED))
     );
     drop(tx);
     while let Some(event) = rx.recv().await {
         assert!(
-            !matches!(event, Event::ToolStarted(_)),
-            "the tool never started"
+            !matches!(event, Event::ToolOutput { .. }),
+            "the tool never ran"
         );
     }
+}
+
+#[tokio::test]
+async fn calls_the_guards_answer_are_seen_by_the_front_end() {
+    let reply = |n: usize| {
+        (1..=n)
+            .map(|i| StreamEvent::ToolCall(call(&i.to_string(), "echo", r#"{"say":"hi"}"#)))
+            .collect::<Vec<_>>()
+    };
+    // The step limit answers the last step's calls; the doom-loop guard,
+    // with nobody to ask, a run of repeats.
+    let guards = [
+        (1, reply(2)),
+        (ROUTE.max_steps, reply(super::DOOM_LOOP_THRESHOLD)),
+    ];
+    for (max_steps, calls) in guards {
+        let provider = Scripted::new(vec![calls]);
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
+        let ctx = ToolContext::new(".".into());
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut messages = vec![Message::User("go".into())];
+
+        let mut last_usage = None;
+        let result = Turn {
+            provider: &provider,
+            route: Route { max_steps, ..ROUTE },
+            tools: &tools,
+            ctx: &ctx,
+            inbox: &crate::Inbox::default(),
+            receipts: None,
+            messages: &mut messages,
+            spend: &mut spend(),
+            last_usage: &mut last_usage,
+            events: &tx,
+            cancel: &CancellationToken::new(),
+        }
+        .run()
+        .await;
+        drop(tx);
+        let mut seen = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::ToolStarted(call) => seen.push((call.id, None)),
+                Event::ToolFinished { call, result } => seen.push((call.id, Some(result))),
+                Event::ToolOutput { .. } => panic!("a guarded call never runs"),
+                _ => {}
+            }
+        }
+
+        assert!(result.is_err(), "the guard stops the turn");
+        // Each call starts and ends as a run call does, ending with the
+        // reason the saved history gives, so `nth run` prints the rows a
+        // replay of the session draws.
+        let expected: Vec<_> = messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::ToolResult { call_id, .. } => Some(call_id),
+                _ => None,
+            })
+            .zip(messages.iter().filter_map(nth_protocol::failure_reason))
+            .flat_map(|(id, reason)| {
+                [
+                    (id.clone(), None),
+                    (id.clone(), Some(Err(reason.to_string()))),
+                ]
+            })
+            .collect();
+        assert_eq!(expected.len(), 2 * calls_in(&messages), "every call failed");
+        assert_eq!(seen, expected, "max_steps {max_steps}");
+    }
+}
+
+/// How many calls the replies in `messages` made.
+fn calls_in(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|message| match message {
+            Message::Assistant(reply) => reply.tool_calls.len(),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Streams its deltas, counting each one the turn takes, then never ends.
@@ -618,16 +687,8 @@ pub(crate) async fn turn_with(
 
 #[test]
 fn settling_a_dropped_turn_answers_only_the_calls_left_open() {
-    let interrupted = |id: &str| Message::ToolResult {
-        call_id: id.into(),
-        content: failed(nth_protocol::INTERRUPTED),
-        images: Vec::new(),
-    };
-    let answered = Message::ToolResult {
-        call_id: "2".into(),
-        content: "done".into(),
-        images: Vec::new(),
-    };
+    let interrupted = |id: &str| Message::tool_failed(id, nth_protocol::INTERRUPTED);
+    let answered = Message::tool_result("2", "done");
     let reply = Message::Assistant(AssistantMessage {
         tool_calls: ["1", "2", "3"].map(|id| call(id, "echo", "{}")).to_vec(),
         ..AssistantMessage::default()

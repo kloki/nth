@@ -73,8 +73,11 @@ impl App {
 
     /// Shows where to sign in and sends the browser there.
     pub(super) fn login_url(&mut self, url: String) {
-        // Shown either way, so a browser that did not open is no dead end.
-        let _ = (self.opener)(&url);
+        // The URL shows either way, so a browser that did not open is no
+        // dead end.
+        if let Err(e) = (self.opener)(&url) {
+            self.hint = Some(format!("could not open a browser: {e}").into());
+        }
         if let Input::Connect(panel) = &mut self.input {
             panel.set_url(url);
         }
