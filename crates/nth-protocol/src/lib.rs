@@ -38,7 +38,7 @@ pub use screen::{Panel, Screen, Show};
 pub use spend::{Price, Spend, ToolUse};
 pub use tool::{
     ChildLlm, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
-    failed, failure_reason, parse_args, reject_old_timeout, timed_out,
+    failure_reason, parse_args, reject_old_timeout, timed_out,
 };
 pub use workdir::Workdir;
 pub use writable::Writable;

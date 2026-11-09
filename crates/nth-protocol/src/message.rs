@@ -17,6 +17,11 @@ pub enum Message {
         /// tool does an image file.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<Image>,
+        /// Whether the call failed. The text alone cannot say: a result
+        /// that succeeded may start with the same `Error: ` a failure's
+        /// does (a grep over a log).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
     },
     /// A compaction, appended after the messages it covers: the summary of
     /// the older ones and the newest kept as text. The history is marked,
@@ -29,6 +34,29 @@ pub enum Message {
         /// lines (tool results cut) rather than summarized; may be empty.
         recent: String,
     },
+}
+
+impl Message {
+    /// The answer to call `call_id` when it succeeded with `content`.
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Message::ToolResult {
+            call_id: call_id.into(),
+            content: content.into(),
+            images: Vec::new(),
+            is_error: false,
+        }
+    }
+
+    /// The answer to call `call_id` when it failed for `reason`, which
+    /// [`crate::failure_reason`] reads back.
+    pub fn tool_failed(call_id: impl Into<String>, reason: &str) -> Self {
+        Message::ToolResult {
+            call_id: call_id.into(),
+            content: crate::tool::failed(reason),
+            images: Vec::new(),
+            is_error: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -814,11 +814,7 @@ mod tests {
         assert!(session.usage.spends().is_empty(), "nothing was spent");
         assert_eq!(
             session.messages.last(),
-            Some(&Message::ToolResult {
-                call_id: "1".into(),
-                content: nth_protocol::failed(nth_protocol::INTERRUPTED),
-                images: Vec::new(),
-            })
+            Some(&Message::tool_failed("1", nth_protocol::INTERRUPTED))
         );
     }
 

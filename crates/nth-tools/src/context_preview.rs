@@ -134,11 +134,7 @@ mod tests {
                     images_available: Vec::new(),
                 },
                 Entry {
-                    message: Message::ToolResult {
-                        call_id: "1".into(),
-                        content: "file contents".into(),
-                        images: Vec::new(),
-                    },
+                    message: Message::tool_result("1", "file contents"),
                     estimated_tokens: 10,
                     checkpoint: true,
                     images_available: Vec::new(),

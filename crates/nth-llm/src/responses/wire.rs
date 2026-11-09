@@ -59,6 +59,7 @@ fn items(message: &Message) -> Vec<Value> {
             call_id,
             content,
             images,
+            ..
         } => {
             let output = if images.is_empty() {
                 json!(content)
@@ -134,11 +135,7 @@ mod tests {
                     arguments: r#"{"filePath":"a"}"#.into(),
                 }],
             }),
-            Message::ToolResult {
-                call_id: "functions.read:0".into(),
-                content: "A".into(),
-                images: Vec::new(),
-            },
+            Message::tool_result("functions.read:0", "A"),
             Message::Assistant(AssistantMessage {
                 text: "Done.".into(),
                 ..AssistantMessage::default()
@@ -226,6 +223,7 @@ mod tests {
                 path: "/images/ab.png".into(),
                 data: Some("iVBO".into()),
             }],
+            is_error: false,
         }
     }
 

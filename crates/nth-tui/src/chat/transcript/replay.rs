@@ -62,7 +62,7 @@ impl Transcript {
                         continue;
                     };
                     let call = call.clone();
-                    let result = match failure_reason(content) {
+                    let result = match failure_reason(message) {
                         Some(error) => Err(error.to_string()),
                         // A write streamed nothing; its start showed its content.
                         None if call.name == "write" => Ok(content.clone()),

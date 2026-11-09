@@ -217,6 +217,7 @@ fn write_entry(out: &mut impl Write, entry: &Entry) -> Result<()> {
             call_id,
             content,
             images,
+            ..
         } => {
             writeln!(
                 out,
@@ -282,6 +283,7 @@ mod tests {
                     path: "/tmp/image.png".into(),
                     data: Some(Arc::from("secret-base64")),
                 }],
+                is_error: false,
             },
         ];
         let preview = session.context_preview(&[], &Inbox::default());

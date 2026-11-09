@@ -462,11 +462,7 @@ mod tests {
         let mut mine = spend("glm", None, at("2026-10-10"), 10);
         mine.tool(
             "read",
-            &nth_protocol::Message::ToolResult {
-                call_id: "1".into(),
-                content: "hi".into(),
-                images: Vec::new(),
-            },
+            &nth_protocol::Message::tool_result("1", "hi"),
             Duration::from_millis(50),
         );
         let value = tools_value([&mine]);

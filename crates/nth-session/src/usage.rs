@@ -491,17 +491,13 @@ mod tests {
 
     #[test]
     fn tools_add_up_across_spends() {
-        let result = |id: &str, content: &str| Message::ToolResult {
-            call_id: id.into(),
-            content: content.into(),
-            images: Vec::new(),
-        };
+        let result = |id: &str, content: &str| Message::tool_result(id, content);
         let mut a = Spend::new("glm", None);
         a.steps = 1;
         a.tool("read", &result("1", "hi"), Duration::from_millis(100));
         a.tool(
             "bash",
-            &result("2", "Error: nope"),
+            &Message::tool_failed("2", "nope"),
             Duration::from_millis(300),
         );
         let mut b = Spend::new("glm", None);
@@ -514,6 +510,22 @@ mod tests {
         assert_eq!(read.duration, Duration::from_millis(300));
         let bash = totals["bash"];
         assert_eq!((bash.calls, bash.failed), (1, 1));
+    }
+
+    #[test]
+    fn a_result_that_starts_with_error_is_not_a_failure() {
+        let mut spend = Spend::new("glm", None);
+        // A grep over a log whose first match starts as a failure does.
+        let log = Message::tool_result("1", "Error: disk full\nError: retrying");
+        spend.tool("grep", &log, Duration::from_millis(10));
+        spend.tool(
+            "grep",
+            &Message::tool_failed("2", "no such file"),
+            Duration::from_millis(10),
+        );
+
+        let grep = tools([&spend])["grep"];
+        assert_eq!((grep.calls, grep.failed), (2, 1));
     }
 
     #[test]

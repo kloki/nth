@@ -500,6 +500,7 @@ mod tests {
             call_id: "1".into(),
             content: "Image read".into(),
             images,
+            is_error: false,
         }
     }
 
