@@ -11,11 +11,24 @@ const GITIGNORE: &str = "# nth's memory of this project, kept out of git.\n*\n";
 
 /// Creates `dir` with its `.gitignore` when the project is a repository;
 /// outside one there is no git to keep it from, and no folder is made
-/// before the model saves something.
+/// before the model saves something. The error names the folder and the
+/// way to run without it, since it ends the turn.
 pub(crate) async fn ensure_dir(dir: &Path, cwd: &Path) -> io::Result<()> {
     if nth_directories::project_root(cwd).is_none() {
         return Ok(());
     }
+    create(dir).await.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the memory folder {}: {error}; `enabled = false` under `[memory]` in the config runs without it",
+                dir.display()
+            ),
+        )
+    })
+}
+
+async fn create(dir: &Path) -> io::Result<()> {
     tokio::fs::create_dir_all(dir).await?;
     let gitignore = dir.join(".gitignore");
     if !tokio::fs::try_exists(&gitignore).await.unwrap_or(false) {

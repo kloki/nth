@@ -70,12 +70,10 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        if self.tools_mode() == Mode::Plan && matches!(input, TurnInput::Prompt(_)) {
-            // Prepare before consuming Curios feedback so a failure cannot
-            // record a receipt without adding the notice to the conversation.
-            plan::ensure_dir(&self.state_root())
-                .await
-                .map_err(Error::State)?;
+        // Feedback arrives already taken, by `deliver_curios`, which readied
+        // the state before taking it.
+        if matches!(input, TurnInput::Prompt(_)) {
+            self.ready_state().await?;
         }
         // Notices lead the message, as `split_notices` reads them; feedback
         // is notices alone, with only the reminders after it.
@@ -84,10 +82,6 @@ impl Session {
             TurnInput::Feedback(notices) => (Some(notices), String::new()),
         };
         let agent = self.primary().map(|agent| agent.name.clone());
-        if let Some(dir) = self.memory_dir() {
-            // Kept out of git before the model first saves to it.
-            let _ = memory::ensure_dir(&dir, &self.cwd).await;
-        }
         let approver = match front_end.asker.reaches_someone() {
             true => Approver::User,
             false => Approver::Nobody,
@@ -254,6 +248,25 @@ impl Session {
 
     /// The memory folder this session keeps, when it keeps one: a subagent
     /// works for another model, which keeps it.
+    /// Makes the folders the model may write this turn: the plan's in plan
+    /// mode, and the memory folder with the `.gitignore` that keeps what it
+    /// saves out of git, so a turn that cannot have it never starts. Called
+    /// before Curios feedback is taken, so a failure cannot record a receipt
+    /// without adding the notice to the conversation.
+    pub(crate) async fn ready_state(&self) -> Result<(), Error> {
+        if self.tools_mode() == Mode::Plan {
+            plan::ensure_dir(&self.state_root())
+                .await
+                .map_err(Error::State)?;
+        }
+        if let Some(dir) = self.memory_dir() {
+            memory::ensure_dir(&dir, &self.cwd)
+                .await
+                .map_err(Error::State)?;
+        }
+        Ok(())
+    }
+
     fn memory_dir(&self) -> Option<PathBuf> {
         let memory = self.context.memory.as_ref().filter(|_| !self.subagent)?;
         Some(memory.dir.clone())
@@ -517,6 +530,89 @@ mod tests {
         let json = serde_json::to_string(&session).expect("serializes");
         let back: Session = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back.origin, session.origin);
+    }
+
+    #[tokio::test]
+    async fn an_unwritable_memory_dir_fails_the_turn_with_why() {
+        use crate::agent_loop::tests::Scripted;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join(".git")).expect("repository");
+        // A file where the folder goes fails as a read-only disk would, and
+        // still does for a test run as root.
+        std::fs::write(tmp.path().join(".nth"), "").expect("blocks the folder");
+        let dir = tmp.path().join(".nth/memory");
+        let context = Arc::new(Context {
+            memory: Some(nth_context::Memory {
+                dir: dir.clone(),
+                index: String::new(),
+                truncated: false,
+            }),
+            ..Context::default()
+        });
+        let mut session =
+            Session::new("glm-5.3", tmp.path().to_path_buf()).with_context(context.clone());
+        let front_end = FrontEnd {
+            inbox: crate::Inbox::new(),
+            ..FrontEnd::default()
+        };
+        let notice = crate::curios::CurioNotice {
+            batch: nth_curios::Batch {
+                id: "waiting".into(),
+                session_id: session.id.to_string(),
+                curio_id: "review".into(),
+                revision: 1,
+                messages: vec![],
+                recorded: false,
+            },
+        };
+        assert!(front_end.inbox.post_curio(notice.clone()));
+        let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+        let (tx, _rx) = mpsc::channel(64);
+
+        let error = session
+            .prompt(
+                "go",
+                &provider,
+                &[],
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("the turn cannot keep memory out of git");
+
+        assert!(matches!(error, Error::State(_)), "{error:?}");
+        let why = error.to_string();
+        assert!(why.contains(&dir.display().to_string()), "{why}");
+        assert!(why.contains("[memory]"), "{why}");
+        assert!(provider.sent.lock().unwrap().is_empty(), "nothing was sent");
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::User(_))),
+            "the prompt is not in the history"
+        );
+        // The feedback waits for a turn that can take it.
+        assert!(session.curio_receipts.is_empty());
+        assert_eq!(
+            front_end.inbox.take_curios(&session.id.to_string()).len(),
+            1
+        );
+
+        assert!(front_end.inbox.post_curio(notice));
+        let error = session
+            .deliver_curios(&provider, &[], &front_end, &tx, &CancellationToken::new())
+            .await
+            .expect_err("feedback fails the same way");
+        assert!(matches!(error, Error::State(_)), "{error:?}");
+        assert!(session.curio_receipts.is_empty());
+
+        // A subagent never writes the memory, so it is not held up by it.
+        let mut child = Session::new("glm-5.3", tmp.path().to_path_buf()).with_context(context);
+        child.subagent = true;
+        assert!(child.ready_state().await.is_ok());
     }
 
     fn with_agents_md(dir: &std::path::Path, text: &str) -> Session {
