@@ -19,6 +19,13 @@ impl App {
         self.git.load_pr(self.cwd.clone());
     }
 
+    /// The working directory changed (a move or a resumed session): git
+    /// and the pull request are read again there, and nothing the old
+    /// directory's loads would find lands after.
+    pub(super) fn reload_git(&mut self) {
+        self.git.reload(self.cwd.clone());
+    }
+
     /// Takes in a load that ended. One whose task panicked says so and
     /// leaves what was shown; either way a load asked for while it ran
     /// starts now, so a timed-out or failed one is not the last word.
@@ -185,6 +192,35 @@ mod tests {
         app.git_finished(loaded);
         assert_eq!(app.git.status, None, "the timed-out load shows nothing");
         assert!(app.git.loading.is_running(), "the change loads again");
+    }
+
+    #[tokio::test]
+    async fn a_move_drops_the_old_directorys_pr_load() {
+        let mut app = test_app();
+        let old = Pr {
+            number: 1,
+            url: "https://x.y/old/pull/1".into(),
+            state: State::Open,
+        };
+        app.git.pr_loading.start(|_| {
+            tokio::spawn(async move {
+                std::future::pending::<()>().await;
+                Some(old)
+            })
+        });
+        app.git
+            .loading
+            .start(|_| tokio::spawn(std::future::pending()));
+        let pr_loading = app.git.pr_loading.abort_handle().expect("loading");
+        let loading = app.git.loading.abort_handle().expect("loading");
+
+        app.follow("/elsewhere".into());
+        tokio::task::yield_now().await;
+
+        assert!(pr_loading.is_finished(), "the old pull request load stops");
+        assert!(loading.is_finished(), "the old git load stops");
+        assert!(app.git.pr_loading.is_running(), "the new directory loads");
+        assert!(!app.git.pr_loading.take_again(), "nothing queued after");
     }
 
     #[tokio::test]

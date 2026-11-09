@@ -4,22 +4,20 @@
 use std::path::Path;
 
 use super::App;
+use crate::history;
 
 impl App {
-    /// Writes the whole history in the background; recalling never waits
-    /// on it.
+    /// Appends what was sent since the last save in the background;
+    /// recalling never waits on it. A save asked for while one runs takes
+    /// its prompts once that one ends.
     pub(super) fn save_history(&mut self) {
         let Some(path) = self.history.saved_at().map(Path::to_path_buf) else {
             return;
         };
-        let jsonl = self.history.to_jsonl();
+        let history = &mut self.history;
         self.history_saving.start_or_queue(|_| {
-            tokio::spawn(async move {
-                if let Some(dir) = path.parent() {
-                    tokio::fs::create_dir_all(dir).await?;
-                }
-                tokio::fs::write(&path, jsonl).await
-            })
+            let jsonl = history.take_unsaved();
+            tokio::spawn(async move { history::append(&path, &jsonl).await })
         });
     }
 

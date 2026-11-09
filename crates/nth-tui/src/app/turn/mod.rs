@@ -526,8 +526,7 @@ impl App {
     pub(super) fn follow(&mut self, cwd: PathBuf) {
         self.cwd = cwd;
         self.follow_place();
-        self.load_git();
-        self.load_pr();
+        self.reload_git();
         self.index_files();
     }
 

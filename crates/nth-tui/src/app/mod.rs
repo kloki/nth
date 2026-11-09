@@ -358,7 +358,7 @@ impl AppConfig {
             history: History::default(),
             llm_usage: LlmUsage::default(),
             clipboard: crate::terminal::copy,
-            opener: mouse::open,
+            opener: nth_auth::open_browser,
             editor_dir: std::env::temp_dir().join("nth"),
         }
     }
