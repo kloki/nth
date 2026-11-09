@@ -353,13 +353,8 @@ fn tool(
         ToolState::Done | ToolState::Failed(_) => name_style,
     };
     let bar = Style::new().fg(Color::Cyan);
-    let mut summary = call.summary(cwd);
-    if matches!(call.name.as_str(), "task" | "work_assign")
-        && let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
-        && let Some(name) = args["name"].as_str().filter(|name| !name.is_empty())
-    {
-        summary = format!("{name} · {summary}");
-    }
+    // `ToolCall::summary` already names a subagent's `task`/`work_assign`.
+    let summary = call.summary(cwd);
     let mut spans = vec![
         Span::styled(BAR, bar),
         Span::styled(icons().tool_icon(&call.name), icon_style),
@@ -773,6 +768,37 @@ mod tests {
         let total = t.layout(40, ChatSettings::default());
 
         assert_eq!(text(&t.visible(0, total)), ["▎ ✦ skill  research-opencode"]);
+    }
+
+    #[test]
+    fn a_task_row_names_the_subagent_once() {
+        let mut t = transcript();
+        let task = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "task".into(),
+            arguments: r#"{"name":"Cedar","description":"find tabs","prompt":"go","subagent_type":"explore"}"#
+                .into(),
+        };
+        t.apply(&Event::ToolStarted(task));
+
+        let total = t.layout(60, ChatSettings::default());
+
+        assert_eq!(text(&t.visible(0, total)), ["▎ ↳ task   Cedar · find tabs"]);
+    }
+
+    #[test]
+    fn a_work_assign_row_names_the_subagent_once() {
+        let mut t = transcript();
+        let assign = nth_protocol::ToolCall {
+            id: "1".into(),
+            name: "work_assign".into(),
+            arguments: r#"{"name":"Finch","cycle":1,"item":"ui","subagent_type":"general"}"#.into(),
+        };
+        t.apply(&Event::ToolStarted(assign));
+
+        let total = t.layout(60, ChatSettings::default());
+
+        assert_eq!(text(&t.visible(0, total)), ["▎ ⊞ work_assign Finch · ui"]);
     }
 
     #[test]
