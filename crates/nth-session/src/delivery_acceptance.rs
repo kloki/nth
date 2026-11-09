@@ -75,7 +75,7 @@ async fn planning_turn_passes_only_owner_source_to_file_writer() {
     assert!(!outside.exists());
     assert!(session.messages.iter().any(|m| matches!(m, Message::ToolResult { call_id, content, .. } if call_id == "source" && content == "source written")));
     for denied in ["private", "project"] {
-        assert!(session.messages.iter().any(|m| matches!(m, Message::ToolResult { call_id, content, .. } if call_id == denied && content.starts_with("Error: ") && content.contains("plan mode"))));
+        assert!(session.messages.iter().any(|m| matches!(m, Message::ToolResult { call_id, content, .. } if call_id == denied && content.contains("plan mode")) && nth_protocol::failure_reason(m).is_some()));
     }
 }
 
@@ -131,7 +131,14 @@ async fn subagent_and_restricted_primary_cannot_call_unoffered_curios_tools() {
                 .iter()
                 .all(|offered| !offered.iter().any(|name| name == "curio_publish"))
         );
-        assert!(session.messages.iter().any(|m| matches!(m, Message::ToolResult { call_id, content, .. } if call_id == "forged" && content.starts_with("Error: "))), "forged call succeeded for subagent={subagent}: {:?}", session.messages);
+        assert!(
+            session.messages.iter().any(
+                |m| matches!(m, Message::ToolResult { call_id, .. } if call_id == "forged")
+                    && nth_protocol::failure_reason(m).is_some()
+            ),
+            "forged call succeeded for subagent={subagent}: {:?}",
+            session.messages
+        );
     }
 }
 

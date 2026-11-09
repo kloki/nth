@@ -352,11 +352,7 @@ fn replays_a_command_you_ran_as_its_bash_row() {
             tool_calls: vec![bash],
             ..Default::default()
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "a.rs".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "a.rs"),
     ];
 
     let t = Transcript::replay(PathBuf::from("/repo"), &messages);
@@ -377,11 +373,7 @@ fn replays_a_command_after_a_failed_turn_after_its_prompt() {
             tool_calls: vec![bash],
             ..Default::default()
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "a.rs".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "a.rs"),
     ];
 
     let t = Transcript::replay(PathBuf::from("/repo"), &messages);
@@ -517,16 +509,8 @@ fn replays_a_saved_session() {
             reasoning: "hm".into(),
             tool_calls: vec![bash.clone(), call("2")],
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "a.rs\nb.rs".into(),
-            images: Vec::new(),
-        },
-        Message::ToolResult {
-            call_id: "2".into(),
-            content: "Error: no such file".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "a.rs\nb.rs"),
+        Message::tool_failed("2", "no such file"),
         Message::Assistant(nth_protocol::AssistantMessage {
             text: "done".into(),
             ..Default::default()
@@ -565,6 +549,26 @@ fn replays_a_saved_session() {
 }
 
 #[test]
+fn a_result_that_starts_with_error_replays_as_done() {
+    let grep = tool("1", "grep", r#"{"pattern":"Error"}"#);
+    let messages = [
+        Message::User("go".into()),
+        Message::Assistant(nth_protocol::AssistantMessage {
+            tool_calls: vec![grep.clone()],
+            ..Default::default()
+        }),
+        Message::tool_result("1", "Error: disk full"),
+    ];
+
+    let t = Transcript::replay("/repo".into(), &messages);
+
+    assert!(matches!(
+        t.entries().nth(1),
+        Some(Entry::Tool { call, state: ToolState::Done, .. }) if *call == grep
+    ));
+}
+
+#[test]
 fn replay_keeps_what_a_write_reported() {
     let write = tool("1", "write", r#"{"filePath":"/repo/a.rs","content":"x"}"#);
     let messages = [
@@ -573,11 +577,7 @@ fn replay_keeps_what_a_write_reported() {
             tool_calls: vec![write],
             ..Default::default()
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "Wrote file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "Wrote file: /repo/a.rs\n\nFormatted with rustfmt."),
     ];
 
     let t = Transcript::replay("/repo".into(), &messages);
@@ -598,11 +598,7 @@ fn replay_keeps_what_an_edit_reported_as_notes() {
             tool_calls: vec![edit],
             ..Default::default()
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "Edited file: /repo/a.rs\n\nFormatted with rustfmt.".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result("1", "Edited file: /repo/a.rs\n\nFormatted with rustfmt."),
     ];
 
     let t = Transcript::replay("/repo".into(), &messages);
@@ -637,11 +633,10 @@ fn replay_shows_a_skill_without_its_body() {
             tool_calls: vec![skill.clone()],
             ..Default::default()
         }),
-        Message::ToolResult {
-            call_id: "1".into(),
-            content: "<skill_content name=\"deploy\">\n# Skill: deploy\n</skill_content>".into(),
-            images: Vec::new(),
-        },
+        Message::tool_result(
+            "1",
+            "<skill_content name=\"deploy\">\n# Skill: deploy\n</skill_content>",
+        ),
     ];
 
     let t = Transcript::replay("/repo".into(), &messages);
@@ -660,17 +655,16 @@ fn replay_shows_a_skill_without_its_body() {
 #[test]
 fn replay_hides_instructions_attached_to_a_read() {
     let messages = [
-            Message::User("go".into()),
-            Message::Assistant(nth_protocol::AssistantMessage {
-                tool_calls: vec![call("1")],
-                ..Default::default()
-            }),
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "1: fn main() {}\n\n<system-reminder>\nInstructions from: /repo/src/AGENTS.md\nBe brief.\n</system-reminder>\n".into(),
-                images: Vec::new(),
-            },
-        ];
+        Message::User("go".into()),
+        Message::Assistant(nth_protocol::AssistantMessage {
+            tool_calls: vec![call("1")],
+            ..Default::default()
+        }),
+        Message::tool_result(
+            "1",
+            "1: fn main() {}\n\n<system-reminder>\nInstructions from: /repo/src/AGENTS.md\nBe brief.\n</system-reminder>\n",
+        ),
+    ];
 
     let t = Transcript::replay("/repo".into(), &messages);
 

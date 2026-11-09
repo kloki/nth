@@ -9,7 +9,7 @@ use std::sync::{
 use crossterm::event::{KeyCode, KeyEvent};
 use nth_protocol::{
     Event, INTERRUPTED, Listing, Message, ModelInfo, MonitorEvent, Provider, Stream, StreamEvent,
-    ToolCall, Usage, failed,
+    ToolCall, Usage, failure_reason,
 };
 use tokio::sync::Notify;
 

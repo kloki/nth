@@ -112,6 +112,7 @@ fn turns(messages: &[Message]) -> Vec<Value> {
                 call_id,
                 content,
                 images,
+                ..
             } => {
                 let mut block = json!({ "type": "tool_result", "tool_use_id": tool_id(call_id) });
                 if !images.is_empty() {
@@ -246,16 +247,8 @@ mod tests {
                     call("functions.read:1", "not json"),
                 ],
             }),
-            Message::ToolResult {
-                call_id: "toolu_a".into(),
-                content: "A".into(),
-                images: Vec::new(),
-            },
-            Message::ToolResult {
-                call_id: "functions.read:1".into(),
-                content: String::new(),
-                images: Vec::new(),
-            },
+            Message::tool_result("toolu_a", "A"),
+            Message::tool_result("functions.read:1", String::new()),
             Message::User("<task>done</task>".into()),
             Message::Assistant(AssistantMessage::default()),
         ];
@@ -394,6 +387,7 @@ mod tests {
                 path: "/images/ab.png".into(),
                 data: Some("iVBO".into()),
             }],
+            is_error: false,
         }
     }
 

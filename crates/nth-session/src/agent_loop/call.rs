@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use nth_protocol::{
-    Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, failed, timed_out,
+    Event, INTERRUPTED, Message, OutputSink, Tool, ToolCall, ToolContext, timed_out,
     tool_names::UNTIMED,
 };
 use tokio::sync::mpsc;
@@ -76,16 +76,44 @@ pub(crate) async fn run_call(
         },
     )
     .await;
-    // A failed call's images are dropped with its result.
-    let (content, images) = match result {
-        Ok(text) => (text, ctx.attachments.take()),
-        Err(reason) => (failed(&reason), Vec::new()),
-    };
-    Message::ToolResult {
-        call_id: call.id.clone(),
-        content,
-        images,
+    match result {
+        Ok(content) => Message::ToolResult {
+            call_id: call.id.clone(),
+            content,
+            images: ctx.attachments.take(),
+            is_error: false,
+        },
+        // A failed call's images are dropped with its result.
+        Err(reason) => Message::tool_failed(call.id.clone(), &reason),
     }
+}
+
+/// Answers `calls` without running them, each failed for `reason`, as a
+/// guard of the loop does. Each is announced started and finished as a call
+/// [`run_call`] runs is, so a front-end that sees only events (`nth run`)
+/// shows the same rows a replay of the saved session draws.
+pub(crate) async fn answer_unrun(
+    calls: &[ToolCall],
+    reason: &str,
+    events: &mpsc::Sender<Event>,
+    cancel: &CancellationToken,
+) -> Vec<Message> {
+    for call in calls {
+        emit(events, cancel, Event::ToolStarted(call.clone())).await;
+        emit(
+            events,
+            cancel,
+            Event::ToolFinished {
+                call: call.clone(),
+                result: Err(reason.to_string()),
+            },
+        )
+        .await;
+    }
+    calls
+        .iter()
+        .map(|call| Message::tool_failed(call.id.clone(), reason))
+        .collect()
 }
 
 /// Resolves with `ceiling` once it has passed; never without one.
@@ -240,14 +268,7 @@ mod tests {
 
         let answer = run_call(Some(&Limit), &ctx, &raw, &tx, &CancellationToken::new()).await;
 
-        assert_eq!(
-            answer,
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "20".into(),
-                images: Vec::new(),
-            }
-        );
+        assert_eq!(answer, Message::tool_result("1", "20"));
         // What the model sent is what the front-ends show.
         match rx.recv().await {
             Some(Event::ToolStarted(started)) => assert_eq!(started, raw),
@@ -299,14 +320,7 @@ mod tests {
         .expect("turn completes");
         answering.await.expect("answers");
 
-        assert_eq!(
-            messages[2],
-            Message::ToolResult {
-                call_id: "7".into(),
-                content: "for 7".into(),
-                images: Vec::new(),
-            }
-        );
+        assert_eq!(messages[2], Message::tool_result("7", "for 7"));
     }
 
     #[tokio::test]
@@ -326,14 +340,7 @@ mod tests {
         .await
         .expect("the ceiling stops the call");
 
-        assert_eq!(
-            answer,
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: failed(&timed_out(ceiling)),
-                images: Vec::new(),
-            }
-        );
+        assert_eq!(answer, Message::tool_failed("1", &timed_out(ceiling)));
         drop(tx);
         let mut finished = None;
         while let Some(event) = rx.recv().await {
@@ -370,14 +377,7 @@ mod tests {
         let answer = run_call(Some(&Pick), &ctx, &raw, &tx, &CancellationToken::new()).await;
         answering.await.expect("answers");
 
-        assert_eq!(
-            answer,
-            Message::ToolResult {
-                call_id: "1".into(),
-                content: "this one".into(),
-                images: Vec::new(),
-            }
-        );
+        assert_eq!(answer, Message::tool_result("1", "this one"));
     }
 
     #[tokio::test]
@@ -412,11 +412,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Interrupted)));
         assert_eq!(
             messages[2..],
-            ["1", "2"].map(|id| Message::ToolResult {
-                call_id: id.into(),
-                content: failed(INTERRUPTED),
-                images: Vec::new(),
-            })
+            ["1", "2"].map(|id| Message::tool_failed(id, INTERRUPTED))
         );
         // A front-end that only sees events, like `nth run`, sees each call
         // end too, with the same result the history has.

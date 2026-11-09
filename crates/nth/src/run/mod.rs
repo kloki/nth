@@ -306,7 +306,7 @@ mod tests {
     };
     use nth_protocol::{
         BoxError, INTERRUPTED, Listing, Message, Request, StreamEvent, ToolCall, ToolContext,
-        ToolResult, ToolSpec, Usage, failed,
+        ToolResult, ToolSpec, Usage,
     };
 
     use super::*;
@@ -421,11 +421,10 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, Message::User(text) if text.contains("wait")))
         );
-        assert!(matches!(
+        assert_eq!(
             saved.messages.last(),
-            Some(Message::ToolResult { call_id, content, .. })
-                if call_id == "1" && *content == failed(INTERRUPTED)
-        ));
+            Some(&Message::tool_failed("1", INTERRUPTED))
+        );
     }
 
     #[tokio::test]

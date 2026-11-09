@@ -337,11 +337,7 @@ mod tests {
                     arguments: "{\"path\":\"file\"}".into(),
                 }],
             }),
-            Message::ToolResult {
-                call_id: "call-1".into(),
-                content: "result body".into(),
-                images: vec![],
-            },
+            Message::tool_result("call-1", "result body"),
         ];
         let mut preview = session.context_preview(&[], &Inbox::default());
         preview.tools.push(ToolDefinition {

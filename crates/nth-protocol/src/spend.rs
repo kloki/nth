@@ -91,7 +91,7 @@ impl Spend {
         use_of.duration += took;
         if let Message::ToolResult { content, .. } = result {
             use_of.output += content.len() as u64;
-            if failure_reason(content).is_some() {
+            if failure_reason(result).is_some() {
                 use_of.failed += 1;
             }
         }
