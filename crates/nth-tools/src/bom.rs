@@ -36,5 +36,5 @@ pub(crate) async fn sync(path: &Path, bom: bool) -> std::io::Result<()> {
         true => [BOM.as_bytes(), text].concat(),
         false => text.to_vec(),
     };
-    tokio::fs::write(path, synced).await
+    crate::post_write::write_atomic(path, synced).await
 }

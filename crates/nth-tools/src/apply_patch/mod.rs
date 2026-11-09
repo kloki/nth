@@ -2,7 +2,7 @@ mod apply;
 mod parse;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::{
     PostWrite,
-    post_write::{self, write_with_dirs},
+    post_write::{self, write_atomic},
 };
 
 pub struct ApplyPatch {
@@ -76,10 +76,7 @@ impl Tool for ApplyPatch {
                 })
                 .collect();
             let writing = self.post_write.lock(&paths).await;
-            let mut plan = Plan {
-                cwd: &ctx.cwd,
-                files: BTreeMap::new(),
-            };
+            let mut plan = Plan::new(&ctx.cwd, identities(paths.clone()).await?);
             let mut summary = Vec::with_capacity(sections.len());
             for section in &sections {
                 let line = plan
@@ -89,8 +86,9 @@ impl Tool for ApplyPatch {
                 summary.push(line);
             }
             // Checked before anything is written, so a refused patch
-            // changes no file at all.
-            for path in plan.files.keys() {
+            // changes no file at all. Every name the patch uses is checked,
+            // as the write tool checks the one it is given.
+            for path in &paths {
                 ctx.writable
                     .check(path)
                     .map_err(|e| format!("{e}\nNo files were changed."))?;
@@ -133,36 +131,101 @@ fn relative(path: &Path, cwd: &Path) -> String {
     path.strip_prefix(cwd).unwrap_or(path).display().to_string()
 }
 
+/// The file each path names, keyed by the path: `a.txt`, `sub/../a.txt` and
+/// a symlink to it are one file, as [`PostWrite::lock`] sees them.
+async fn identities(paths: Vec<PathBuf>) -> Result<HashMap<PathBuf, PathBuf>, String> {
+    // `identity` asks the filesystem about every component.
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                let identity = post_write::identity(&path);
+                (path, identity)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("cannot resolve the patch's paths: {e}"))
+}
+
 /// What a patch does to each file, worked out in memory before any file is
 /// written, so a hunk that fails to apply leaves every file as it was.
 struct Plan<'a> {
     cwd: &'a Path,
-    /// The new content of each file, or `None` to delete it. Sections read
-    /// what earlier ones planned, so a patch may touch a file twice.
-    files: BTreeMap<PathBuf, Option<String>>,
+    /// The file each path the patch names is, from [`identities`].
+    identities: HashMap<PathBuf, PathBuf>,
+    /// What becomes of each file, keyed by its identity, so two names for
+    /// one file are one entry. Sections read what earlier ones planned, so
+    /// a patch may touch a file twice.
+    files: BTreeMap<PathBuf, Planned>,
+    /// The files that were there before the patch, so a file it adds and
+    /// then deletes is never asked to go.
+    on_disk: BTreeSet<PathBuf>,
 }
 
-impl Plan<'_> {
+struct Planned {
+    /// The path the patch first named the file by, for what the model reads.
+    name: PathBuf,
+    /// Its new content, or `None` to delete it.
+    content: Option<String>,
+}
+
+/// A file the patch named: the path as named, and the file it is.
+struct Named {
+    name: PathBuf,
+    identity: PathBuf,
+}
+
+impl<'a> Plan<'a> {
+    fn new(cwd: &'a Path, identities: HashMap<PathBuf, PathBuf>) -> Self {
+        Self {
+            cwd,
+            identities,
+            files: BTreeMap::new(),
+            on_disk: BTreeSet::new(),
+        }
+    }
+
+    fn named(&self, raw: &str) -> Named {
+        let name = crate::path::resolve(self.cwd, raw);
+        // Every path a section names was resolved before planning; a miss
+        // would be a path the tool forgot to collect, keyed as named.
+        let identity = self.identities.get(&name).cloned();
+        let identity = identity.unwrap_or_else(|| name.clone());
+        Named { name, identity }
+    }
+
+    fn set(&mut self, file: Named, content: Option<String>) {
+        let entry = self.files.entry(file.identity).or_insert(Planned {
+            name: file.name,
+            content: None,
+        });
+        entry.content = content;
+    }
+
     /// Plans one section and returns its line of the summary.
     async fn add(&mut self, section: &Section) -> Result<String, String> {
         match section {
             Section::Add { path, content } => {
-                let full = crate::path::resolve(self.cwd, path);
-                if self.read(&full).await?.is_some() {
+                let file = self.named(path);
+                if self.read(&file).await?.is_some() {
                     return Err(format!(
                         "cannot add {}: it already exists. Use `*** Update File:` to change it.",
-                        full.display()
+                        file.name.display()
                     ));
                 }
-                self.files.insert(full, Some(content.clone()));
+                self.set(file, Some(content.clone()));
                 Ok(format!("A {path}"))
             }
             Section::Delete { path } => {
-                let full = crate::path::resolve(self.cwd, path);
-                if self.read(&full).await?.is_none() {
-                    return Err(format!("cannot delete {}: no such file", full.display()));
+                let file = self.named(path);
+                if self.read(&file).await?.is_none() {
+                    return Err(format!(
+                        "cannot delete {}: no such file",
+                        file.name.display()
+                    ));
                 }
-                self.files.insert(full, None);
+                self.set(file, None);
                 Ok(format!("D {path}"))
             }
             Section::Update {
@@ -170,79 +233,93 @@ impl Plan<'_> {
                 move_to,
                 hunks,
             } => {
-                let full = crate::path::resolve(self.cwd, path);
-                let source = self
-                    .read(&full)
-                    .await?
-                    .ok_or_else(|| format!("cannot update {}: no such file", full.display()))?;
+                let file = self.named(path);
+                let source = self.read(&file).await?.ok_or_else(|| {
+                    format!("cannot update {}: no such file", file.name.display())
+                })?;
                 let updated = apply(&source, hunks)
-                    .map_err(|e| format!("cannot update {}: {e}", full.display()))?;
+                    .map_err(|e| format!("cannot update {}: {e}", file.name.display()))?;
                 let Some(move_to) = move_to else {
-                    self.files.insert(full, Some(updated));
+                    self.set(file, Some(updated));
                     return Ok(format!("M {path}"));
                 };
-                let dest = crate::path::resolve(self.cwd, move_to);
-                if dest != full {
+                let dest = self.named(move_to);
+                if dest.identity != file.identity {
                     if self.read(&dest).await?.is_some() {
                         return Err(format!(
                             "cannot move {} to {}: it already exists",
-                            full.display(),
-                            dest.display()
+                            file.name.display(),
+                            dest.name.display()
                         ));
                     }
-                    self.files.insert(full, None);
+                    self.set(file, None);
                 }
-                self.files.insert(dest, Some(updated));
+                self.set(dest, Some(updated));
                 Ok(format!("M {move_to}"))
             }
         }
     }
 
     /// A file as the sections so far leave it; `None` if it does not exist.
-    async fn read(&self, path: &Path) -> Result<Option<String>, String> {
-        if let Some(planned) = self.files.get(path) {
-            return Ok(planned.clone());
+    async fn read(&mut self, file: &Named) -> Result<Option<String>, String> {
+        if let Some(planned) = self.files.get(&file.identity) {
+            return Ok(planned.content.clone());
         }
-        match tokio::fs::read_to_string(path).await {
-            Ok(content) => Ok(Some(content)),
+        match tokio::fs::read_to_string(&file.identity).await {
+            Ok(content) => {
+                self.on_disk.insert(file.identity.clone());
+                Ok(Some(content))
+            }
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+            Err(e) => Err(format!("cannot read {}: {e}", file.name.display())),
         }
     }
 
-    /// The files the patch leaves in place, added, changed or moved to.
+    /// The files the patch leaves in place, added, changed or moved to, by
+    /// the name the patch used.
     fn changed(&self) -> Vec<PathBuf> {
-        let kept = self.files.iter().filter(|(_, content)| content.is_some());
-        kept.map(|(path, _)| path.clone()).collect()
+        let kept = self.files.values().filter(|file| file.content.is_some());
+        kept.map(|file| file.name.clone()).collect()
     }
 
     /// Deletes first, so a file may give way to a directory of its name.
+    /// Each operation goes to the file itself, so deleting through a
+    /// symlink deletes what it names, as updating through one does.
     async fn write(self) -> Result<(), String> {
-        let operations: Vec<_> = self
+        let deletes = self
             .files
             .iter()
-            .filter(|(_, content)| content.is_none())
-            .chain(self.files.iter().filter(|(_, content)| content.is_some()))
-            .collect();
+            .filter(|(identity, file)| file.content.is_none() && self.on_disk.contains(*identity));
+        let writes = self.files.iter().filter(|(_, file)| file.content.is_some());
+        let operations: Vec<_> = deletes.chain(writes).collect();
         let mut completed = Vec::new();
-        for (index, (path, content)) in operations.iter().enumerate() {
-            let (verb, result) = match content {
-                None => ("delete", tokio::fs::remove_file(path).await),
-                Some(content) => ("write", write_with_dirs(path, content.as_bytes()).await),
+        for (index, (identity, file)) in operations.iter().enumerate() {
+            let (verb, result) = match &file.content {
+                None => ("delete", tokio::fs::remove_file(identity).await),
+                Some(content) => (
+                    "write",
+                    write_atomic(identity, content.clone().into_bytes()).await,
+                ),
             };
+            let path = &file.name;
             if let Err(e) = result {
                 let pending: Vec<_> = operations[index + 1..]
                     .iter()
-                    .map(|(path, content)| {
+                    .map(|(_, file)| {
                         format!(
                             "{} {}",
-                            if content.is_some() { "write" } else { "delete" },
-                            path.display()
+                            if file.content.is_some() {
+                                "write"
+                            } else {
+                                "delete"
+                            },
+                            file.name.display()
                         )
                     })
                     .collect();
                 return Err(format!(
-                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}{}",
+                    // Each write is atomic, so the failing one changed nothing.
+                    "cannot {verb} {}: {e}\nCompleted operations: {}\nUnattempted operations: {}\nThe failing file is as it was.",
                     path.display(),
                     if completed.is_empty() {
                         "none".into()
@@ -253,11 +330,6 @@ impl Plan<'_> {
                         "none".into()
                     } else {
                         pending.join(", ")
-                    },
-                    if content.is_some() {
-                        "\nThe failing write may have partially changed its target."
-                    } else {
-                        ""
                     },
                 ));
             }
@@ -289,6 +361,43 @@ mod tests {
         std::fs::read_to_string(path).expect("read back")
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_patch_that_names_one_file_two_ways_sees_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = file(dir.path(), "real.txt", "one\n");
+        let alias = dir.path().join("alias.txt");
+        std::os::unix::fs::symlink("real.txt", &alias).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+        // The second update reads what the first planned through the link,
+        // and the delete sees the file the add planned under another name.
+        let out = patch(
+            dir.path(),
+            "*** Begin Patch
+*** Update File: real.txt
+@@
+-one
++two
+*** Update File: alias.txt
+@@
+-two
++three
+*** Add File: new.txt
++new
+*** Delete File: sub/../new.txt
+*** End Patch",
+        )
+        .await
+        .expect("one file under two names");
+
+        assert!(out.contains("M alias.txt"), "{out}");
+        assert_eq!(contents(&real), "three\n");
+        let link = std::fs::symlink_metadata(&alias).unwrap();
+        assert!(link.file_type().is_symlink(), "the link stays a link");
+        assert!(!dir.path().join("new.txt").exists());
+    }
+
     #[tokio::test]
     async fn write_failure_reports_completed_and_unattempted_operations() {
         let dir = tempfile::tempdir().unwrap();
@@ -297,15 +406,20 @@ mod tests {
         let blocker = file(dir.path(), "blocker", "not a directory");
         let failing = blocker.join("child");
         let last = dir.path().join("z");
-        let plan = Plan {
-            cwd: dir.path(),
-            files: BTreeMap::from([
-                (deleted.clone(), None),
-                (first.clone(), Some("written".into())),
-                (failing.clone(), Some("cannot write".into())),
-                (last.clone(), Some("not reached".into())),
-            ]),
-        };
+        let mut plan = Plan::new(dir.path(), HashMap::new());
+        for (path, content) in [
+            (&deleted, None),
+            (&first, Some("written")),
+            (&failing, Some("cannot write")),
+            (&last, Some("not reached")),
+        ] {
+            let planned = Planned {
+                name: path.clone(),
+                content: content.map(String::from),
+            };
+            plan.files.insert(path.clone(), planned);
+        }
+        plan.on_disk.insert(deleted.clone());
         let err = plan.write().await.unwrap_err();
         assert!(
             err.contains(&format!("cannot write {}", failing.display())),
@@ -317,7 +431,7 @@ mod tests {
         );
         assert!(err.contains(&format!("write {}", first.display())), "{err}");
         assert!(err.contains(&format!("write {}", last.display())), "{err}");
-        assert!(err.contains("may have partially changed"), "{err}");
+        assert!(err.contains("The failing file is as it was."), "{err}");
         assert!(!deleted.exists());
         assert_eq!(contents(&first), "written");
         assert!(!last.exists());
@@ -373,10 +487,7 @@ mod tests {
             )),
             "{err}"
         );
-        assert!(
-            err.contains("may have partially changed its target"),
-            "{err}"
-        );
+        assert!(err.contains("The failing file is as it was."), "{err}");
         assert!(!err.contains("Formatted with"), "{err}");
         assert_eq!(contents(&written), "one\n");
         assert!(!unattempted.exists());

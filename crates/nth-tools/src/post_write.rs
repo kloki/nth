@@ -5,9 +5,13 @@
 
 use std::{
     collections::HashMap,
-    io::ErrorKind,
+    fs::OpenOptions,
+    io::{self, ErrorKind, Write as _},
     path::{Component, Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex as StdMutex, Weak},
+    sync::{
+        Arc, LazyLock, Mutex as StdMutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use nth_format::{Formatters, Outcome};
@@ -26,8 +30,9 @@ const MAX_LINKS: usize = 40;
 /// Resolve existing symlinks, retaining missing components under the nearest
 /// existing parent. A dangling symlink resolves to its target, so a link and
 /// the target it is about to gain share one identity. Resolve `..` only after
-/// following any preceding symlink.
-fn identity(path: &Path) -> PathBuf {
+/// following any preceding symlink. Blocking: it asks the filesystem about
+/// each component.
+pub(crate) fn identity(path: &Path) -> PathBuf {
     resolve(path, 0)
 }
 
@@ -188,17 +193,71 @@ impl Writing<'_> {
     }
 }
 
-/// Writes `content` to `path`, creating its folders when they are missing.
-pub(crate) async fn write_with_dirs(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    match tokio::fs::write(path, content).await {
+/// Writes `bytes` to `path` aside and renames them over it, so a reader
+/// running beside, a crash or a full disk never leaves half a file; missing
+/// folders are created. A symlink is written through: the file it names is
+/// replaced and the link stays a link. A file that exists keeps its
+/// permissions, and one that refuses to be written in place still refuses,
+/// though the rename itself asks only the folder.
+pub(crate) async fn write_atomic(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+    let path = path.to_path_buf();
+    // One blocking job rather than a `tokio::fs` call per step: a call
+    // dropped between steps would otherwise leave its temporary file.
+    tokio::task::spawn_blocking(move || write_aside(&path, &bytes))
+        .await
+        .map_err(io::Error::other)?
+}
+
+fn write_aside(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // The rename must land on the file a symlink names, not on the link.
+    let target = identity(path);
+    let existing = match std::fs::metadata(&target) {
+        Ok(meta) => Some(meta),
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
+            if std::fs::symlink_metadata(&target).is_ok() {
+                // `identity` stops following a chain that loops or runs too
+                // long, leaving the link itself, which a rename would replace.
+                return Err(io::Error::other("too many levels of symbolic links"));
             }
-            tokio::fs::write(path, content).await
+            None
         }
-        result => result,
+        Err(e) => return Err(e),
+    };
+    if existing.is_some() {
+        // Opened only to ask, without truncating: a read-only file or a
+        // directory is refused as writing it in place would have been.
+        OpenOptions::new().write(true).open(&target)?;
     }
+    let parent = target
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "no parent folder"))?;
+    // Unique per write, as two calls may write into one folder at once, and
+    // short, so a long file name cannot push it past the name limit.
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(".nth-{}-{n}.tmp", std::process::id()));
+    let create = || OpenOptions::new().write(true).create_new(true).open(&tmp);
+    let mut file = match create() {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            std::fs::create_dir_all(parent)?;
+            create()?
+        }
+        result => result?,
+    };
+    let written = (|| {
+        file.write_all(bytes)?;
+        if let Some(meta) = &existing {
+            file.set_permissions(meta.permissions())?;
+        }
+        // On disk before the rename, so a power cut cannot leave the new
+        // name pointing at an empty file.
+        file.sync_all()?;
+        std::fs::rename(&tmp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// `result`, then each section that is not empty, a blank line apart. LSP
@@ -407,6 +466,112 @@ mod tests {
         .await
         .expect("overlapping acquisitions in opposite orders both finish");
         assert_eq!((first, second), ((), ()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_never_leaves_a_half_file() {
+        use std::sync::atomic::AtomicBool;
+
+        const SIZE: usize = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big");
+        std::fs::write(&path, vec![b'a'; SIZE]).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut reads = 0;
+                while !done.load(Ordering::Relaxed) {
+                    let seen = std::fs::read(&path).expect("the file is always there");
+                    let whole = seen.len() == SIZE
+                        && (seen.iter().all(|&b| b == b'a') || seen.iter().all(|&b| b == b'b'));
+                    assert!(whole, "a read saw {} bytes of a half write", seen.len());
+                    reads += 1;
+                }
+                reads
+            })
+        };
+        for round in 0..40 {
+            let byte = if round % 2 == 0 { b'b' } else { b'a' };
+            write_atomic(&path, vec![byte; SIZE]).await.unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        let reads = reader.join().expect("no read saw half a file");
+        assert!(reads > 0);
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temporary file is left behind");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_atomic_write_keeps_the_mode_and_writes_through_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("run.sh");
+        std::fs::write(&script, "old").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o750)).unwrap();
+        write_atomic(&script, b"new".to_vec()).await.unwrap();
+        let mode = std::fs::metadata(&script).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o750);
+
+        // Through a link to a file, and a dangling one: the link stays and
+        // the file it names gets the bytes.
+        let link = dir.path().join("link");
+        symlink("run.sh", &link).unwrap();
+        write_atomic(&link, b"via link".to_vec()).await.unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), "via link");
+        let dangling = dir.path().join("dangling");
+        symlink("sub/target", &dangling).unwrap();
+        write_atomic(&dangling, b"made".to_vec()).await.unwrap();
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sub/target")).unwrap(),
+            "made"
+        );
+
+        // A loop has no file to write, and the link is left alone.
+        let looped = dir.path().join("loop");
+        symlink("loop", &looped).unwrap();
+        write_atomic(&looped, b"x".to_vec()).await.unwrap_err();
+        assert!(
+            std::fs::symlink_metadata(&looped)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        // A file that may not be written in place is refused; root may
+        // write anything, so it is not asked there.
+        let locked = dir.path().join("locked");
+        std::fs::write(&locked, "kept").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            let err = write_atomic(&locked, b"x".to_vec()).await.unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+            assert_eq!(std::fs::read_to_string(&locked).unwrap(), "kept");
+        }
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_string_lossy().ends_with(".tmp")),
+            "{names:?}"
+        );
     }
 
     #[tokio::test]

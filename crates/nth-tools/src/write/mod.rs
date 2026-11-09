@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::{
     PostWrite,
     bom::{BOM, has_bom},
-    post_write::{self, write_with_dirs},
+    post_write::{self, write_atomic},
 };
 
 pub struct Write {
@@ -75,7 +75,7 @@ impl Tool for Write {
                 content.to_string()
             };
 
-            write_with_dirs(&path, content.as_bytes())
+            write_atomic(&path, content.into_bytes())
                 .await
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             let verb = if existing.is_some() {

@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::{
     PostWrite,
     bom::BOM,
-    post_write::{self, write_with_dirs},
+    post_write::{self, write_atomic},
 };
 
 pub struct Edit {
@@ -87,7 +87,7 @@ async fn edit(path: &Path, args: &Args) -> Result<String, String> {
     let source = match tokio::fs::read_to_string(path).await {
         Ok(source) => source,
         Err(e) if e.kind() == ErrorKind::NotFound && args.old_string.is_empty() => {
-            write_with_dirs(path, args.new_string.as_bytes())
+            write_atomic(path, args.new_string.clone().into_bytes())
                 .await
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             return Ok(format!("Created file: {}", path.display()));
@@ -132,7 +132,7 @@ async fn edit(path: &Path, args: &Args) -> Result<String, String> {
         from = span.end;
     }
     edited.push_str(&text[from..]);
-    tokio::fs::write(path, edited)
+    write_atomic(path, edited.into_bytes())
         .await
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(match spans.len() {

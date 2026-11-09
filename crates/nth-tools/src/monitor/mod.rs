@@ -169,7 +169,7 @@ async fn watch(
             // Waits for bash rather than for its pipes to close, which
             // processes it put in the background can delay forever.
             status = child.wait() => {
-                let status = status.ok().and_then(|s| s.code());
+                let status = status.ok().map(end_of);
                 let drained = tokio::time::timeout(DRAIN, async {
                     while let Some(line) = next_line(&mut out).await {
                         if let Some(end) = watch.line(line, Stream::Stdout).await { return Some(end); }
@@ -184,7 +184,8 @@ async fn watch(
                 // may be reused, and what is left in it was meant to
                 // outlive the command.
                 abandoned.0 = None;
-                break drained_end.unwrap_or(MonitorEnd::Exited(status));
+                break drained_end
+                    .unwrap_or(status.unwrap_or(MonitorEnd::Exited(None)));
             }
         }
     };
@@ -251,6 +252,16 @@ impl<R: tokio::io::AsyncRead + Unpin> Pipe<R> {
 /// follows replaces the line so far, so a bar arrives as its latest state
 /// in one line rather than as a line per redraw, which would trip the flood
 /// guard and stop a monitor that only waits for the bar to finish.
+/// How a reaped command ended: its exit code, or the signal that killed
+/// it, which has no code.
+fn end_of(status: std::process::ExitStatus) -> MonitorEnd {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return MonitorEnd::Killed(signal);
+    }
+    MonitorEnd::Exited(status.code())
+}
+
 async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
     let Some(Pipe {
         reader,
@@ -687,6 +698,19 @@ mod tests {
         start(&f.ctx, "sleep 30", 1_000).await.expect("starts");
         let seen = until_ended(&mut f.events).await;
         assert_eq!(end(&seen), (MonitorEnd::TimedOut { after_ms: 1_000 }, 0));
+    }
+
+    #[tokio::test]
+    async fn a_monitor_killed_by_a_signal_says_so() {
+        let mut f = fixture();
+        start(&f.ctx, "echo up; kill -9 $$", 10_000)
+            .await
+            .expect("starts");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(end(&seen), (MonitorEnd::Killed(9), 1));
+        assert_eq!(MonitorEnd::Killed(9).to_string(), "killed by signal 9");
+        let log = std::fs::read_to_string(f.dir.path().join("logs/1.log")).expect("log");
+        assert!(log.contains("] killed by signal 9\n"), "{log}");
     }
 
     #[tokio::test]
