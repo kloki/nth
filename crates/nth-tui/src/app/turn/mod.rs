@@ -359,6 +359,7 @@ impl App {
             asker: Asker::new(self.channels.asks.tx.clone()),
             screen: Screen::new(self.channels.screen.tx.clone()),
             monitors: self.monitors.clone(),
+            wakeup: self.wakeup.clone(),
             inbox: self.inbox.clone(),
             context_preview: self.context_tab.slot.clone(),
         }
@@ -413,7 +414,13 @@ impl App {
 
     /// Esc cancels the turn cooperatively so the session comes back;
     /// aborting the task would drop the session with it.
+    /// Stopping a running turn also cancels its wakeup; Esc while idle
+    /// leaves one alone, since there was nothing to stop.
     pub(super) fn interrupt(&mut self) {
+        if self.is_busy() {
+            self.wakeup.clear();
+            self.inbox.discard_wakeup();
+        }
         let prompts_waiting = self.inbox.prompts_waiting().is_some();
         let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
         self.turn.cancel();
@@ -446,6 +453,11 @@ impl App {
             .map_or(Duration::ZERO, |t| t.elapsed());
         self.running = None;
         let ending = self.turns.ended(&result);
+        // A tool of the stopped turn may have scheduled one after Esc.
+        if ending.interrupted {
+            self.wakeup.clear();
+            self.inbox.discard_wakeup();
+        }
         let transcript = &mut self.chat.transcript;
         let error = match &result {
             Err(nth_session::Error::Interrupted) | Ok(()) => None,

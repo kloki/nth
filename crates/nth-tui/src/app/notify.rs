@@ -66,6 +66,7 @@ impl App {
         self.subagents.running() > 0
             || self.monitors.running() > 0
             || self.awaits_monitor_ends()
+            || self.wakeup_deadline().is_some()
             || self.inbox.wakes()
     }
 
@@ -338,6 +339,17 @@ mod tests {
         send(&mut app, "again");
         end(&mut app).await;
         assert!(next(&mut rx).await.summary.contains("done"));
+    }
+
+    #[tokio::test]
+    async fn armed_wakeup_suppresses_completion_but_not_failure() {
+        let (mut app, mut rx) = answering("ok");
+        app.last_turn = TabState::Done;
+        app.wakeup.schedule(Duration::from_secs(30)).unwrap();
+        app.notify_turn_ended(false, None, Duration::ZERO);
+        none(&mut rx).await;
+        app.notify_turn_ended(false, Some("failed".into()), Duration::ZERO);
+        assert!(next(&mut rx).await.summary.contains("failed"));
     }
 
     #[tokio::test]

@@ -359,6 +359,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wakeup_survives_what_is_handed_over_mid_turn() {
+        use std::time::Duration;
+
+        let wakeup = nth_protocol::Wakeup::new();
+        let ctx = ToolContext {
+            wakeup: wakeup.clone(),
+            ..ToolContext::new(".".into())
+        };
+        let inbox = Inbox::new();
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo)];
+        wakeup.schedule(Duration::from_secs(60)).unwrap();
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let mut messages = vec![Message::User("go".into())];
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+            .await
+            .0
+            .expect("turn completes");
+        assert!(wakeup.subscribe().unwrap().borrow().is_some());
+
+        let provider = Scripted::new(vec![
+            vec![StreamEvent::ToolCall(call("2", "shout", ""))],
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Shout("news", inbox.clone()))];
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+            .await
+            .0
+            .expect("turn completes");
+        // The model was awake to read it; only the next turn cancels it.
+        assert!(wakeup.subscribe().unwrap().borrow().is_some());
+    }
+
+    #[tokio::test]
     async fn a_prompt_sent_while_tools_run_follows_their_results() {
         let provider = Scripted::new(vec![
             vec![StreamEvent::ToolCall(call("1", "shout", ""))],

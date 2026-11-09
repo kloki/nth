@@ -26,6 +26,8 @@ pub struct ToolSpec {
 /// is shared with the turn unless that says otherwise.
 #[derive(Clone)]
 pub struct ToolContext {
+    /// Session-owned wakeup schedule, disabled unless supplied by the front-end.
+    pub wakeup: crate::Wakeup,
     /// Latest committed main-session preview, shared by all calls of a turn.
     pub context_preview: crate::ContextPreview,
     pub is_subagent: bool,
@@ -88,6 +90,7 @@ impl ToolContext {
     /// nobody to ask or show anything to and no monitors.
     pub fn new(cwd: PathBuf) -> Self {
         Self {
+            wakeup: crate::Wakeup::default(),
             context_preview: crate::ContextPreview::default(),
             cwd,
             state_root: None,

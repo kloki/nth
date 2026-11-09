@@ -149,6 +149,46 @@ async fn a_key_is_drawn_once_the_loop_takes_it() {
     assert_eq!(app.prompt.text(), "hello loop");
 }
 
+#[tokio::test(start_paused = true)]
+async fn scheduled_wakeup_runs_once_after_the_countdown() {
+    use nth_protocol::{StreamEvent, ToolCall};
+
+    let provider = Arc::new(Scripted::replying([
+        super::Reply::Events(vec![StreamEvent::ToolCall(ToolCall {
+            id: "schedule".into(),
+            name: "schedule_wakeup".into(),
+            arguments: r#"{"duration_ms":5000}"#.into(),
+        })]),
+        super::Reply::text("waiting"),
+        super::Reply::text("checked"),
+    ]));
+    let mut config = AppConfig::test(Session::new("glm", nowhere()), provider.clone());
+    config
+        .runtime
+        .model_tools
+        .push(Arc::new(nth_tools::ScheduleWakeup));
+    let mut app = App::new(config);
+    drive(&mut app, |mut driver| async move {
+        driver.type_text("go");
+        driver.press(KeyCode::Enter, KeyModifiers::NONE);
+        driver.shows("waiting").await;
+        driver.shows("wake in").await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        driver.shows("checked").await;
+    })
+    .await
+    .0
+    .expect("runs");
+    let requests = provider.sent();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[2]
+            .iter()
+            .any(|message| matches!(message, Message::User(text) if text.contains("<wakeup")))
+    );
+    assert!(app.wakeup_deadline().is_none());
+}
+
 #[tokio::test]
 async fn a_panicking_job_is_reported_not_an_exit() {
     let mut app = idle_app();

@@ -11,6 +11,7 @@ use crate::Inbox;
 /// The default reaches nobody, as in a headless run.
 #[derive(Debug, Clone, Default)]
 pub struct FrontEnd {
+    pub wakeup: nth_protocol::Wakeup,
     pub asker: Asker,
     pub screen: Screen,
     pub monitors: Monitors,

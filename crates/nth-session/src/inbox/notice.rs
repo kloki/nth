@@ -26,6 +26,8 @@ pub(crate) const NOTICE_LINES: usize = 50;
 /// not take megabytes from one line.
 pub(crate) const NOTICE_LINE_CHARS: usize = 2000;
 
+pub(super) const WAKEUP: &str = "<wakeup type=\"scheduled\">\nScheduled wakeup elapsed; check the progress of your background work.\n</wakeup>";
+
 impl WorkNotice {
     /// The notice as the model reads it, for a caller that hands it over
     /// itself rather than through the inbox.
@@ -224,6 +226,8 @@ fn body(text: &str, element: &str) -> String {
 /// A notice as the transcript shows it, from the text the model read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeSummary {
+    /// A scheduled wakeup reached the session.
+    Wakeup,
     Curio {
         delivery: String,
         session: String,
@@ -263,7 +267,14 @@ pub enum NoticeSummary {
 }
 
 /// The elements `split_notices` knows.
-const ELEMENTS: [&str; 5] = ["monitor", "task", "work_item", "instructions", "curio"];
+const ELEMENTS: [&str; 6] = [
+    "monitor",
+    "task",
+    "work_item",
+    "instructions",
+    "curio",
+    "wakeup",
+];
 
 /// Splits the notices off the front of a user message: what monitors,
 /// subagents and work items said, then what the user typed after it, if
@@ -309,6 +320,8 @@ pub fn split_notices(text: &str) -> (Vec<NoticeSummary>, &str) {
 /// missing, which ends the notices there.
 fn summary(element: &str, attrs: &str, inner: &str) -> Option<NoticeSummary> {
     Some(match element {
+        "wakeup" if value(attrs, "type").as_deref() == Some("scheduled") => NoticeSummary::Wakeup,
+        "wakeup" => return None,
         "curio" => NoticeSummary::Curio {
             delivery: value(attrs, "delivery")?,
             session: value(attrs, "session")?,
@@ -408,6 +421,21 @@ mod tests {
         );
         assert_eq!(rest, "now fix it");
         assert_eq!(split_notices("hi"), (vec![], "hi"));
+    }
+
+    #[test]
+    fn wakeup_splits_with_other_notices_and_preserves_following_text() {
+        let output = render(1, "ci", Path::new("/l"), &["ok".into()], 0, None);
+        let text = format!("{WAKEUP}\n{output}\n\ncontinue");
+        assert_eq!(
+            split_notices(&text),
+            (
+                vec![NoticeSummary::Wakeup, monitor(1, "ci", 1, None)],
+                "continue"
+            )
+        );
+        let malformed = "<wakeup type=\"other\"/>\nhello";
+        assert_eq!(split_notices(malformed), (vec![], malformed));
     }
 
     #[test]

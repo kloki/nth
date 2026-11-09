@@ -58,6 +58,78 @@ async fn a_turn_waits_for_a_pending_save() {
     assert_eq!(*app.turns.queued(), [Queued::Prompt("then".into())]);
 }
 
+#[tokio::test(start_paused = true)]
+async fn expired_wakeup_during_busy_turn_starts_no_concurrent_turn() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(Scripted::replying([Reply::HangUntil(gate.clone(), vec![])]));
+    let mut app = app_on(Session::new("glm", "/repo".into()), provider.clone());
+    send(&mut app, "go");
+    provider.asked.notified().await;
+    app.wakeup.schedule(Duration::from_secs(1)).unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    app.wakeup_due();
+    app.notices_due();
+    assert_eq!(provider.sent().len(), 1);
+    gate.notify_one();
+    end(&mut app).await;
+    if !app.is_busy() && app.inbox.wakes() {
+        app.notices_due();
+    }
+    if app.is_busy() {
+        end(&mut app).await;
+    }
+    let requests = provider.sent();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .iter()
+            .any(|m| matches!(m, Message::User(text) if text.contains("<wakeup")))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_wakeup_waits_for_save_then_reaches_model() {
+    let provider = Arc::new(Scripted::hang());
+    let mut app = app_on(Session::new("glm", "/repo".into()), provider.clone());
+    let open = gate_save(&mut app);
+    app.wakeup.schedule(Duration::from_secs(1)).unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    app.wakeup_due();
+    app.notices_due();
+    assert_eq!(app.turns.held(), Some(&Queued::Prompt(String::new())));
+    land(&mut app, open).await;
+    assert!(app.is_busy());
+    provider.asked.notified().await;
+    assert!(
+        provider.sent()[0]
+            .iter()
+            .any(|m| matches!(m, Message::User(text) if text.contains("<wakeup")))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_wakeup_waits_for_shell_then_reaches_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shell_app(dir.path());
+    command(&mut app, "echo hello");
+    app.wakeup.schedule(Duration::from_secs(1)).unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    app.wakeup_due();
+    app.notices_due();
+    assert!(app.inbox.wakes());
+    end(&mut app).await;
+    assert!(app.is_busy());
+    end(&mut app).await;
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| matches!(m, Message::User(text) if text.contains("<wakeup")))
+    );
+}
+
 #[tokio::test]
 async fn an_approval_waits_as_itself() {
     let mut app = hang_app();

@@ -16,6 +16,7 @@ mod post_write;
 mod process;
 mod question;
 mod read;
+mod schedule_wakeup;
 mod show_user;
 mod skill;
 mod webfetch;
@@ -38,6 +39,7 @@ pub use panel::Panel;
 pub use post_write::PostWrite;
 pub use question::Question;
 pub use read::{Read, ReadConfig};
+pub use schedule_wakeup::ScheduleWakeup;
 use serde::{Deserialize, Serialize};
 pub use show_user::ShowUser;
 pub use skill::Skill;
@@ -74,6 +76,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Arc<dyn Tool>> {
         Arc::new(Question),
         Arc::new(Panel),
         Arc::new(ContextPreview),
+        Arc::new(ScheduleWakeup),
         Arc::new(ShowUser),
         Arc::new(CurioPublish),
         Arc::new(CurioRead),

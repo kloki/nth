@@ -13,6 +13,7 @@ mod question;
 mod screen;
 mod spend;
 mod tool;
+mod wakeup;
 mod workdir;
 mod writable;
 
@@ -40,5 +41,6 @@ pub use tool::{
     ChildLlm, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
     failure_reason, parse_args, reject_old_timeout, timed_out,
 };
+pub use wakeup::Wakeup;
 pub use workdir::Workdir;
 pub use writable::Writable;

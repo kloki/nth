@@ -104,6 +104,11 @@ impl Session {
         self.last_turn_agent = agent;
         self.refresh_system_prompt();
         self.push_user(notices, text);
+        // The model resumes here, so a wakeup it scheduled earlier has done
+        // its job; one it schedules during this turn comes after.
+        if !self.subagent {
+            front_end.wakeup.clear();
+        }
         self.updated_at = SystemTime::now();
         let held = self.held(front_end);
         let result = self
@@ -219,6 +224,7 @@ impl Session {
             screen: front_end.screen.clone(),
             monitors: front_end.monitors.clone(),
             context_preview: front_end.context_preview.clone(),
+            wakeup: front_end.wakeup.clone(),
             writable,
             agent: self.primary().cloned(),
             child: ChildLlm {
@@ -613,6 +619,49 @@ mod tests {
         let mut child = Session::new("glm-5.3", tmp.path().to_path_buf()).with_context(context);
         child.subagent = true;
         assert!(child.ready_state().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_wakeup_is_cancelled_only_by_a_turn_that_reaches_the_model() {
+        use crate::agent_loop::tests::Scripted;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join(".git")).expect("repository");
+        std::fs::write(tmp.path().join(".nth"), "").expect("blocks the folder");
+        let context = Arc::new(Context {
+            memory: Some(nth_context::Memory {
+                dir: tmp.path().join(".nth/memory"),
+                index: String::new(),
+                truncated: false,
+            }),
+            ..Context::default()
+        });
+        let mut session = Session::new("glm-5.3", tmp.path().to_path_buf()).with_context(context);
+        let front_end = FrontEnd {
+            wakeup: nth_protocol::Wakeup::new(),
+            ..FrontEnd::default()
+        };
+        let armed = || front_end.wakeup.subscribe().unwrap().borrow().is_some();
+        front_end
+            .wakeup
+            .schedule(std::time::Duration::from_secs(60))
+            .unwrap();
+        let provider = Scripted::new(vec![vec![StreamEvent::TextDelta("ok".into())]]);
+        let (tx, _rx) = mpsc::channel(64);
+        let cancel = CancellationToken::new();
+
+        session
+            .prompt("go", &provider, &[], &front_end, &tx, &cancel)
+            .await
+            .expect_err("the memory folder cannot be made");
+        assert!(armed(), "the model never resumed");
+
+        std::fs::remove_file(tmp.path().join(".nth")).expect("unblocks");
+        session
+            .prompt("go", &provider, &[], &front_end, &tx, &cancel)
+            .await
+            .expect("the turn runs");
+        assert!(!armed(), "the model resumed");
     }
 
     fn with_agents_md(dir: &std::path::Path, text: &str) -> Session {
