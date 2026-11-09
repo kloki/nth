@@ -75,14 +75,7 @@ impl Tool for ApplyPatch {
                         .map(|p| crate::path::resolve(&ctx.cwd, p))
                 })
                 .collect();
-            let identities = identities(paths.clone()).await?;
-            // A symlink's own identity too, since a delete or a move takes
-            // the link itself.
-            let locked = identities
-                .values()
-                .flat_map(|identity| [identity.file.clone(), identity.own.clone()])
-                .collect();
-            let writing = self.post_write.lock_identities(locked).await;
+            let (writing, identities) = self.lock(&paths).await?;
             let mut plan = Plan::new(&ctx.cwd, identities);
             let mut summary = Vec::with_capacity(sections.len());
             for section in &sections {
@@ -133,6 +126,40 @@ impl Tool for ApplyPatch {
     }
 }
 
+/// How many times a patch waits for its files' locks again when what its
+/// paths name moved while it waited, before it gives up.
+const LOCK_TRIES: usize = 5;
+
+impl ApplyPatch {
+    /// Locks what `paths` name and returns it, resolved under the lock. A
+    /// symlink's own identity is locked too, since a delete or a move takes
+    /// the link itself. What a path names can change while the patch waits
+    /// (another patch deleting a link), and a plan made from the stale
+    /// answer would delete or write the file the link used to name, so it
+    /// is asked again once the lock is held, and on a change the lock goes
+    /// and the patch waits for the new set.
+    async fn lock(
+        &self,
+        paths: &[PathBuf],
+    ) -> Result<(post_write::Writing<'_>, HashMap<PathBuf, Identity>), String> {
+        let mut resolved = identities(paths.to_vec()).await?;
+        for _ in 0..LOCK_TRIES {
+            let locked = resolved
+                .values()
+                .flat_map(|identity| [identity.file.clone(), identity.own.clone()])
+                .collect();
+            let writing = self.post_write.lock_identities(locked).await;
+            let now = identities(paths.to_vec()).await?;
+            if now == resolved {
+                return Ok((writing, now));
+            }
+            drop(writing);
+            resolved = now;
+        }
+        Err("the files this patch names kept changing while it waited for them; try again.\nNo files were changed.".into())
+    }
+}
+
 /// `path` as the model named it, relative to the working directory.
 fn relative(path: &Path, cwd: &Path) -> String {
     path.strip_prefix(cwd).unwrap_or(path).display().to_string()
@@ -155,7 +182,7 @@ async fn identities(paths: Vec<PathBuf>) -> Result<HashMap<PathBuf, Identity>, S
     .map_err(|e| format!("cannot resolve the patch's paths: {e}"))
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Identity {
     /// The file the path names, through a symlink at its end.
     file: PathBuf,
@@ -312,7 +339,9 @@ impl<'a> Plan<'a> {
                     return Ok(format!("M {path}"));
                 };
                 let dest = self.named(move_to);
-                if dest.identity != file.identity {
+                // By where the plan keeps each, so a link planned gone
+                // and the file it named are two places to move between.
+                if self.key(&dest) != self.key(&file) {
                     if self.read(&dest).await?.is_some() {
                         return Err(format!(
                             "cannot move {} to {}: it already exists",
@@ -542,6 +571,94 @@ mod tests {
         );
         assert_eq!(contents(&link), "own\n");
         assert_eq!(contents(&target), "target\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_deleted_while_a_patch_waits_never_costs_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = file(dir.path(), "target.txt", "target\n");
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        let file_identity = post_write::identity(&target);
+        let own = post_write::identity(dir.path()).join("link.txt");
+        let post = PostWrite::off();
+        // Another patch holds both while this one resolves and waits.
+        let held = post.lock_identities(vec![file_identity.clone(), own]).await;
+        let tool = ApplyPatch::new(post.clone());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let waiting = tokio::spawn(async move {
+            let text = "*** Begin Patch\n*** Delete File: link.txt\n*** End Patch";
+            tool.call(json!({ "patchText": text }), &ctx).await
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while post_write::lock_holders(&file_identity) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the patch never waited"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // The other patch deletes the link, then lets go.
+        std::fs::remove_file(&link).unwrap();
+        drop(held);
+
+        let err = waiting.await.unwrap().expect_err("the link is gone");
+        assert!(err.contains("no such file"), "{err}");
+        assert_eq!(contents(&target), "target\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_moved_onto_its_deleted_link_leaves_its_old_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = file(dir.path(), "target.txt", "target\n");
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+
+        patch(
+            dir.path(),
+            "*** Begin Patch
+*** Delete File: link.txt
+*** Update File: target.txt
+*** Move to: link.txt
+@@
+-target
++moved
+*** End Patch",
+        )
+        .await
+        .expect("a move onto the link's place");
+
+        assert!(!target.exists(), "a move, not a copy");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert_eq!(contents(&link), "moved\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_partly_written_file_is_never_said_to_be_as_it_was() {
+        if post_write::may_write_dev() {
+            // The write would rename over /dev/full instead of failing.
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let full = PathBuf::from("/dev/full");
+        let mut plan = Plan::new(dir.path(), HashMap::new());
+        let planned = Planned {
+            name: full.clone(),
+            content: Some("x".into()),
+            unlink: false,
+        };
+        plan.files.insert(full, planned);
+        let err = plan.write().await.unwrap_err();
+        assert!(err.contains("the file may be partly written"), "{err}");
+        assert!(!err.contains("as it was"), "{err}");
     }
 
     #[tokio::test]

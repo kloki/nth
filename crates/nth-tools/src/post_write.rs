@@ -411,6 +411,29 @@ pub(crate) fn partly_written(error: &io::Error) -> bool {
         .is_some_and(|inner| inner.is::<PartlyWritten>())
 }
 
+/// How many hold or wait on the lock of `identity`, for a test to see that
+/// a patch reached it.
+#[cfg(test)]
+pub(crate) fn lock_holders(identity: &Path) -> usize {
+    let registry = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+    registry.get(identity).map_or(0, Weak::strong_count)
+}
+
+/// Whether this process may make files in /dev, where a write to
+/// /dev/full would rename over the device rather than fail.
+#[cfg(test)]
+pub(crate) fn may_write_dev() -> bool {
+    // SAFETY: the literal is NUL-terminated and faccessat only reads it.
+    unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            c"/dev".as_ptr(),
+            libc::W_OK,
+            libc::AT_EACCESS,
+        ) == 0
+    }
+}
+
 /// `result`, then each section that is not empty, a blank line apart. LSP
 /// reports come with leading blank lines of their own, which go.
 pub(crate) fn append(result: String, sections: &[&str]) -> String {
@@ -813,8 +836,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_write_in_place_says_the_file_may_be_partly_written() {
         // /dev/full opens and refuses every byte, and nth may not make a
-        // temporary file in /dev, so it is written in place. Root could,
-        // and would rename over the device, so it is not asked there.
+        // temporary file in /dev, so it is written in place. Where it may
+        // (root), it would rename over the device, so it is not asked.
         let full = Path::new("/dev/full");
         let in_place = write_in_place(full, b"x").unwrap_err();
         assert!(partly_written(&in_place), "{in_place}");
@@ -823,7 +846,7 @@ mod tests {
                 .to_string()
                 .ends_with("the file may be partly written")
         );
-        if !is_root() {
+        if !may_write_dev() {
             let err = write_atomic(full, b"x".to_vec()).await.unwrap_err();
             assert!(partly_written(&err), "{err}");
         }
