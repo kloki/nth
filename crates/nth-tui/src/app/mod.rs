@@ -556,7 +556,8 @@ impl App {
             session_saving: Job::default(),
             session: None,
             provider: runtime.provider.clone(),
-            tools: runtime.model_tools.clone(),
+            // `install` moves the runtime's list in.
+            tools: Vec::new(),
             shell: runtime.shell.clone(),
             channels: TurnChannels::new(),
             asks: VecDeque::new(),
