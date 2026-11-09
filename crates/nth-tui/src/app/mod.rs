@@ -187,7 +187,7 @@ pub struct App {
     /// The current session's id, kept here because the session itself is
     /// in the turn task while a turn runs.
     session_id: uuid::Uuid,
-    curios: curios::Curios,
+    curios: crate::curios::CuriosTab,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
     hero_since: Instant,
@@ -356,9 +356,7 @@ async fn next_input(input: &mut Option<EventStream>) -> Option<std::io::Result<T
 }
 
 enum Step {
-    CurioOpened(Result<nth_curios::Result<curios::Opened>, JoinError>),
-    CurioPolled(Result<curios::Tick, JoinError>),
-    CurioAcknowledged(Result<nth_curios::Result<()>, JoinError>),
+    Curio(crate::curios::CurioStep),
     Terminal(Option<std::io::Result<TermEvent>>),
     Session(Event),
     Asked(Ask),
@@ -379,7 +377,7 @@ enum Step {
     LspUsageChanged(bool),
     /// The notification backend failed for the first time.
     NotifyFailed,
-    /// The one-second tick: the curio poll and a stale context tab.
+    /// The one-second tick: a stale context tab.
     Second,
     Tick,
 }
@@ -478,7 +476,7 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
-            curios: curios::Curios::new(session),
+            curios: crate::curios::CuriosTab::new(session.state_root()),
             hero_since: Instant::now(),
             flash: None,
             pointer: None,
@@ -661,7 +659,7 @@ impl App {
         self.plan.read();
         self.work.read();
         self.poll_curios();
-        let mut curio_tick = tokio::time::interval(Duration::from_secs(1));
+        let mut second = tokio::time::interval(Duration::from_secs(1));
 
         while !self.quit {
             let showing_diagnostics = self.panes().shows(Tab::Diagnostics);
@@ -684,9 +682,7 @@ impl App {
                 || self.hint.as_ref().is_some_and(hint::Hint::moving);
             let step = tokio::select! {
                 event = next_input(&mut input) => Step::Terminal(event),
-                opened = self.curios.opening.join() => Step::CurioOpened(opened),
-                tick = self.curios.polling.join() => Step::CurioPolled(tick),
-                acknowledged = self.curios.acknowledging.join() => Step::CurioAcknowledged(acknowledged),
+                step = self.curios.next() => Step::Curio(step),
                 ended = self.editor.join() => Step::EditorClosed(ended),
                 Some(event) = self.events_rx.recv() => Step::Session(event),
                 Some(ask) = self.asks_rx.recv() => Step::Asked(ask),
@@ -718,14 +714,10 @@ impl App {
                 changed = lsp_changed(&mut self.lsp) => Step::LspChanged(changed),
                 changed = diagnostics::usage_changed(&mut self.lsp_usage) => Step::LspUsageChanged(changed),
                 _ = tick.tick(), if ticking => Step::Tick,
-                _ = curio_tick.tick() => Step::Second,
+                _ = second.tick() => Step::Second,
             };
             match step {
-                Step::CurioOpened(opened) => self.curio_opened(opened.unwrap_or_else(|_| {
-                    Err(nth_curios::Error::Invalid("host unavailable".into()))
-                })),
-                Step::CurioPolled(tick) => self.curio_polled(tick),
-                Step::CurioAcknowledged(acknowledged) => self.curio_acknowledged(acknowledged),
+                Step::Curio(step) => self.curio_step(step),
                 Step::Terminal(None) => break,
                 Step::Terminal(Some(event)) => {
                     self.on_terminal(event.context("reading terminal input")?)
@@ -784,11 +776,11 @@ impl App {
         self.close_answered_subagents();
     }
 
-    /// The work of the loop's one-second tick. The context tab is rebuilt
-    /// only when something marked it stale or it came into view, since
-    /// each rebuild projects the whole history.
+    /// The work of the loop's one-second tick, the curios tab keeping a
+    /// tick of its own. The context tab is rebuilt only when something
+    /// marked it stale or it came into view, since each rebuild projects
+    /// the whole history.
     fn every_second(&mut self) {
-        self.poll_curios();
         self.refresh_stale_context();
     }
 

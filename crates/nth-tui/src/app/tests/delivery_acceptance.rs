@@ -279,7 +279,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let (second_store, second) = publish("second-owner", "Second document");
     app.poll_curios_through().await;
     app.open_curio(second.session_id.clone(), second.id.clone(), None);
-    let opened = app.curios.opening.join().await.unwrap();
+    let opened = app.curios.opening().join().await.unwrap();
     let adopted = opened.as_ref().unwrap();
     assert_eq!(adopted.id, second.id);
     assert_eq!(adopted.owner, first.session_id, "adopted by this session");
@@ -291,7 +291,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     assert!(app.hint.as_deref().unwrap().starts_with("adopted Curio"));
     assert!(second_store.list().unwrap().is_empty());
     app.open_latest_curio();
-    let opened = app.curios.opening.join().await.unwrap();
+    let opened = app.curios.opening().join().await.unwrap();
     assert!(
         opened.as_ref().unwrap().host.is_none(),
         "last-opened host is reused"
@@ -303,7 +303,7 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     let running = third_store.claim_delivery().unwrap();
     app.poll_curios_through().await;
     app.open_curio(third.session_id.clone(), third.id.clone(), None);
-    let opened = app.curios.opening.join().await.unwrap();
+    let opened = app.curios.opening().join().await.unwrap();
     let kept = opened.as_ref().unwrap();
     assert_eq!(kept.owner, "third-owner");
     assert_eq!(kept.how, nth_session::curios::How::Running);
@@ -314,8 +314,8 @@ async fn opening_another_sessions_curio_adopts_it_then_falls_back_once_gone() {
     app.poll_curios_through().await;
     app.open_latest_curio();
     // The latest left is this session's own, whose host is reused or made.
-    if app.curios.opening.is_running() {
-        let opened = app.curios.opening.join().await.unwrap();
+    if app.curios.opening().is_running() {
+        let opened = app.curios.opening().join().await.unwrap();
         assert_eq!(opened.as_ref().unwrap().owner, first.session_id);
         app.curio_opened(opened);
     }
