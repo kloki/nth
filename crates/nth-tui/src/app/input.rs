@@ -17,7 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub(super) enum Input {
     Prompt,
-    Curios(super::curios::Picker),
+    Curios(crate::curios::Picker),
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
     AgentPicker(AgentPicker),
