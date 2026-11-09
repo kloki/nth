@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use nth_protocol::{Message, StoppedBy};
 
-use super::{App, job::Job};
+use super::App;
+use crate::job::Job;
 
 /// How long quitting waits for the stopped monitors to report back.
 const EXIT_WAIT: Duration = Duration::from_secs(2);

@@ -165,7 +165,11 @@ mod tests {
         let started = tokio::time::Instant::now();
         let ran = run("sleep", dir.path(), &["60"]).await;
         assert_eq!(ran.err().as_deref(), Some("sleep took longer than 10 s"));
-        assert!(started.elapsed() >= LOAD_TIMEOUT);
+        assert!(started.elapsed() >= LOAD_TIMEOUT, "it waited the timeout");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "and no longer"
+        );
     }
 
     #[tokio::test]

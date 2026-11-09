@@ -12,7 +12,7 @@ use ratatui::{Frame, layout::Rect};
 use tokio::task::JoinError;
 pub use view::{DiagnosticsView, Facts, ModeModel};
 
-use crate::{Checkers, app::job::Job};
+use crate::{Checkers, job::Job};
 
 /// What looking a program up on PATH found.
 #[derive(Debug)]
@@ -121,6 +121,11 @@ impl DiagnosticsTab {
     #[cfg(test)]
     pub fn looking(&self) -> bool {
         self.lookup.is_running()
+    }
+
+    #[cfg(test)]
+    pub fn shown(&self) -> Option<&Lookup> {
+        self.found.as_ref()
     }
 }
 
@@ -236,7 +241,12 @@ mod tests {
         tab.found(Lookup {
             servers: Vec::new(),
             formatters: Vec::new(),
-            programs: Programs::find(false),
+            programs: Programs {
+                rtk: Some(Program::Found("/bin/rtk".into())),
+                browser: Program::Found("/bin/agent-browser".into()),
+                tea: Program::Found("/bin/tea".into()),
+                gh: Program::Found("/bin/gh".into()),
+            },
         });
 
         tab.diagnose(&checkers(), dir.path().to_path_buf());

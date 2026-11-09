@@ -16,7 +16,7 @@ pub use status::{GitStatus, load};
 use tokio::task::JoinError;
 pub use view::summary;
 
-use crate::app::job::Job;
+use crate::job::Job;
 
 /// The longest git or a forge's tool may take to answer. A tool waiting
 /// on the network, or on a lock, would otherwise keep its load running for

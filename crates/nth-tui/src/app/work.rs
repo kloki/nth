@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use nth_work::{Plan, Store};
 use tokio::task::JoinError;
 
-use super::{App, Tab, content::Change, job::Job};
-use crate::work::{Live, LiveTask, WorkView};
+use super::{App, Tab, content::Change};
+use crate::{
+    job::Job,
+    work::{Live, LiveTask, WorkView},
+};
 
 /// What a subagent's tab says it works on: its description.
 const WORK_PREFIX: &str = "work ";

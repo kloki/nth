@@ -12,7 +12,7 @@ use ratatui::{Frame, layout::Rect};
 use tokio::task::JoinError;
 pub use view::UsageView;
 
-use crate::app::job::Job;
+use crate::job::Job;
 
 /// Every tool's all-time totals, most called first.
 pub type ToolTotals = Vec<(String, ToolUse)>;

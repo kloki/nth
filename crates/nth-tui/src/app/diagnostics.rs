@@ -149,6 +149,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installing_a_runtime_drops_the_look_and_what_it_found() {
+        let mut app = app();
+        app.diagnose();
+        let found = app.diagnostics.next().await.expect("looks");
+        app.diagnostics.found(found);
+        app.diagnose();
+        let looking = app.diagnostics.looking();
+
+        let session = nth_session::Session::new("m", "/repo".into());
+        let provider = std::sync::Arc::new(crate::app::tests::Scripted::idle());
+        app.install(crate::app::tests::runtime(session, provider));
+        assert!(looking, "a look ran before");
+        assert!(!app.diagnostics.looking(), "the old runtime's look is gone");
+        assert!(app.diagnostics.shown().is_none(), "and what it found");
+    }
+
+    #[tokio::test]
     async fn the_status_bar_follows_the_servers_until_the_sender_is_gone() {
         let (tx, rx) = watch::channel(Vec::new());
         let mut app = app().with_lsp(rx);

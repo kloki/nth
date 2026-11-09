@@ -14,6 +14,7 @@ mod git;
 mod header;
 mod hero;
 mod history;
+mod job;
 mod keymaps;
 mod llm_picker;
 mod mention;

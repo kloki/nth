@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_git_that_hangs_reruns_on_the_next_change() {
+    async fn a_failed_git_load_reruns_on_the_next_change() {
         let mut app = app();
         let timeout = format!("git took longer than {} s", git::LOAD_TIMEOUT.as_secs());
         app.git

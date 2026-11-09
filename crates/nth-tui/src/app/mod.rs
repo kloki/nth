@@ -20,7 +20,6 @@ mod git;
 mod hint;
 mod history;
 mod input;
-pub(crate) mod job;
 mod keys;
 mod llm_picker;
 mod mode;
@@ -60,7 +59,6 @@ use diagnostics::lsp_changed;
 use finished::Finished;
 use futures::StreamExt;
 use input::Input;
-use job::Job;
 use mode::Steerable;
 use monitor::due;
 use nth_config::{Selection, Target};
@@ -98,6 +96,7 @@ use crate::{
     git::GitBar,
     header, hero,
     history::History,
+    job::Job,
     keymaps::Keymaps,
     llm_picker::usage::LlmUsage,
     prompt::{self, Prompt},
