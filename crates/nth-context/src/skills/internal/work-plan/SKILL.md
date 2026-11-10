@@ -1,9 +1,9 @@
 ---
 name: work-plan
-description: How to run a large task as an nth work plan (work_item, work_assign, work_close, work_status) - when one is worth it, how to cut it into cycles and items, write briefs a subagent can act on alone, manage its worktrees, branches, merges and pull requests, test and review the result, and judge what comes back. Load it before writing the first item of a plan.
+description: The preferred way to coordinate work across multiple agents using an nth work plan (work_item, work_assign, work_close, work_status). Load it before organizing multi-agent work to plan cycles and items, brief subagents, manage branches and pull requests, test, review and judge results.
 ---
 
-A work plan is for work too big to do well in one conversation: parts that each fit one subagent, run in cycles. You are the orchestrator. You plan, brief, judge and decide, and you own the git side: worktrees, branches, merges and pull requests. The subagents do the work. If you can finish the change yourself in a handful of steps, do not make a plan.
+A work plan is the preferred way to coordinate work across multiple agents: parts that each fit one subagent, run in cycles. You are the orchestrator. You plan, brief, judge and decide, and you own the git side: worktrees, branches, merges and pull requests. The subagents do the work. For a small one-off delegation, use `task` instead; if you can finish the change yourself in a handful of steps, do not make a plan.
 
 ## Cut the work into cycles
 
@@ -84,7 +84,13 @@ Git is part of the plan, not an afterthought. Decide the layout before the first
 1. Write `plan.md` in the plan's folder (work_status names it): a `# Title` line, then the goal and the branch layout. The user sees it above the cycles.
 2. Reconsider the plan at the cycle boundary, then write the current cycle's items with work_item.
 3. Assign every item of the cycle with work_assign, all in one message, so they run in parallel (items in their own worktrees are assigned one after another, each after its enter_worktree).
-4. End your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep, poll, or call work_status to wait.
+4. Schedule a fallback wakeup as described below, then end your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep or poll to wait.
+
+## Wakeup failsafe
+
+Before yielding while items run, call `schedule_wakeup` with a `duration_ms` suited to the expected work (1 ms to one hour). It is a failsafe alongside return and stall notices, not a substitute for them. The main interactive session has one replaceable, one-shot timer. It lasts through the current turn; if another turn starts before it fires, the timer is cancelled, so schedule it again before yielding if work remains. It works only while the session is open, not headless or from a subagent; headless work assignment waits for its result instead.
+
+When a wakeup arrives, call `work_status` once and inspect available results and branches. Judge completed items; investigate failed, interrupted, timed-out or stalled work. A wakeup alone does not mean an agent failed. If replacing a still-running agent, stop it first, then revise and reassign the item or close it as warranted. If background work remains, schedule another wakeup before yielding. Do not sleep or repeatedly poll status.
 
 ## Judge what comes back
 
