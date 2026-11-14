@@ -7,7 +7,7 @@ use serde_json::json;
 
 const QUESTIONS: RangeInclusive<usize> = 1..=4;
 const OPTIONS: RangeInclusive<usize> = 2..=4;
-const HEADER_CHARS: usize = 12;
+const HEADER_CHARS: usize = 16;
 
 /// Asks you multiple-choice questions mid-turn and waits for the answers.
 /// Every question also gets an open field, which the front-end adds.
@@ -34,7 +34,7 @@ impl Tool for Question {
                             "type": "object",
                             "properties": {
                                 "question": { "type": "string", "description": "The full question, ending with a question mark" },
-                                "header": { "type": "string", "description": "A label of at most 12 characters, such as \"Auth\"" },
+                                "header": { "type": "string", "description": format!("A label of at most {HEADER_CHARS} characters, such as \"Auth\"") },
                                 "multiple": { "type": "boolean", "description": "Allow picking more than one option", "default": false },
                                 "options": {
                                     "type": "array",
@@ -66,8 +66,8 @@ impl Tool for Question {
         ctx: &'a ToolContext,
     ) -> BoxFuture<'a, ToolResult> {
         async move {
-            let Args { questions } = nth_protocol::parse_args(args)?;
-            check(&questions)?;
+            let Args { mut questions } = nth_protocol::parse_args(args)?;
+            check(&mut questions)?;
             match ctx.asker.ask(questions.clone()).await {
                 Some(Reply::Answered(answers)) => Ok(format(&questions, &answers)),
                 Some(Reply::Declined) => {
@@ -81,8 +81,10 @@ impl Tool for Question {
 }
 
 /// Holds the model to what the input panel can show, so it hears why
-/// rather than the panel cutting things off.
-fn check(questions: &[Asked]) -> Result<(), String> {
+/// rather than the panel cutting things off. A header too long for its tab
+/// is only cut: refusing it costs the model a step to say the same in fewer
+/// letters.
+fn check(questions: &mut [Asked]) -> Result<(), String> {
     if !QUESTIONS.contains(&questions.len()) {
         return Err(format!("ask 1 to 4 questions, not {}", questions.len()));
     }
@@ -94,12 +96,12 @@ fn check(questions: &[Asked]) -> Result<(), String> {
                 q.options.len()
             ));
         }
-        let chars = q.header.chars().count();
-        if chars == 0 || chars > HEADER_CHARS {
-            return Err(format!(
-                "header \"{}\" must be 1 to {HEADER_CHARS} characters",
-                q.header
-            ));
+        if q.header.trim().is_empty() {
+            return Err(format!("\"{}\" has an empty header", q.question));
+        }
+        if q.header.chars().count() > HEADER_CHARS {
+            let cut: String = q.header.chars().take(HEADER_CHARS - 1).collect();
+            q.header = format!("{}…", cut.trim_end());
         }
     }
     Ok(())
@@ -214,8 +216,8 @@ mod tests {
         let one_option = json!({ "questions": [
             { "question": "Sure?", "header": "Sure", "options": [{ "label": "yes" }] }
         ]});
-        let long_header = json!({ "questions": [
-            { "question": "Which?", "header": "a header that is far too long",
+        let no_header = json!({ "questions": [
+            { "question": "Which?", "header": " ",
               "options": [{ "label": "a" }, { "label": "b" }] }
         ]});
 
@@ -227,12 +229,32 @@ mod tests {
             Question.call(one_option, &ctx).await,
             Err("\"Sure\" has 1 options; give 2 to 4".into())
         );
-        assert!(
-            Question
-                .call(long_header, &ctx)
-                .await
-                .expect_err("too long")
-                .contains("1 to 12 characters")
+        assert_eq!(
+            Question.call(no_header, &ctx).await,
+            Err("\"Which?\" has an empty header".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn cuts_a_header_too_long_for_its_tab() {
+        let (ctx, mut rx) = asking();
+        let asked = tokio::spawn(async move {
+            let ask = rx.recv().await.expect("asks");
+            let headers: Vec<String> = ask.questions.iter().map(|q| q.header.clone()).collect();
+            ask.reply.send(Reply::Declined).expect("tool waits");
+            headers
+        });
+        let questions = json!({ "questions": [
+            { "question": "Which?", "header": "All-time surface", "options": [{ "label": "a" }, { "label": "b" }] },
+            { "question": "Where?", "header": "Claude on lenovo laptop", "options": [{ "label": "a" }, { "label": "b" }] },
+            { "question": "What?", "header": "Session switch it", "options": [{ "label": "a" }, { "label": "b" }] }
+        ]});
+
+        let _ = Question.call(questions, &ctx).await;
+
+        assert_eq!(
+            asked.await.expect("asked"),
+            ["All-time surface", "Claude on lenov…", "Session switch…"]
         );
     }
 }
