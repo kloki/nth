@@ -153,7 +153,11 @@ pub static BUILTINS: &[Builtin] = &[
     on_path("gleam", &[".gleam"], &["gleam", "format", "$FILE"]),
     on_path("shfmt", &[".sh", ".bash"], &["shfmt", "-w", "$FILE"]),
     on_path("nixfmt", &[".nix"], &["nixfmt", "$FILE"]),
-    on_path("rustfmt", &[".rs"], &["rustfmt", "$FILE"]),
+    on_path(
+        "rustfmt",
+        &[".rs"],
+        &["rustfmt", "--edition", "$RUST_EDITION", "$FILE"],
+    ),
     on_path("ormolu", &[".hs"], &["ormolu", "-i", "$FILE"]),
     on_path(
         "cljfmt",

@@ -5,6 +5,7 @@
 mod config;
 mod probe;
 mod registry;
+mod rust_edition;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -138,7 +139,7 @@ impl Formatters {
             if let Ok(command) = self.command(index, cwd, &root).await {
                 outcomes.push(Outcome {
                     name: formatter.name.clone(),
-                    result: self.run(formatter, &command, path, cwd).await,
+                    result: self.run(formatter, &command, path, cwd, &root).await,
                 });
             }
         }
@@ -218,10 +219,24 @@ impl Formatters {
         command: &[String],
         path: &Path,
         cwd: &Path,
+        root: &Path,
     ) -> Result<(), String> {
+        // Only looked up when asked for, since it reads manifests.
+        let edition = match command
+            .iter()
+            .any(|arg| arg.contains(rust_edition::PLACEHOLDER))
+        {
+            true => rust_edition::of(&normalize(&cwd.join(path)), &normalize(root)).await,
+            false => String::new(),
+        };
+        // The edition goes in first, so a file name holding the placeholder
+        // is left as it is.
         let mut args = command.iter().map(|arg| match arg.as_str() {
             "$FILE" => path.as_os_str().to_owned(),
-            _ => arg.replace("$FILE", &path.to_string_lossy()).into(),
+            _ => arg
+                .replace(rust_edition::PLACEHOLDER, &edition)
+                .replace("$FILE", &path.to_string_lossy())
+                .into(),
         });
         let program = args.next().ok_or("empty command")?;
         let child = tokio::process::Command::new(&program)
@@ -330,6 +345,89 @@ mod tests {
         std::fs::write(&path, "#!/bin/sh\n").expect("write program");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         bin
+    }
+
+    /// A `rustfmt` in `dir/bin` that writes its arguments to `dir/args`,
+    /// one per line, and the formatters that find it there.
+    fn recording_rustfmt(dir: &Path) -> Formatters {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = fake_program(dir, "rustfmt");
+        let program = bin.join("rustfmt");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            dir.join("args").display()
+        );
+        std::fs::write(&program, script).expect("write rustfmt");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        formatters([]).with_search_path(&bin)
+    }
+
+    /// The arguments the recording `rustfmt` in `dir` was last run with.
+    fn rustfmt_args(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("args"))
+            .expect("rustfmt ran")
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn rustfmt_gets_the_edition_a_member_inherits_from_its_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let formatters = recording_rustfmt(dir.path());
+        let project = dir.path().join("project");
+        let src = project.join("crates/member/src");
+        std::fs::create_dir_all(&src).expect("member dir");
+        file(
+            &project,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        );
+        file(
+            &project.join("crates/member"),
+            "Cargo.toml",
+            "[package]\nname = \"member\"\nedition.workspace = true\n",
+        );
+        let path = file(&src, "lib.rs", "async fn f() {}\n");
+
+        let outcomes = formatters.format(&path, &project).await;
+
+        assert_eq!(outcomes[0].result, Ok(()));
+        assert_eq!(
+            rustfmt_args(dir.path()),
+            ["--edition", "2024", &path.to_string_lossy()]
+        );
+    }
+
+    #[tokio::test]
+    async fn rustfmt_gets_the_edition_a_package_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let formatters = recording_rustfmt(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).expect("src dir");
+        file(
+            &project,
+            "Cargo.toml",
+            "[package]\nname = \"lone\"\nedition = \"2021\"\n",
+        );
+        let path = file(&project.join("src"), "main.rs", "fn main() {}\n");
+
+        formatters.format(&path, &project).await;
+
+        assert_eq!(rustfmt_args(dir.path())[..2], ["--edition", "2021"]);
+    }
+
+    #[tokio::test]
+    async fn rustfmt_falls_back_to_cargos_default_edition() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let formatters = recording_rustfmt(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let path = file(&project, "loose.rs", "fn main() {}\n");
+
+        formatters.format(&path, &project).await;
+
+        assert_eq!(rustfmt_args(dir.path())[..2], ["--edition", "2015"]);
     }
 
     #[tokio::test]
