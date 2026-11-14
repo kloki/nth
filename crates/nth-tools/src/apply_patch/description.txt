@@ -34,6 +34,6 @@ It is important to remember:
 - You must include a header with your intended action (Add/Delete/Update)
 - You must prefix new lines with `+` even when creating a new file
 - Paths are relative to the working directory, or absolute
-- Hunks of a file apply in order, each after the one before. A hunk's context and `-` lines must match the file and match only one place; with an `@@` line, the first match after that line is used
+- Hunks of a file apply in order. A hunk's context and `-` lines must match the file, and the first match after the previous hunk (or after its `@@` line) is used, so give enough context, or an `@@` line, to land in the right place
 - Add File fails if the file exists, and Move to fails if the new path exists
 - All sections are validated before writing: if validation fails, no file is changed. Filesystem write or delete failures can leave a partially applied patch; the error reports completed and unattempted operations.

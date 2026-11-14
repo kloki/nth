@@ -2,7 +2,8 @@
 //! read output and often get the whitespace slightly wrong, so after an exact
 //! match fails a few looser strategies try again. Ported from opencode's
 //! `tool/edit.ts`, minus the block-anchor and Levenshtein ones, which can
-//! match text the model never saw.
+//! match text the model never saw, plus Codex's last pass, which reads
+//! typographic punctuation as its ASCII look-alike.
 
 use std::ops::Range;
 
@@ -20,11 +21,12 @@ type Strategy = fn(&str, &str) -> Vec<Range<usize>>;
 /// strategy never picks one of several places a stricter one found.
 /// Indentation-flexible is stricter than line-trimmed, as it still compares
 /// each line's indent relative to the block's.
-const STRATEGIES: [Strategy; 4] = [
+const STRATEGIES: [Strategy; 5] = [
     exact,
     indentation_flexible,
     line_trimmed,
     whitespace_normalised,
+    punctuation_normalised,
 ];
 
 /// The one span of `content` that `needle` matches. An empty needle matches
@@ -103,6 +105,29 @@ fn indentation_flexible(content: &str, needle: &str) -> Vec<Range<usize>> {
         .filter(|&i| dedent(lines.text(i, want.lines.len())) == want_lines)
         .map(|i| lines.span(i, &want))
         .collect()
+}
+
+/// Lines equal once trimmed and with typographic dashes, quotes and spaces
+/// read as ASCII, as Codex's apply_patch does: a model writes `-` and `"`
+/// where the file has `—` and `“`, or the other way round.
+fn punctuation_normalised(content: &str, needle: &str) -> Vec<Range<usize>> {
+    windows(content, needle, |line, want| {
+        line.trim()
+            .chars()
+            .map(ascii_punctuation)
+            .eq(want.trim().chars().map(ascii_punctuation))
+    })
+}
+
+/// Codex's table, from `seek_sequence.rs`.
+fn ascii_punctuation(c: char) -> char {
+    match c {
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+        '\u{2018}'..='\u{201B}' => '\'',
+        '\u{201C}'..='\u{201F}' => '"',
+        '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+        other => other,
+    }
 }
 
 /// Every run of whitespace counts as one space, within a line or across a
@@ -288,6 +313,22 @@ mod tests {
     fn unique<'a>(content: &'a str, needle: &str) -> &'a str {
         let span = find_unique(content, needle).expect("one match");
         &content[span]
+    }
+
+    #[test]
+    fn punctuation_normalised_reads_typographic_marks_as_ascii() {
+        let content = "// a — b\nlet s = “x”;\nlet t = 'y';\n";
+        assert_eq!(
+            unique(content, "// a - b\nlet s = \"x\";"),
+            "// a — b\nlet s = “x”;"
+        );
+        assert_eq!(unique("let t = 'y';\n", "let t = ‘y’;"), "let t = 'y';");
+    }
+
+    #[test]
+    fn punctuation_normalised_never_overrides_a_stricter_match() {
+        // The exact match decides; the typographic line is not a second one.
+        assert_eq!(unique("a - b\na — b\n", "a - b"), "a - b");
     }
 
     #[test]

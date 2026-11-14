@@ -27,6 +27,10 @@ pub(crate) struct Hunk {
     pub old: Vec<String>,
     /// The context and added lines, as the file will have them.
     pub new: Vec<String>,
+    /// Where each context line sits in `old` and in `new`. The file keeps
+    /// its own text for these, as in Codex, so a line a looser match found
+    /// keeps its indentation and punctuation.
+    pub kept: Vec<(usize, usize)>,
     /// `*** End of File` followed the hunk, so its old lines end the file.
     pub end_of_file: bool,
 }
@@ -170,10 +174,12 @@ fn hunks(body: &[&str]) -> Result<Vec<Hunk>, String> {
             // Slicing after the first byte is safe: it is ASCII.
             match line.as_bytes().first() {
                 None => {
+                    hunk.kept.push((hunk.old.len(), hunk.new.len()));
                     hunk.old.push(String::new());
                     hunk.new.push(String::new());
                 }
                 Some(b' ') => {
+                    hunk.kept.push((hunk.old.len(), hunk.new.len()));
                     hunk.old.push(line[1..].to_string());
                     hunk.new.push(line[1..].to_string());
                 }
@@ -227,6 +233,7 @@ mod tests {
             context: context.map(str::to_string),
             old: old.iter().map(|line| line.to_string()).collect(),
             new: new.iter().map(|line| line.to_string()).collect(),
+            kept: Vec::new(),
             end_of_file: false,
         }
     }
@@ -292,8 +299,12 @@ mod tests {
         assert_eq!(
             hunks,
             &[
-                hunk(None, &["fn a() {}", "fn b() {}", ""], &["fn a() {}", ""]),
                 Hunk {
+                    kept: vec![(0, 0), (2, 1)],
+                    ..hunk(None, &["fn a() {}", "fn b() {}", ""], &["fn a() {}", ""])
+                },
+                Hunk {
+                    kept: vec![(0, 0)],
                     end_of_file: true,
                     ..hunk(Some("impl C {"), &["    x"], &["    x", "    y"])
                 },

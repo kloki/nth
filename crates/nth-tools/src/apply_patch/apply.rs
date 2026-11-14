@@ -59,20 +59,15 @@ pub(super) fn apply(source: &str, hunks: &[Hunk]) -> Result<String, String> {
             replacements.push((at..at, new));
             continue;
         }
-        let (span, new) = locate(&text, hunk, cursor, crlf).map_err(|e| {
-            let expected = hunk.old.join("\n");
-            match e {
-                MatchError::NotFound => format!(
-                    "hunk {n} not found. Its context and `-` lines must match the file, including indentation; read it again if unsure. Expected{}:\n{expected}",
-                    if hunk.end_of_file { " at the end of the file" } else { "" }
-                ),
-                MatchError::Ambiguous(k) => format!(
-                    "hunk {n} matches {k} places. Add an @@ line naming the enclosing function or class, or more context lines:\n{expected}"
-                ),
-            }
+        let found = locate(&text, hunk, cursor, crlf).map_err(|_| {
+            format!(
+                "hunk {n} not found. Its context and `-` lines must match the file, including indentation; read it again if unsure. Expected{}:\n{}",
+                if hunk.end_of_file { " at the end of the file" } else { "" },
+                hunk.old.join("\n")
+            )
         })?;
-        cursor = span.end;
-        replacements.push((span, joined(new, eol)));
+        cursor = found.span.end;
+        replacements.extend(changed_runs(&text, &found, &hunk.kept, eol));
     }
 
     // Pure additions at the end may come before later hunks.
@@ -91,15 +86,25 @@ pub(super) fn apply(source: &str, hunks: &[Hunk]) -> Result<String, String> {
     Ok(updated)
 }
 
-/// The whole lines at or after `cursor` that hold the hunk's old lines,
-/// and the new lines to put there. The old lines must match one place,
-/// unless an @@ line anchors the hunk, which then takes the nearest.
+/// Where a hunk matched: the whole lines that hold its old lines, and the
+/// old and new lines once `locate` let go of a trailing blank line the
+/// file lacks.
+struct Found<'h> {
+    span: Range<usize>,
+    old: &'h [String],
+    new: &'h [String],
+}
+
+/// Where the hunk's old lines sit at or after `cursor`: the first place
+/// they match, as Codex's apply_patch takes it. Models trained on Codex
+/// send a hunk of just `}` meaning the first one after the previous hunk,
+/// never a unique one.
 fn locate<'h>(
     text: &str,
     hunk: &'h Hunk,
     cursor: usize,
     crlf: bool,
-) -> Result<(Range<usize>, &'h [String]), MatchError> {
+) -> Result<Found<'h>, MatchError> {
     // Only whole lines, give or take indentation, so `x = 1` never matches
     // the end of `max = 1`.
     let keep = |span: &Range<usize>| {
@@ -127,12 +132,51 @@ fn locate<'h>(
             result => break result?,
         }
     };
-    let span = match found.as_slice() {
-        [span] => span,
-        [span, ..] if hunk.context.is_some() => span,
-        many => return Err(MatchError::Ambiguous(many.len())),
-    };
-    Ok((line_start(text, span.start)..line_end(text, span.end), new))
+    // Sorted, so the first is the nearest after the cursor.
+    let span = found.first().ok_or(MatchError::NotFound)?;
+    Ok(Found {
+        span: line_start(text, span.start)..line_end(text, span.end),
+        old,
+        new,
+    })
+}
+
+/// The replacements for a hunk where it was `found`, one line of the file
+/// per old line: only the runs between its context lines, so the file keeps
+/// its own text for those, as Codex does. A looser match must not rewrite
+/// a context line's tabs or typographic quotes into the model's version.
+fn changed_runs(
+    text: &str,
+    found: &Found,
+    kept: &[(usize, usize)],
+    eol: &str,
+) -> Vec<(Range<usize>, String)> {
+    let Found { span, old, new } = found;
+    // Where each matched line starts, and where the last one ends.
+    let mut starts = vec![span.start];
+    starts.extend(
+        text[span.clone()]
+            .match_indices('\n')
+            .map(|(i, _)| span.start + i + 1),
+    );
+    let at = |line: usize| starts.get(line).copied().unwrap_or(span.end);
+
+    let mut runs = Vec::new();
+    let (mut from_old, mut from_new) = (0, 0);
+    // A context line past the end was a trailing blank line `locate` let go.
+    for &(o, n) in kept
+        .iter()
+        .take_while(|&&(o, n)| o < old.len() && n < new.len())
+    {
+        if (from_old, from_new) != (o, n) {
+            runs.push((at(from_old)..at(o), joined(&new[from_new..n], eol)));
+        }
+        (from_old, from_new) = (o + 1, n + 1);
+    }
+    if (from_old, from_new) != (old.len(), new.len()) {
+        runs.push((at(from_old)..span.end, joined(&new[from_new..], eol)));
+    }
+    runs
 }
 
 fn joined(lines: &[String], eol: &str) -> String {
