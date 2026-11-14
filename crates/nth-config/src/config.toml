@@ -225,8 +225,10 @@ enabled = true
 # adds one, which needs command and extensions.
 #
 #   disabled    true turns this formatter off.
-#   command     Program and arguments; $FILE is the file to format. For a
-#               built-in name, leaving it out keeps its own.
+#   command     Program and arguments; $FILE is the file to format, and
+#               $RUST_EDITION the edition of its Rust crate (from Cargo.toml,
+#               2015 when none says). For a built-in name, leaving it out
+#               keeps its own.
 #   extensions  The files it formats, with the dot, as in ".toml". For a
 #               built-in name, leaving it out keeps its own.
 #   env         Extra environment variables for the command.

@@ -219,8 +219,10 @@ env = { RUST_LOG = "warn" }
 ```
 
 A built-in name changes that formatter; any other name adds one, which needs
-`command` and `extensions`. `$FILE` is the file to format. `nth formatters`
-lists them and whether they apply to the working directory.
+`command` and `extensions`. `$FILE` is the file to format, and `$RUST_EDITION`
+the edition of its Rust crate, read from `Cargo.toml` (2015 when none says), as
+the built-in rustfmt passes it to `--edition`. `nth formatters` lists them and
+whether they apply to the working directory.
 
 ### Language servers
 
@@ -415,12 +417,12 @@ Every key with its default, in the order of `nth init`'s template
 **`[format.<name>]`** — a built-in name changes that formatter; any other adds
 one, which needs `command` and `extensions`.
 
-| Key          | Default    | Meaning                                     |
-| ------------ | ---------- | ------------------------------------------- |
-| `disabled`   | `false`    | `true` turns this formatter off.            |
-| `command`    | built-in's | Program and arguments; `$FILE` is the file. |
-| `extensions` | built-in's | The files it formats, with the dot.         |
-| `env`        | none       | Extra environment variables.                |
+| Key          | Default    | Meaning                                                                          |
+| ------------ | ---------- | -------------------------------------------------------------------------------- |
+| `disabled`   | `false`    | `true` turns this formatter off.                                                 |
+| `command`    | built-in's | Program and arguments; `$FILE` is the file, `$RUST_EDITION` its crate's edition. |
+| `extensions` | built-in's | The files it formats, with the dot.                                              |
+| `env`        | none       | Extra environment variables.                                                     |
 
 **`[lsp]`** — check a file with its language servers after a tool reads or
 writes it.
