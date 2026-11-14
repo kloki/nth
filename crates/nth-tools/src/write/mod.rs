@@ -269,7 +269,10 @@ mod tests {
         let path = dir.path().join("a.txt");
         assert_eq!(
             out,
-            format!("Created file: {}\n\nFormatted with sed.", path.display())
+            format!(
+                "Created file: {}\n\nFormatted with sed, which changed the file; read it again before editing it.",
+                path.display()
+            )
         );
         assert_eq!(contents(&path), "b\n");
     }
