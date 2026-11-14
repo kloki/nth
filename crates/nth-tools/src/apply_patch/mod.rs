@@ -947,10 +947,17 @@ mod tests {
             "a.py",
             "def f():\n    pass\n\ndef g():\n    pass\n",
         );
-        let ambiguous =
-            "*** Begin Patch\n*** Update File: a.py\n@@\n-    pass\n+    return 1\n*** End Patch";
-        let err = patch(dir.path(), ambiguous).await.expect_err("ambiguous");
-        assert!(err.contains("hunk 1 matches 2 places"), "{err}");
+        // Without an @@ line the first match is used, as in Codex.
+        patch(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: a.py\n@@\n-    pass\n+    return 0\n*** End Patch",
+        )
+        .await
+        .expect("patch");
+        assert_eq!(
+            contents(&path),
+            "def f():\n    return 0\n\ndef g():\n    pass\n"
+        );
 
         patch(
             dir.path(),
@@ -960,8 +967,64 @@ mod tests {
         .expect("patch");
         assert_eq!(
             contents(&path),
-            "def f():\n    pass\n\ndef g():\n    return 1\n"
+            "def f():\n    return 0\n\ndef g():\n    return 1\n"
         );
+    }
+
+    /// The shape models trained on Codex send: a hunk of context alone to
+    /// get past `b`, then a hunk on a bare `}` that means the first one
+    /// after it, though the file has many.
+    #[tokio::test]
+    async fn a_repeated_line_takes_the_first_match_after_the_previous_hunk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(
+            dir.path(),
+            "a.rs",
+            "fn a() {\n}\n\nfn b() {\n}\n\nfn c() {\n}\n",
+        );
+        patch(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: a.rs\n@@\n fn b() {\n@@\n }\n+\n+fn after_b() {\n+}\n*** End Patch",
+        )
+        .await
+        .expect("patch");
+        assert_eq!(
+            contents(&path),
+            "fn a() {\n}\n\nfn b() {\n}\n\nfn after_b() {\n}\n\nfn c() {\n}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_between_changes_keeps_the_file_text_and_line_endings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(
+            dir.path(),
+            "a",
+            "\ta = 1\r\n\tkeep()\r\n\tb = 2\r\ntail\r\n",
+        );
+        patch(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: a\n@@\n-  a = 1\n+\ta = 10\n   keep()\n-  b = 2\n+\tb = 20\n+\tc = 30\n*** End Patch",
+        )
+        .await
+        .expect("patch");
+        assert_eq!(
+            contents(&path),
+            "\ta = 10\r\n\tkeep()\r\n\tb = 20\r\n\tc = 30\r\ntail\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn typographic_punctuation_matches_its_ascii_look_alike() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file(dir.path(), "a", "// one — two\nsay(“hi”)\n");
+        patch(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: a\n@@\n // one - two\n-say(\"hi\")\n+say(\"bye\")\n*** End Patch",
+        )
+        .await
+        .expect("patch");
+        assert_eq!(contents(&path), "// one — two\nsay(\"bye\")\n");
     }
 
     #[tokio::test]
@@ -1101,6 +1164,8 @@ mod tests {
     }
 
     #[tokio::test]
+    /// The context line found loosely keeps the file's tab, as in Codex;
+    /// only the changed line takes the patch's text.
     async fn falls_back_to_fuzzy_whitespace() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = file(
@@ -1116,7 +1181,7 @@ mod tests {
         .expect("patch");
         assert_eq!(
             contents(&path),
-            "fn f() {\n\tlet x = 10;\n    let y = 2;\n}\n"
+            "fn f() {\n\tlet x = 10;\n\tlet y = 2;\n}\n"
         );
     }
 
