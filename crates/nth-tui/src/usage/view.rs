@@ -130,11 +130,19 @@ fn tool_usage(lines: &mut Vec<Line<'static>>, tools: &[(String, ToolUse)]) {
             0 => theme::dim(),
             _ => Style::new().fg(Color::Yellow),
         };
+        let percent = if use_of.calls == 0 {
+            0.0
+        } else {
+            use_of.failed as f64 / use_of.calls as f64 * 100.0
+        };
         lines.push(Line::from(vec![
             Span::raw(theme::INDENT),
             Span::styled(format!("{name:width$}  "), Style::new().fg(Color::Blue)),
             Span::styled(format!("{:>digits$} calls  ", use_of.calls), theme::dim()),
-            Span::styled(format!("{} failed  ", use_of.failed), failed),
+            Span::styled(
+                format!("{} failed ({percent:.1}%)  ", use_of.failed),
+                failed,
+            ),
             Span::styled(format!("{} avg  ", short_duration(mean)), theme::dim()),
             Span::styled(format!("{} out", usage::short(use_of.output)), theme::dim()),
         ]));
@@ -440,6 +448,24 @@ mod tests {
                     output: 900,
                 },
             ),
+            (
+                "failed".to_string(),
+                ToolUse {
+                    calls: 2,
+                    failed: 2,
+                    duration: Duration::ZERO,
+                    output: 0,
+                },
+            ),
+            (
+                "empty".to_string(),
+                ToolUse {
+                    calls: 0,
+                    failed: 0,
+                    duration: Duration::ZERO,
+                    output: 0,
+                },
+            ),
         ];
         let text = text(&Ledger::default(), &[], &tools, &|_| None);
         let at = text
@@ -449,8 +475,11 @@ mod tests {
         let read = &text[at + 1];
         assert!(read.contains("read"), "{read:?}");
         assert!(read.contains("12 calls"), "{read:?}");
-        assert!(read.contains("1 failed"), "{read:?}");
+        assert!(read.contains("1 failed (8.3%)"), "{read:?}");
         assert!(read.contains("500ms avg"), "{read:?}");
         assert!(read.contains("40k out"), "{read:?}");
+        assert!(text[at + 2].contains("0 failed (0.0%)"));
+        assert!(text[at + 3].contains("2 failed (100.0%)"));
+        assert!(text[at + 4].contains("0 failed (0.0%)"));
     }
 }
