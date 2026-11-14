@@ -181,6 +181,14 @@ impl Tool for Read {
     }
 }
 
+/// The most entries a hint names.
+const HINT_ENTRIES: usize = 10;
+/// How many leading letters a name must share with the missing one to be
+/// suggested; one shared letter suggested half a folder.
+const HINT_PREFIX: usize = 3;
+
+/// For a path that does not exist: what the nearest folder that does holds
+/// that the model may have meant.
 async fn path_hint(path: &Path) -> String {
     let mut missing = path;
     while let Some(parent) = missing.parent() {
@@ -189,30 +197,7 @@ async fn path_hint(path: &Path) -> String {
                 let Some(name) = missing.file_name().and_then(|n| n.to_str()) else {
                     return String::new();
                 };
-                let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
-                    return String::new();
-                };
-                let mut candidates = Vec::new();
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let candidate = entry.file_name().to_string_lossy().into_owned();
-                    let a = name.to_lowercase();
-                    let b = candidate.to_lowercase();
-                    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-                    if common > 0 || a.contains(&b) || b.contains(&a) {
-                        candidates.push((std::cmp::Reverse(common), candidate));
-                    }
-                }
-                candidates.sort();
-                let names: Vec<_> = candidates.into_iter().take(5).map(|(_, n)| n).collect();
-                return if names.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "\nSimilar entries in {}: {}",
-                        parent.display(),
-                        names.join(", ")
-                    )
-                };
+                return hint(parent, name).await;
             }
             Ok(_) => return String::new(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing = parent,
@@ -220,6 +205,80 @@ async fn path_hint(path: &Path) -> String {
         }
     }
     String::new()
+}
+
+/// A file that became a folder of its name (`skills.rs` now `skills/`, a
+/// layout models keep guessing at) is listed outright, so the next read
+/// needs no guess; otherwise the entries of `parent` whose names are close
+/// to `name`, the same stem first.
+async fn hint(parent: &Path, name: &str) -> String {
+    let stem = stem(name);
+    if stem != name {
+        let folder = parent.join(stem);
+        if tokio::fs::metadata(&folder).await.is_ok_and(|m| m.is_dir()) {
+            let mut inside = entries(&folder).await;
+            inside.sort();
+            let more = inside.len().saturating_sub(HINT_ENTRIES);
+            inside.truncate(HINT_ENTRIES);
+            let mut listed = inside.join(", ");
+            if more > 0 {
+                listed.push_str(&format!(" and {more} more"));
+            }
+            return format!("\n{} is a folder: {listed}", folder.display());
+        }
+    }
+    let mut close: Vec<_> = entries(parent)
+        .await
+        .into_iter()
+        .filter_map(|entry| closeness(name, &entry).map(|rank| (rank, entry)))
+        .collect();
+    close.sort();
+    let names: Vec<_> = close.into_iter().take(5).map(|(_, entry)| entry).collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\nSimilar entries in {}: {}",
+        parent.display(),
+        names.join(", ")
+    )
+}
+
+/// The names in `dir`, a folder's with a `/` after it.
+async fn entries(dir: &Path) -> Vec<String> {
+    let Ok(mut read) = tokio::fs::read_dir(dir).await else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    while let Ok(Some(entry)) = read.next_entry().await {
+        let mut name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
+            name.push('/');
+        }
+        names.push(name);
+    }
+    names
+}
+
+fn stem(name: &str) -> &str {
+    let name = name.trim_end_matches('/');
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
+        _ => name,
+    }
+}
+
+/// How close `entry` is to the missing `name`, smaller first: the same
+/// stem, then the longer shared prefix; `None` when it is not close at all.
+fn closeness(name: &str, entry: &str) -> Option<(bool, std::cmp::Reverse<usize>)> {
+    let a = name.to_lowercase();
+    let b = entry.trim_end_matches('/').to_lowercase();
+    let same_stem = stem(&a) == stem(&b);
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    let shared = common >= HINT_PREFIX.min(a.chars().count());
+    let contained = (b.chars().count() >= HINT_PREFIX && a.contains(&b))
+        || (a.chars().count() >= HINT_PREFIX && b.contains(&a));
+    (same_stem || shared || contained).then_some((!same_stem, std::cmp::Reverse(common)))
 }
 
 fn not_regular(path: &Path) -> String {
@@ -884,6 +943,63 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("cannot read"));
         assert!(err.contains("source"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_file_that_became_a_folder_lists_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        std::fs::create_dir_all(skills.join("internal")).unwrap();
+        std::fs::write(skills.join("mod.rs"), "").unwrap();
+        std::fs::write(skills.join("parse.rs"), "").unwrap();
+
+        let err = read(dir.path(), json!({"filePath":"skills.rs"}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.ends_with(&format!(
+                "\n{} is a folder: internal/, mod.rs, parse.rs",
+                skills.display()
+            )),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_folder_is_listed_in_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        for i in 0..12 {
+            std::fs::write(app.join(format!("f{i:02}.rs")), "").unwrap();
+        }
+
+        let err = read(dir.path(), json!({"filePath":"app.rs"}))
+            .await
+            .unwrap_err();
+
+        assert!(err.ends_with("f09.rs and 2 more"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn suggests_only_names_that_are_close() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["path.rs", "post_write.rs", "panels.rs", "process.rs"] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+
+        let err = read(dir.path(), json!({"filePath":"panel.rs"}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.ends_with(&format!(
+                "\nSimilar entries in {}: panels.rs",
+                dir.path().display()
+            )),
+            "{err}"
+        );
     }
 
     #[tokio::test]
