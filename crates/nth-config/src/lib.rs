@@ -137,7 +137,7 @@ impl Default for TaskConfig {
     fn default() -> Self {
         Self {
             max_steps: 50,
-            timeout_secs: 600,
+            timeout_secs: 900,
             stall_secs: 120,
         }
     }
@@ -170,7 +170,7 @@ impl Default for WorkConfig {
     fn default() -> Self {
         Self {
             max_steps: 100,
-            timeout_secs: 600,
+            timeout_secs: 900,
             stall_secs: 120,
         }
     }
