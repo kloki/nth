@@ -1356,9 +1356,9 @@ mod tests {
         assert_eq!(
             out,
             "Success. Updated the following files:\nM a.txt\nD gone.txt\nA sub/new.txt\nM to.txt\n\n\
-             a.txt: Formatted with upper.\n\
-             sub/new.txt: Formatted with upper.\n\
-             to.txt: Formatted with upper."
+             a.txt: Formatted with upper, which changed the file; read it again before editing it.\n\
+             sub/new.txt: Formatted with upper, which changed the file; read it again before editing it.\n\
+             to.txt: Formatted with upper, which changed the file; read it again before editing it."
         );
         assert_eq!(contents(&dir.path().join("a.txt")), "B\n");
         assert_eq!(contents(&dir.path().join("sub/new.txt")), "N\n");

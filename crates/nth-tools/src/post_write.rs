@@ -185,15 +185,20 @@ impl Drop for Writing<'_> {
 
 impl Writing<'_> {
     /// Formats `path` with the formatters for `cwd`'s project and returns
-    /// one note per formatter that ran. A BOM the file had before survives
-    /// the formatter.
+    /// their notes. A BOM the file had before survives the formatter.
     pub(crate) async fn format(&self, path: &Path, cwd: &Path) -> String {
+        let before = tokio::fs::read(path).await.ok();
         let bom = bom::has_bom(path).await.unwrap_or(false);
         let outcomes = self.post_write.format.format(path, cwd).await;
-        let mut notes: Vec<_> = outcomes.iter().map(note).collect();
-        if !outcomes.is_empty()
-            && let Err(e) = bom::sync(path, bom).await
-        {
+        if outcomes.is_empty() {
+            return String::new();
+        }
+        let restored = bom::sync(path, bom).await;
+        // The model edits next from the text it wrote; a formatter that
+        // rewrote it leaves that text stale, so it must hear to read again.
+        let changed = before.is_some() && tokio::fs::read(path).await.ok() != before;
+        let mut notes = notes(&outcomes, changed);
+        if let Err(e) = restored {
             notes.push(format!("Could not restore the byte order mark: {e}"));
         }
         notes.join("\n")
@@ -455,12 +460,33 @@ fn join_sections(notes: &str, errors: &str) -> String {
     joined.trim_start_matches('\n').to_string()
 }
 
-fn note(outcome: &Outcome) -> String {
-    match &outcome.result {
-        Ok(()) => format!("Formatted with {}.", outcome.name),
-        Err(e) => format!("{} failed: {e}", outcome.name),
+/// One line for the formatters that ran, saying whether they changed the
+/// file, then one per formatter that failed.
+fn notes(outcomes: &[Outcome], changed: bool) -> Vec<String> {
+    let ran: Vec<&str> = outcomes
+        .iter()
+        .filter(|o| o.result.is_ok())
+        .map(|o| o.name.as_str())
+        .collect();
+    let mut notes = Vec::new();
+    if !ran.is_empty() {
+        let names = ran.join(" and ");
+        notes.push(match changed {
+            true => format!("Formatted with {names}, {CHANGED}"),
+            false => format!("Formatted with {names}."),
+        });
     }
+    notes.extend(outcomes.iter().filter_map(|o| match &o.result {
+        Ok(()) => None,
+        Err(e) => Some(format!("{} failed: {e}", o.name)),
+    }));
+    if ran.is_empty() && changed {
+        notes.push(format!("The formatter ran, {CHANGED}"));
+    }
+    notes
 }
+
+const CHANGED: &str = "which changed the file; read it again before editing it.";
 
 #[cfg(test)]
 impl PostWrite {
@@ -896,8 +922,41 @@ mod tests {
 
         let note = post.after_write(&path, dir.path()).await;
 
-        assert_eq!(note, "Formatted with sed.");
+        assert_eq!(
+            note,
+            "Formatted with sed, which changed the file; read it again before editing it."
+        );
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "b");
+    }
+
+    #[tokio::test]
+    async fn a_formatter_that_changed_nothing_says_only_that_it_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "a").expect("write");
+        let post = PostWrite::with_formatter("noop", &["true"]);
+
+        assert_eq!(
+            post.after_write(&path, dir.path()).await,
+            "Formatted with noop."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_formatter_that_changed_the_file_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "a").expect("write");
+        let post = PostWrite::with_formatter(
+            "half",
+            &["sh", "-c", "printf b > $FILE; echo oops >&2; exit 1"],
+        );
+
+        assert_eq!(
+            post.after_write(&path, dir.path()).await,
+            "half failed: oops\n\
+             The formatter ran, which changed the file; read it again before editing it."
+        );
     }
 
     #[tokio::test]
