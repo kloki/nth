@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn repeatable_tools_repeat_without_tripping() {
-        let input = ("monitor_input", r#"{"id":1,"input":"y\n"}"#);
+        let input = ("monitor_input", r#"{"id":1,"text":"y\n"}"#);
         for n in [DOOM_LOOP_THRESHOLD, 2 * DOOM_LOOP_THRESHOLD] {
             let turn = replies(&vec![input; n]);
             assert!(
@@ -319,7 +319,7 @@ mod tests {
                 "{n} monitor_input calls never trip"
             );
         }
-        let wakeup = ("schedule_wakeup", r#"{"delay_secs":300}"#);
+        let wakeup = ("schedule_wakeup", r#"{"duration_ms":300000}"#);
         let turn = replies(&[wakeup; DOOM_LOOP_THRESHOLD]);
         assert!(repeating(&turn).is_none());
     }
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn a_repeatable_call_beside_a_run_leaves_its_count_as_before() {
         let echo = ("echo", "{}");
-        let input = ("monitor_input", r#"{"id":1,"input":"\n"}"#);
+        let input = ("monitor_input", r#"{"id":1,"text":"\n"}"#);
         // Before and after the run, the run is counted as without them.
         let around = replies(&[input, input, echo, echo, echo, input]);
         assert_eq!(repeating(&around[..5]).map(|c| c.id.as_str()), Some("5"));
