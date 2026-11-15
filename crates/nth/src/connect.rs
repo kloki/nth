@@ -2,18 +2,21 @@
 //! your subscription; `--status` says whether it is connected, `--logout`
 //! signs out. Needs no provider configured: it never builds `Providers`.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
 use anyhow::Result;
 use nth_auth::ChatGpt;
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 
+use crate::output::{self, Report};
+
 pub async fn run(status: bool, logout: bool, json: bool, chatgpt: ChatGpt) -> Result<()> {
     if status {
-        let mut out = std::io::stdout().lock();
-        let json = json || !out.is_terminal();
-        return write_status(&mut out, &chatgpt, json);
+        let report = ConnectStatusReport {
+            chatgpt: chatgpt.connected(),
+        };
+        return output::print(&report, json);
     }
     if logout {
         let signed_out = chatgpt.logout().await?;
@@ -43,42 +46,89 @@ pub async fn run(status: bool, logout: bool, json: bool, chatgpt: ChatGpt) -> Re
     Ok(())
 }
 
-/// One line per provider that is signed in to rather than given a key:
-/// whether it is connected. ChatGPT only, today.
-fn write_status(out: &mut impl Write, chatgpt: &ChatGpt, json: bool) -> Result<()> {
-    let providers = [(ChatGpt::ID, "ChatGPT", chatgpt.connected())];
-    let width = providers
-        .iter()
-        .map(|(_, name, _)| name.len())
-        .max()
-        .unwrap_or(0);
-    for (id, name, connected) in providers {
-        if json {
+/// Whether each provider that is signed in to rather than given a key is
+/// connected. ChatGPT only, today.
+struct ConnectStatusReport {
+    chatgpt: bool,
+}
+
+impl ConnectStatusReport {
+    /// Each provider's id, name and whether it is connected.
+    fn providers(&self) -> [(&'static str, &'static str, bool); 1] {
+        [(ChatGpt::ID, "ChatGPT", self.chatgpt)]
+    }
+}
+
+impl Report for ConnectStatusReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        let providers = self.providers();
+        let width = providers
+            .iter()
+            .map(|(_, name, _)| name.len())
+            .max()
+            .unwrap_or(0);
+        for (_, name, connected) in providers {
+            if connected {
+                writeln!(out, "{} {}", icons().ok.green().bold(), name.cyan())?;
+            } else {
+                writeln!(
+                    out,
+                    "{} {:width$}  {}",
+                    icons().fail.red(),
+                    name.dimmed(),
+                    "not connected: run `nth connect`".dimmed()
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        for (id, name, connected) in self.providers() {
             let line = serde_json::json!({ "id": id, "name": name, "connected": connected });
             writeln!(out, "{line}")?;
-        } else if connected {
-            writeln!(out, "{} {}", icons().ok.green().bold(), name.cyan())?;
-        } else {
-            writeln!(
-                out,
-                "{} {:width$}  {}",
-                icons().fail.red(),
-                name.dimmed(),
-                "not connected: run `nth connect`".dimmed()
-            )?;
         }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::testing;
 
     fn status(chatgpt: &ChatGpt, json: bool) -> String {
-        let mut out = Vec::new();
-        write_status(&mut out, chatgpt, json).expect("written");
-        String::from_utf8(out).expect("utf-8")
+        let report = ConnectStatusReport {
+            chatgpt: chatgpt.connected(),
+        };
+        match json {
+            true => testing::json(&report),
+            false => testing::text(&report),
+        }
+    }
+
+    #[test]
+    fn a_connected_provider_is_named() {
+        let text = testing::text(&ConnectStatusReport { chatgpt: true });
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_provider_not_connected_says_how_to_connect() {
+        let text = testing::text(&ConnectStatusReport { chatgpt: false });
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn the_status_is_a_json_line_per_provider() {
+        let report = ConnectStatusReport { chatgpt: true };
+
+        let value: serde_json::Value =
+            serde_json::from_str(&testing::json(&report)).expect("one JSON line");
+
+        insta::assert_json_snapshot!(value);
     }
 
     #[tokio::test]

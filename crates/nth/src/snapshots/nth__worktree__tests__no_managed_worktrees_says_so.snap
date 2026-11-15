@@ -1,0 +1,5 @@
+---
+source: crates/nth/src/worktree.rs
+expression: text
+---
+→ no managed worktrees

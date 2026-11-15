@@ -1,6 +1,6 @@
 //! Repository-scoped review commands. No provider is needed.
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -10,6 +10,8 @@ use nth_curios::{self as core, Author, Comment, Publish, Reply, Send, Status, Ta
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
+
+use crate::output::{self, Report};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -136,22 +138,27 @@ enum Command {
 
 pub async fn run(args: Args) -> Result<()> {
     let root = core::owner_root(&std::env::current_dir().context("no working directory")?)?;
-    let json_output = args.json || !io::stdout().is_terminal();
+    let json = args.json;
     let value = execute(args, &root).await?;
-    print(&value, json_output)
+    output::print(&CurioReport(value), json)
 }
 
-fn print(value: &Value, json_output: bool) -> Result<()> {
-    let mut out = io::stdout().lock();
-    if json_output {
-        writeln!(out, "{}", serde_json::to_string(value)?)?;
-    } else {
-        human(&mut out, value, "")?;
+/// What a curio command answered, as `nth curio` prints it.
+struct CurioReport(Value);
+
+impl Report for CurioReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        human(out, &self.0, "")?;
+        Ok(())
     }
-    Ok(())
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(out, "{}", serde_json::to_string(&self.0)?)?;
+        Ok(())
+    }
 }
 
-fn human(out: &mut impl Write, value: &Value, indent: &str) -> io::Result<()> {
+fn human(out: &mut dyn Write, value: &Value, indent: &str) -> io::Result<()> {
     match value {
         Value::Object(fields) => {
             for (key, value) in fields {
@@ -467,7 +474,7 @@ async fn execute(args: Args, root: &Path) -> Result<Value> {
         Command::Serve { id } => {
             let host = core::Host::start(owner(root, prefix, Some(&id)).await?, &id).await?;
             if args.json {
-                print(&json!({"url":host.url()}), true)?;
+                output::print(&CurioReport(json!({"url":host.url()})), true)?;
             } else {
                 println!("{}", host.url());
             }

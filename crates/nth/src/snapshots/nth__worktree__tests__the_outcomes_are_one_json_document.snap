@@ -1,0 +1,29 @@
+---
+source: crates/nth/src/worktree.rs
+expression: value
+---
+{
+  "dry_run": false,
+  "worktrees": [
+    {
+      "path": "/repo/.nth/worktrees/a",
+      "reason": null,
+      "status": "removed"
+    },
+    {
+      "path": "/repo/.nth/worktrees/c",
+      "reason": "dirty",
+      "status": "skipped"
+    },
+    {
+      "path": "/repo/.nth/worktrees/d",
+      "reason": "contains another worktree",
+      "status": "skipped"
+    },
+    {
+      "path": "/repo/.nth/worktrees/e",
+      "reason": "permission denied",
+      "status": "failed"
+    }
+  ]
+}

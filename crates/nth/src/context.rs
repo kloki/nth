@@ -1,9 +1,6 @@
 //! `nth context`: a next-request preview reconstructed from a saved session.
 
-use std::{
-    io::{self, IsTerminal, Write},
-    sync::Arc,
-};
+use std::{io::Write, sync::Arc};
 
 use anyhow::Result;
 use nth_icons::icons;
@@ -13,7 +10,10 @@ use nth_session::{Inbox, Session, Store, Subagents};
 use owo_colors::OwoColorize;
 use serde_json::json;
 
-use crate::runtime::{Runtime, Start};
+use crate::{
+    output::{self, Report},
+    runtime::{Runtime, Start},
+};
 
 const SOURCE: &str = "Reconstructed from saved state; another process's unsaved running state and inbox are unavailable.";
 
@@ -25,14 +25,23 @@ pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()
         eprintln!("{} {warning}", icons().warn.yellow().bold());
     }
     let preview = session.context_preview(&tools, &Inbox::default());
-    let mut out = io::stdout().lock();
-    let json = json || !out.is_terminal();
-    if json {
-        write_json(&mut out, &session, &preview)?;
-    } else {
-        write_text(&mut out, &session, &preview)?;
+    output::print(&ContextReport { session, preview }, json)
+}
+
+/// A saved session's next request, as `nth context` prints it.
+struct ContextReport {
+    session: Session,
+    preview: Preview,
+}
+
+impl Report for ContextReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        write_text(out, &self.session, &self.preview)
     }
-    Ok(())
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        write_json(out, &self.session, &self.preview)
+    }
 }
 
 /// The saved session as the chat would resume it, on offline providers,
@@ -80,7 +89,7 @@ fn offline_provider() -> Result<Arc<Providers>> {
     Ok(Arc::new(provider))
 }
 
-fn write_json(out: &mut impl Write, session: &Session, preview: &Preview) -> Result<()> {
+fn write_json(out: &mut dyn Write, session: &Session, preview: &Preview) -> Result<()> {
     writeln!(
         out,
         "{}",
@@ -89,7 +98,7 @@ fn write_json(out: &mut impl Write, session: &Session, preview: &Preview) -> Res
     Ok(())
 }
 
-fn write_text(out: &mut impl Write, session: &Session, preview: &Preview) -> Result<()> {
+fn write_text(out: &mut dyn Write, session: &Session, preview: &Preview) -> Result<()> {
     let budget = &preview.budget;
     writeln!(
         out,
@@ -176,7 +185,7 @@ fn known(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".into(), |n| n.to_string())
 }
 
-fn write_entry(out: &mut impl Write, entry: &Entry) -> Result<()> {
+fn write_entry(out: &mut dyn Write, entry: &Entry) -> Result<()> {
     let checkpoint = if entry.checkpoint {
         " · checkpoint"
     } else {
@@ -257,7 +266,7 @@ mod tests {
     use nth_protocol::{AssistantMessage, Image, ToolCall};
 
     use super::*;
-    use crate::runtime::tests::runtime;
+    use crate::{output::testing, runtime::tests::runtime};
 
     #[test]
     fn text_and_json_show_complete_preview_without_image_bytes() {
@@ -289,9 +298,8 @@ mod tests {
             },
         ];
         let preview = session.context_preview(&[], &Inbox::default());
-        let mut text = Vec::new();
-        write_text(&mut text, &session, &preview).unwrap();
-        let text = String::from_utf8(text).unwrap();
+        let report = ContextReport { session, preview };
+        let text = testing::text(&report);
         assert!(!text.contains("· failed"), "the read succeeded: {text}");
         for expected in [
             "saved system",
@@ -310,9 +318,7 @@ mod tests {
             assert!(text.contains(expected), "missing {expected}: {text}");
         }
         assert!(!text.contains("secret-base64"));
-        let mut json = Vec::new();
-        write_json(&mut json, &session, &preview).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&testing::json(&report)).unwrap();
         assert_eq!(json["source"], "saved_state");
         assert_eq!(json["preview"]["entries"][3]["images_available"][0], true);
         assert!(!json.to_string().contains("secret-base64"));
@@ -336,9 +342,7 @@ mod tests {
             Message::tool_failed("bad", "no such file"),
         ];
         let preview = session.context_preview(&[], &Inbox::default());
-        let mut text = Vec::new();
-        write_text(&mut text, &session, &preview).unwrap();
-        let text = String::from_utf8(text).unwrap();
+        let text = testing::text(&ContextReport { session, preview });
 
         assert!(text.contains("Tool result · ok · ~"), "{text}");
         assert!(text.contains("Tool result · bad · failed · ~"), "{text}");
@@ -404,14 +408,12 @@ mod tests {
             .unwrap();
         assert!(!read.description.is_empty());
         assert!(read.parameters.is_object());
-        let mut text = Vec::new();
-        write_text(&mut text, &session, &preview).unwrap();
-        let text = String::from_utf8(text).unwrap();
+        let read = read.clone();
+        let report = ContextReport { session, preview };
+        let text = testing::text(&report);
         assert!(text.contains(&read.description));
         assert!(text.contains("Schema:"));
-        let mut json = Vec::new();
-        write_json(&mut json, &session, &preview).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&testing::json(&report)).unwrap();
         assert!(
             json["preview"]["tools"]
                 .as_array()

@@ -1,0 +1,9 @@
+---
+source: crates/nth/src/worktree.rs
+expression: text
+---
+✓ removed /repo/.nth/worktrees/a
+→ would remove /repo/.nth/worktrees/b
+! skipped /repo/.nth/worktrees/c: dirty
+! skipped /repo/.nth/worktrees/d: contains another worktree
+✗ failed /repo/.nth/worktrees/e: permission denied

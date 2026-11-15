@@ -1,0 +1,16 @@
+---
+source: crates/nth/src/work.rs
+expression: text
+---
+→ Retry  0a1b2c3d-0000-4000-8000-000000000000
+  0/2 done · 1 returned
+  zen/glm 1
+  Add retries.
+
+  → 1 a  0/1
+  └─ ∎ store  1/2  Atlas @general #2 · zen/glm · high · returned completed
+       ☒ parse
+       ☐ write
+
+  ● 2 b  0/1
+  └─ ● tab  1/2  @explore #1

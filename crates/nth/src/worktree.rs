@@ -1,12 +1,14 @@
 //! `nth worktree cleanup`: report and remove clean managed worktrees.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Subcommand;
 use nth_icons::icons;
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
+
+use crate::output::{self, Report};
 
 #[derive(Subcommand)]
 pub enum WorktreeCommand {
@@ -41,29 +43,41 @@ pub async fn run(command: WorktreeCommand) -> Result<()> {
     let outcomes = nth_worktree::cleanup(&cwd, dry_run)
         .await
         .map_err(|e| anyhow!(e))?;
-    let mut out = io::stdout().lock();
-    let json_output = json || !out.is_terminal();
-    report(&mut out, &outcomes, dry_run, json_output)
+    let report = WorktreeReport { outcomes, dry_run };
+    output::print(&report, json)?;
+    report.exit()
 }
 
-fn report(
-    out: &mut impl Write,
-    outcomes: &[nth_worktree::CleanupResult],
+/// What `nth worktree cleanup` did, or would do, with each managed worktree.
+struct WorktreeReport {
+    outcomes: Vec<nth_worktree::CleanupResult>,
     dry_run: bool,
-    json_output: bool,
-) -> Result<()> {
-    if json_output {
-        writeln!(out, "{}", report_json(outcomes, dry_run))?;
-    } else {
-        report_text(out, outcomes)?;
+}
+
+impl WorktreeReport {
+    /// Fails once the report is printed when any worktree could not be
+    /// removed, so the command exits non-zero; the report named why.
+    fn exit(&self) -> Result<()> {
+        if self
+            .outcomes
+            .iter()
+            .any(|item| matches!(item.outcome, nth_worktree::CleanupOutcome::Failed(_)))
+        {
+            return Err(CleanupFailed.into());
+        }
+        Ok(())
     }
-    if outcomes
-        .iter()
-        .any(|item| matches!(item.outcome, nth_worktree::CleanupOutcome::Failed(_)))
-    {
-        return Err(CleanupFailed.into());
+}
+
+impl Report for WorktreeReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        report_text(out, &self.outcomes)
     }
-    Ok(())
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(out, "{}", report_json(&self.outcomes, self.dry_run))?;
+        Ok(())
+    }
 }
 
 fn report_json(outcomes: &[nth_worktree::CleanupResult], dry_run: bool) -> Value {
@@ -94,7 +108,7 @@ fn skip_reason(reason: nth_worktree::SkipReason) -> &'static str {
     }
 }
 
-fn report_text(out: &mut impl Write, outcomes: &[nth_worktree::CleanupResult]) -> Result<()> {
+fn report_text(out: &mut dyn Write, outcomes: &[nth_worktree::CleanupResult]) -> Result<()> {
     if outcomes.is_empty() {
         writeln!(
             out,
@@ -140,27 +154,94 @@ mod tests {
     use nth_worktree::{CleanupOutcome, CleanupResult, SkipReason};
 
     use super::*;
+    use crate::output::testing;
+
+    /// One worktree with each outcome.
+    fn outcomes() -> Vec<CleanupResult> {
+        let at = |path: &str, outcome| CleanupResult {
+            path: path.into(),
+            outcome,
+        };
+        vec![
+            at("/repo/.nth/worktrees/a", CleanupOutcome::Removed),
+            at("/repo/.nth/worktrees/b", CleanupOutcome::WouldRemove),
+            at(
+                "/repo/.nth/worktrees/c",
+                CleanupOutcome::Skipped(SkipReason::Dirty),
+            ),
+            at(
+                "/repo/.nth/worktrees/d",
+                CleanupOutcome::Skipped(SkipReason::ContainsWorktree),
+            ),
+            at(
+                "/repo/.nth/worktrees/e",
+                CleanupOutcome::Failed("permission denied".into()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn each_outcome_is_a_line() {
+        let report = WorktreeReport {
+            outcomes: outcomes(),
+            dry_run: false,
+        };
+
+        let text = testing::text(&report);
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn no_managed_worktrees_says_so() {
+        let report = WorktreeReport {
+            outcomes: Vec::new(),
+            dry_run: false,
+        };
+
+        let text = testing::text(&report);
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn the_outcomes_are_one_json_document() {
+        // A real run: a dry run never removes or fails.
+        let report = WorktreeReport {
+            outcomes: outcomes()
+                .into_iter()
+                .filter(|item| !matches!(item.outcome, CleanupOutcome::WouldRemove))
+                .collect(),
+            dry_run: false,
+        };
+
+        let value: Value = serde_json::from_str(&testing::json(&report)).unwrap();
+
+        insta::assert_json_snapshot!(value);
+    }
 
     #[test]
     fn report_contains_outcomes_and_failure_sets_exit_decision() {
-        let outcomes = vec![
-            CleanupResult {
-                path: "/repo/a".into(),
-                outcome: CleanupOutcome::WouldRemove,
-            },
-            CleanupResult {
-                path: "/repo/b".into(),
-                outcome: CleanupOutcome::Skipped(SkipReason::Dirty),
-            },
-            CleanupResult {
-                path: "/repo/c".into(),
-                outcome: CleanupOutcome::Failed("refused".into()),
-            },
-        ];
-        let mut out = Vec::new();
-        let error = report(&mut out, &outcomes, true, true).unwrap_err();
+        let report = WorktreeReport {
+            outcomes: vec![
+                CleanupResult {
+                    path: "/repo/a".into(),
+                    outcome: CleanupOutcome::WouldRemove,
+                },
+                CleanupResult {
+                    path: "/repo/b".into(),
+                    outcome: CleanupOutcome::Skipped(SkipReason::Dirty),
+                },
+                CleanupResult {
+                    path: "/repo/c".into(),
+                    outcome: CleanupOutcome::Failed("refused".into()),
+                },
+            ],
+            dry_run: true,
+        };
+        let error = report.exit().unwrap_err();
         assert!(error.is::<CleanupFailed>());
-        let value: Value = serde_json::from_slice(&out).unwrap();
+        let value: Value = serde_json::from_str(&testing::json(&report)).unwrap();
         assert_eq!(value["dry_run"], true);
         assert_eq!(
             value["worktrees"][0],
@@ -173,18 +254,23 @@ mod tests {
 
     #[test]
     fn skips_and_empty_reports_succeed() {
-        let outcomes = [CleanupResult {
-            path: "/repo/b".into(),
-            outcome: CleanupOutcome::Skipped(SkipReason::Locked),
-        }];
-        let mut out = Vec::new();
-        report(&mut out, &outcomes, false, false).unwrap();
-        let text = String::from_utf8(out).unwrap();
+        let report = WorktreeReport {
+            outcomes: vec![CleanupResult {
+                path: "/repo/b".into(),
+                outcome: CleanupOutcome::Skipped(SkipReason::Locked),
+            }],
+            dry_run: false,
+        };
+        report.exit().unwrap();
+        let text = testing::text(&report);
         assert!(text.contains("skipped /repo/b: locked"));
-        let mut out = Vec::new();
-        report(&mut out, &[], false, true).unwrap();
+        let report = WorktreeReport {
+            outcomes: Vec::new(),
+            dry_run: false,
+        };
+        report.exit().unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(&out).unwrap(),
+            serde_json::from_str::<Value>(&testing::json(&report)).unwrap(),
             json!({"dry_run": false, "worktrees": []})
         );
     }
