@@ -4,26 +4,32 @@
 //! the OpenAI-style `/v1/models` listing the run asks for when the config
 //! names no models, and chat completions SSE in the shape `nth-llm` parses.
 //!
-//! Everything the run writes goes under a temp dir — HOME, XDG_DATA_HOME
-//! (where the session lands) and the working directory — so the test pins
-//! the config-to-session wiring without touching any real file, and the
-//! models.dev fetch the binary makes on its own can fail offline without
-//! the run noticing.
+//! Everything the run writes goes under the runner's temp dir — HOME,
+//! XDG_DATA_HOME (where the session lands) and the working directory — so
+//! the test pins the config-to-session wiring without touching any real
+//! file, and the models.dev fetch the binary makes on its own can fail
+//! offline without the run noticing.
+
+mod support;
 
 use std::{
+    ffi::OsStr,
     io::{Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     path::PathBuf,
-    process::{Child, Command, ExitStatus, Stdio},
+    process::Output,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::SystemTime,
 };
 
-use tempfile::TempDir;
+use nth_protocol::Message;
+use nth_session::Session;
+use serde_json::Value;
+use support::Env;
 
 /// The answer a plain run gets; distinctive enough to assert on.
 const ANSWER: &str = "Hello from the mock provider.";
@@ -208,48 +214,64 @@ fn write_response(stream: &mut TcpStream, status: u16, content_type: &str, body:
     let _ = stream.shutdown(Shutdown::Write);
 }
 
-/// The temp dirs the child runs against: its HOME, its data dir (where the
-/// session lands), its config dir, and the working directory it starts in.
+/// The runner's environment with the mock's key set, the working
+/// directory the child starts in and the config file it is pointed at with
+/// `--config`.
 struct Dirs {
-    _root: TempDir,
-    home: PathBuf,
-    data: PathBuf,
-    config: PathBuf,
+    env: Env,
     work: PathBuf,
-    /// The config file the child is pointed at with `--config`.
     file: PathBuf,
 }
 
 impl Dirs {
-    fn new(root: TempDir, config: &str) -> Self {
-        let path = root.path();
-        let dirs = Self {
-            home: path.join("home"),
-            data: path.join("data"),
-            config: path.join("config"),
-            work: path.join("work"),
-            file: path.join("nth.toml"),
-            _root: root,
-        };
-        for dir in [&dirs.home, &dirs.data, &dirs.config, &dirs.work] {
-            std::fs::create_dir_all(dir).expect("creates the temp dirs");
-        }
-        std::fs::write(&dirs.file, config).expect("writes the config");
-        dirs
+    fn new(config: &str) -> Self {
+        let mut env = Env::new();
+        env.set("MOCK_KEY", "mock-key");
+        let work = env.dir("work");
+        let file = env.root().join("nth.toml");
+        std::fs::write(&file, config).expect("writes the config");
+        Self { env, work, file }
     }
 
     /// The one session the run saved, parsed.
-    fn session(&self) -> serde_json::Value {
-        let sessions = self.data.join("nth/sessions");
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&sessions)
-            .expect("the run saved a session")
+    fn session(&self) -> Value {
+        let mut sessions = self.sessions();
+        assert_eq!(sessions.len(), 1, "exactly one session: {sessions:?}");
+        sessions.remove(0)
+    }
+
+    /// Every saved session, parsed, as the files on disk hold them.
+    fn sessions(&self) -> Vec<Value> {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(self.env.sessions())
+            .expect("a session was saved")
             .map(|entry| entry.expect("readable").path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 1, "exactly one session: {files:?}");
-        let json = std::fs::read_to_string(&files[0]).expect("reads the session");
-        serde_json::from_str(&json).expect("the session is valid JSON")
+        files
+            .iter()
+            .map(|file| {
+                let json = std::fs::read_to_string(file).expect("reads the session");
+                serde_json::from_str(&json).expect("the session is valid JSON")
+            })
+            .collect()
+    }
+
+    /// `nth --config <file> args` in the working directory.
+    fn nth(&self, args: &[&str]) -> Output {
+        self.env.run(&self.work, &self.args(args))
+    }
+
+    /// [`Dirs::nth`] for a command that prints one JSON document: that
+    /// document, failing the test unless the command succeeded.
+    fn json(&self, args: &[&str]) -> Value {
+        self.env.json(&self.work, &self.args(args))
+    }
+
+    fn args<'a>(&'a self, args: &[&'a str]) -> Vec<&'a OsStr> {
+        let mut all = vec![OsStr::new("--config"), self.file.as_os_str()];
+        all.extend(args.iter().map(|arg| OsStr::new(*arg)));
+        all
     }
 }
 
@@ -277,69 +299,21 @@ auto = {auto}
     )
 }
 
-/// What one child left behind.
+/// What one child left behind, as text.
 struct Run {
-    status: ExitStatus,
+    status: std::process::ExitStatus,
     stdout: String,
     stderr: String,
 }
 
-/// Runs the real binary on `prompt` with `dirs`' config and environment,
-/// killing it and failing the test if it outlives the timeout.
+/// Runs the real binary on `prompt` with `dirs`' config and environment.
 fn run_nth(dirs: &Dirs, prompt: &str) -> Run {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nth"))
-        .arg("--config")
-        .arg(&dirs.file)
-        .arg("run")
-        .arg(prompt)
-        .current_dir(&dirs.work)
-        // Cleared, so a developer's own NTH_MODEL, NTH_CONFIG or proxy
-        // settings cannot steer the child; only what this test sets is seen.
-        .env_clear()
-        .env("HOME", &dirs.home)
-        .env("XDG_DATA_HOME", &dirs.data)
-        .env("XDG_CONFIG_HOME", &dirs.config)
-        .env("MOCK_KEY", "mock-key")
-        .env("NO_COLOR", "1")
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawns nth");
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    // Drained on their own threads, so a full pipe can never deadlock the
-    // wait below.
-    let out = thread::spawn(move || read_all(stdout));
-    let err = thread::spawn(move || read_all(stderr));
-    let status = wait(&mut child, Duration::from_secs(60));
+    let output = dirs.nth(&["run", prompt]);
     let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
     Run {
-        status,
-        stdout: text(out.join().expect("the stdout reader")),
-        stderr: text(err.join().expect("the stderr reader")),
-    }
-}
-
-fn read_all(mut reader: impl Read) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes).expect("reads the pipe");
-    bytes
-}
-
-fn wait(child: &mut Child, timeout: Duration) -> ExitStatus {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            return status;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("nth run did not finish within {timeout:?}");
-        }
-        thread::sleep(Duration::from_millis(20));
+        status: output.status,
+        stdout: text(output.stdout),
+        stderr: text(output.stderr),
     }
 }
 
@@ -349,8 +323,7 @@ fn wait(child: &mut Child, timeout: Duration) -> ExitStatus {
 #[test]
 fn a_run_answers_and_saves_the_session_the_config_asked_for() {
     let mock = Mock::start(Script::Answer);
-    let dir = tempfile::tempdir().expect("tempdir");
-    let dirs = Dirs::new(dir, &config_for(mock.port(), &["mock-model"], false));
+    let dirs = Dirs::new(&config_for(mock.port(), &["mock-model"], false));
 
     let run = run_nth(&dirs, "say hello");
 
@@ -404,6 +377,46 @@ fn a_run_answers_and_saves_the_session_the_config_asked_for() {
     assert_eq!(mock.listings(), 0, "models = [...] skips /v1/models");
 }
 
+/// The commands that read a saved session find the one a run saved, in
+/// the environment it saved it in: the `run` glue of `session list`,
+/// `usage` and `context`, which the listings' smoke tests cannot reach
+/// without a session. Another directory's session is saved first and dated
+/// at the epoch, so `session list` has one to leave out, and `usage` and
+/// `context` without an id take the newest session, which is the run's.
+/// The mock still serves, so `usage` may ask it for prices.
+#[tokio::test]
+async fn the_saved_session_commands_name_the_run_s_session() {
+    let mock = Mock::start(Script::Answer);
+    let dirs = Dirs::new(&config_for(mock.port(), &["mock-model"], false));
+    let mut other = Session::new("mock/mock-model", dirs.env.dir("elsewhere"));
+    other.messages.push(Message::User("elsewhere".into()));
+    other.updated_at = SystemTime::UNIX_EPOCH;
+    dirs.env.save(&other).await;
+    let other = other.id.to_string();
+
+    let run = run_nth(&dirs, "say hello");
+    assert!(run.status.success(), "nth run failed: {}", run.stderr);
+
+    let id = dirs
+        .sessions()
+        .into_iter()
+        .map(|session| session["id"].clone())
+        .find(|id| *id != other.as_str())
+        .expect("the run saved a session");
+    assert!(id.is_string(), "the session has an id: {id}");
+
+    let all = dirs.json(&["session", "list", "--all", "--json"]);
+    let all = all.as_array().expect("an array");
+    assert_eq!(all.len(), 2, "both sessions are listed: {all:?}");
+
+    let here = dirs.json(&["session", "list", "--json"]);
+    let here = here.as_array().expect("an array");
+    assert_eq!(here.len(), 1, "only the working directory's: {here:?}");
+    assert_eq!(here[0]["id"], id);
+    assert_eq!(dirs.json(&["usage", "--json"])["id"], id);
+    assert_eq!(dirs.json(&["context", "--json"])["session_id"], id);
+}
+
 /// An overflowed step is compacted and replayed: the summary request is the
 /// next thing the endpoint sees, its answer reaches stderr as the
 /// `compacted` row, and the replay ends the turn. The mock model is unknown
@@ -412,10 +425,9 @@ fn a_run_answers_and_saves_the_session_the_config_asked_for() {
 #[test]
 fn an_overflowed_run_compacts_replays_and_prints_the_compaction() {
     let mock = Mock::start(Script::Overflow);
-    let dir = tempfile::tempdir().expect("tempdir");
     // No models listed: nth asks the endpoint's `/v1/models`, which the
     // mock serves.
-    let dirs = Dirs::new(dir, &config_for(mock.port(), &[], true));
+    let dirs = Dirs::new(&config_for(mock.port(), &[], true));
 
     let run = run_nth(&dirs, "the overflowing prompt");
 

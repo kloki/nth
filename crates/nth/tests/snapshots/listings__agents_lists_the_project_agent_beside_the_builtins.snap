@@ -1,0 +1,16 @@
+---
+source: crates/nth/tests/listings.rs
+expression: "redacted(&env, y)"
+---
+{
+  "denied": [],
+  "description": "The y agent",
+  "hidden": false,
+  "mode": "subagent",
+  "model": null,
+  "name": "y",
+  "path": "[root]/work/.claude/agents/y.md",
+  "root": "[root]/work/.claude/agents",
+  "source": "project",
+  "tools": null
+}
