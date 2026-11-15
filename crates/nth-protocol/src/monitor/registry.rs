@@ -192,6 +192,15 @@ impl Monitors {
         }
     }
 
+    /// Why writing a running monitor's stdin failed, if it did.
+    pub fn stdin_failure(&self, id: MonitorId) -> Option<String> {
+        let inner = self.0.as_ref()?;
+        match &inner.lock().running.get(&id)?.stdin {
+            Stdin::Failed(reason) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
     /// Stops a running monitor; `false` when there is none with that id.
     pub fn stop(&self, id: MonitorId, by: StoppedBy) -> bool {
         let Some(inner) = &self.0 else { return false };
@@ -441,6 +450,10 @@ mod tests {
 
         monitors.stdin_failed(m.id, "the command stopped reading its stdin".into());
         let failed = InputRefused::Failed("the command stopped reading its stdin".into());
+        assert_eq!(
+            monitors.stdin_failure(m.id).as_deref(),
+            Some("the command stopped reading its stdin")
+        );
         assert_eq!(monitors.input(m.id, "b".into(), false).unwrap_err(), failed);
         assert_eq!(
             monitors.input(m.id, String::new(), true).unwrap_err(),

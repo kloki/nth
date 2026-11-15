@@ -4,7 +4,12 @@
 //! read fills the pipe, and a write waiting on it there would hold up
 //! reading the command's output behind it.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    os::fd::{AsFd, OwnedFd},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{
@@ -12,7 +17,12 @@ use nth_protocol::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::{io::AsyncWriteExt, process::ChildStdin, sync::mpsc, task::JoinHandle};
+use tokio::{
+    io::AsyncWriteExt,
+    process::{Child, ChildStdin},
+    sync::mpsc,
+    task::JoinHandle,
+};
 
 use super::MAX_LINE_BYTES;
 use crate::command_output;
@@ -35,10 +45,54 @@ const ECHOED_LINES: usize = 20;
 /// The lines one write shows in the tab and the log, cut and cleaned.
 pub(super) type Echo = Vec<String>;
 
-/// Where the model's writes queue for the writer, for a monitor started
-/// with its stdin open.
-pub(super) fn queue() -> (mpsc::Sender<StdinWrite>, mpsc::Receiver<StdinWrite>) {
-    mpsc::channel(QUEUED_WRITES)
+/// A monitor's open stdin, before its writer starts.
+pub(super) struct Input {
+    pipe: ChildStdin,
+    held: Held,
+    writes: mpsc::Receiver<StdinWrite>,
+}
+
+impl Input {
+    /// Takes the stdin of a command spawned with it piped, with a second
+    /// handle on it, and returns the sender the model's writes queue on.
+    pub(super) fn open(child: &mut Child) -> Result<(mpsc::Sender<StdinWrite>, Self), String> {
+        let pipe = child
+            .stdin
+            .take()
+            .ok_or("bash was started without a stdin pipe")?;
+        let held = pipe
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| format!("failed to hold stdin open: {e}"))?;
+        let (queue, writes) = mpsc::channel(QUEUED_WRITES);
+        let input = Self {
+            pipe,
+            held: Held(Arc::new(Mutex::new(Some(held)))),
+            writes,
+        };
+        Ok((queue, input))
+    }
+
+    /// The handle that keeps the pipe open once the writer has stopped.
+    pub(super) fn held(&self) -> Held {
+        self.held.clone()
+    }
+}
+
+/// A second handle on a monitor's stdin pipe, so that the command reads
+/// end-of-input only when the model closes it, never because the writer
+/// stopped: a monitor that is stopped, times out or floods mid-write must
+/// be killed with a write cut short, not handed the half of it that went
+/// in as a whole (half a manifest to `kubectl apply -f -`). The watch
+/// releases it once the command is killed, or has exited by itself, and a
+/// close from the model releases it at once, with the writer's own handle.
+#[derive(Clone)]
+pub(super) struct Held(Arc<Mutex<Option<OwnedFd>>>);
+
+impl Held {
+    pub(super) fn release(&self) {
+        self.0.lock().expect("held stdin lock poisoned").take();
+    }
 }
 
 /// Why a monitor may not be started with its stdin open: the agent the
@@ -63,21 +117,22 @@ pub(super) fn refused(ctx: &ToolContext) -> Option<String> {
 pub(super) struct Writer(JoinHandle<()>);
 
 impl Writer {
-    /// Starts the task that writes `writes` to `pipe` one after another,
-    /// with the receiver each one's echo comes over once it is written.
+    /// Starts the task that writes the model's writes to the pipe one after
+    /// another, with the receiver each one's echo comes over once it is
+    /// written.
     pub(super) fn spawn(
         monitors: Monitors,
         id: MonitorId,
-        pipe: ChildStdin,
-        writes: mpsc::Receiver<StdinWrite>,
+        input: Input,
     ) -> (Self, mpsc::Receiver<Echo>) {
         let (echo, echoes) = mpsc::channel(ECHOED_WRITES);
-        let task = tokio::spawn(write(monitors, id, pipe, writes, echo));
+        let task = tokio::spawn(write(monitors, id, input, echo));
         (Self(task), echoes)
     }
 
-    /// Stops the task and waits until it is gone: the pipe is closed, and
-    /// nothing is written, answered or echoed after this.
+    /// Stops the task and waits until it is gone: nothing is written,
+    /// answered or echoed after this. The pipe stays open while the
+    /// [`Held`] handle does.
     pub(super) async fn stop(mut self) {
         self.0.abort();
         let _ = (&mut self.0).await;
@@ -90,16 +145,15 @@ impl Drop for Writer {
     }
 }
 
-/// Ends after a close or a failed write, dropping the pipe so the command
-/// reads end-of-input; writes still queued then are dropped unanswered,
-/// which their callers hear as the stdin having closed.
-async fn write(
-    monitors: Monitors,
-    id: MonitorId,
-    mut pipe: ChildStdin,
-    mut writes: mpsc::Receiver<StdinWrite>,
-    echo: mpsc::Sender<Echo>,
-) {
+/// Ends after a close, dropping the pipe and releasing the held handle so
+/// the command reads end-of-input, or after a failed write; writes still
+/// queued then are dropped unanswered.
+async fn write(monitors: Monitors, id: MonitorId, input: Input, echo: mpsc::Sender<Echo>) {
+    let Input {
+        mut pipe,
+        held,
+        mut writes,
+    } = input;
     while let Some(StdinWrite { text, close, done }) = writes.recv().await {
         // Room for the echo first, so that once the text is written its
         // echo and its answer go out with no await between them: stopped
@@ -121,6 +175,7 @@ async fn write(
         room.send(echo_of(&text));
         let _ = done.send(Ok(()));
         if close {
+            held.release();
             return;
         }
     }
@@ -225,11 +280,16 @@ impl Tool for MonitorInput {
                 Ok(Ok(Err(reason))) => Err(format!(
                     "writing to monitor {id}'s stdin failed: {reason}"
                 )),
-                // The writer went with the monitor, or with a failed write
-                // queued before this one.
-                Ok(Err(_)) => Err(format!(
-                    "monitor {id}'s stdin closed before this was written"
-                )),
+                // Dropped unanswered: behind a write that failed, or by a
+                // writer the watch stopped, maybe partway through it.
+                Ok(Err(_)) => Err(match ctx.monitors.stdin_failure(id) {
+                    Some(reason) => format!(
+                        "an earlier write to monitor {id}'s stdin failed, so this was not written: {reason}"
+                    ),
+                    None => {
+                        format!("monitor {id} ended before all of this was written to its stdin")
+                    }
+                }),
                 Err(_) => Ok(match (bytes, close) {
                     (0, _) => format!(
                         "Monitor {id} has not read what was written before; its stdin closes once it has."
@@ -277,6 +337,97 @@ mod tests {
         },
         *,
     };
+
+    /// Whether `path` appears within `within`.
+    async fn appears(path: &std::path::Path, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        path.exists()
+    }
+
+    /// Records end-of-input in `marker` once `cat` reads it.
+    const RECORDS_EOF: &str = "cat > out; echo eof-seen > marker";
+
+    #[tokio::test]
+    async fn stopping_the_writer_leaves_the_pipe_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut child = crate::process::shell(RECORDS_EOF, dir.path(), "")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let (queue, input) = Input::open(&mut child).expect("stdin");
+        let held = input.held();
+        let (writer, _echoes) = Writer::spawn(Monitors::default(), 1, input);
+        let (done, written) = oneshot::channel();
+        let write = StdinWrite {
+            text: "a\n".into(),
+            close: false,
+            done,
+        };
+        queue.send(write).await.expect("queued");
+        assert_eq!(written.await, Ok(Ok(())));
+
+        writer.stop().await;
+        let marker = dir.path().join("marker");
+        assert!(
+            !appears(&marker, Duration::from_millis(300)).await,
+            "the command read end-of-input while the pipe was held"
+        );
+        held.release();
+        assert!(appears(&marker, Duration::from_secs(5)).await, "released");
+        child.wait().await.expect("exits");
+        let out = std::fs::read_to_string(dir.path().join("out")).expect("out");
+        assert_eq!(out, "a\n");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_monitor_never_reads_end_of_input() {
+        let mut f = fixture();
+        start_with_stdin(&f.ctx, RECORDS_EOF).await.expect("starts");
+        input(&f.ctx, 1, "a\n", false).await.expect("written");
+
+        MonitorStop
+            .call(json!({ "id": 1 }), &f.ctx)
+            .await
+            .expect("stops");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(end(&seen).0, MonitorEnd::Stopped(StoppedBy::Model));
+        let marker = f.dir.path().join("marker");
+        assert!(
+            !appears(&marker, Duration::from_millis(300)).await,
+            "killed, not closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_delivers_end_of_input_while_the_monitor_runs() {
+        let mut f = fixture();
+        start_with_stdin(&f.ctx, "cat > /dev/null; echo eof-seen; sleep 30")
+            .await
+            .expect("starts");
+        assert_eq!(
+            input(&f.ctx, 1, "", true).await,
+            Ok("Closed monitor 1's stdin.".into())
+        );
+        let heard = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match f.events.recv().await {
+                    Some(MonitorEvent::Output { line, .. }) if line == "eof-seen" => return,
+                    Some(MonitorEvent::Ended { .. }) | None => panic!("ended first"),
+                    Some(_) => {}
+                }
+            }
+        })
+        .await;
+        assert!(heard.is_ok(), "the close never reached the command");
+        f.ctx.monitors.stop(1, StoppedBy::Model);
+        until_ended(&mut f.events).await;
+    }
 
     async fn start_with_stdin(ctx: &ToolContext, command: &str) -> ToolResult {
         let args = json!({ "command": command, "description": "test", "timeout_ms": 30_000, "stdin": true });

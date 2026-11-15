@@ -10,7 +10,7 @@ use std::{
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{
-    MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StdinWrite, StoppedBy, Stream, Tool,
+    MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream, Tool,
     ToolContext, ToolResult, ToolSpec,
 };
 use serde::Deserialize;
@@ -20,10 +20,9 @@ use tokio::{
     fs::File,
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Child,
-    sync::mpsc,
 };
 
-use self::stdin::{Echo, Writer};
+use self::stdin::{Echo, Input, Writer};
 use crate::{
     command_output::Cleaner,
     process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
@@ -93,14 +92,20 @@ impl Tool for Monitor {
                 }
                 command.stdin(Stdio::piped());
             }
-            let child = command
+            let mut child = command
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             // Armed before anything can fail: a command whose watch never
             // starts is killed with everything it started, where dropping
             // the child alone would reach only bash.
             let abandoned = KillGroupOnDrop(child.id());
-            let (writes, stdin) = args.stdin.then(stdin::queue).unzip();
+            let (writes, input) = match args.stdin {
+                true => {
+                    let (writes, input) = Input::open(&mut child)?;
+                    (Some(writes), Some(input))
+                }
+                false => (None, None),
+            };
             let registered = ctx
                 .monitors
                 .register(&args.description, &args.command, writes)
@@ -116,7 +121,7 @@ impl Tool for Monitor {
                 registered,
                 child,
                 abandoned,
-                stdin,
+                input,
                 log,
                 timeout,
             ));
@@ -144,26 +149,27 @@ async fn open_log(path: &Path) -> std::io::Result<File> {
 /// Runs until the command exits, the timeout, a stop, a flood or the
 /// front-end leaving, and reports how it ended. Everything the command
 /// started dies with it unless it exited by itself: then, as with bash,
-/// what it put in the background lives on. `stdin` is the model's writes,
-/// for a command started with its stdin open.
+/// what it put in the background lives on. `input` is the command's stdin
+/// and the model's writes to it, for a command started with it open.
 async fn watch(
     monitors: Monitors,
     registered: Registered,
     mut child: Child,
     mut abandoned: KillGroupOnDrop,
-    stdin: Option<mpsc::Receiver<StdinWrite>>,
+    input: Option<Input>,
     log: Option<File>,
     timeout: Duration,
 ) {
     let Registered { id, stop, .. } = registered;
     let mut out = child.stdout.take().map(Pipe::new);
     let mut err = child.stderr.take().map(Pipe::new);
-    let (writer, mut echoes) = match (child.stdin.take(), stdin) {
-        (Some(pipe), Some(writes)) => {
-            let (writer, echoes) = Writer::spawn(monitors.clone(), id, pipe, writes);
-            (Some(writer), Some(echoes))
+    let (writer, mut echoes, held) = match input {
+        Some(input) => {
+            let held = input.held();
+            let (writer, echoes) = Writer::spawn(monitors.clone(), id, input);
+            (Some(writer), Some(echoes), Some(held))
         }
-        _ => (None, None),
+        None => (None, None, None),
     };
     let mut watch = Watch {
         monitors: &monitors,
@@ -182,7 +188,7 @@ async fn watch(
             _ = stop.cancelled() => break MonitorEnd::Stopped(monitors.stopped_by(id)),
             _ = &mut deadline => break MonitorEnd::TimedOut { after_ms: timeout.as_millis() as u64 },
             // Before the output, which may answer it.
-            echo =stdin::echoed(&mut echoes) => {
+            echo = stdin::echoed(&mut echoes) => {
                 if let Some(end) = watch.echo(echo).await {
                     break end;
                 }
@@ -208,6 +214,11 @@ async fn watch(
             status = child.wait() => {
                 let status = status.ok().map(end_of);
                 let drained = tokio::time::timeout(DRAIN, async {
+                    // Written before the command's last output, which may
+                    // answer it.
+                    while let Some(echo) = echoes.as_mut().and_then(|echoes| echoes.try_recv().ok()) {
+                        if let Some(end) = watch.echo(echo).await { return Some(end); }
+                    }
                     while let Some(line) = next_line(&mut out).await {
                         if let Some(end) = watch.line(line, Stream::Stdout).await { return Some(end); }
                     }
@@ -228,8 +239,8 @@ async fn watch(
     };
     // The writer stops before anything else, before the command is killed:
     // a write it still waits on is cut short rather than failing on a pipe
-    // the kill closed, the pipe closes at once, and nothing is written or
-    // echoed after this, so the drain below has a fixed end.
+    // the kill closed, and nothing is written or echoed after this, so the
+    // drain below has a fixed end. The held handle keeps the pipe open.
     if let Some(writer) = writer {
         writer.stop().await;
     }
@@ -237,6 +248,12 @@ async fn watch(
         // Stopped, timed out or flooded: the command and all it started go.
         kill_group(&child);
         abandoned.0 = None;
+    }
+    // Only now may the pipe close: a command killed above never reads
+    // end-of-input after a write cut short, and one that exited by itself
+    // leaves what it put in the background to read it, as bash would.
+    if let Some(held) = held {
+        held.release();
     }
     // A line that never ended, such as the latest redraw of a bar, is the
     // last thing the command said: it goes out as the close of a pipe
