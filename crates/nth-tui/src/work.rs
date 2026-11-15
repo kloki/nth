@@ -117,11 +117,10 @@ impl WorkView {
             return theme::sections(vec![vec![Line::styled("No work plan yet.", dim)]]);
         };
         let outline = plan.outline();
-        let mut overview = vec![
-            Line::styled(header(place, &outline, plan, live), dim),
-            Line::default(),
-        ];
         let room = width.saturating_sub(usize::from(theme::BAR_WIDTH)).max(1);
+        let mut overview = vec![Line::styled(header(place, &outline, plan, live), dim)];
+        overview.extend(models(plan, room));
+        overview.push(Line::default());
         let mut cycles: Vec<Vec<Line<'static>>> = Vec::new();
         // The bar of the item a todo or note belongs to.
         let mut item = theme::SECTION_COLOUR;
@@ -208,6 +207,32 @@ fn header(place: &str, outline: &Outline, plan: &Plan, live: &Live) -> String {
     }
     parts.join(" · ")
 }
+
+/// `zen/glm 3 · chatgpt/gpt-5 2`: the models the plan's items were worked
+/// on and how many items each, under the header. A row of its own, since
+/// the header's counts already fill most of a narrow tab; a whole entry
+/// moves to the next row when `room` runs out, rather than its count
+/// alone. An entry wider than the tab is cut there, as the header is.
+fn models(plan: &Plan, room: usize) -> Vec<Line<'static>> {
+    let dim = theme::dim();
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for (model, count) in plan.models() {
+        let mut entry = theme::model_spans(model, None);
+        entry.push(Span::styled(format!(" {count}"), dim));
+        let width: usize = entry.iter().map(Span::width).sum();
+        match rows.last_mut() {
+            Some(row) if row.width() + Span::raw(SEPARATOR).width() + width <= room => {
+                row.spans.push(Span::styled(SEPARATOR, dim));
+                row.spans.append(&mut entry);
+            }
+            _ => rows.push(Line::from(entry)),
+        }
+    }
+    rows
+}
+
+/// Between the parts of a row; three columns wide.
+const SEPARATOR: &str = " · ";
 
 /// `kind` as rows behind a `bar` bar, `indent` columns in, its wrapped
 /// rest under its text, past its mark.
@@ -323,17 +348,7 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
     if total > 0 {
         spans.push(Span::styled(format!("  {done}/{total}"), dim));
     }
-    if matches!(
-        item.status,
-        Status::Running | Status::Returned | Status::Failed
-    ) && let (Some(agent), Some(task)) = (&item.agent, item.task)
-    {
-        spans.push(Span::styled(
-            format!("  @{agent}"),
-            colour(theme::SUBAGENT_COLOUR),
-        ));
-        spans.push(Span::styled(format!(" #{task}"), dim));
-    }
+    spans.extend(worker_spans(item));
     match (&item.status, seen) {
         (_, Seen::Lost) => spans.push(Span::styled(" · lost", colour(Color::Yellow))),
         (
@@ -373,6 +388,43 @@ fn item_spans(item: &Item, live: &Live) -> Vec<Span<'static>> {
     spans
 }
 
+/// `  Atlas @general #3 · zen/glm · high`: who worked on the item and on
+/// what, each part only when its file has it (an older one names no
+/// subagent and no model). In the subagent's and the model's colours while
+/// the item is in play, all dim once it is done or back to pending, so
+/// finished work recedes.
+fn worker_spans(item: &Item) -> Vec<Span<'static>> {
+    let dim = theme::dim();
+    let subagent = Style::new().fg(theme::SUBAGENT_COLOUR);
+    let who = [
+        item.name.clone().map(|name| (name, subagent)),
+        item.agent
+            .as_ref()
+            .map(|agent| (format!("@{agent}"), subagent)),
+        item.task.map(|task| (format!("#{task}"), dim)),
+    ];
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (text, style) in who.into_iter().flatten() {
+        let lead = if spans.is_empty() { "  " } else { " " };
+        spans.push(Span::styled(format!("{lead}{text}"), style));
+    }
+    if let Some(model) = &item.model {
+        let lead = if spans.is_empty() { "  " } else { SEPARATOR };
+        spans.push(Span::styled(lead, dim));
+        spans.extend(theme::model_spans(model, item.effort.as_deref()));
+    }
+    let in_play = matches!(
+        item.status,
+        Status::Running | Status::Returned | Status::Failed
+    );
+    if !in_play {
+        for span in &mut spans {
+            span.style = dim;
+        }
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use nth_work::{Cycle, ItemRef, Todo, WorkOutcome};
@@ -407,7 +459,14 @@ mod tests {
                 Cycle {
                     number: 1,
                     slug: "scaffold".into(),
-                    items: vec![item("01-scaffold", "trait", Status::Done, &[("a", true)])],
+                    items: vec![Item {
+                        agent: Some("general".into()),
+                        task: Some(2),
+                        name: Some("Atlas".into()),
+                        model: Some("zen/glm".into()),
+                        effort: Some("high".into()),
+                        ..item("01-scaffold", "trait", Status::Done, &[("a", true)])
+                    }],
                 },
                 Cycle {
                     number: 2,
@@ -416,6 +475,8 @@ mod tests {
                         Item {
                             agent: Some("general".into()),
                             task: Some(3),
+                            name: Some("Borg".into()),
+                            model: Some("chatgpt/gpt-5".into()),
                             ..item(
                                 "02-build",
                                 "http-retry",
@@ -424,6 +485,7 @@ mod tests {
                             )
                         },
                         Item {
+                            // An older file: no name and no model.
                             agent: Some("explore".into()),
                             task: Some(4),
                             outcome: Some(WorkOutcome::Completed("ok".into())),
@@ -434,12 +496,14 @@ mod tests {
                 Cycle {
                     number: 3,
                     slug: "verify".into(),
-                    items: vec![item(
-                        "03-verify",
-                        "test",
-                        Status::Pending,
-                        &[("run", false)],
-                    )],
+                    items: vec![Item {
+                        // Sent back to pending: who had it stays.
+                        agent: Some("general".into()),
+                        task: Some(5),
+                        name: Some("Cleo".into()),
+                        model: Some("zen/glm".into()),
+                        ..item("03-verify", "test", Status::Pending, &[("run", false)])
+                    }],
                 },
             ],
         }
@@ -471,16 +535,19 @@ mod tests {
             text(&lines),
             [
                 "▎ .nth/work/s1 · 1/4 done · 1 running · 1 returned",
+                "▎ zen/glm 2 · chatgpt/gpt-5 1",
                 "▎ ",
                 "▎ Retry",
                 "▎ Add retries with jitter to every",
                 "▎ client call.",
                 "",
                 "▎ ✓ 1 scaffold  1/1",
-                "▎   ✓ trait  1/1",
+                "▎   ✓ trait  1/1  Atlas @general #2 ·",
+                "▎     zen/glm · high",
                 "",
                 "▎ → 2 build  0/2",
-                "▎   ● http-retry  1/2  @general #3",
+                "▎   ● http-retry  1/2  Borg @general #3",
+                "▎     · chatgpt/gpt-5",
                 "▎     ☒ wrap idempotent requests",
                 "▎     ☐ cap",
                 "▎   ∎ docs  1/1  @explore #4 · returned",
@@ -488,7 +555,8 @@ mod tests {
                 "▎     ☒ write",
                 "",
                 "▎ ● 3 verify  0/1",
-                "▎   ● test  0/1",
+                "▎   ● test  0/1  Cleo @general #5 ·",
+                "▎     zen/glm",
             ]
         );
         assert_eq!(view.label(), "work 1/4");
@@ -498,14 +566,118 @@ mod tests {
         let bar = |row: usize| lines[row].spans[0].style.fg;
         let grey = Some(theme::SECTION_COLOUR);
         assert_eq!(bar(0), grey, "the header");
-        assert_eq!(bar(6), Some(Color::Green), "a closed cycle");
-        assert_eq!(bar(7), Some(Color::Green), "a done item");
-        assert_eq!(bar(9), Some(Color::Blue), "the current cycle");
-        assert_eq!(bar(10), Some(Color::Yellow), "a running item");
-        assert_eq!(bar(12), Some(Color::Yellow), "and its todos");
-        assert_eq!(bar(13), Some(Color::Magenta), "a returned item");
-        assert_eq!(bar(17), grey, "an upcoming cycle");
-        assert_eq!(bar(18), grey, "a pending item");
+        assert_eq!(bar(1), grey, "and its models");
+        assert_eq!(bar(7), Some(Color::Green), "a closed cycle");
+        assert_eq!(bar(8), Some(Color::Green), "a done item");
+        assert_eq!(bar(9), Some(Color::Green), "and its wrapped rest");
+        assert_eq!(bar(11), Some(Color::Blue), "the current cycle");
+        assert_eq!(bar(12), Some(Color::Yellow), "a running item");
+        assert_eq!(bar(15), Some(Color::Yellow), "and its todos");
+        assert_eq!(bar(16), Some(Color::Magenta), "a returned item");
+        assert_eq!(bar(20), grey, "an upcoming cycle");
+        assert_eq!(bar(21), grey, "a pending item");
+    }
+
+    /// The span of row `row` that reads `text`.
+    fn span<'a>(lines: &'a [Line<'static>], row: usize, text: &str) -> &'a Span<'static> {
+        lines[row]
+            .spans
+            .iter()
+            .find(|span| span.content.trim() == text)
+            .unwrap_or_else(|| panic!("no {text:?} in {:?}", lines[row]))
+    }
+
+    #[test]
+    fn every_item_names_who_worked_on_it_and_on_what() {
+        let mut view = WorkView::default();
+        view.update(Some(plan()));
+        let live = Live::from([(
+            "02-build/http-retry".to_string(),
+            LiveTask {
+                task: 3,
+                since: None,
+                tool_calls: 0,
+            },
+        )]);
+
+        let lines = view.lines("w", 80, &live);
+        let rows = text(&lines);
+
+        assert_eq!(
+            rows[7],
+            "▎   ✓ trait  1/1  Atlas @general #2 · zen/glm · high"
+        );
+        assert_eq!(
+            rows[10],
+            "▎   ● http-retry  1/2  Borg @general #3 · chatgpt/gpt-5"
+        );
+        assert_eq!(
+            rows[13], "▎   ∎ docs  1/1  @explore #4 · returned completed",
+            "a file from before names and models were kept"
+        );
+        assert_eq!(rows[17], "▎   ● test  0/1  Cleo @general #5 · zen/glm");
+
+        // In play, the subagent and the model in their own colours.
+        let fg = |row: usize, text: &str| span(&lines, row, text).style.fg;
+        assert_eq!(fg(10, "Borg"), Some(theme::SUBAGENT_COLOUR));
+        assert_eq!(fg(10, "@general"), Some(theme::SUBAGENT_COLOUR));
+        assert_eq!(fg(10, "chatgpt/"), Some(theme::PROVIDER_COLOUR));
+        assert_eq!(fg(10, "gpt-5"), Some(Color::Blue));
+        // Failed is in play too: the model looks at it next.
+        let mut failed = plan();
+        failed.cycles[1].items[0].status = Status::Failed;
+        view.update(Some(failed));
+        let failed = view.lines("w", 80, &live);
+        assert_eq!(
+            text(&failed)[10],
+            "▎   ✗ http-retry  1/2  Borg @general #3 · chatgpt/gpt-5 · failed"
+        );
+        assert_eq!(
+            span(&failed, 10, "Borg").style.fg,
+            Some(theme::SUBAGENT_COLOUR)
+        );
+        assert_eq!(span(&failed, 10, "gpt-5").style.fg, Some(Color::Blue));
+        // Done or back to pending, all of it dim.
+        for (row, parts) in [
+            (7, &["Atlas", "@general", "#2", "zen/", "glm", "· high"][..]),
+            (17, &["Cleo", "@general", "#5", "zen/", "glm"][..]),
+        ] {
+            for part in parts {
+                assert_eq!(span(&lines, row, part).style, theme::dim(), "{part}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_header_counts_the_items_of_each_model() {
+        let mut view = WorkView::default();
+        view.update(Some(plan()));
+
+        let lines = view.lines("w", 80, &Live::new());
+
+        assert_eq!(text(&lines)[1], "▎ zen/glm 2 · chatgpt/gpt-5 1");
+        assert_eq!(
+            span(&lines, 1, "zen/").style.fg,
+            Some(theme::PROVIDER_COLOUR)
+        );
+        assert_eq!(span(&lines, 1, "glm").style.fg, Some(Color::Blue));
+        assert_eq!(span(&lines, 1, "2").style, theme::dim());
+
+        // The row is 27 columns behind the 2 of its bar: it stays whole
+        // where it just fits, and one column narrower a model moves down
+        // with its count.
+        let fits = text(&view.lines("w", 29, &Live::new()));
+        assert_eq!(fits[1..3], ["▎ zen/glm 2 · chatgpt/gpt-5 1", "▎ "]);
+        let narrow = text(&view.lines("w", 28, &Live::new()));
+        assert_eq!(narrow[1..3], ["▎ zen/glm 2", "▎ chatgpt/gpt-5 1"]);
+
+        // No item with a model, no row.
+        let mut plan = plan();
+        for item in plan.cycles.iter_mut().flat_map(|c| &mut c.items) {
+            item.model = None;
+        }
+        view.update(Some(plan));
+        assert_eq!(text(&view.lines("w", 80, &Live::new()))[1], "▎ ");
     }
 
     #[test]
@@ -518,16 +690,16 @@ mod tests {
         let lines = view.lines("w", 40, &Live::new());
         let text = text(&lines);
 
-        assert_eq!(text[2], "▎ Retry", "the title as a heading");
+        assert_eq!(text[3], "▎ Retry", "the title as a heading");
         assert!(
-            lines[2].spans[1..]
+            lines[3].spans[1..]
                 .iter()
                 .filter(|s| !s.content.is_empty())
                 .all(|s| s.style.add_modifier.contains(Modifier::BOLD))
         );
-        assert_eq!(text[3], "▎ • step one");
-        assert_eq!(text[4], "▎ • step two", "a list, its bold rendered");
-        assert_eq!(text[5], "", "a blank before the first cycle");
+        assert_eq!(text[4], "▎ • step one");
+        assert_eq!(text[5], "▎ • step two", "a list, its bold rendered");
+        assert_eq!(text[6], "", "a blank before the first cycle");
     }
 
     #[test]
@@ -543,10 +715,13 @@ mod tests {
             },
         )]);
 
-        let lines = text(&view.lines("w", 60, &other));
+        let lines = text(&view.lines("w", 80, &other));
 
         assert_eq!(lines[0], "▎ w · 1/4 done · 1 returned · 1 lost");
-        assert_eq!(lines[9], "▎   ⏹ http-retry  1/2  @general #3 · lost");
+        assert_eq!(
+            lines[10],
+            "▎   ⏹ http-retry  1/2  Borg @general #3 · chatgpt/gpt-5 · lost"
+        );
         assert_eq!(view.state(&other), TabState::NeedsYou);
         assert_eq!(view.state(&Live::new()), TabState::NeedsYou);
     }

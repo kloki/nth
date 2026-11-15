@@ -150,6 +150,7 @@ mod tests {
         let mut child = SubagentView::new(
             "Atlas".into(),
             "agent".into(),
+            "glm".into(),
             "task".into(),
             "/repo".into(),
         );
