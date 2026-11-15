@@ -2,7 +2,7 @@
 //! it runs with on the top row, and three rows of text under it, scrolled to
 //! the cursor.
 
-use nth_protocol::{Effort, Llm, Mode};
+use nth_protocol::{Llm, Mode};
 use ratatui::{
     Frame,
     layout::{Position, Rect},
@@ -13,7 +13,7 @@ use ratatui::{
 
 use super::Prompt;
 use crate::theme::{
-    AGENT_COLOUR, BAR, BAR_WIDTH, PROVIDER_COLOUR, SHELL_COLOUR, SUBAGENT_COLOUR, dim, mode_colour,
+    AGENT_COLOUR, BAR, BAR_WIDTH, SHELL_COLOUR, SUBAGENT_COLOUR, dim, mode_colour, model_spans,
     panel_row, panel_title,
 };
 
@@ -98,8 +98,8 @@ pub fn draw(frame: &mut Frame, area: Rect, prompt: &Prompt, mode: Mode, runs: Ru
 }
 
 /// The top row for plan and act: the bar and mode label in the mode's
-/// colour, the label padded to [`MODE_WIDTH`], then the model, and the
-/// active profile's name while one is.
+/// colour, the label padded to [`MODE_WIDTH`], then the model after a
+/// ` · `, and the active profile's name while one is.
 fn label_row<'a>(
     label: &'a str,
     colour: Color,
@@ -111,7 +111,8 @@ fn label_row<'a>(
     if let Some(pad) = MODE_WIDTH.checked_sub(label.chars().count()) {
         spans.push(Span::raw(" ".repeat(pad)));
     }
-    spans.extend(model_spans(&llm.model, llm.effort));
+    spans.push(Span::styled(" · ", dim()));
+    spans.extend(model_spans(&llm.model, llm.effort.wire()));
     if let Some(name) = profile {
         spans.push(Span::styled(
             format!(" · {name}"),
@@ -119,33 +120,6 @@ fn label_row<'a>(
         ));
     }
     Line::from(spans)
-}
-
-/// The model the next turn runs with, after the mode: ` · `, its
-/// `provider/` prefix in bright white, the model id in blue, and the
-/// effort after another ` · ` when it takes one.
-fn model_spans<'a>(model: &'a str, effort: Effort) -> Vec<Span<'a>> {
-    let mut spans = vec![Span::styled(" · ", dim())];
-    match model
-        .split_once('/')
-        .filter(|(provider, _)| !provider.is_empty())
-    {
-        Some((provider, id)) => {
-            spans.push(Span::styled(
-                format!("{provider}/"),
-                Style::new().fg(PROVIDER_COLOUR),
-            ));
-            spans.push(Span::styled(id, Style::new().fg(Color::Blue)));
-        }
-        None => spans.push(Span::styled(model, Style::new().fg(Color::Blue))),
-    }
-    if let Some(effort) = effort.wire() {
-        spans.push(Span::styled(
-            format!(" · {effort}"),
-            Style::new().fg(Color::Gray),
-        ));
-    }
-    spans
 }
 
 /// Where byte `at` falls on the cursor's row on screen; a position on an
@@ -173,6 +147,8 @@ fn scroll(cursor_row: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use nth_protocol::Effort;
+
     use super::*;
 
     fn text(spans: &[Span<'_>]) -> String {
@@ -184,34 +160,6 @@ mod tests {
             model: model.into(),
             effort,
         }
-    }
-
-    #[test]
-    fn the_model_follows_the_provider_in_the_modes_colour() {
-        let spans = model_spans("opencode/glm-5.3", Effort::High);
-
-        assert_eq!(text(&spans), " · opencode/glm-5.3 · high");
-        assert_eq!(spans[1].content, "opencode/");
-        assert_eq!(spans[1].style.fg, Some(PROVIDER_COLOUR));
-        assert_eq!(spans[2].style.fg, Some(Color::Blue));
-        assert_eq!(spans[3].style.fg, Some(Color::Gray));
-    }
-
-    #[test]
-    fn a_model_without_a_provider_shows_whole() {
-        let spans = model_spans("glm", Effort::Default);
-
-        assert_eq!(text(&spans), " · glm");
-        assert_eq!(spans[1].style.fg, Some(Color::Blue));
-    }
-
-    #[test]
-    fn only_the_first_slash_splits_the_provider() {
-        let spans = model_spans("openrouter/z-ai/glm-5.2", Effort::Default);
-
-        assert_eq!(spans[1].content, "openrouter/");
-        assert_eq!(spans[2].content, "z-ai/glm-5.2");
-        assert_eq!(text(&spans), " · openrouter/z-ai/glm-5.2");
     }
 
     #[test]

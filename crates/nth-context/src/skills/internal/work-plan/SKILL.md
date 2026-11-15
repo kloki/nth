@@ -18,9 +18,9 @@ A plan usually looks like this:
 
 1. **Survey** (optional): read-only items that map out what the build cycles need, when you do not know the code well enough to brief them yet.
 2. **Build**: one or more cycles of items that make the change.
-3. **Test**: after each build cycle that adds something substantial, a dedicated cycle whose items only write and run tests for what was just built, one item per area. Do not rely on the builders' own checks: someone who did not write the code tests it against the brief. A failing test goes back to a build item, rewritten and assigned again, before you move on.
+3. **Test**: after each build cycle that adds something substantial, a dedicated cycle whose items only write and run tests for what was just built, one item per area. Do not rely on the builders' own checks: someone who did not write the code tests it against the brief. A failing test goes back to whoever built that code, as a fix item assigned with its `task_id`, before you move on.
 4. **Integrate**: when items ran on their own branches, merge them before the work that needs the whole change (see "Manage branches, merges and pull requests").
-5. **Review**: the last cycle is always a bug hunt over the whole change, by subagents that did not write it. Use `review` when available. One item per angle: correctness and edge cases, error handling and failure paths, tests that are missing or assert too little, consistency with the codebase's conventions. Tell each to look for real bugs, reproduce every one it reports, and give file:line and the failing input. Then check each finding yourself, fix the real ones (yourself, or as fix items in one more cycle), and run the full test suite, formatter and linter before you call the plan done.
+5. **Review**: the last cycle is always a bug hunt over the whole change, by subagents that did not write it. Use `review` when available. One item per angle: correctness and edge cases, error handling and failure paths, tests that are missing or assert too little, consistency with the codebase's conventions. Tell each to look for real bugs, reproduce every one it reports, and give file:line and the failing input. Reviewers are always fresh subagents, never a continued builder. Then check each finding yourself. Each confirmed one becomes a fix item in one more cycle, assigned with the `task_id` of the subagent that built that code, which still remembers it; fix only a trivial one yourself. Run the full test suite, formatter and linter before you call the plan done.
 6. **Deliver**: push and open the pull requests the plan set out to make, or tell the user which branch holds the result.
 
 Write the later cycles' items when you know enough to brief them, and rewrite them with what earlier cycles taught you before assigning them.
@@ -51,13 +51,23 @@ Seed the todo with the steps you expect; the subagent ticks them and adds its ow
 
 ## Pick the agent
 
-`work_assign` takes `subagent_type`, an agent from your agents list, and a short distinctive `name` you choose for each new subagent. A continued subagent keeps its name. Choose the agent that fits the work:
+`work_assign` takes `subagent_type`, an agent from your agents list, and a short distinctive `name` you choose for each new subagent. Choose the agent that fits the work:
 
 - `general` for implementation, fixes, tests and tasks needing several steps or judgement.
 - `explore` for read-only codebase investigation and surveys.
 - `review`, when available, for an independent bug hunt over completed changes. Give it the comparison base, scope and review angle; ask for actionable findings with severity and evidence.
 - `clerk` for a small, well-defined task such as a commit message, PR title or description, short summary or quick lookup. Supply the context it needs; use `general` when substantial investigation or judgement is needed. Use `task` for a small one-off instead of creating a work item solely for it.
 - A project agent (an opencode-style markdown agent with `mode: subagent`) when its specialization fits better.
+
+## Continue a subagent or start a fresh one
+
+`task_id` puts a subagent this plan already started on another item, with everything it remembers. Continue one for follow-up on its own work: a fix for a bug found in what it built, a failing test in its code, the next step of its survey. Start a fresh one when the work is unrelated, or when independence matters: tests and reviews of someone's work.
+
+- The item must use the builder's `subagent_type`; it keeps its name.
+- A subagent in its own worktree stays there: a fix lands on its branch wherever you are when you assign it.
+- A busy subagent cannot take another item. Several fixes for one builder go in one item, or in successive cycles.
+- A task id ends with the run of nth, and when the session is left or resumed. After that, start fresh; the item file's Result still carries over.
+- `work_status` lists the subagents, their state and what each worked on.
 
 ## Give items their own worktrees
 
@@ -96,7 +106,7 @@ When a wakeup arrives, call `work_status` once and inspect available results and
 
 - Read the answer, then check the work as far as you need to: the diff, the verification command. Close an item as done only once you checked it.
 - Reconsider the remaining plan when a result materially changes what you know, and again before assigning the next cycle.
-- When it falls short, rewrite the brief with work_item and assign it again. Ticked steps and the last result are kept for the next subagent; pass `task_id` to continue the same subagent when what it remembers helps.
+- When it falls short, rewrite the brief with work_item and assign it again. Ticked steps and the last result are kept; pass `task_id` to continue the subagent that did it.
 - When it cannot be done, close it as failed and plan around it.
 - When an item stalls, wait, or stop it with task_stop and assign it again.
 

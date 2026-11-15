@@ -25,7 +25,7 @@ impl App {
                 name,
                 agent,
                 description,
-                ..
+                model,
             } => {
                 // Forgotten before it got here: its session was left.
                 if self.subagents.forgotten(id) {
@@ -33,7 +33,7 @@ impl App {
                 }
                 self.subagent_views.insert(
                     id,
-                    SubagentView::new(name, agent, description, self.cwd.clone()),
+                    SubagentView::new(name, agent, model, description, self.cwd.clone()),
                 );
                 // Opened, not shown: you keep looking at the chat while the
                 // model works.
@@ -42,12 +42,14 @@ impl App {
             SubagentEvent::Prompted { id, text } => {
                 if !self.subagent_views.contains_key(&id)
                     && let Some((agent, description)) = self.subagents.describe(id)
+                    && let Some(llm) = self.subagents.llm(id)
                 {
                     self.subagent_views.insert(
                         id,
                         SubagentView::new(
                             self.subagents.name(id).unwrap_or_else(|| id.to_string()),
                             agent,
+                            llm.model,
                             description,
                             self.cwd.clone(),
                         ),
@@ -446,7 +448,7 @@ pub(super) mod tests {
         let rows = crate::app::tests::rows_of(&mut app, 80);
         assert!(
             rows[2].starts_with(" explore · @explore · find tabs · running · ")
-                && rows[2].contains(" · 2 queued"),
+                && rows[2].contains(" · 2 queued · "),
             "{}",
             rows[2]
         );
@@ -641,6 +643,10 @@ pub(super) mod tests {
 
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(id)]);
         assert!(app.subagent_views[&id].is_running());
+        // The event names no model, so the new view asks the registry.
+        let model = app.subagents.llm(id).expect("still registered").model;
+        assert!(!model.is_empty());
+        assert_eq!(app.subagent_views[&id].model, model);
     }
 
     #[tokio::test]

@@ -14,7 +14,9 @@ use crate::{
     work::{Live, LiveTask, WorkView},
 };
 
-/// What a subagent's tab says it works on: its description.
+/// How the description of a subagent `work_assign` started begins, which
+/// tells it from one the task tool started; the item it names after is
+/// the one it runs, kept so by [`App::work_read`].
 const WORK_PREFIX: &str = "work ";
 
 /// A read of the work plan, with the directory it read.
@@ -108,6 +110,15 @@ impl App {
                 },
             );
         }
+        // A subagent continued on another item says so in its tab, whose
+        // description named the item it was started for.
+        for (task, item) in self.work.view.running() {
+            if let Some(view) = self.subagent_views.get_mut(&task)
+                && view.description.starts_with(WORK_PREFIX)
+            {
+                view.description = format!("{WORK_PREFIX}{item}");
+            }
+        }
         if self.work.reading.take_again() {
             self.work.read();
         }
@@ -119,18 +130,17 @@ impl App {
         self.work.place(&self.cwd)
     }
 
-    /// This run's subagents on work items, by the item, from their tabs.
+    /// This run's work subagents, by their number, from their tabs.
     pub(super) fn live_work(&self) -> Live {
         self.subagent_views
             .iter()
-            .filter_map(|(id, view)| {
-                let item = view.description.strip_prefix(WORK_PREFIX)?;
+            .filter(|(_, view)| view.description.starts_with(WORK_PREFIX))
+            .map(|(id, view)| {
                 let task = LiveTask {
-                    task: *id,
                     since: view.running_since(),
                     tool_calls: view.tool_calls(),
                 };
-                Some((item.to_string(), task))
+                (*id, task)
             })
             .collect()
     }
@@ -145,6 +155,7 @@ mod tests {
 
     use super::*;
     use crate::app::{
+        TabState,
         keys::Action,
         tests::{rows, tab_colour, test_app},
     };
@@ -279,6 +290,39 @@ mod tests {
             model: "glm".into(),
         });
         assert!(app.work.reading.is_running(), "and so is a return");
+    }
+
+    #[tokio::test]
+    async fn a_continued_subagents_later_item_is_live_and_another_number_is_lost() {
+        let (mut app, _dir) = app_with_work();
+        let started = |id, description: &str| SubagentEvent::Started {
+            id,
+            name: "Atlas".into(),
+            agent: "general".into(),
+            description: description.into(),
+            model: "glm".into(),
+        };
+        let state = |app: &App| app.work.view.state(&app.live_work());
+        app.on_subagent(started(1, "work 01-a/store"));
+        // The task tool's, which is no work subagent whatever its number.
+        app.on_subagent(started(2, "find tabs"));
+        write(&app, "01-a", "store", Status::Returned, Some(1)).await;
+        write(&app, "02-b", "fix", Status::Running, Some(1)).await;
+        read(&mut app).await;
+
+        assert_eq!(state(&app), TabState::Working, "live");
+        assert_eq!(
+            app.subagent_views[&1].description, "work 02-b/fix",
+            "its tab names the item it is on now"
+        );
+
+        write(&app, "02-b", "tab", Status::Running, Some(2)).await;
+        read(&mut app).await;
+        assert_eq!(state(&app), TabState::NeedsYou, "lost");
+        assert_eq!(app.subagent_views[&2].description, "find tabs");
+        write(&app, "02-b", "tab", Status::Running, Some(9)).await;
+        read(&mut app).await;
+        assert_eq!(state(&app), TabState::NeedsYou, "lost");
     }
 
     #[tokio::test]

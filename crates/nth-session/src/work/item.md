@@ -8,7 +8,7 @@ How to run a plan:
 1. Write the items of a cycle with work_item, one call per item. Give `cycle_name` the first time you use a cycle number.
 2. Assign each item of the current cycle to a subagent with work_assign, all in one message so they run in parallel.
 3. Then stop and wait: what happens to each item reaches you as a `<work_item>` notice (see work_assign). End your turn when there is nothing to do.
-4. When an item returns, judge it: close it with work_close as done or failed, or fix the brief with work_item and assign it again. Steps you keep word for word stay ticked, and its last result stays for the next subagent.
+4. When an item returns, judge it: close it with work_close as done or failed, or fix the brief with work_item and assign it again. Steps you keep word for word stay ticked, and its last result stays for the next subagent. A fix for what a subagent made, as an item of its own, goes back to that subagent with work_assign's `task_id`.
 5. Once every item of a cycle is closed, the next cycle's items can be assigned. Nothing moves on by itself.
 
 Writing an item that exists replaces it and makes it pending again, unless it is running. You may write items of later cycles at any time; they wait for the earlier cycles to be closed.

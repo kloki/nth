@@ -105,17 +105,17 @@ The tab follows the newest line unless scrolled up, and keeps the last 2000 line
 
 ## Subagents
 
-The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, nth's `clerk`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is what it was asked, cut at 20 characters, behind `@`: `@ find how tabs open`, coloured by its state: blue while its turn runs, green once it answered, red when it was stopped or failed. While its turn runs, a one-character braille spinner stands in for the `@`, so the tab keeps its width.
+The `task` tool starts a subagent: an agent nth-context found (`nth agents` lists them: opencode's `general` and `explore`, nth's `clerk`, plus your own `.claude/agents/*.md` and the like) on a session of its own, in the background. The call returns at once with the subagent's id, and the answer reaches the model as a notice when it is done, as a monitor's output does: between its steps, or waking it when idle. Each subagent gets its own tab, opened without being shown. The label is the name the model gave it, cut at 20 characters, behind `@`: `@ Atlas`, coloured by its state: blue while its turn runs, green once it answered, red when it was stopped or failed. While its turn runs, a one-character braille spinner stands in for the `@`, so the tab keeps its width.
 
 ```
-@explore · find how tabs open · running · 12s · 3 tool calls · 1 queued
+Atlas · @explore · find how tabs open · running · 12s · 3 tool calls · 1 queued · zen/glm
 
 ▎ Find where the content panel's tabs are opened …
   ≡ read   crates/nth-tui/src/app/content.rs
 ▎ Tabs open in `Content::open` …
 ```
 
-- **Header.** The agent, what the model asked of it, its state in colour (running yellow, done green, interrupted yellow, failed red), how long, how many tool calls this turn, and how many prompts wait in its inbox.
+- **Header.** Its name and agent in cyan, what the model asked of it (`work <cycle>/<item>` for one on a work item, the item it is on now once the model continued it on another), its state in colour (running yellow, done green, interrupted yellow, failed red), how long, how many tool calls this turn, how many prompts wait in its inbox, and last the model it runs on as the prompt's label draws one (the provider bright white, the id blue): the row is cut in a narrow tab, and the model is what can go.
 - **Chat.** Its own transcript under the header, drawn like the main chat: the prompt it got, its tool calls with their output, its answer, and a turn summary.
 - **The prompt is its.** While a subagent's tab shows, the input panel talks to it: the label row reads the agent's name, `explore`, in cyan in place of `plan` or `act`, and the bar turns cyan with it. Enter sends what you typed to the subagent; it waits in its inbox behind whatever the subagent is doing, and the tab shows it once its turn starts. The spinner and `esc to cancel` follow the subagent's turn, not the main session's. Tab and shift+Tab do nothing: the mode belongs to the main session. The main session never hears what you say to a subagent; the model gets only the answers to its own tasks, and continues a subagent with `task_id`.
 - **Commands.** `/` commands work as everywhere. A `!` command belongs to the main session, so running one from a subagent's tab shows the chat tab where its output lands.
@@ -159,24 +159,25 @@ The plan file of plan mode, `.nth/plans/<session>.md`, with what its latest chan
 
 ## Work
 
-The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles of items worked on in parallel, one subagent an item. The model writes items with `work_item`, puts subagents on them with `work_assign`, and closes them with `work_close`; nothing moves on by itself. The tab opens without being shown once there is a plan, and stays while there is one.
+The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles of items worked on in parallel, one subagent an item. The model writes items with `work_item`, puts subagents on them with `work_assign`, a fresh one or one that worked on an earlier item of the plan, and closes them with `work_close`; nothing moves on by itself. The tab opens without being shown once there is a plan, and stays while there is one.
 
 ```
 ▎ .nth/work/6b2e… · 3/7 done · 1 running · 1 returned
+▎ zen/glm 4 · chatgpt/gpt-5 1
 ▎
 ▎ Retry for the fetch client
 ▎ Add retries with jitter to every client call.
 
 ▎ ✓ 1 scaffold  2/2
-▎   ✓ client-trait  3/3
-▎   ✓ retry-config  2/2
+▎   ✓ client-trait  3/3  Atlas @general #1 · zen/glm · high
+▎   ✓ retry-config  2/2  Cleo @general #2 · zen/glm
 
 ▎ → 2 implement  1/3
-▎   ✓ backoff  4/4
-▎   ⠋ http-retry  2/5  @general #3 · 42s · 7 calls
+▎   ✓ backoff  4/4  Atlas @general #1 · zen/glm · high
+▎   ⠋ http-retry  2/5  Borg @general #3 · chatgpt/gpt-5 · 42s · 7 calls
 ▎     ☒ wrap idempotent requests
 ▎     ☐ cap at 5 tries
-▎   ∎ docs  3/3  @explore #4 · returned completed
+▎   ∎ docs  3/3  Dana @explore #4 · zen/glm · returned completed
 ▎     ☒ write the section
 
 ▎ ● 3 verify  0/2
@@ -186,19 +187,19 @@ The work plan the model orchestrates, from `.nth/work/<session>/`: serial cycles
 
 - **Label.** `⊞ work`, then `⊞ work 3/7` once there are items: done over all.
 - **Bars.** Every row has the chat's `▎` bar, coloured by the state of what it belongs to, so the plan's progress reads down the left edge. The header and overview are one block with a grey (bright black) bar; then a block per cycle, a bare blank line between them. A cycle's row carries the cycle's colour, an item's row and its todos and note the item's.
-- **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out.
+- **Header.** The directory and how many items are done, running, returned, failed and lost, dim; counts of zero are left out. Under it, once an item has one, the models the items were worked on and how many items each, most first: the model in the prompt's colours, the count dim, a model moving to the next row with its count where the tab is too narrow.
 - **Overview.** `plan.md` rendered as markdown — its first heading, then the rest — when the model wrote one.
 - **Cycles.** `✓` and a green bar once every item is closed, `→` and a blue bar for the current one (the first with an item not yet closed, whose items are the ones the model may assign), `●` dim with a grey bar for the ones after it. Closed items over all follow.
-- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `●` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and for one in play the agent in cyan and the subagent id. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
+- **Items.** Indented under their cycle, the bar in the mark's colour (grey for pending): `●` dim pending, a yellow spinner while its subagent's turn runs (`●` when the file says running but the turn just ended), `∎` magenta returned and waiting for the model's verdict, `✓` green done, `✗` red failed or not readable as an item. Then ticked steps over all, and who worked on it, on every item that had a subagent: its name and `@agent` in cyan, the subagent id dim, and the model with its effort as the prompt's label draws them, each only when the item's file has it. On a done item, or one sent back to pending, all of that is dim, so finished work recedes. A running item shows how long its turn has run and its tool calls, from the subagent's own tab.
 - **Todos.** Under the item's name, behind its bar, for the items in play (running, returned, failed): `☒` green with dim text, `☐` dim. A pending item's list is unstarted and a done one's finished, so their counts say it. The model's note on a closed item shows under it, dim.
-- **Lost.** An item whose file says running with no subagent of this run on it: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
+- **Lost.** An item whose file says running with no work subagent of this run under the number the file names: nth stopped while it ran. It shows `⏹ … · lost` in yellow and turns the tab magenta, until the next work tool call settles it as interrupted and the model can assign it again.
 - **Where.** Under the main checkout, also once a worktree tool moved the session, so the plan stays one plan. A folder that is not `NN-slug`, or a second folder for a cycle's number, is left out, and `work_status` names it.
 - **Reading.** After every `work_*` call, in the model's turn or a subagent's `work_todo`, when a subagent's turn ends, at the end of each turn and when a session opens. A plan deleted from disk closes the tab.
 - **Opening and closing.** `/work` shows it, and so does the model with the `panel` tool. ctrl+q and `/close` leave it open while there is a plan.
 - **Scrolling.** Like the chat: the scroll keys and the wheel move it, and a grey scrollbar thumb sits in the right margin while the tree is longer than the tab. The header and overview scroll with it.
 - **In the chat.** Every change to an item reaches the model as a `<work_item>` notice, shown as one row: `⊞ work 02-implement/http-retry · todo 2/5 · @general #3`, `· returned completed 5/5`, or `· stalled` when its subagent has said nothing for `[work] stall_secs`.
 - **Waking the model.** A return or a stall wakes it; todo ticks do not, and go along with the next notice that does or between the steps of a turn that runs, so parallel items do not cost a turn a tick. After Esc, work notices wait for your next message like every other notice: the subagents keep running, and the model hears from them once you speak.
-- **The subagents.** Each has its usual tab, named `work <cycle>/<item>`. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (900) before the item returns failed or timed out.
+- **The subagents.** Each has its usual tab, labelled with its name; `work <cycle>/<item>` is what its header says it was asked. Its turn may take `[work] max_steps` requests (100) and `[work] timeout_secs` seconds (900) before the item returns failed or timed out.
 - **Outside the TUI.** `nth work [<session>]` prints the plan of a saved session as a tree, with guides in place of the bars, `--json` for the plan as data.
 
 ## Diagnostics

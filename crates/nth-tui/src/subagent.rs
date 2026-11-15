@@ -1,6 +1,6 @@
-//! A subagent's tab: the agent the model delegated to, what it was asked,
-//! how its turn is doing, and its own chat under that. While the tab shows,
-//! the prompt talks to it.
+//! A subagent's tab: the agent the model delegated to, what it runs on,
+//! what it was asked, how its turn is doing, and its own chat under that.
+//! While the tab shows, the prompt talks to it.
 
 use std::time::{Duration, Instant};
 
@@ -18,12 +18,14 @@ use crate::{app::TabState, chat::Chat, settings::ChatSettings, spinner, theme};
 
 /// The header row above the chat.
 const HEADER_ROWS: u16 = 2;
-/// The most characters of what it was asked the tab's label shows.
+/// The most characters of its name the tab's label shows.
 const TITLE_CHARS: usize = 20;
 
 pub struct SubagentView {
     pub name: String,
     pub agent: String,
+    /// What it runs on, `provider/model`.
+    pub model: String,
     pub description: String,
     pub chat: Chat,
     /// Where it is between prompts; `None` until its first one.
@@ -41,10 +43,17 @@ pub struct SubagentView {
 }
 
 impl SubagentView {
-    pub fn new(name: String, agent: String, description: String, cwd: std::path::PathBuf) -> Self {
+    pub fn new(
+        name: String,
+        agent: String,
+        model: String,
+        description: String,
+        cwd: std::path::PathBuf,
+    ) -> Self {
         Self {
             name,
             agent,
+            model,
             description,
             chat: Chat::new(cwd),
             state: None,
@@ -116,7 +125,7 @@ impl SubagentView {
         self.running_since
     }
 
-    /// The tab's name in the header: what it was asked, cut short.
+    /// The tab's name in the header: its own, cut short.
     pub fn label(&self) -> String {
         let mut title: String = self.name.chars().take(TITLE_CHARS).collect();
         if self.name.chars().count() > TITLE_CHARS {
@@ -159,7 +168,9 @@ impl SubagentView {
         chat
     }
 
-    /// `@explore · find tabs · running · 12s · 3 tool calls · 1 queued`.
+    /// `Atlas · @explore · find tabs · running · 12s · 3 tool calls · 1
+    /// queued · zen/glm`. The model comes last: the row is cut, not
+    /// wrapped, in a narrow tab, and the state and time are what moves.
     fn header(&self, queued: usize) -> Line<'static> {
         let dim = theme::dim();
         let (state, colour, elapsed) = match (self.state, self.running_since, self.took) {
@@ -178,7 +189,7 @@ impl SubagentView {
         if queued > 0 {
             rest.push_str(&format!(" · {queued} queued"));
         }
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 format!("{} · @{}", self.name, self.agent),
                 Style::new().fg(Color::Cyan),
@@ -186,7 +197,10 @@ impl SubagentView {
             Span::styled(format!(" · {} · ", self.description), dim),
             Span::styled(state, Style::new().fg(colour)),
             Span::styled(rest, dim),
-        ])
+            Span::styled(" · ", dim),
+        ];
+        spans.extend(theme::model_spans(&self.model, None));
+        Line::from(spans)
     }
 }
 
@@ -198,6 +212,7 @@ mod tests {
         SubagentView::new(
             "Atlas".into(),
             "explore".into(),
+            "zen/glm".into(),
             "find tabs".into(),
             "/repo".into(),
         )
@@ -251,7 +266,7 @@ mod tests {
             .collect();
         assert_eq!(
             header,
-            "Atlas · @explore · find tabs · running · 0s · 1 tool call · 1 queued"
+            "Atlas · @explore · find tabs · running · 0s · 1 tool call · 1 queued · zen/glm"
         );
 
         view.ended(
@@ -267,7 +282,7 @@ mod tests {
             .collect();
         assert_eq!(
             header,
-            "Atlas · @explore · find tabs · done · 3s · 1 tool call"
+            "Atlas · @explore · find tabs · done · 3s · 1 tool call · zen/glm"
         );
     }
 
