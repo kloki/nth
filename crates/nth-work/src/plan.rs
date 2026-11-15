@@ -2,6 +2,7 @@
 //! it stands and what its subagent made of it. Nothing here touches disk.
 
 use std::{
+    collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -90,6 +91,12 @@ pub struct Item {
     pub agent: Option<String>,
     /// The subagent's number in the run of nth that assigned it.
     pub task: Option<u32>,
+    /// The instance name the orchestrator gave that subagent.
+    pub name: Option<String>,
+    /// What it ran on, `provider/model`.
+    pub model: Option<String>,
+    /// The effort it ran at, when one was picked.
+    pub effort: Option<String>,
     pub assigned: Option<jiff::Timestamp>,
     /// How its subagent's last turn ended, its text being `result`.
     pub outcome: Option<WorkOutcome>,
@@ -113,6 +120,9 @@ impl Item {
             status: Status::Pending,
             agent: None,
             task: None,
+            name: None,
+            model: None,
+            effort: None,
             assigned: None,
             outcome: None,
             note: None,
@@ -201,6 +211,19 @@ impl Plan {
     pub fn items(&self) -> impl Iterator<Item = &Item> {
         self.cycles.iter().flat_map(|cycle| &cycle.items)
     }
+
+    /// The models the plan's items were worked on and how many items
+    /// each: most first, ties by name.
+    pub fn models(&self) -> Vec<(&str, usize)> {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for model in self.items().filter_map(|item| item.model.as_deref()) {
+            *counts.entry(model).or_default() += 1;
+        }
+        let mut models: Vec<_> = counts.into_iter().collect();
+        // Stable, so equal counts stay in the map's order, by name.
+        models.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        models
+    }
 }
 
 /// One step of a work item's todo list.
@@ -260,5 +283,45 @@ impl WorkOutcome {
 impl fmt::Display for WorkOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_models_come_most_used_first_and_ties_by_name() {
+        let item = |slug: &str, model: Option<&str>| Item {
+            model: model.map(String::from),
+            ..Item::pending(
+                ItemRef {
+                    cycle: "01-a".into(),
+                    item: slug.into(),
+                },
+                slug,
+                "",
+                Vec::new(),
+            )
+        };
+        let plan = Plan {
+            cycles: vec![Cycle {
+                number: 1,
+                slug: "a".into(),
+                items: vec![
+                    item("one", Some("zen/glm")),
+                    item("two", Some("chatgpt/gpt-5")),
+                    item("three", Some("zen/kimi")),
+                    item("four", Some("zen/kimi")),
+                    item("five", None),
+                ],
+            }],
+            ..Plan::default()
+        };
+
+        assert_eq!(
+            plan.models(),
+            [("zen/kimi", 2), ("chatgpt/gpt-5", 1), ("zen/glm", 1)]
+        );
     }
 }

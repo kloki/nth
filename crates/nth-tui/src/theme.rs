@@ -36,9 +36,34 @@ pub const AGENT_COLOUR: Color = Color::Green;
 /// The prompt's colour while it talks to a subagent: a model talking to
 /// you, as the question panel is.
 pub const SUBAGENT_COLOUR: Color = Color::Cyan;
-/// The provider prefix in the prompt's label: bright white, against the
-/// model's blue.
+/// The provider prefix of a model: bright white, against the model's
+/// blue.
 pub const PROVIDER_COLOUR: Color = Color::White;
+
+/// A model as the prompt, the work tab and a subagent's header name it:
+/// its `provider/` prefix in bright white, the model id in blue, and the
+/// effort after a ` · ` when it runs at one. The effort is its name, since
+/// a work item's file keeps only that.
+pub fn model_spans(model: &str, effort: Option<&str>) -> Vec<Span<'static>> {
+    let blue = Style::new().fg(Color::Blue);
+    let mut spans = match model
+        .split_once('/')
+        .filter(|(provider, _)| !provider.is_empty())
+    {
+        Some((provider, id)) => vec![
+            Span::styled(format!("{provider}/"), Style::new().fg(PROVIDER_COLOUR)),
+            Span::styled(id.to_string(), blue),
+        ],
+        None => vec![Span::styled(model.to_string(), blue)],
+    };
+    if let Some(effort) = effort {
+        spans.push(Span::styled(
+            format!(" · {effort}"),
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    spans
+}
 
 /// A tab's colour in the header; `None` leaves the terminal's own.
 pub fn tab_colour(state: TabState) -> Option<Color> {
@@ -121,4 +146,41 @@ pub fn join(blocks: Vec<Vec<Line<'static>>>) -> Vec<Line<'static>> {
         lines.extend(block);
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_model_follows_the_provider_and_the_effort_the_model() {
+        let spans = model_spans("opencode/glm-5.3", Some("high"));
+
+        assert_eq!(text(&spans), "opencode/glm-5.3 · high");
+        assert_eq!(spans[0].content, "opencode/");
+        assert_eq!(spans[0].style.fg, Some(PROVIDER_COLOUR));
+        assert_eq!(spans[1].style.fg, Some(Color::Blue));
+        assert_eq!(spans[2].style.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn a_model_without_a_provider_shows_whole() {
+        let spans = model_spans("glm", None);
+
+        assert_eq!(text(&spans), "glm");
+        assert_eq!(spans[0].style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn only_the_first_slash_splits_the_provider() {
+        let spans = model_spans("openrouter/z-ai/glm-5.2", None);
+
+        assert_eq!(spans[0].content, "openrouter/");
+        assert_eq!(spans[1].content, "z-ai/glm-5.2");
+        assert_eq!(text(&spans), "openrouter/z-ai/glm-5.2");
+    }
 }

@@ -57,6 +57,14 @@ fn text(out: &mut impl Write, session: &Session, plan: &Plan) -> Result<()> {
         }
     }
     writeln!(out, "  {}", counts.dimmed())?;
+    let models: Vec<String> = plan
+        .models()
+        .into_iter()
+        .map(|(model, count)| format!("{} {}", model_text(model, None), count.dimmed()))
+        .collect();
+    if !models.is_empty() {
+        writeln!(out, "  {}", models.join(&" · ".dimmed().to_string()))?;
+    }
     for row in &outline.rows {
         match &row.kind {
             Kind::Title(_) => {}
@@ -142,17 +150,7 @@ fn item_text(item: &Item) -> String {
     if total > 0 {
         out.push_str(&format!("  {}", format!("{done}/{total}").dimmed()));
     }
-    if matches!(
-        item.status,
-        Status::Running | Status::Returned | Status::Failed
-    ) && let (Some(agent), Some(task)) = (&item.agent, item.task)
-    {
-        out.push_str(&format!(
-            "  {} {}",
-            format!("@{agent}").cyan(),
-            format!("#{task}").dimmed()
-        ));
-    }
+    out.push_str(&worker_text(item));
     match &item.status {
         Status::Running => out.push_str(&" · running".yellow().to_string()),
         Status::Returned => {
@@ -166,6 +164,77 @@ fn item_text(item: &Item) -> String {
         Status::Failed => out.push_str(&" · failed".red().to_string()),
         Status::Broken(why) => out.push_str(&format!(" · {why}").red().to_string()),
         Status::Pending | Status::Done => {}
+    }
+    out
+}
+
+/// `  Atlas @general #3 · zen/glm · high`, as the work tab draws it: the
+/// parts the item's file has, coloured while the item is in play and all
+/// dim once it is done or back to pending.
+fn worker_text(item: &Item) -> String {
+    let who: Vec<String> = [
+        item.name.clone(),
+        item.agent.as_ref().map(|agent| format!("@{agent}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let task = item.task.map(|task| format!("#{task}"));
+    let in_play = matches!(
+        item.status,
+        Status::Running | Status::Returned | Status::Failed
+    );
+    if !in_play {
+        // Plain text dimmed once: a part with a style of its own would
+        // end in a reset, and the rest of the row would lose its dim.
+        let mut parts: Vec<String> = Vec::new();
+        let who: Vec<String> = who.into_iter().chain(task).collect();
+        if !who.is_empty() {
+            parts.push(who.join(" "));
+        }
+        if let Some(model) = &item.model {
+            parts.push(match &item.effort {
+                Some(effort) => format!("{model} · {effort}"),
+                None => model.clone(),
+            });
+        }
+        return match parts.is_empty() {
+            true => String::new(),
+            false => format!("  {}", parts.join(" · ").dimmed()),
+        };
+    }
+    let who: Vec<String> = who
+        .into_iter()
+        .map(|part| part.cyan().to_string())
+        .chain(task.map(|task| task.dimmed().to_string()))
+        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    if !who.is_empty() {
+        parts.push(who.join(" "));
+    }
+    if let Some(model) = &item.model {
+        parts.push(model_text(model, item.effort.as_deref()));
+    }
+    match parts.is_empty() {
+        true => String::new(),
+        false => format!("  {}", parts.join(&" · ".dimmed().to_string())),
+    }
+}
+
+/// A model in the TUI's colours: the provider bright white, the id blue,
+/// the effort grey.
+fn model_text(model: &str, effort: Option<&str>) -> String {
+    let mut out = match model
+        .split_once('/')
+        .filter(|(provider, _)| !provider.is_empty())
+    {
+        Some((provider, id)) => {
+            format!("{}{}", format!("{provider}/").bright_white(), id.blue())
+        }
+        None => model.blue().to_string(),
+    };
+    if let Some(effort) = effort {
+        out.push_str(&format!(" · {effort}").white().to_string());
     }
     out
 }
@@ -219,6 +288,9 @@ fn item_json(item: &Item) -> Value {
         "broken": broken,
         "agent": item.agent,
         "task": item.task,
+        "name": item.name,
+        "model": item.model,
+        "effort": item.effort,
         "assigned": item.assigned.map(|at| at.to_string()),
         "outcome": item.outcome.as_ref().map(|o| o.name()),
         "done": done,
@@ -262,6 +334,9 @@ mod tests {
                         status: Status::Returned,
                         agent: Some("general".into()),
                         task: Some(2),
+                        name: Some("Atlas".into()),
+                        model: Some("zen/glm".into()),
+                        effort: Some("high".into()),
                         outcome: Some(WorkOutcome::Completed("ok".into())),
                         result: Some("ok".into()),
                         ..Item::pending(at("01-a", "store"), "Store", "Do it.", todos.clone())
@@ -270,7 +345,13 @@ mod tests {
                 Cycle {
                     number: 2,
                     slug: "b".into(),
-                    items: vec![Item::pending(at("02-b", "tab"), "Tab", "", todos)],
+                    items: vec![Item {
+                        // Sent back to pending by a file from before
+                        // names and models were kept.
+                        agent: Some("explore".into()),
+                        task: Some(1),
+                        ..Item::pending(at("02-b", "tab"), "Tab", "", todos)
+                    }],
                 },
             ],
         }
@@ -306,16 +387,50 @@ mod tests {
             lines[1..],
             [
                 "  0/2 done · 1 returned",
+                "  zen/glm 1",
                 "  Add retries.",
                 "",
                 "  → 1 a  0/1",
-                "  └─ ∎ store  1/2  @general #2 · returned completed",
+                "  └─ ∎ store  1/2  Atlas @general #2 · zen/glm · high · returned completed",
                 "       ☒ parse",
                 "       ☐ write",
                 "",
                 "  ● 2 b  0/1",
-                "  └─ ● tab  1/2",
+                "  └─ ● tab  1/2  @explore #1",
             ]
+        );
+    }
+
+    #[test]
+    fn the_counts_are_followed_by_the_items_of_each_model() {
+        let session = Session::new("glm", "/repo".into());
+        let mut plan = plan();
+        plan.cycles[1].items[0].model = Some("chatgpt/gpt-5".into());
+        let again = plan.cycles[1].items[0].clone();
+        plan.cycles[1].items.push(again);
+        let mut out = Vec::new();
+
+        text(&mut out, &session, &plan).unwrap();
+
+        let text = plain(&String::from_utf8(out).unwrap());
+        assert_eq!(text.lines().nth(2), Some("  chatgpt/gpt-5 2 · zen/glm 1"));
+    }
+
+    #[test]
+    fn a_finished_items_worker_is_dim_to_its_end_and_one_in_play_coloured() {
+        let mut item = plan().cycles[0].items[0].clone();
+
+        // Returned: the name cyan, the model in its own colours.
+        let in_play = worker_text(&item);
+        assert!(in_play.contains(&"Atlas".cyan().to_string()), "{in_play:?}");
+        assert!(in_play.contains(&"glm".blue().to_string()), "{in_play:?}");
+
+        // Done: one dim run from the name to the effort, nothing inside
+        // it ending the dim early.
+        item.status = Status::Done;
+        assert_eq!(
+            worker_text(&item),
+            format!("  {}", "Atlas @general #2 · zen/glm · high".dimmed())
         );
     }
 
