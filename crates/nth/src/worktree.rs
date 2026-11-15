@@ -182,6 +182,8 @@ mod tests {
 
     #[test]
     fn each_outcome_is_a_line() {
+        // Mixes the dry run's `would remove` into a real run on purpose,
+        // to show every outcome's line in one snapshot.
         let report = WorktreeReport {
             outcomes: outcomes(),
             dry_run: false,

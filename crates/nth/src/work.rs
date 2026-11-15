@@ -372,12 +372,15 @@ mod tests {
         }
     }
 
-    /// A session with an id a snapshot can hold.
+    /// A session with an id and a state root a snapshot can hold: the
+    /// root is set, since one found by asking git about `/repo` would
+    /// depend on what the machine has there.
     fn session() -> Session {
         let mut session = Session::new("glm", "/repo".into());
         session.id = "0a1b2c3d-0000-4000-8000-000000000000"
             .parse()
             .expect("a uuid");
+        session.state_root = Some("/repo".into());
         session
     }
 

@@ -53,7 +53,7 @@ struct ConnectStatusReport {
 }
 
 impl ConnectStatusReport {
-    /// Each provider's id, name and whether it is connected.
+    /// Both halves list the same providers, in the same order.
     fn providers(&self) -> [(&'static str, &'static str, bool); 1] {
         [(ChatGpt::ID, "ChatGPT", self.chatgpt)]
     }
