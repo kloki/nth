@@ -23,6 +23,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
+    time::SystemTime,
 };
 
 use nth_protocol::Message;
@@ -234,15 +235,26 @@ impl Dirs {
 
     /// The one session the run saved, parsed.
     fn session(&self) -> Value {
+        let mut sessions = self.sessions();
+        assert_eq!(sessions.len(), 1, "exactly one session: {sessions:?}");
+        sessions.remove(0)
+    }
+
+    /// Every saved session, parsed, as the files on disk hold them.
+    fn sessions(&self) -> Vec<Value> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(self.env.sessions())
-            .expect("the run saved a session")
+            .expect("a session was saved")
             .map(|entry| entry.expect("readable").path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 1, "exactly one session: {files:?}");
-        let json = std::fs::read_to_string(&files[0]).expect("reads the session");
-        serde_json::from_str(&json).expect("the session is valid JSON")
+        files
+            .iter()
+            .map(|file| {
+                let json = std::fs::read_to_string(file).expect("reads the session");
+                serde_json::from_str(&json).expect("the session is valid JSON")
+            })
+            .collect()
     }
 
     /// `nth --config <file> args` in the working directory.
@@ -368,9 +380,9 @@ fn a_run_answers_and_saves_the_session_the_config_asked_for() {
 /// The commands that read a saved session find the one a run saved, in
 /// the environment it saved it in: the `run` glue of `session list`,
 /// `usage` and `context`, which the listings' smoke tests cannot reach
-/// without a session. Another directory's session is saved first, so
-/// `session list` has one to leave out; `usage` and `context` without an
-/// id take the newest session whatever its directory, which is the run's.
+/// without a session. Another directory's session is saved first and dated
+/// at the epoch, so `session list` has one to leave out, and `usage` and
+/// `context` without an id take the newest session, which is the run's.
 /// The mock still serves, so `usage` may ask it for prices.
 #[tokio::test]
 async fn the_saved_session_commands_name_the_run_s_session() {
@@ -378,20 +390,24 @@ async fn the_saved_session_commands_name_the_run_s_session() {
     let dirs = Dirs::new(&config_for(mock.port(), &["mock-model"], false));
     let mut other = Session::new("mock/mock-model", dirs.env.dir("elsewhere"));
     other.messages.push(Message::User("elsewhere".into()));
+    other.updated_at = SystemTime::UNIX_EPOCH;
     dirs.env.save(&other).await;
     let other = other.id.to_string();
 
     let run = run_nth(&dirs, "say hello");
     assert!(run.status.success(), "nth run failed: {}", run.stderr);
 
+    let id = dirs
+        .sessions()
+        .into_iter()
+        .map(|session| session["id"].clone())
+        .find(|id| *id != other.as_str())
+        .expect("the run saved a session");
+    assert!(id.is_string(), "the session has an id: {id}");
+
     let all = dirs.json(&["session", "list", "--all", "--json"]);
     let all = all.as_array().expect("an array");
-    assert_eq!(all.len(), 2, "both sessions are saved: {all:?}");
-    let id = all
-        .iter()
-        .map(|s| s["id"].clone())
-        .find(|id| *id != other.as_str())
-        .expect("the run's session");
+    assert_eq!(all.len(), 2, "both sessions are listed: {all:?}");
 
     let here = dirs.json(&["session", "list", "--json"]);
     let here = here.as_array().expect("an array");

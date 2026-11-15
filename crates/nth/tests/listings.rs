@@ -146,8 +146,8 @@ fn session_list_all_is_empty_on_an_empty_data_dir() {
 }
 
 /// The gather reads the env's data dir: one saved session's spend comes
-/// back as its model's line for the day and its tool's line. No provider is
-/// configured, so the prices' listing has nothing to wait for and the
+/// back as its model's line for the day and its tool's line. The spend
+/// stores no rates and no provider is configured to list them, so its
 /// price is null.
 #[tokio::test]
 async fn usage_all_reads_the_saved_spend() {
@@ -182,7 +182,10 @@ async fn usage_all_reads_the_saved_spend() {
     assert_eq!(model["input"], 100);
     assert_eq!(model["output"], 20);
     assert!(model["day"].is_string(), "{model}");
-    assert!(model["price"].is_null(), "no listing, no price: {model}");
+    assert!(
+        model["price"].is_null(),
+        "no stored rates and no listing, so no price: {model}"
+    );
     assert_eq!(find(&lines, "tool", "read")["calls"], 3);
 }
 
