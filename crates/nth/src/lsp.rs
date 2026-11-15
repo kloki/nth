@@ -24,10 +24,19 @@ pub enum LspCommand {
 
 pub async fn run(command: Option<LspCommand>, json: bool, config: &Config) -> Result<()> {
     let lsp = Lsp::new(&config.lsp);
-    let cwd = std::env::current_dir().context("no working directory")?;
     match command {
-        None => output::print(&ServersReport::read(lsp, cwd).await?, json),
+        None => {
+            let cwd = std::env::current_dir().context("no working directory")?;
+            output::print(&ServersReport::read(lsp, &cwd).await?, json)
+        }
         Some(LspCommand::Diagnostics { file }) => {
+            // Only a relative path is resolved against the working
+            // directory, so an absolute one still works from a directory
+            // that was removed; joining it to the empty path keeps it whole.
+            let cwd = match file.is_relative() {
+                true => std::env::current_dir().context("no working directory")?,
+                false => PathBuf::new(),
+            };
             output::print(&DiagnosticsReport::read(lsp, &cwd, &file).await?, json)
         }
     }
@@ -40,8 +49,9 @@ struct ServersReport {
 }
 
 impl ServersReport {
-    async fn read(lsp: Lsp, cwd: PathBuf) -> Result<Self> {
+    async fn read(lsp: Lsp, cwd: &Path) -> Result<Self> {
         // Finding programs and roots walks PATH and the directory tree.
+        let cwd = cwd.to_path_buf();
         let servers = tokio::task::spawn_blocking(move || lsp.servers_for(&cwd))
             .await
             .context("server lookup failed")?;
@@ -215,7 +225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_finds_a_configured_server_and_its_root() {
+    async fn read_finds_a_configured_server() {
         // The built-in table and PATH decide the rest, so only the
         // config's own server is pinned.
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -223,7 +233,7 @@ mod tests {
             toml::from_str("[x]\ncommand = ['no-such-server-nth']\nextensions = ['.x']\n")
                 .expect("an lsp config");
 
-        let report = ServersReport::read(Lsp::new(&config), dir.path().to_path_buf())
+        let report = ServersReport::read(Lsp::new(&config), dir.path())
             .await
             .expect("the lookup");
 
@@ -344,6 +354,20 @@ mod tests {
         assert_eq!(report.file, dir.path().join("notes.nolsp"));
         assert!(report.status.is_empty(), "{:?}", report.status);
         assert!(report.diagnostics.values().all(Vec::is_empty));
+    }
+
+    #[tokio::test]
+    async fn read_takes_an_absolute_path_without_a_working_directory() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = dir.path().join("notes.nolsp");
+        std::fs::write(&file, "text").expect("a file");
+        let lsp = Lsp::new(&nth_lsp::LspConfig::default());
+
+        let report = DiagnosticsReport::read(lsp, Path::new(""), &file)
+            .await
+            .expect("the touch");
+
+        assert_eq!(report.file, file);
     }
 
     #[tokio::test]

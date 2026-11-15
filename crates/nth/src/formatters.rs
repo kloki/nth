@@ -146,6 +146,9 @@ mod tests {
 
         let report = FormattersReport::read(dir.path(), &config).await;
 
+        let names: Vec<&str> = report.formatters.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.len() > 2, "{names:?}");
+        assert_eq!(names[names.len() - 2..], ["mine", "theirs"]);
         let mine = report
             .formatters
             .iter()
