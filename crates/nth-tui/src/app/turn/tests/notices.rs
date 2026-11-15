@@ -7,7 +7,7 @@ use super::*;
 pub(super) async fn monitor_says(app: &mut App, line: &str) {
     let m = app
         .monitors
-        .register("ci", "watch")
+        .register("ci", "watch", None)
         .await
         .expect("front-end");
     let output = MonitorEvent::Output {

@@ -1,3 +1,5 @@
+mod stdin;
+
 use std::{
     collections::VecDeque,
     path::Path,
@@ -13,12 +15,14 @@ use nth_protocol::{
 };
 use serde::Deserialize;
 use serde_json::json;
+pub use stdin::MonitorInput;
 use tokio::{
     fs::File,
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Child,
 };
 
+use self::stdin::{Echo, Input, Writer};
 use crate::{
     command_output::Cleaner,
     process::{self, DRAIN, KillGroupOnDrop, MIN_TIMEOUT_MS, kill_group},
@@ -40,6 +44,8 @@ struct Args {
     command: String,
     description: String,
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    stdin: bool,
 }
 
 impl Tool for Monitor {
@@ -52,7 +58,8 @@ impl Tool for Monitor {
                 "properties": {
                     "command": { "type": "string", "description": "Shell command or script. Each stdout line is an event; exit ends the watch." },
                     "description": { "type": "string", "description": "Short description of what you are monitoring, shown in every notice." },
-                    "timeout_ms": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS, "description": "Kill the monitor after this deadline. Default 300000." }
+                    "timeout_ms": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS, "description": "Kill the monitor after this deadline. Default 300000." },
+                    "stdin": { "type": "boolean", "description": "Keep the command's stdin open so you can write to it with monitor_input, as for a REPL or a prompt. Default false: it reads end-of-input at once." }
                 },
                 "required": ["command", "description"]
             }),
@@ -75,18 +82,33 @@ impl Tool for Monitor {
                     .unwrap_or(DEFAULT_TIMEOUT_MS)
                     .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
             );
-            let child = process::shell(&args.command, &ctx.cwd, &ctx.session)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+            let mut command = process::shell(&args.command, &ctx.cwd, &ctx.session);
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            // Only on request: a command that reads stdin would otherwise
+            // wait on it forever rather than read end-of-input.
+            if args.stdin {
+                if let Some(refused) = stdin::refused(ctx) {
+                    return Err(refused);
+                }
+                command.stdin(Stdio::piped());
+            }
+            let mut child = command
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             // Armed before anything can fail: a command whose watch never
             // starts is killed with everything it started, where dropping
             // the child alone would reach only bash.
             let abandoned = KillGroupOnDrop(child.id());
+            let (writes, input) = match args.stdin {
+                true => {
+                    let (writes, input) = Input::open(&mut child)?;
+                    (Some(writes), Some(input))
+                }
+                false => (None, None),
+            };
             let registered = ctx
                 .monitors
-                .register(&args.description, &args.command)
+                .register(&args.description, &args.command, writes)
                 .await
                 .ok_or("the front-end is gone")?;
             let id = registered.id;
@@ -99,11 +121,16 @@ impl Tool for Monitor {
                 registered,
                 child,
                 abandoned,
+                input,
                 log,
                 timeout,
             ));
+            let stdin_note = match args.stdin {
+                true => " Write to its stdin with monitor_input.",
+                false => "",
+            };
             Ok(format!(
-                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it. {log_note} Stop it with monitor_stop.",
+                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it. {log_note}{stdin_note} Stop it with monitor_stop.",
                 args.description,
                 timeout.as_secs()
             ))
@@ -122,18 +149,28 @@ async fn open_log(path: &Path) -> std::io::Result<File> {
 /// Runs until the command exits, the timeout, a stop, a flood or the
 /// front-end leaving, and reports how it ended. Everything the command
 /// started dies with it unless it exited by itself: then, as with bash,
-/// what it put in the background lives on.
+/// what it put in the background lives on. `input` is the command's stdin
+/// and the model's writes to it, for a command started with it open.
 async fn watch(
     monitors: Monitors,
     registered: Registered,
     mut child: Child,
     mut abandoned: KillGroupOnDrop,
+    input: Option<Input>,
     log: Option<File>,
     timeout: Duration,
 ) {
     let Registered { id, stop, .. } = registered;
     let mut out = child.stdout.take().map(Pipe::new);
     let mut err = child.stderr.take().map(Pipe::new);
+    let (writer, mut echoes, held) = match input {
+        Some(input) => {
+            let held = input.held();
+            let (writer, echoes) = Writer::spawn(monitors.clone(), id, input);
+            (Some(writer), Some(echoes), Some(held))
+        }
+        None => (None, None, None),
+    };
     let mut watch = Watch {
         monitors: &monitors,
         id,
@@ -150,6 +187,12 @@ async fn watch(
             biased;
             _ = stop.cancelled() => break MonitorEnd::Stopped(monitors.stopped_by(id)),
             _ = &mut deadline => break MonitorEnd::TimedOut { after_ms: timeout.as_millis() as u64 },
+            // Before the output, which may answer it.
+            echo = stdin::echoed(&mut echoes) => {
+                if let Some(end) = watch.echo(echo).await {
+                    break end;
+                }
+            }
             line = next_line(&mut out) => match line {
                 Some(line) => {
                     if let Some(end) = watch.line(line, Stream::Stdout).await {
@@ -171,6 +214,11 @@ async fn watch(
             status = child.wait() => {
                 let status = status.ok().map(end_of);
                 let drained = tokio::time::timeout(DRAIN, async {
+                    // Written before the command's last output, which may
+                    // answer it.
+                    while let Some(echo) = echoes.as_mut().and_then(|echoes| echoes.try_recv().ok()) {
+                        if let Some(end) = watch.echo(echo).await { return Some(end); }
+                    }
                     while let Some(line) = next_line(&mut out).await {
                         if let Some(end) = watch.line(line, Stream::Stdout).await { return Some(end); }
                     }
@@ -189,10 +237,23 @@ async fn watch(
             }
         }
     };
+    // The writer stops before anything else, before the command is killed:
+    // a write it still waits on is cut short rather than failing on a pipe
+    // the kill closed, and nothing is written or echoed after this, so the
+    // drain below has a fixed end. The held handle keeps the pipe open.
+    if let Some(writer) = writer {
+        writer.stop().await;
+    }
     if abandoned.0.is_some() {
         // Stopped, timed out or flooded: the command and all it started go.
         kill_group(&child);
         abandoned.0 = None;
+    }
+    // Only now may the pipe close: a command killed above never reads
+    // end-of-input after a write cut short, and one that exited by itself
+    // leaves what it put in the background to read it, as bash would.
+    if let Some(held) = held {
+        held.release();
     }
     // A line that never ended, such as the latest redraw of a bar, is the
     // last thing the command said: it goes out as the close of a pipe
@@ -202,6 +263,13 @@ async fn watch(
     }
     if let Some(line) = unfinished(&mut err) {
         watch.last_line(line, Stream::Stderr).await;
+    }
+    // Every write the writer answered shows in the log and the tab, also
+    // one written as the command ended.
+    if let Some(echoes) = &mut echoes {
+        while let Some(echo) = echoes.recv().await {
+            watch.echo(echo).await;
+        }
     }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
@@ -423,10 +491,22 @@ impl Watch<'_> {
         self.send(line, stream).await;
     }
 
+    /// Logs and reports what the model wrote to stdin, past the flood
+    /// guard: the model wrote it, so it is no flood of the command's.
+    async fn echo(&mut self, echo: Echo) -> Option<MonitorEnd> {
+        for line in echo {
+            if let Some(end) = self.send(line, Stream::Stdin).await {
+                return Some(end);
+            }
+        }
+        None
+    }
+
     async fn send(&mut self, line: String, stream: Stream) -> Option<MonitorEnd> {
         let prefix = match stream {
             Stream::Stdout => "",
             Stream::Stderr => "stderr: ",
+            Stream::Stdin => "stdin: ",
         };
         self.write_log(&format!("{prefix}{line}")).await;
         let output = MonitorEvent::Output {
@@ -507,13 +587,13 @@ mod tests {
 
     use super::*;
 
-    struct Fixture {
-        dir: tempfile::TempDir,
-        ctx: ToolContext,
-        events: mpsc::Receiver<MonitorEvent>,
+    pub(super) struct Fixture {
+        pub(super) dir: tempfile::TempDir,
+        pub(super) ctx: ToolContext,
+        pub(super) events: mpsc::Receiver<MonitorEvent>,
     }
 
-    fn fixture() -> Fixture {
+    pub(super) fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let (tx, events) = mpsc::channel(256);
         let ctx = ToolContext {
@@ -523,13 +603,15 @@ mod tests {
         Fixture { dir, ctx, events }
     }
 
-    async fn start(ctx: &ToolContext, command: &str, timeout_ms: u64) -> ToolResult {
+    pub(super) async fn start(ctx: &ToolContext, command: &str, timeout_ms: u64) -> ToolResult {
         let args = json!({ "command": command, "description": "test", "timeout_ms": timeout_ms });
         Monitor.call(args, ctx).await
     }
 
     /// Everything the monitor reports until it ends.
-    async fn until_ended(events: &mut mpsc::Receiver<MonitorEvent>) -> Vec<MonitorEvent> {
+    pub(super) async fn until_ended(
+        events: &mut mpsc::Receiver<MonitorEvent>,
+    ) -> Vec<MonitorEvent> {
         let mut seen = Vec::new();
         while let Some(event) = events.recv().await {
             let ended = matches!(event, MonitorEvent::Ended { .. });
@@ -541,7 +623,7 @@ mod tests {
         seen
     }
 
-    fn stdout(seen: &[MonitorEvent]) -> Vec<&str> {
+    pub(super) fn stdout(seen: &[MonitorEvent]) -> Vec<&str> {
         seen.iter()
             .filter_map(|e| match e {
                 MonitorEvent::Output {
@@ -554,7 +636,7 @@ mod tests {
             .collect()
     }
 
-    fn end(seen: &[MonitorEvent]) -> (MonitorEnd, usize) {
+    pub(super) fn end(seen: &[MonitorEvent]) -> (MonitorEnd, usize) {
         match seen.last() {
             Some(MonitorEvent::Ended { end, events, .. }) => (*end, *events),
             other => panic!("not ended: {other:?}"),

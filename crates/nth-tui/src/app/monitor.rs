@@ -162,7 +162,7 @@ pub(super) mod tests {
     pub(in crate::app) async fn start(app: &mut App, description: &str) -> Registered {
         let m = app
             .monitors
-            .register(description, "watch")
+            .register(description, "watch", None)
             .await
             .expect("front-end");
         hear(app);
@@ -302,6 +302,32 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn what_the_model_wrote_shows_in_the_tab_and_not_in_the_inbox() {
+        let mut app = test_app();
+        let m = start(&mut app, "repl").await;
+        say(&mut app, m.id, "1+1", Stream::Stdin).await;
+        say(&mut app, m.id, "2", Stream::Stdout).await;
+        app.apply(Action::Content(1));
+
+        let rows = rows(&mut app);
+        assert!(
+            rows[3].starts_with(" running · 0s · 1 event · "),
+            "{}",
+            rows[3]
+        );
+        assert_eq!(rows[5].trim_end(), " > 1+1");
+        assert_eq!(rows[6].trim_end(), " 2");
+        assert_eq!(
+            app.inbox.take_notices().unwrap(),
+            format!(
+                "<monitor id=\"1\" description=\"repl\" log=\"{}\">\n2\n</monitor>",
+                app.monitor_tabs.views[&m.id].log.display()
+            ),
+            "only the answer"
+        );
+    }
+
+    #[tokio::test]
     async fn an_ended_monitor_closes_its_notice() {
         let mut app = test_app();
         app.monitors.set_log_dir("/logs".into());
@@ -348,7 +374,7 @@ pub(super) mod tests {
         // nothing it says may reach the next session's model.
         let m = app
             .monitors
-            .register("ci", "watch")
+            .register("ci", "watch", None)
             .await
             .expect("front-end");
         let output = MonitorEvent::Output {

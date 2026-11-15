@@ -107,6 +107,11 @@ impl MonitorView {
         lines.extend(self.lines.iter().map(|(stream, text)| match stream {
             Stream::Stdout => Line::raw(text.clone()),
             Stream::Stderr => Line::styled(text.clone(), dim),
+            // What the model typed, between the output it answers.
+            Stream::Stdin => Line::styled(
+                format!("{} {text}", nth_icons::icons().stdin),
+                Style::new().fg(Color::Cyan),
+            ),
         }));
         lines
     }
@@ -127,6 +132,17 @@ mod tests {
     #[test]
     fn the_label_is_the_description_cut_short() {
         assert_eq!(view().label(), "errors in the deploy…");
+    }
+
+    #[test]
+    fn what_the_model_wrote_is_cyan_and_no_event() {
+        let mut view = view();
+        view.push(Stream::Stdin, "1+1".into());
+        assert_eq!(view.events, 0);
+        let lines = view.render(None);
+        let typed = lines.last().expect("a line");
+        assert_eq!(typed.to_string(), "> 1+1");
+        assert_eq!(typed.style.fg, Some(Color::Cyan));
     }
 
     #[test]

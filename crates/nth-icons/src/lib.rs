@@ -49,6 +49,8 @@ pub struct Icons {
     pub checked: &'static str,
     /// A model that takes images, in the model lists.
     pub image: &'static str,
+    /// What the model wrote to a monitor's stdin, in its tab.
+    pub stdin: &'static str,
     pub work: WorkIcons,
     pub tree: TreeIcons,
     pub tab: TabIcons,
@@ -153,6 +155,7 @@ pub static PLAIN: Icons = Icons {
     unchecked: "☐",
     checked: "☒",
     image: "◩",
+    stdin: ">",
     work: WorkIcons {
         pending: "●",
         upcoming: "●",
@@ -227,7 +230,7 @@ impl Icons {
             "skill" => tool.skill,
             "question" => tool.question,
             "panel" | "show_user" => tool.panel,
-            "monitor" | "monitor_stop" => tool.monitor,
+            "monitor" | "monitor_input" | "monitor_stop" => tool.monitor,
             "task" => tool.task,
             name if name.starts_with("work_") => tool.work,
             _ => tool.other,
@@ -260,6 +263,7 @@ impl Icons {
             unchecked,
             checked,
             image,
+            stdin,
             work,
             tree,
             tab,
@@ -290,6 +294,7 @@ impl Icons {
             *unchecked,
             *checked,
             *image,
+            *stdin,
             work.pending,
             work.upcoming,
             tree.bar,
@@ -357,6 +362,7 @@ mod tests {
     fn tools_have_their_own_icon() {
         assert_eq!(PLAIN.tool_icon("read"), "≡");
         assert_eq!(PLAIN.tool_icon("monitor_stop"), "&");
+        assert_eq!(PLAIN.tool_icon("monitor_input"), "&");
         assert_eq!(PLAIN.tool_icon("work_todo"), "⊞");
         assert_eq!(PLAIN.tool_icon("mystery"), "•");
     }
