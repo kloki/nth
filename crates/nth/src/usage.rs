@@ -5,7 +5,7 @@
 
 use std::{
     collections::BTreeMap,
-    io::{IsTerminal, Write},
+    io::Write,
     time::{Duration, SystemTime},
 };
 
@@ -21,7 +21,10 @@ use nth_session::{
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
-use crate::runtime::Runtime;
+use crate::{
+    output::{self, Report},
+    runtime::Runtime,
+};
 
 /// How long a price waits for the model listing.
 const LISTING_WAIT: Duration = Duration::from_secs(3);
@@ -49,30 +52,61 @@ pub async fn run(
         Err(_) => None,
     };
     let cost = |model: &str| listing.as_ref()?.cost_of(model);
-    let mut out = std::io::stdout().lock();
-    let json = json || !out.is_terminal();
     if all {
         let spending = store.spending().await?;
         let spends: Vec<&Spend> = spending.iter().flat_map(|s| s.usage.spends()).collect();
         let days = per_day(&spends);
-        return match json {
-            true => days_json(&mut out, &days, &cost),
-            false => days_text(&mut out, &days, &cost),
-        };
+        return output::print(&DaysUsageReport { days, cost: &cost }, json);
     }
     let session = crate::session::pick(&store, session.as_deref()).await?;
-    match json {
-        true => writeln!(out, "{}", session_json(&session, &cost))?,
-        false => session_text(&mut out, &session, &cost)?,
-    }
-    Ok(())
+    output::print(
+        &SessionUsageReport {
+            session,
+            cost: &cost,
+        },
+        json,
+    )
 }
 
-fn session_text(
-    out: &mut impl Write,
-    session: &Session,
-    cost: &dyn Fn(&str) -> Option<Cost>,
-) -> Result<()> {
+/// What a model's tokens cost per million, when known. Borrowed, since
+/// `run`'s closure reads the listing it holds.
+type CostOf<'a> = &'a dyn Fn(&str) -> Option<Cost>;
+
+/// What one session spent, as `nth usage` prints it.
+struct SessionUsageReport<'a> {
+    session: Session,
+    cost: CostOf<'a>,
+}
+
+impl Report for SessionUsageReport<'_> {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        session_text(out, &self.session, self.cost)
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(out, "{}", session_json(&self.session, self.cost))?;
+        Ok(())
+    }
+}
+
+/// What every saved session spent per day and model, as `nth usage --all`
+/// prints it.
+struct DaysUsageReport<'a> {
+    days: Days<'a>,
+    cost: CostOf<'a>,
+}
+
+impl Report for DaysUsageReport<'_> {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        days_text(out, &self.days, self.cost)
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        days_json(out, &self.days, self.cost)
+    }
+}
+
+fn session_text(out: &mut dyn Write, session: &Session, cost: CostOf) -> Result<()> {
     let title = session.title().unwrap_or_default();
     writeln!(
         out,
@@ -109,7 +143,7 @@ fn session_text(
     note(out)
 }
 
-fn session_json(session: &Session, cost: &dyn Fn(&str) -> Option<Cost>) -> Value {
+fn session_json(session: &Session, cost: CostOf) -> Value {
     let ledger = &session.usage;
     let models: Vec<Value> = ledger
         .by_model()
@@ -156,7 +190,7 @@ fn per_day<'a>(spends: &[&'a Spend]) -> Days<'a> {
     days.into_iter().rev().collect()
 }
 
-fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Cost>) -> Result<()> {
+fn days_text(out: &mut dyn Write, days: &Days, cost: CostOf) -> Result<()> {
     if days.is_empty() {
         writeln!(
             out,
@@ -225,7 +259,7 @@ fn days_text(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
     note(out)
 }
 
-fn days_json(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Cost>) -> Result<()> {
+fn days_json(out: &mut dyn Write, days: &Days, cost: CostOf) -> Result<()> {
     for (day, models) in days {
         for (model, spends) in models {
             let total = usage::total(spends.iter().copied());
@@ -259,7 +293,7 @@ fn days_json(out: &mut impl Write, days: &Days, cost: &dyn Fn(&str) -> Option<Co
 
 /// The tool calls' totals as a table of rows: calls, failures, the mean
 /// time and the output returned, all time.
-fn tools_text(out: &mut impl Write, tools: &BTreeMap<&str, ToolUse>) -> Result<()> {
+fn tools_text(out: &mut dyn Write, tools: &BTreeMap<&str, ToolUse>) -> Result<()> {
     if tools.is_empty() {
         return Ok(());
     }
@@ -295,7 +329,7 @@ fn tools_text(out: &mut impl Write, tools: &BTreeMap<&str, ToolUse>) -> Result<(
 }
 
 /// A titled block of rows, indented under its title.
-fn table(out: &mut impl Write, title: Option<&str>, rows: &[Row]) -> Result<()> {
+fn table(out: &mut dyn Write, title: Option<&str>, rows: &[Row]) -> Result<()> {
     if let Some(title) = title {
         writeln!(out)?;
         writeln!(out, "{}", title.bold())?;
@@ -349,7 +383,7 @@ fn paint(rows: &[Row]) -> Vec<String> {
         .collect()
 }
 
-fn note(out: &mut impl Write) -> Result<()> {
+fn note(out: &mut dyn Write) -> Result<()> {
     writeln!(out)?;
     let note = "prices are list-price estimates from models.dev, whatever your plan bills";
     writeln!(out, "{}", note.dimmed())?;
@@ -403,6 +437,7 @@ mod tests {
     use nth_protocol::Usage;
 
     use super::*;
+    use crate::output::testing;
 
     fn spend(model: &str, agent: Option<&str>, at: SystemTime, input: u64) -> Spend {
         Spend {
@@ -502,5 +537,150 @@ mod tests {
                 .as_str()
                 .is_some_and(|at| at.starts_with("2026-10-10"))
         );
+    }
+
+    /// An instant fixed in UTC, for what prints the time itself: the JSON's
+    /// `at`, which `at(day)` would move with the machine's zone.
+    fn noon_utc() -> SystemTime {
+        let at: Timestamp = "2026-10-10T12:00:00Z".parse().expect("a timestamp");
+        SystemTime::from(at)
+    }
+
+    /// A session with a fixed id and title and no spends.
+    fn titled() -> Session {
+        let mut session = Session::new("glm", "/repo".into());
+        session.id = "5e5510a0-0000-4000-8000-000000000000"
+            .parse()
+            .expect("a uuid");
+        session
+            .messages
+            .push(nth_protocol::Message::User("Fix the usage tables".into()));
+        session
+    }
+
+    /// Two turns on glm around a subagent's on kimi, the first with cache
+    /// writes, thinking and two tool calls, one of them failed.
+    fn two_models() -> Session {
+        let mut session = titled();
+        let mut first = spend("glm", None, noon_utc(), 400_000);
+        first.steps = 3;
+        first.tokens.output = 24_000;
+        first.tokens.cache_write = Some(12_000);
+        first.tokens.reasoning = Some(6_000);
+        first.tool(
+            "read",
+            &nth_protocol::Message::tool_result("1", "fn main() {}"),
+            Duration::from_millis(40),
+        );
+        first.tool(
+            "bash",
+            &nth_protocol::Message::tool_failed("2", "exit 1"),
+            Duration::from_millis(1_250),
+        );
+        session.usage.record(first);
+        session
+            .usage
+            .record(spend("kimi", Some("explore"), noon_utc(), 80_000));
+        session.usage.record(spend("glm", None, noon_utc(), 30_000));
+        session
+    }
+
+    /// glm at $3 in and $15 out per million tokens, with no cheaper cache
+    /// read; kimi unknown.
+    fn glm_rates(model: &str) -> Option<Cost> {
+        (model == "glm").then_some(Cost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: None,
+            cache_write: None,
+        })
+    }
+
+    /// glm as `glm_rates`, but reading from the cache at a tenth.
+    fn glm_cached(model: &str) -> Option<Cost> {
+        glm_rates(model).map(|rates| Cost {
+            cache_read: Some(0.3),
+            ..rates
+        })
+    }
+
+    #[test]
+    fn a_session_with_no_steps_says_nothing_was_spent() {
+        let session = titled();
+        let text = testing::text(&SessionUsageReport {
+            session,
+            cost: &glm_rates,
+        });
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_session_tables_its_total_models_and_turns() {
+        let session = two_models();
+        let text = testing::text(&SessionUsageReport {
+            session,
+            cost: &glm_rates,
+        });
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_cheaper_cache_read_says_what_caching_saved() {
+        let session = two_models();
+        let text = testing::text(&SessionUsageReport {
+            session,
+            cost: &glm_cached,
+        });
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn no_days_says_nothing_was_spent_yet() {
+        let text = testing::text(&DaysUsageReport {
+            days: Vec::new(),
+            cost: &glm_rates,
+        });
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn days_table_newest_first_then_the_tools() {
+        let mut read = spend("glm", None, at("2026-10-09"), 400_000);
+        read.tool(
+            "read",
+            &nth_protocol::Message::tool_result("1", "fn main() {}"),
+            Duration::from_millis(40),
+        );
+        let mut bash = spend("kimi", Some("explore"), at("2026-10-10"), 2_000_000);
+        bash.tool(
+            "bash",
+            &nth_protocol::Message::tool_failed("2", "exit 1"),
+            Duration::from_millis(1_250),
+        );
+        bash.tool(
+            "bash",
+            &nth_protocol::Message::tool_result("3", "ok"),
+            Duration::from_millis(750),
+        );
+        let spends = [read, bash, spend("glm", None, at("2026-10-10"), 30_000)];
+        let refs: Vec<&Spend> = spends.iter().collect();
+        let days = per_day(&refs);
+        let text = testing::text(&DaysUsageReport {
+            days,
+            cost: &glm_cached,
+        });
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_session_is_one_json_document() {
+        let report = SessionUsageReport {
+            session: two_models(),
+            cost: &glm_cached,
+        };
+
+        let value: Value = serde_json::from_str(&testing::json(&report)).expect("one document");
+
+        insta::assert_json_snapshot!(value);
     }
 }

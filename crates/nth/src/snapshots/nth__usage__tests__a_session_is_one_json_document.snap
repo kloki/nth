@@ -1,0 +1,106 @@
+---
+source: crates/nth/src/usage.rs
+expression: value
+---
+{
+  "id": "5e5510a0-0000-4000-8000-000000000000",
+  "models": [
+    {
+      "cache_read": 215000,
+      "cache_write": 12000,
+      "input": 430000,
+      "model": "glm",
+      "output": 24001,
+      "price": {
+        "dollars": 1.069515,
+        "partial": false
+      },
+      "reasoning": 6000,
+      "steps": 4
+    },
+    {
+      "cache_read": 40000,
+      "cache_write": null,
+      "input": 80000,
+      "model": "kimi",
+      "output": 1,
+      "price": null,
+      "reasoning": null,
+      "steps": 1
+    }
+  ],
+  "saved": 0.5805,
+  "title": "Fix the usage tables",
+  "tools": [
+    {
+      "calls": 1,
+      "duration_ms": 1250,
+      "failed": 1,
+      "name": "bash",
+      "output": 13
+    },
+    {
+      "calls": 1,
+      "duration_ms": 40,
+      "failed": 0,
+      "name": "read",
+      "output": 12
+    }
+  ],
+  "total": {
+    "cache_read": 255000,
+    "cache_write": 12000,
+    "input": 510000,
+    "output": 24002,
+    "price": {
+      "dollars": 1.069515,
+      "partial": true
+    },
+    "reasoning": 6000,
+    "steps": 5
+  },
+  "turns": [
+    {
+      "agent": null,
+      "at": "2026-10-10T12:00:00Z",
+      "cache_read": 200000,
+      "cache_write": 12000,
+      "input": 400000,
+      "model": "glm",
+      "output": 24000,
+      "price": {
+        "dollars": 1.02,
+        "partial": false
+      },
+      "reasoning": 6000,
+      "steps": 3
+    },
+    {
+      "agent": "explore",
+      "at": "2026-10-10T12:00:00Z",
+      "cache_read": 40000,
+      "cache_write": null,
+      "input": 80000,
+      "model": "kimi",
+      "output": 1,
+      "price": null,
+      "reasoning": null,
+      "steps": 1
+    },
+    {
+      "agent": null,
+      "at": "2026-10-10T12:00:00Z",
+      "cache_read": 15000,
+      "cache_write": null,
+      "input": 30000,
+      "model": "glm",
+      "output": 1,
+      "price": {
+        "dollars": 0.049515,
+        "partial": false
+      },
+      "reasoning": null,
+      "steps": 1
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+---
+source: crates/nth/src/usage.rs
+expression: text
+---
+→ Fix the usage tables  5e5510a0-0000-4000-8000-000000000000
+  all  5 steps  510k in  50% cached  2% written  24k out  25% think  $1.07+
+
+per model
+  glm   4 steps  430k in  50% cached  3% written  24k out  25% think  $1.07
+  kimi   1 step   80k in  50% cached     write ?    1 out    think ?
+
+per turn
+  #1 glm            3 steps  400k in  50% cached  3% written  24k out  25% think  $1.02
+  #2 @explore kimi   1 step   80k in  50% cached     write ?    1 out    think ?
+  #3 glm             1 step   30k in  50% cached     write ?    1 out    think ?  $0.05
+
+  $0.58 saved by caching
+
+prices are list-price estimates from models.dev, whatever your plan bills
