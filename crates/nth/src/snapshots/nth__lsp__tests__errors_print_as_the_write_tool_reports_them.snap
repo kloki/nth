@@ -1,0 +1,13 @@
+---
+source: crates/nth/src/lsp.rs
+expression: "testing::text(&report)"
+---
+LSP errors detected in other files:
+<diagnostics file="/repo/src/lib.rs">
+ERROR [10:5] cannot find value `x`
+</diagnostics>
+
+LSP errors detected in this file, please fix:
+<diagnostics file="/repo/src/main.rs">
+ERROR [3:5] mismatched types
+</diagnostics>

@@ -1,0 +1,5 @@
+---
+source: crates/nth/src/notify.rs
+expression: "testing::text(&report(None))"
+---
+✓ sent via notify-send  nth notify: done

@@ -1,0 +1,7 @@
+---
+source: crates/nth/src/lsp.rs
+expression: "testing::text(&servers())"
+---
+✓ rust-analyzer  /usr/bin/rust-analyzer  → /repo
+✓ gopls          /usr/bin/gopls  no project root here
+✗ pyright        not on PATH

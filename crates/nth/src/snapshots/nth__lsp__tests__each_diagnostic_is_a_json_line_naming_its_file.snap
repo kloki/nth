@@ -1,0 +1,20 @@
+---
+source: crates/nth/src/lsp.rs
+expression: "lines[1]"
+---
+{
+  "file": "/repo/src/main.rs",
+  "message": "mismatched types",
+  "range": {
+    "end": {
+      "character": 4,
+      "line": 2
+    },
+    "start": {
+      "character": 4,
+      "line": 2
+    }
+  },
+  "severity": 1,
+  "source": "rustc"
+}
