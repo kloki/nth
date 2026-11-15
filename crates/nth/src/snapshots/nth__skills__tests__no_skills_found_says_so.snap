@@ -1,0 +1,5 @@
+---
+source: crates/nth/src/skills.rs
+expression: "testing::text(&report(Vec::new()))"
+---
+→ no skills found

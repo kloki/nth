@@ -1,0 +1,11 @@
+---
+source: crates/nth/src/skills.rs
+expression: "lines[0]"
+---
+{
+  "description": "Draw a diagram",
+  "name": "diagram",
+  "path": "/home/u/.claude/skills/diagram/SKILL.md",
+  "root": "/home/u/.claude/skills",
+  "source": "global"
+}

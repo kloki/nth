@@ -1,0 +1,7 @@
+---
+source: crates/nth/src/memory.rs
+expression: "testing::text(&empty())"
+---
+memory  /repo/.nth/memory
+no MEMORY.md yet
+→ no memories saved

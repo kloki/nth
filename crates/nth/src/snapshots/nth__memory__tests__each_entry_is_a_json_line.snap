@@ -1,0 +1,10 @@
+---
+source: crates/nth/src/memory.rs
+expression: "lines[1]"
+---
+{
+  "description": "Stacked PRs",
+  "name": "prs",
+  "path": "/repo/.nth/memory/prs.md",
+  "type": "feedback"
+}

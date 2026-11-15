@@ -1,0 +1,10 @@
+---
+source: crates/nth/src/agents.rs
+expression: "testing::text(&report)"
+---
+global  ~/.claude/agents
+├─ research  all  The research agent
+└─ review    team/group  The review agent
+project  /repo/.nth/agents
+├─ planner   primary
+└─ scout     no description, so the model is not offered it

@@ -1,0 +1,9 @@
+---
+source: crates/nth/src/memory.rs
+expression: "testing::text(&report)"
+---
+memory  /repo/.nth/memory
+! off: [memory] enabled = false, so no session reads or writes it
+! skipped /repo/.nth/memory/broken.md: no type
+MEMORY.md  1/200 lines · 1/25 KB
+→ no memories saved

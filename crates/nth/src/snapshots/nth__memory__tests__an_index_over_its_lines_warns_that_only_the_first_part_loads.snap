@@ -1,0 +1,7 @@
+---
+source: crates/nth/src/memory.rs
+expression: "testing::text(&report)"
+---
+memory  /repo/.nth/memory
+! MEMORY.md  201/200 lines · 4/25 KB, only the first part loads
+→ no memories saved
