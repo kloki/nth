@@ -1,9 +1,10 @@
 //! The one way a binary test runs `nth`: the real binary in an environment
-//! of its own. The environment is cleared, so a developer's `NTH_CONFIG`,
-//! `NTH_MODEL`, proxy or `GIT_DIR` cannot steer the child, and `HOME`,
-//! `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point into one temp dir, so no
-//! test reads or writes the real `~/.config/nth`, `~/.local/share/nth` or a
-//! project's `.nth`.
+//! of its own. The child's environment is cleared, so a developer's
+//! `NTH_CONFIG`, `NTH_MODEL`, proxy or `GIT_DIR` cannot steer it, and
+//! `HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` point into one temp dir,
+//! so no run of `nth` reads or writes the real `~/.config/nth`,
+//! `~/.local/share/nth` or a project's `.nth`. What a test runs itself,
+//! such as `git init`, still sees the test's own environment.
 
 // Each test binary compiles this module on its own and uses only part of it.
 #![allow(dead_code)]
@@ -17,12 +18,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nth_session::{Session, Store};
 use serde_json::Value;
 use tempfile::TempDir;
 
 /// How long one run may take before it is killed and the test fails: far
 /// past any command's own deadline, so only a hang reaches it.
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The test's own variables the child still gets: under cargo-llvm-cov the
+/// binary is instrumented, and without `LLVM_PROFILE_FILE` its runs count
+/// for nothing and it drops its profile in `cwd`, which a test that checks
+/// its repository is clean would see; `RUST_BACKTRACE` so a panic in the
+/// child explains itself in the failing test's output.
+const PASSED_THROUGH: [&str; 2] = ["LLVM_PROFILE_FILE", "RUST_BACKTRACE"];
 
 /// An isolated home for the binary: the temp root and the directories in it
 /// the child is pointed at, plus the variables a test adds.
@@ -80,6 +89,15 @@ impl Env {
         self.data.join("nth/sessions")
     }
 
+    /// Saves `session` where the child finds its sessions, for a command
+    /// that reads one the test made rather than one a run saved.
+    pub async fn save(&self, session: &Session) {
+        Store::at(self.sessions())
+            .save(session)
+            .await
+            .expect("saves the session");
+    }
+
     /// A new directory `name` under the root, for a project or a repository.
     pub fn dir(&self, name: &str) -> PathBuf {
         let dir = self.root().join(name);
@@ -107,11 +125,10 @@ impl Env {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .envs(self.vars.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null());
-        // Under cargo-llvm-cov the binary is instrumented: without this its
-        // runs count for nothing and it drops its profile in `cwd`, which a
-        // test that checks its repository is clean would see.
-        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile);
+        for key in PASSED_THROUGH {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
         }
         command
     }

@@ -13,9 +13,10 @@
 mod support;
 
 use std::{
+    ffi::OsStr,
     io::{Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Output,
     sync::{
         Arc, Mutex,
@@ -24,6 +25,8 @@ use std::{
     thread,
 };
 
+use nth_protocol::Message;
+use nth_session::Session;
 use serde_json::Value;
 use support::Env;
 
@@ -244,10 +247,19 @@ impl Dirs {
 
     /// `nth --config <file> args` in the working directory.
     fn nth(&self, args: &[&str]) -> Output {
-        let file: &Path = &self.file;
-        let mut all = vec![std::ffi::OsStr::new("--config"), file.as_os_str()];
-        all.extend(args.iter().map(std::ffi::OsStr::new));
-        self.env.run(&self.work, &all)
+        self.env.run(&self.work, &self.args(args))
+    }
+
+    /// [`Dirs::nth`] for a command that prints one JSON document: that
+    /// document, failing the test unless the command succeeded.
+    fn json(&self, args: &[&str]) -> Value {
+        self.env.json(&self.work, &self.args(args))
+    }
+
+    fn args<'a>(&'a self, args: &[&'a str]) -> Vec<&'a OsStr> {
+        let mut all = vec![OsStr::new("--config"), self.file.as_os_str()];
+        all.extend(args.iter().map(|arg| OsStr::new(*arg)));
+        all
     }
 }
 
@@ -356,32 +368,37 @@ fn a_run_answers_and_saves_the_session_the_config_asked_for() {
 /// The commands that read a saved session find the one a run saved, in
 /// the environment it saved it in: the `run` glue of `session list`,
 /// `usage` and `context`, which the listings' smoke tests cannot reach
-/// without a session. The mock still serves, so `usage` may ask it for
-/// prices.
-#[test]
-fn the_saved_session_commands_name_the_run_s_session() {
+/// without a session. Another directory's session is saved first, so
+/// `session list` has one to leave out; `usage` and `context` without an
+/// id take the newest session whatever its directory, which is the run's.
+/// The mock still serves, so `usage` may ask it for prices.
+#[tokio::test]
+async fn the_saved_session_commands_name_the_run_s_session() {
     let mock = Mock::start(Script::Answer);
     let dirs = Dirs::new(&config_for(mock.port(), &["mock-model"], false));
+    let mut other = Session::new("mock/mock-model", dirs.env.dir("elsewhere"));
+    other.messages.push(Message::User("elsewhere".into()));
+    dirs.env.save(&other).await;
+    let other = other.id.to_string();
+
     let run = run_nth(&dirs, "say hello");
     assert!(run.status.success(), "nth run failed: {}", run.stderr);
-    let id = dirs.session()["id"].clone();
-    assert!(id.is_string(), "the session has an id: {id}");
 
-    let json = |args: &[&str]| -> Value {
-        let output = dirs.nth(args);
-        assert!(
-            output.status.success(),
-            "nth {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("one JSON document")
-    };
-    let sessions = json(&["session", "list", "--json"]);
-    let sessions = sessions.as_array().expect("an array");
-    assert_eq!(sessions.len(), 1, "{sessions:?}");
-    assert_eq!(sessions[0]["id"], id);
-    assert_eq!(json(&["usage", "--json"])["id"], id);
-    assert_eq!(json(&["context", "--json"])["session_id"], id);
+    let all = dirs.json(&["session", "list", "--all", "--json"]);
+    let all = all.as_array().expect("an array");
+    assert_eq!(all.len(), 2, "both sessions are saved: {all:?}");
+    let id = all
+        .iter()
+        .map(|s| s["id"].clone())
+        .find(|id| *id != other.as_str())
+        .expect("the run's session");
+
+    let here = dirs.json(&["session", "list", "--json"]);
+    let here = here.as_array().expect("an array");
+    assert_eq!(here.len(), 1, "only the working directory's: {here:?}");
+    assert_eq!(here[0]["id"], id);
+    assert_eq!(dirs.json(&["usage", "--json"])["id"], id);
+    assert_eq!(dirs.json(&["context", "--json"])["session_id"], id);
 }
 
 /// An overflowed step is compacted and replayed: the summary request is the

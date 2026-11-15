@@ -6,8 +6,10 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf, time::SystemTime};
 
+use nth_protocol::{Message, Usage};
+use nth_session::{Session, Spend, ToolUse};
 use serde_json::{Value, json};
 use support::Env;
 
@@ -81,7 +83,11 @@ fn memory_lists_the_saved_entry() {
     let work = project(&env);
     let lines = env.json_lines(&work, &["memory"]);
     assert_eq!(lines.len(), 1, "the index is not an entry: {lines:?}");
-    insta::assert_json_snapshot!(redacted(&env, &lines[0]));
+    let entry = &lines[0];
+    assert_eq!(entry["name"], "colours");
+    assert_eq!(entry["type"], "feedback");
+    assert_eq!(entry["description"], "Colour names are terminal colours");
+    insta::assert_json_snapshot!(redacted(&env, entry));
 }
 
 /// What is on PATH decides which formatters are enabled, so only the keys
@@ -139,14 +145,45 @@ fn session_list_all_is_empty_on_an_empty_data_dir() {
     assert_eq!(sessions, json!([]));
 }
 
-/// No provider is configured, so the prices' listing has nothing to wait
-/// for, and there is nothing to spend.
-#[test]
-fn usage_all_succeeds_on_an_empty_data_dir() {
+/// The gather reads the env's data dir: one saved session's spend comes
+/// back as its model's line for the day and its tool's line. No provider is
+/// configured, so the prices' listing has nothing to wait for and the
+/// price is null.
+#[tokio::test]
+async fn usage_all_reads_the_saved_spend() {
     let env = Env::new();
     let work = project(&env);
-    // Parsing every line is what the runner checks; there may be none.
-    env.json_lines(&work, &["usage", "--all"]);
+    let mut session = Session::new("seed/model", work.clone());
+    session.messages.push(Message::User("spend".into()));
+    session.usage.record(Spend {
+        model: "seed/model".into(),
+        agent: None,
+        steps: 2,
+        tokens: Usage {
+            input: 100,
+            output: 20,
+            ..Usage::default()
+        },
+        at: SystemTime::now(),
+        cost: None,
+        tools: BTreeMap::from([(
+            "read".to_string(),
+            ToolUse {
+                calls: 3,
+                ..ToolUse::default()
+            },
+        )]),
+    });
+    env.save(&session).await;
+
+    let lines = env.json_lines(&work, &["usage", "--all"]);
+    let model = find(&lines, "model", "seed/model");
+    assert_eq!(model["steps"], 2);
+    assert_eq!(model["input"], 100);
+    assert_eq!(model["output"], 20);
+    assert!(model["day"].is_string(), "{model}");
+    assert!(model["price"].is_null(), "no listing, no price: {model}");
+    assert_eq!(find(&lines, "tool", "read")["calls"], 3);
 }
 
 #[test]
