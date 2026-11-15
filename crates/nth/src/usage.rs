@@ -614,6 +614,11 @@ mod tests {
         insta::assert_snapshot!(text);
     }
 
+    /// glm is priced but reads from the cache at full price, so caching
+    /// saved nothing, yet the snapshot ends in "$0.00 saved by caching":
+    /// `session_text` prints the line whenever `Ledger::saved` is `Some`,
+    /// which any priced spend makes it, while `days_text` prints it only
+    /// above zero. Pinned as master prints it.
     #[test]
     fn a_session_tables_its_total_models_and_turns() {
         let session = two_models();
@@ -643,8 +648,10 @@ mod tests {
         insta::assert_snapshot!(text);
     }
 
-    #[test]
-    fn days_table_newest_first_then_the_tools() {
+    /// Two days: a glm turn reading a file on the first, then a kimi
+    /// subagent's two bash calls, one failed, and another glm turn on the
+    /// second.
+    fn two_days() -> [Spend; 3] {
         let mut read = spend("glm", None, at("2026-10-09"), 400_000);
         read.tool(
             "read",
@@ -662,14 +669,35 @@ mod tests {
             &nth_protocol::Message::tool_result("3", "ok"),
             Duration::from_millis(750),
         );
-        let spends = [read, bash, spend("glm", None, at("2026-10-10"), 30_000)];
+        [read, bash, spend("glm", None, at("2026-10-10"), 30_000)]
+    }
+
+    #[test]
+    fn days_table_newest_first_then_the_tools() {
+        let spends = two_days();
         let refs: Vec<&Spend> = spends.iter().collect();
-        let days = per_day(&refs);
         let text = testing::text(&DaysUsageReport {
-            days,
+            days: per_day(&refs),
             cost: &glm_cached,
         });
         insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn days_are_a_json_line_per_day_and_model_then_one_per_tool() {
+        let spends = two_days();
+        let refs: Vec<&Spend> = spends.iter().collect();
+        let report = DaysUsageReport {
+            days: per_day(&refs),
+            cost: &glm_cached,
+        };
+
+        let lines: Vec<Value> = testing::json(&report)
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a JSON line"))
+            .collect();
+
+        insta::assert_json_snapshot!(lines);
     }
 
     #[test]
