@@ -13,11 +13,13 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Assignment, Work, WorkNotice, WorkState, open_items, outcome, returned, todo::WorkTodo,
+    Assignment, Work, WorkNotice, WorkState, Worker, open_items, outcome, returned, todo::WorkTodo,
 };
 use crate::subagent::{Answer, Done, Job, PLANNING, TaskIdArg, find_agent, validate_name};
 
 const ASSIGNED: &str = include_str!("assigned.md");
+/// For a subagent continued on another item than its last.
+const REASSIGNED: &str = include_str!("reassigned.md");
 
 /// What the actor tells about a job on a work item. The actor settles
 /// it however the job ends, so the item never stays running for nobody.
@@ -30,27 +32,18 @@ pub struct Assigned {
 impl Assigned {
     /// The subagent has said nothing for `quiet`.
     pub(crate) fn stalled(&self, quiet: Duration) {
-        let a = &self.assignment;
-        a.parent.tell(|| {
-            a.inbox.post_work(WorkNotice {
-                cycle: a.at.cycle.clone(),
-                item: a.at.item.clone(),
-                task: a.task,
-                name: a.name.clone(),
-                agent: a.agent.clone(),
-                state: WorkState::Stalled { quiet },
-            });
-        });
+        let Assignment { worker, at } = &self.assignment;
+        worker.tell(at, WorkState::Stalled { quiet });
     }
 
     /// The subagent's turn ended: the item returns, and the model hears
     /// unless the session that assigned it was left. The file returns
     /// either way, or it would read as running forever.
     pub(crate) async fn settle(self, turn: Answer) {
-        let a = &self.assignment;
-        let notice = returned(a, outcome(&turn)).await;
-        a.parent.tell(|| {
-            a.inbox.post_work(notice.clone());
+        let worker = &self.assignment.worker;
+        let notice = returned(&self.assignment, outcome(&turn)).await;
+        worker.parent.tell(|| {
+            worker.inbox.post_work(notice.clone());
         });
         // A dropped receiver is a call that stopped waiting, which is fine.
         if let Some(reply) = self.reply {
@@ -91,7 +84,7 @@ impl Tool for WorkAssign {
                     "item": { "type": "string", "description": "The item's slug." },
                     "subagent_type": { "type": "string", "description": "The type of specialized agent to put on it" },
                     "name": { "type": "string", "description": "Instance name; required on fresh spawn, optional on continuation." },
-                    "task_id": { "type": "integer", "description": "Only to continue the subagent that last worked on this item, with what it remembers; leave it out for a fresh one." },
+                    "task_id": { "type": "integer", "description": "Continues an idle subagent this plan started in this run of nth, on this item, with what it remembers: prefer it when the item follows from that subagent's own work. Leave it out for a fresh one." },
                     "timeout_ms": { "type": "integer", "minimum": 0, "description": "Milliseconds this attempt may run before it returns as timed out, 0 for no limit; the configured limit by default." }
                 },
                 "required": ["cycle", "item", "subagent_type"]
@@ -158,14 +151,13 @@ impl Tool for WorkAssign {
                     open_items(first)
                 ));
             }
-            let path = at.path(store.dir());
-            // A fresh subagent's number, taken first so its work_todo is
-            // bound to the item from the start.
+            // A fresh subagent's number, taken first so its work_todo
+            // knows whose it is from the start.
             let (id, parent, fresh) = match continued {
                 Some(id) => {
-                    if live.worked.get(&path) != Some(&id) {
+                    if live.last(store.dir(), id).is_none() {
                         return Err(format!(
-                            "subagent {id} did not work on {at} in this run of nth; leave task_id out to start a fresh one"
+                            "subagent {id} is not one work_assign started for this plan in this run of nth, so it cannot work on its items; leave task_id out to start a fresh one"
                         ));
                     }
                     match subagents.describe(id) {
@@ -183,6 +175,9 @@ impl Tool for WorkAssign {
                         Some(_) => {}
                     }
                     if let Some(name) = &args.name && subagents.name(id).as_deref() != Some(name.as_str()) { return Err(format!("subagent {id} has a different name; omit name or use its original name")); }
+                    if let Some(on) = live.busy_on(id) {
+                        return Err(format!("subagent {id} is busy on {on}; wait for it, or stop it with task_stop. Several items for one subagent go one after another"));
+                    }
                     if subagents.is_running(id) || subagents.queued(id) > 0 {
                         return Err(format!("subagent {id} is busy; wait for it, or stop it with task_stop"));
                     }
@@ -195,10 +190,9 @@ impl Tool for WorkAssign {
                 }
             };
             let name = match continued { Some(_) => subagents.name(id).ok_or_else(|| format!("subagent {id} has ended"))?, None => args.name.expect("fresh name checked") };
-            let assignment = Assignment {
+            let worker = Worker {
                 files: shared.files.clone(),
                 store: store.clone(),
-                at: at.clone(),
                 task: id,
                 name: name.clone(),
                 agent: agent.name.clone(),
@@ -208,9 +202,18 @@ impl Tool for WorkAssign {
             // Started only once the file says running, so a write that
             // fails leaves no idle subagent behind.
             let fresh = fresh.map(|reserved| {
-                let todo: Arc<dyn Tool> = Arc::new(WorkTodo::new(assignment.clone()));
+                let todo: Arc<dyn Tool> = Arc::new(WorkTodo::new(worker.clone()));
                 (reserved, todo)
             });
+            // A subagent that comes from another item is told so: its
+            // todo tool follows it here, and what it remembers is of the
+            // other item.
+            let moved = live.last(store.dir(), id).is_some_and(|last| *last != at);
+            let template = if moved { REASSIGNED } else { ASSIGNED };
+            let assignment = Assignment {
+                worker,
+                at: at.clone(),
+            };
             let before = item.clone();
             // Known before the subagent starts, since the file says who
             // works on the item first.
@@ -233,7 +236,7 @@ impl Tool for WorkAssign {
                 ),
                 None => String::new(),
             };
-            let mut text = ASSIGNED
+            let mut text = template
                 .replace("{item}", &at.to_string())
                 .replace("{limit}", &limit)
                 .replace("{body}", &before.body());
@@ -263,6 +266,7 @@ impl Tool for WorkAssign {
                 }
                 false => (None, None),
             };
+            let worker = assignment.worker.clone();
             let assigned = Assigned { assignment, reply };
             let cancel = CancellationToken::new();
             let job = Job {
@@ -297,15 +301,15 @@ impl Tool for WorkAssign {
                     "subagent {id} has ended{restored}; leave task_id out to start a fresh one"
                 ));
             }
-            live.running.insert(path.clone(), id);
-            live.worked.insert(path.clone(), id);
+            live.assign(&worker, &at);
             let Some(waiting) = waiting else {
-                let verb = match continued {
-                    Some(_) => format!("Sent {at} back to subagent {id} ({name}, @{})", agent.name),
-                    None => format!("Assigned {at} to subagent {id} ({name}, @{})", agent.name),
+                let verb = match (continued, moved) {
+                    (Some(_), true) => format!("Continued subagent {id} ({name}, @{}) on {at}", agent.name),
+                    (Some(_), false) => format!("Sent {at} back to subagent {id} ({name}, @{})", agent.name),
+                    (None, _) => format!("Assigned {at} to subagent {id} ({name}, @{})", agent.name),
                 };
                 return Ok(format!(
-                    "{verb}. Its answer and any stall reach you as <work_item> notices, its todo updates along with them; carry on, or end your turn to wait. task_id {id} continues the same subagent on this item later."
+                    "{verb}. Its answer and any stall reach you as <work_item> notices, its todo updates along with them; carry on, or end your turn to wait. Once it is idle, task_id {id} continues the same subagent, on this item or on a later one that follows from its work."
                 ));
             };
             // The subagent's work_todo and its settling take the lock.

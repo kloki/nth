@@ -405,6 +405,16 @@ impl Subagents {
         Some((child.agent.clone(), child.description.clone()))
     }
 
+    /// Whether subagent `id` still takes a prompt: known, and its actor
+    /// has not ended, as it does once its front-end is gone.
+    pub fn alive(&self, id: SubagentId) -> bool {
+        let registry = self.0.lock();
+        registry
+            .children
+            .get(&id)
+            .is_some_and(|child| !child.commands.is_closed())
+    }
+
     /// The stable instance name of a subagent.
     pub fn name(&self, id: SubagentId) -> Option<String> {
         Some(self.0.lock().children.get(&id)?.name.clone())

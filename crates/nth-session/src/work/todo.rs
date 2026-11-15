@@ -1,21 +1,23 @@
-//! `work_todo`: the one work tool an assigned subagent gets, bound to its
-//! item. Each call replaces the item's todo list and tells the model that
-//! assigned it.
+//! `work_todo`: the one work tool an assigned subagent gets. Each call
+//! replaces the todo list of the item the subagent runs now and tells
+//! the model that assigned it.
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, tool_names};
-use nth_work::{Status, Todo, one_line, todo_counts};
+use nth_work::{ItemRef, Status, Todo, one_line, todo_counts};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Assignment, WorkNotice, WorkState};
+use super::{WorkState, Worker};
 
-/// Bound to the item and subagent `work_assign` built it for.
-pub(super) struct WorkTodo(Assignment);
+/// Bound to the subagent `work_assign` built it for, never to an item:
+/// each call asks `Live` which one the subagent runs, since `task_id`
+/// may have put it on another since.
+pub(super) struct WorkTodo(Worker);
 
 impl WorkTodo {
-    pub(super) fn new(assignment: Assignment) -> Self {
-        Self(assignment)
+    pub(super) fn new(worker: Worker) -> Self {
+        Self(worker)
     }
 }
 
@@ -74,42 +76,42 @@ impl Tool for WorkTodo {
                 })
                 .filter(|todo| !todo.text.is_empty())
                 .collect();
-            {
-                let _live = a.files.0.lock().await;
+            let at = {
+                let live = a.files.0.lock().await;
+                let plan = a.store.dir();
+                let Some(at) = live.current(plan, a.task).cloned() else {
+                    return Err(match live.last(plan, a.task) {
+                        Some(at) => gone(at),
+                        None => "you are on no work item; finish with your answer".into(),
+                    });
+                };
                 let item = a
                     .store
-                    .read(&a.at)
+                    .read(&at)
                     .await
-                    .map_err(|e| format!("reading {} failed: {e}", a.at))?;
+                    .map_err(|e| format!("reading {at} failed: {e}"))?;
+                // Written since by the orchestrator, whose it is now.
                 let Some(mut item) =
                     item.filter(|item| item.status == Status::Running && item.task == Some(a.task))
                 else {
-                    return Err(format!(
-                        "{} is no longer yours to work on; finish with your answer",
-                        a.at
-                    ));
+                    return Err(gone(&at));
                 };
                 item.todos = todos.clone();
                 a.store
                     .write(&item)
                     .await
-                    .map_err(|e| format!("writing {} failed: {e}", a.at))?;
-            }
+                    .map_err(|e| format!("writing {at} failed: {e}"))?;
+                at
+            };
             let (done, total) = todo_counts(&todos);
-            // Not once forgotten with the session that assigned it: a
-            // later one's model would read about another plan.
-            a.parent.tell(|| {
-                a.inbox.post_work(WorkNotice {
-                    cycle: a.at.cycle.clone(),
-                    item: a.at.item.clone(),
-                    task: a.task,
-                    name: a.name.clone(),
-                    agent: a.agent.clone(),
-                    state: WorkState::Todo(todos),
-                });
-            });
+            a.tell(&at, WorkState::Todo(todos));
             Ok(format!("Todo updated: {done}/{total} done."))
         }
         .boxed()
     }
+}
+
+/// Told to a subagent whose turn on the item at `at` is over.
+fn gone(at: &ItemRef) -> String {
+    format!("{at} is no longer yours to work on; finish with your answer")
 }
