@@ -1,0 +1,20 @@
+---
+source: crates/nth/src/agents.rs
+expression: "lines[0]"
+---
+{
+  "denied": [
+    "bash"
+  ],
+  "description": "The planner agent",
+  "hidden": true,
+  "mode": "primary",
+  "model": "zen/claude",
+  "name": "planner",
+  "path": "/repo/.nth/agents/planner.md",
+  "root": "/repo/.nth/agents",
+  "source": "project",
+  "tools": [
+    "read"
+  ]
+}

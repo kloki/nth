@@ -1,0 +1,11 @@
+---
+source: crates/nth/src/memory.rs
+expression: "testing::text(&report)"
+---
+memory  /repo/.nth/memory
+MEMORY.md  2/200 lines · 1/25 KB
+user
+├─ colours    Colour names are the 16 terminal colours
+└─ worktrees  Work in worktrees
+feedback
+└─ prs        Deliver as stacked PRs
