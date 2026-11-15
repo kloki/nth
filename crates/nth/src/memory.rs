@@ -175,6 +175,16 @@ mod tests {
     }
 
     #[test]
+    fn an_index_over_its_bytes_warns_though_under_its_lines() {
+        let report = MemoryReport {
+            index: Some(format!("{}\n", "a".repeat(INDEX_BYTES))),
+            ..empty()
+        };
+
+        insta::assert_snapshot!(testing::text(&report));
+    }
+
+    #[test]
     fn memory_off_says_so_beside_a_warning_from_the_list() {
         let report = MemoryReport {
             enabled: false,
