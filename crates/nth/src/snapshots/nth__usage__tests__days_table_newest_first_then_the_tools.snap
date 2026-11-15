@@ -1,0 +1,23 @@
+---
+source: crates/nth/src/usage.rs
+expression: text
+---
+
+all days
+  glm   2 steps  430k in  50% cached  write ?  2 out  think ?  $0.71
+  kimi   1 step  2.0M in  50% cached  write ?  1 out  think ?
+
+2026-10-10  2 steps  2.0M in  50% cached  write ?  2 out  think ?  $0.05+
+  glm   1 step   30k in  50% cached  write ?  1 out  think ?  $0.05
+  kimi  1 step  2.0M in  50% cached  write ?  1 out  think ?
+
+2026-10-09  1 step  400k in  50% cached  write ?  1 out  think ?  $0.66
+  glm  1 step  400k in  50% cached  write ?  1 out  think ?  $0.66
+
+tools
+  bash  2 calls  1 failed  1.0s avg  15 out
+  read  1 calls  0 failed  40ms avg  12 out
+
+  $0.58 saved by caching
+
+prices are list-price estimates from models.dev, whatever your plan bills
