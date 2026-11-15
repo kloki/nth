@@ -10,7 +10,7 @@ use crate::{
     Inbox, SubagentEvent, Subagents,
     agent_loop::tests::{Scripted, call},
     inbox::{NoticeSummary, split_notices},
-    subagent::tests::says,
+    subagent::{child_session, find_agent, tests::says},
     work::{
         Item, Limits, Store, WorkOutcome,
         item::WorkItem,
@@ -216,7 +216,7 @@ async fn with_an_inbox_it_returns_at_once_and_every_change_is_a_notice() {
 }
 
 #[tokio::test]
-async fn work_todo_knows_its_item_from_the_first_call() {
+async fn work_todo_finds_its_item_from_the_first_call() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = mpsc::channel(64);
     let subagents = Subagents::new(tx);
@@ -310,8 +310,13 @@ async fn cycles_run_one_after_another_and_closed_items_stay_closed() {
     );
 }
 
+/// A continuation of subagent `id` on item `item` of cycle 1.
+fn again(item: &str, id: u32) -> serde_json::Value {
+    json!({ "cycle": 1, "item": item, "subagent_type": "general", "task_id": id })
+}
+
 #[tokio::test]
-async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
+async fn task_id_continues_a_subagent_on_the_same_item_under_its_name() {
     let dir = tempfile::tempdir().unwrap();
     let work = work_with(
         vec![says("first try"), says("second try"), says("third try")],
@@ -322,11 +327,9 @@ async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
     );
     let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "a").await;
-    write(&work, &ctx, 1, "b").await;
     let tool = WorkAssign::new(work);
     tool.call(assign(1, "a"), &ctx).await.unwrap();
 
-    let again = |item: &str, id: u32| json!({ "cycle": 1, "item": item, "subagent_type": "general", "name": "worker", "task_id": id });
     let mut mismatch = again("a", 1);
     mismatch["name"] = json!("other");
     assert!(
@@ -335,18 +338,349 @@ async fn task_id_continues_only_the_subagent_that_last_worked_on_the_item() {
             .unwrap_err()
             .contains("different name")
     );
-    assert_eq!(
-        tool.call(again("b", 1), &ctx).await.unwrap_err(),
-        "subagent 1 did not work on 01-c1/b in this run of nth; leave task_id out to start a fresh one"
-    );
-    let result = tool.call(again("a", 1), &ctx).await.unwrap();
+    let mut named = again("a", 1);
+    named["name"] = json!("worker");
+    let result = tool.call(named, &ctx).await.unwrap();
     assert!(result.contains("second try"), "{result}");
-    let mut unnamed = again("a", 1);
-    unnamed.as_object_mut().unwrap().remove("name");
-    let result = tool.call(unnamed, &ctx).await.unwrap();
+    let result = tool.call(again("a", 1), &ctx).await.unwrap();
     assert!(result.contains("name=\"worker\""), "{result}");
     assert!(result.contains("third try"), "{result}");
     assert_eq!(read(dir.path(), "01-c1", "a").await.task, Some(1));
+}
+
+/// The next prompt a subagent is sent.
+async fn prompted(rx: &mut mpsc::Receiver<SubagentEvent>) -> String {
+    loop {
+        match rx.recv().await {
+            Some(SubagentEvent::Prompted { text, .. }) => return text,
+            Some(_) => {}
+            None => panic!("never prompted"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn task_id_continues_a_work_subagent_on_another_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    let mut replies = vec![says("Built the store.")];
+    replies.extend(ticks_then_answers());
+    let work = work_with(replies, Vec::new(), subagents.clone(), Inbox::new(), LIMITS);
+    let ctx = ctx(dir.path());
+    write(&work, &ctx, 1, "build").await;
+    write(&work, &ctx, 1, "fix").await;
+    let tool = WorkAssign::new(work.clone());
+    let status = super::super::status::WorkStatus::new(work.clone());
+
+    tool.call(assign(1, "build"), &ctx).await.unwrap();
+    let first = prompted(&mut rx).await;
+    assert!(first.starts_with("You are assigned one item"), "{first}");
+    until(&mut rx, ended).await;
+    let result = tool.call(again("fix", 1), &ctx).await.unwrap();
+
+    assert!(
+        result.starts_with("Continued subagent 1 (worker, @general) on 01-c1/fix."),
+        "{result}"
+    );
+    let second = prompted(&mut rx).await;
+    assert!(
+        second.starts_with("You are assigned another item of the same plan"),
+        "{second}"
+    );
+    assert!(second.contains("01-c1/fix"), "{second}");
+    assert!(second.contains("<work_item>\n# Store\n"), "{second}");
+    until(&mut rx, ended).await;
+    assert_eq!(subagents.ids(), [1], "no second subagent");
+    let fix = read(dir.path(), "01-c1", "fix").await;
+    assert_eq!(fix.status, Status::Returned);
+    assert!(fix.todos[0].done && !fix.todos[1].done, "its todo ticked");
+    assert_eq!(fix.task, Some(1));
+    assert_eq!(fix.name.as_deref(), Some("worker"));
+    assert_eq!(fix.agent.as_deref(), Some("general"));
+    assert_eq!(fix.model.as_deref(), Some("glm-5.3"));
+    assert_eq!(fix.result.as_deref(), Some("Parsed; writing is left."));
+    let build = read(dir.path(), "01-c1", "build").await;
+    assert!(build.todos.iter().all(|todo| !todo.done), "not the first");
+    assert_eq!(build.result.as_deref(), Some("Built the store."));
+
+    let text = status.call(json!({}), &ctx).await.unwrap();
+    assert!(
+        text.ends_with(
+            "\n\n## Subagents\n- task 1: worker @general on glm-5.3 · idle · worked 01-c1/build, 01-c1/fix"
+        ),
+        "{text}"
+    );
+    subagents.forget_all();
+    let text = status.call(json!({}), &ctx).await.unwrap();
+    assert!(
+        text.ends_with("- task 1: worker @general · ended · worked 01-c1/build, 01-c1/fix"),
+        "{text}"
+    );
+    assert_eq!(
+        tool.call(again("build", 1), &ctx).await.unwrap_err(),
+        "subagent 1 has ended; leave task_id out to start a fresh one"
+    );
+}
+
+#[tokio::test]
+async fn task_id_is_refused_for_what_cannot_take_the_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    let work = Work::new(
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+        subagents.clone(),
+        Inbox::new(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
+    for item in ["a", "b", "c"] {
+        write(&work, &ctx, 1, item).await;
+    }
+    let tool = WorkAssign::new(work.clone());
+    let status = super::super::status::WorkStatus::new(work.clone());
+    // As one the task tool started: in the registry, not of the plan.
+    let agent = find_agent(&ctx, "general").unwrap();
+    let other = subagents.spawn(
+        subagents.reserve(),
+        agent,
+        "a task",
+        child_session(agent, &ctx, 10),
+        Arc::new(Scripted::stalled()),
+        Vec::new(),
+    );
+    assert!(subagents.alive(other));
+
+    assert_eq!(
+        tool.call(again("a", other), &ctx).await.unwrap_err(),
+        "subagent 1 is not one work_assign started for this plan in this run of nth, so it cannot work on its items; leave task_id out to start a fresh one"
+    );
+    assert!(
+        !status
+            .call(json!({}), &ctx)
+            .await
+            .unwrap()
+            .contains("## Subagents"),
+        "none yet"
+    );
+    tool.call(assign(1, "a"), &ctx).await.unwrap();
+    // Before its actor read the prompt, when the registry says idle.
+    let text = status.call(json!({}), &ctx).await.unwrap();
+    assert!(text.ends_with("· running · worked 01-c1/a"), "{text}");
+    assert_eq!(
+        tool.call(again("b", 2), &ctx).await.unwrap_err(),
+        "subagent 2 is busy on 01-c1/a; wait for it, or stop it with task_stop. Several items for one subagent go one after another"
+    );
+    until(&mut rx, |e| matches!(e, SubagentEvent::Prompted { .. })).await;
+    assert!(
+        tool.call(again("b", 2), &ctx)
+            .await
+            .unwrap_err()
+            .starts_with("subagent 2 is busy on 01-c1/a"),
+    );
+    let text = status.call(json!({}), &ctx).await.unwrap();
+    assert!(
+        text.ends_with("- task 2: worker @general on glm-5.3 · running · worked 01-c1/a"),
+        "{text}"
+    );
+    let mut explore = again("b", 2);
+    explore["subagent_type"] = json!("explore");
+    assert_eq!(
+        tool.call(explore, &ctx).await.unwrap_err(),
+        "subagent 2 is @general, not @explore; leave task_id out to start a fresh one"
+    );
+    assert_eq!(
+        read(dir.path(), "01-c1", "b").await.status,
+        Status::Pending,
+        "refused before the file changed"
+    );
+    assert_eq!(
+        tool.call(again("a", 2), &ctx).await.unwrap_err(),
+        "01-c1/a is running (task 2) already"
+    );
+}
+
+#[tokio::test]
+async fn a_subagent_returning_to_an_item_is_told_it_moved_and_worked_lists_each_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    // No inbox, so each call waits for its notice as `nth run`'s does.
+    let work = work_with(
+        vec![says("one"), says("two"), says("three"), says("four")],
+        Vec::new(),
+        Subagents::new(tx),
+        Inbox::default(),
+        LIMITS,
+    );
+    let ctx = ctx(dir.path());
+    write(&work, &ctx, 1, "a").await;
+    write(&work, &ctx, 1, "b").await;
+    let tool = WorkAssign::new(work.clone());
+
+    tool.call(assign(1, "a"), &ctx).await.unwrap();
+    let moved = tool.call(again("b", 1), &ctx).await.unwrap();
+    assert!(
+        moved.starts_with("<work_item cycle=\"01-c1\" item=\"b\" task=\"1\" name=\"worker\""),
+        "{moved}"
+    );
+    assert!(moved.contains("two"), "{moved}");
+    let back = tool.call(again("a", 1), &ctx).await.unwrap();
+    assert!(back.contains("item=\"a\"") && back.contains("three"));
+    tool.call(again("a", 1), &ctx).await.unwrap();
+
+    let mut prompts = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let SubagentEvent::Prompted { text, .. } = event {
+            prompts.push(text.starts_with("You are assigned another item"));
+        }
+    }
+    assert_eq!(
+        prompts,
+        [false, true, true, false],
+        "fresh, moved to b, moved back to a, a again"
+    );
+    let text = super::super::status::WorkStatus::new(work)
+        .call(json!({}), &ctx)
+        .await
+        .unwrap();
+    assert!(text.ends_with("· idle · worked 01-c1/b, 01-c1/a"), "{text}");
+}
+
+#[tokio::test]
+async fn a_continued_subagents_stall_and_stop_name_the_item_it_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(64);
+    let subagents = Subagents::new(tx);
+    let inbox = Inbox::new();
+    let provider = Scripted {
+        then: Some(crate::agent_loop::tests::Reply::Hangs(Vec::new())),
+        ..Scripted::new(vec![says("built")])
+    };
+    let limits = Limits {
+        stall: Some(Duration::from_millis(20)),
+        ..LIMITS
+    };
+    let work = Work::new(
+        Arc::new(provider),
+        Vec::new(),
+        subagents.clone(),
+        inbox.clone(),
+        limits,
+    );
+    let ctx = ctx(dir.path());
+    write(&work, &ctx, 1, "a").await;
+    write(&work, &ctx, 1, "b").await;
+    let tool = WorkAssign::new(work);
+    tool.call(assign(1, "a"), &ctx).await.unwrap();
+    until(&mut rx, ended).await;
+    inbox.clear();
+    let last = |inbox: &Inbox| {
+        let text = inbox.take_notices().unwrap();
+        match split_notices(&text).0.pop() {
+            Some(NoticeSummary::Work {
+                item,
+                state,
+                outcome,
+                ..
+            }) => (item, state, outcome),
+            other => panic!("{other:?}"),
+        }
+    };
+
+    tool.call(again("b", 1), &ctx).await.unwrap();
+    until(&mut rx, |e| matches!(e, SubagentEvent::Stalled { .. })).await;
+    assert_eq!(last(&inbox), ("b".into(), "stalled".into(), None));
+    subagents.cancel(1);
+    until(&mut rx, ended).await;
+
+    assert_eq!(
+        last(&inbox),
+        ("b".into(), "returned".into(), Some("interrupted".into()))
+    );
+    assert_eq!(
+        read(dir.path(), "01-c1", "b").await.outcome,
+        Some(WorkOutcome::Interrupted)
+    );
+    assert_eq!(
+        read(dir.path(), "01-c1", "a").await.status,
+        Status::Returned
+    );
+}
+
+#[tokio::test]
+async fn a_worker_belongs_to_the_plan_it_was_started_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        Subagents::default(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let s1 = ctx(dir.path());
+    let s2 = ToolContext {
+        session: "s2".into(),
+        ..ctx(dir.path())
+    };
+    write(&work, &s1, 1, "a").await;
+    write(&work, &s2, 1, "a").await;
+    let tool = WorkAssign::new(work.clone());
+    let status = super::super::status::WorkStatus::new(work);
+    tool.call(assign(1, "a"), &s1).await.unwrap();
+
+    assert_eq!(
+        tool.call(again("a", 1), &s2).await.unwrap_err(),
+        "subagent 1 is not one work_assign started for this plan in this run of nth, so it cannot work on its items; leave task_id out to start a fresh one"
+    );
+    let other = status.call(json!({}), &s2).await.unwrap();
+    assert!(!other.contains("## Subagents"), "{other}");
+    let own = status.call(json!({}), &s1).await.unwrap();
+    assert!(own.contains("## Subagents\n- task 1: worker"), "{own}");
+}
+
+#[tokio::test]
+async fn work_todo_is_refused_once_its_subagent_runs_no_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx(dir.path());
+    let subagents = Subagents::default();
+    let work = work_with(
+        vec![says("done")],
+        Vec::new(),
+        subagents.clone(),
+        Inbox::default(),
+        LIMITS,
+    );
+    write(&work, &ctx, 1, "a").await;
+    let tick = json!({ "todos": [{ "text": "parse", "done": true }] });
+    let todo = |task| {
+        WorkTodo::new(Worker {
+            files: work.0.files.clone(),
+            store: Work::store(&ctx).unwrap(),
+            task,
+            name: "worker".into(),
+            agent: "general".into(),
+            inbox: Inbox::default(),
+            parent: subagents.parent(task),
+        })
+    };
+    assert_eq!(
+        todo(1).call(tick.clone(), &ctx).await.unwrap_err(),
+        "you are on no work item; finish with your answer"
+    );
+
+    // Headless, so the item has returned when the call does.
+    WorkAssign::new(work.clone())
+        .call(assign(1, "a"), &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        todo(1).call(tick, &ctx).await.unwrap_err(),
+        "01-c1/a is no longer yours to work on; finish with your answer"
+    );
+    assert!(!read(dir.path(), "01-c1", "a").await.todos[0].done);
 }
 
 #[tokio::test]
@@ -623,6 +957,17 @@ async fn a_front_end_gone_still_returns_the_items_queued_for_it() {
     let item = until_status(dir.path(), "a", Status::Returned).await;
     assert_eq!(item.outcome, Some(WorkOutcome::Interrupted));
     assert!(work.files().0.lock().await.running.is_empty());
+    // Still in the registry, but its actor went with the front-end.
+    let status = super::super::status::WorkStatus::new(work);
+    for _ in 0..200 {
+        let text = status.call(json!({}), &ctx).await.unwrap();
+        if text.ends_with("- task 1: worker @general on glm-5.3 · ended · worked 01-c1/a") {
+            return;
+        }
+        assert!(text.contains("## Subagents"), "{text}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never listed as ended");
 }
 
 #[tokio::test]
@@ -741,16 +1086,17 @@ async fn a_todo_tick_after_forgetting_tells_no_model() {
     item.status = Status::Running;
     item.task = Some(reserved.id());
     store.write(&item).await.unwrap();
-    let todo = WorkTodo::new(Assignment {
+    let worker = Worker {
         files: work.0.files.clone(),
         store,
-        at,
         task: reserved.id(),
         name: "worker".into(),
         agent: "general".into(),
         inbox: inbox.clone(),
         parent: reserved.parent(),
-    });
+    };
+    work.files().0.lock().await.assign(&worker, &at);
+    let todo = WorkTodo::new(worker);
     let tick = |done: bool| json!({ "todos": [{ "text": "parse", "done": done }] });
     todo.call(tick(false), &ctx).await.unwrap();
     assert!(inbox.has_notices(), "heard while its session lasts");
@@ -785,17 +1131,19 @@ fn a_forgotten_work_subagent_that_stalls_tells_no_model() {
     let reserved = subagents.reserve();
     let assigned = Assigned {
         assignment: Assignment {
-            files: work.0.files.clone(),
-            store: Store::new(work_dir(dir.path(), "s1")),
+            worker: Worker {
+                files: work.0.files.clone(),
+                store: Store::new(work_dir(dir.path(), "s1")),
+                task: reserved.id(),
+                name: "worker".into(),
+                agent: "general".into(),
+                inbox: inbox.clone(),
+                parent: reserved.parent(),
+            },
             at: ItemRef {
                 cycle: "01-c1".into(),
                 item: "a".into(),
             },
-            task: reserved.id(),
-            name: "worker".into(),
-            agent: "general".into(),
-            inbox: inbox.clone(),
-            parent: reserved.parent(),
         },
         reply: None,
     };

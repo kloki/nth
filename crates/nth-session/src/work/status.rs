@@ -5,10 +5,11 @@ use std::time::SystemTime;
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
-use nth_work::{Cycle, Item, Plan, Status};
+use nth_work::{Cycle, Item, ItemRef, Plan, Status};
 use serde_json::json;
 
-use super::Work;
+use super::{Work, Worked};
+use crate::{SubagentId, Subagents};
 
 pub(super) struct WorkStatus {
     work: Work,
@@ -32,13 +33,27 @@ impl Tool for WorkStatus {
     fn call<'a>(&'a self, _: serde_json::Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
         async move {
             let store = Work::store(ctx)?;
-            let (_, plan) = self.work.locked_plan(&store).await?;
+            let (live, plan) = self.work.locked_plan(&store).await?;
             if plan.cycles.is_empty() && plan.ignored.is_empty() {
                 return Ok(
                     "There is no work plan yet: write its first items with work_item.".into(),
                 );
             }
-            Ok(render(&plan, &store.dir().display().to_string()))
+            let mut out = render(&plan, &store.dir().display().to_string());
+            let subagents = self.work.0.spawner.subagents();
+            let workers: Vec<String> = live
+                .workers
+                .iter()
+                .filter(|(_, worked)| worked.plan == store.dir())
+                .map(|(&task, worked)| {
+                    worker(subagents, task, worked, live.busy_on(task).is_some())
+                })
+                .collect();
+            if !workers.is_empty() {
+                out.push_str("\n\n## Subagents\n");
+                out.push_str(&workers.join("\n"));
+            }
+            Ok(out)
         }
         .boxed()
     }
@@ -127,6 +142,30 @@ fn line(item: &Item) -> String {
     format!("- {}: {}", item.at.item, parts.join(" · "))
 }
 
+/// `- task 2: Atlas @general on zen/glm · idle · worked 01-build/store, 03-fix/store`:
+/// whom `task_id` may continue, and what each knows.
+/// `on_item` is whether `Live` has it on a running item.
+fn worker(subagents: &Subagents, task: SubagentId, worked: &Worked, on_item: bool) -> String {
+    let model = subagents
+        .llm(task)
+        .map(|llm| format!(" on {}", llm.model))
+        .unwrap_or_default();
+    // `Live` first: the registry counts a prompt only once the actor
+    // read it, and an item line above already says this one runs it.
+    let state = match subagents.alive(task) {
+        false => "ended",
+        true if on_item || subagents.is_running(task) => "running",
+        true => "idle",
+    };
+    let items: Vec<String> = worked.items.iter().map(ItemRef::to_string).collect();
+    format!(
+        "- task {task}: {} @{}{model} · {state} · worked {}",
+        worked.name,
+        worked.agent,
+        items.join(", ")
+    )
+}
+
 /// `20s ago`, `4m ago`, `2h ago`: one unit is enough to judge by.
 fn ago(secs: u64) -> String {
     match secs {
@@ -138,7 +177,7 @@ fn ago(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nth_work::{ItemRef, Store, work_dir};
+    use nth_work::{Store, work_dir};
 
     use super::*;
     use crate::work::{item::WorkItem, tests::ctx};

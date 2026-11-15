@@ -19,17 +19,18 @@ use ratatui::{
 
 use crate::{app::TabState, pager::Pager, rich, spinner, theme};
 
-/// What this run's tab of the subagent on an item knows about it.
+/// What this run's tab of a work subagent knows about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveTask {
-    pub task: SubagentId,
     /// When its turn began, while it runs.
     pub since: Option<Instant>,
     pub tool_calls: usize,
 }
 
-/// This run's subagents by the item they work on, `01-a/store`.
-pub type Live = BTreeMap<String, LiveTask>;
+/// This run's work subagents by their number, which is what an item file
+/// names: one subagent works on several items of a plan in turn, so its
+/// tab's description, fixed when it started, cannot say which.
+pub type Live = BTreeMap<SubagentId, LiveTask>;
 
 /// How an item reads given who of this run works on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,13 +44,18 @@ enum Seen {
     Lost,
 }
 
+/// Numbers start again with every run of nth, so an item a gone run left
+/// running under a number a work subagent of this run also has reads as
+/// live. That lasts only until the plan is next read: this run has a work
+/// subagent only after a `work_assign`, and every work tool call first
+/// settles what a gone run left.
 fn seen(item: &Item, live: &Live) -> Seen {
     if item.status != Status::Running {
         return Seen::AsFiled;
     }
-    match live.get(&item.at.to_string()) {
-        Some(task) if Some(task.task) == item.task => Seen::Live(*task),
-        _ => Seen::Lost,
+    match item.task.and_then(|task| live.get(&task)) {
+        Some(task) => Seen::Live(*task),
+        None => Seen::Lost,
     }
 }
 
@@ -70,6 +76,14 @@ impl WorkView {
     /// The plan as read now; `None` when there is none.
     pub fn update(&mut self, plan: Option<Plan>) {
         self.plan = plan;
+    }
+
+    /// The subagent on each running item, by the item, `01-a/store`.
+    pub fn running(&self) -> impl Iterator<Item = (SubagentId, String)> + '_ {
+        let items = self.plan.iter().flat_map(Plan::items);
+        items
+            .filter(|item| item.status == Status::Running)
+            .filter_map(|item| Some((item.task?, item.at.to_string())))
     }
 
     /// `work`, or `work 3/7` once there are items: done over all.
@@ -521,9 +535,8 @@ mod tests {
         let mut view = WorkView::default();
         view.update(Some(plan()));
         let live = Live::from([(
-            "02-build/http-retry".to_string(),
+            3,
             LiveTask {
-                task: 3,
                 since: None,
                 tool_calls: 0,
             },
@@ -592,9 +605,8 @@ mod tests {
         let mut view = WorkView::default();
         view.update(Some(plan()));
         let live = Live::from([(
-            "02-build/http-retry".to_string(),
+            3,
             LiveTask {
-                task: 3,
                 since: None,
                 tool_calls: 0,
             },
@@ -707,9 +719,8 @@ mod tests {
         let mut view = WorkView::default();
         view.update(Some(plan()));
         let other = Live::from([(
-            "02-build/http-retry".to_string(),
+            7,
             LiveTask {
-                task: 7,
                 since: None,
                 tool_calls: 0,
             },

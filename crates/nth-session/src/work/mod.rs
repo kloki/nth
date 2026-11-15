@@ -12,7 +12,11 @@ mod notice;
 mod status;
 mod todo;
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 pub use assign::Assigned;
 use assign::WorkAssign;
@@ -48,9 +52,63 @@ pub(crate) struct Live {
     /// memory is the right scope, since a run that ends takes its
     /// subagents with it.
     unreturned: BTreeMap<PathBuf, (SubagentId, WorkOutcome)>,
-    /// The last one on each item, running or not: the only one `task_id`
-    /// may continue it with, since an id in a file may be another run's.
-    worked: BTreeMap<PathBuf, SubagentId>,
+    /// The subagents `work_assign` started in this run of nth: the ones
+    /// `task_id` may continue, since an id in a file may be another
+    /// run's and one the task tool started has no `work_todo`.
+    workers: BTreeMap<SubagentId, Worked>,
+}
+
+/// What `Live` remembers of a work subagent.
+#[derive(Debug)]
+struct Worked {
+    /// The folder of the plan it was started for, the only one it is
+    /// continued on: its `work_todo` writes there.
+    plan: PathBuf,
+    /// Kept here, since the registry forgets both once it has ended.
+    name: String,
+    agent: String,
+    /// The items it was put on, the latest last and each once.
+    items: Vec<ItemRef>,
+}
+
+impl Live {
+    /// Subagent `worker.task` now runs the item at `at`.
+    fn assign(&mut self, worker: &Worker, at: &ItemRef) {
+        self.running
+            .insert(at.path(worker.store.dir()), worker.task);
+        let worked = self.workers.entry(worker.task).or_insert_with(|| Worked {
+            plan: worker.store.dir().to_path_buf(),
+            name: worker.name.clone(),
+            agent: worker.agent.clone(),
+            items: Vec::new(),
+        });
+        worked.items.retain(|item| item != at);
+        worked.items.push(at.clone());
+    }
+
+    /// The item subagent `task` was last put on, in the plan at `plan`.
+    fn last(&self, plan: &Path, task: SubagentId) -> Option<&ItemRef> {
+        let worked = self.workers.get(&task).filter(|w| w.plan == plan)?;
+        worked.items.last()
+    }
+
+    /// The item subagent `task` runs now. One subagent runs one item at a
+    /// time, so it is the last it was put on or none.
+    fn current(&self, plan: &Path, task: SubagentId) -> Option<&ItemRef> {
+        self.last(plan, task)
+            .filter(|at| self.running.get(&at.path(plan)) == Some(&task))
+    }
+
+    /// The running item subagent `task` is on or waits to start, in any
+    /// plan. The registry counts a prompt only once the actor read it, so
+    /// this is what keeps two calls of one message from both taking it.
+    fn busy_on(&self, task: SubagentId) -> Option<&ItemRef> {
+        let worked = self.workers.get(&task)?;
+        worked
+            .items
+            .iter()
+            .find(|at| self.running.get(&at.path(&worked.plan)) == Some(&task))
+    }
 }
 
 /// The lock every change to an item file is made under, which owns what
@@ -202,15 +260,10 @@ const STOPPED: &str = "The last subagent on this item was stopped before it answ
 /// call to write. Returns the notice telling the orchestrator. Takes the
 /// lock itself, so the caller must not hold it.
 async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
-    let Assignment {
-        files,
-        store,
-        at,
-        task,
-        name,
-        agent,
-        ..
-    } = assignment;
+    let Assignment { worker, at } = assignment;
+    let Worker {
+        files, store, task, ..
+    } = worker;
     let path = at.path(store.dir());
     let mut live = files.0.lock().await;
     let mut progress = (0, 0);
@@ -241,28 +294,32 @@ async fn returned(assignment: &Assignment, outcome: WorkOutcome) -> WorkNotice {
     if live.running.get(&path) == Some(task) {
         live.running.remove(&path);
     }
-    WorkNotice {
-        cycle: at.cycle.clone(),
-        item: at.item.clone(),
-        task: *task,
-        name: name.clone(),
-        agent: agent.clone(),
-        state: WorkState::Returned {
+    worker.notice(
+        at,
+        WorkState::Returned {
             outcome,
             done: progress.0,
             total: progress.1,
         },
-    }
+    )
 }
 
-/// Where a subagent's tool reaches its item and the model that assigned
-/// it. Holds no `Work`, so no `Subagents`: a subagent holding its own
-/// registry would never end.
+/// One job of a work subagent: the item it was put on, which the job's
+/// settling and stalls are told about.
 #[derive(Clone)]
 struct Assignment {
+    worker: Worker,
+    at: ItemRef,
+}
+
+/// Where a work subagent's tool reaches its plan and the model that
+/// assigned it. It names no item: `task_id` may put the subagent on
+/// another, and `Live` knows which it runs. Holds no `Work`, so no
+/// `Subagents`: a subagent holding its own registry would never end.
+#[derive(Clone)]
+struct Worker {
     files: Arc<Files>,
     store: Store,
-    at: ItemRef,
     task: SubagentId,
     name: String,
     agent: String,
@@ -272,6 +329,29 @@ struct Assignment {
     /// model once the subagent is forgotten with the session that
     /// assigned it.
     parent: crate::subagent::Parent,
+}
+
+impl Worker {
+    /// Tells the orchestrator `state` of the item at `at`, unless the
+    /// session that assigned it was left: a later one's model would read
+    /// about another plan.
+    fn tell(&self, at: &ItemRef, state: WorkState) {
+        let notice = self.notice(at, state);
+        self.parent.tell(|| {
+            self.inbox.post_work(notice);
+        });
+    }
+
+    fn notice(&self, at: &ItemRef, state: WorkState) -> WorkNotice {
+        WorkNotice {
+            cycle: at.cycle.clone(),
+            item: at.item.clone(),
+            task: self.task,
+            name: self.name.clone(),
+            agent: self.agent.clone(),
+            state,
+        }
+    }
 }
 
 /// `01-foundation/store: running` style lists of what keeps a cycle open.
@@ -401,14 +481,16 @@ pub(crate) mod tests {
         let path = at.path(store.dir());
         work.files().0.lock().await.running.insert(path.clone(), 3);
         let assignment = Assignment {
-            files: work.0.files.clone(),
-            store: store.clone(),
+            worker: Worker {
+                files: work.0.files.clone(),
+                store: store.clone(),
+                task: 3,
+                name: "worker".into(),
+                agent: "general".into(),
+                inbox: Inbox::default(),
+                parent: Subagents::default().reserve().parent(),
+            },
             at: at.clone(),
-            task: 3,
-            name: "worker".into(),
-            agent: "general".into(),
-            inbox: Inbox::default(),
-            parent: Subagents::default().reserve().parent(),
         };
         let cycle = path.parent().unwrap();
         let status = WorkStatus::new(work.clone());
