@@ -18,6 +18,15 @@ pub fn render(item: &Item) -> String {
     if let Some(task) = item.task {
         out.push_str(&format!("task: {task}\n"));
     }
+    for (key, value) in [
+        ("name", &item.name),
+        ("model", &item.model),
+        ("effort", &item.effort),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!("{key}: {}\n", quoted(value)));
+        }
+    }
     if let Some(assigned) = item.assigned {
         out.push_str(&format!("assigned: {}\n", quoted(&assigned.to_string())));
     }
@@ -70,6 +79,9 @@ pub fn parse(at: ItemRef, text: &str) -> Result<Item, String> {
         status,
         agent: frontmatter::field(&front, "agent"),
         task,
+        name: frontmatter::field(&front, "name"),
+        model: frontmatter::field(&front, "model"),
+        effort: frontmatter::field(&front, "effort"),
         assigned,
         outcome,
         note: frontmatter::field(&front, "note"),
@@ -235,6 +247,9 @@ mod tests {
             status: Status::Returned,
             agent: Some("general".into()),
             task: Some(3),
+            name: Some("Atlas".into()),
+            model: Some("zen/glm".into()),
+            effort: Some("high".into()),
             assigned: Some("2026-10-11T12:02:11Z".parse().unwrap()),
             outcome: Some(WorkOutcome::Completed("Done: \"it\" works.".into())),
             note: Some("merged: in \"3b2c\"".into()),
@@ -244,7 +259,7 @@ mod tests {
         };
         let text = render(&returned);
         assert!(
-            text.starts_with("---\nstatus: returned\nagent: \"general\"\ntask: 3\nassigned: \"2026-10-11T12:02:11Z\"\noutcome: completed\nnote: \"merged: in \\\"3b2c\\\"\"\n---\n"),
+            text.starts_with("---\nstatus: returned\nagent: \"general\"\ntask: 3\nname: \"Atlas\"\nmodel: \"zen/glm\"\neffort: \"high\"\nassigned: \"2026-10-11T12:02:11Z\"\noutcome: completed\nnote: \"merged: in \\\"3b2c\\\"\"\n---\n"),
             "{text}"
         );
         assert!(

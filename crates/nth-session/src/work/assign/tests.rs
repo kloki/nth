@@ -124,7 +124,7 @@ async fn headless_it_waits_while_the_child_ticks_its_todo() {
     let ctx = ctx(dir.path());
     write(&work, &ctx, 1, "store").await;
 
-    let result = WorkAssign::new(work)
+    let result = WorkAssign::new(work.clone())
         .call(assign(1, "store"), &ctx)
         .await
         .unwrap();
@@ -138,9 +138,22 @@ async fn headless_it_waits_while_the_child_ticks_its_todo() {
     assert_eq!(item.status, Status::Returned);
     assert_eq!(item.agent.as_deref(), Some("general"));
     assert_eq!(item.task, Some(1));
+    assert_eq!(item.name.as_deref(), Some("worker"));
+    assert_eq!(item.model.as_deref(), Some("glm-5.3"));
+    assert_eq!(item.effort, None);
     assert!(item.assigned.is_some());
     assert_eq!(item.result.as_deref(), Some("Parsed; writing is left."));
     assert!(item.todos[0].done && !item.todos[1].done);
+
+    // A rewritten brief still says who made the last attempt.
+    write(&work, &ctx, 1, "store").await;
+    let item = read(dir.path(), "01-c1", "store").await;
+    assert_eq!(item.status, Status::Pending);
+    assert_eq!(item.agent.as_deref(), Some("general"));
+    assert_eq!(item.task, Some(1));
+    assert_eq!(item.name.as_deref(), Some("worker"));
+    assert_eq!(item.model.as_deref(), Some("glm-5.3"));
+    assert_eq!(item.assigned, None);
 }
 
 #[tokio::test]
@@ -797,4 +810,43 @@ fn a_forgotten_work_subagent_that_stalls_tells_no_model() {
         !inbox.has_notices(),
         "the session after the one that assigned it hears nothing"
     );
+}
+
+#[tokio::test]
+async fn the_file_names_what_its_subagent_runs_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = work_with(
+        vec![says("first try"), says("second try")],
+        Vec::new(),
+        Subagents::default(),
+        Inbox::default(),
+        LIMITS,
+    );
+    let slot = |model: &str| {
+        Some(nth_protocol::ModelSettings::bare(Llm {
+            model: model.into(),
+            effort: nth_protocol::Effort::High,
+        }))
+    };
+    let mut ctx = ctx(dir.path());
+    ctx.child.subagent = slot("zen/big");
+    write(&work, &ctx, 1, "a").await;
+    let tool = WorkAssign::new(work);
+
+    tool.call(assign(1, "a"), &ctx).await.unwrap();
+
+    let item = read(dir.path(), "01-c1", "a").await;
+    assert_eq!(item.model.as_deref(), Some("zen/big"));
+    assert_eq!(item.effort.as_deref(), Some("high"));
+
+    // A continued subagent stays on what it started on, whatever the
+    // subagents' slot says by now.
+    ctx.child.subagent = slot("zen/small");
+    let mut again = assign(1, "a");
+    again["task_id"] = json!(1);
+    tool.call(again, &ctx).await.unwrap();
+
+    let item = read(dir.path(), "01-c1", "a").await;
+    assert_eq!(item.model.as_deref(), Some("zen/big"));
+    assert_eq!(item.name.as_deref(), Some("worker"));
 }

@@ -5,7 +5,7 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec};
+use nth_protocol::{Effort, Tool, ToolContext, ToolResult, ToolSpec};
 use nth_work::{Item, ItemRef, Status};
 use serde::Deserialize;
 use serde_json::json;
@@ -212,6 +212,14 @@ impl Tool for WorkAssign {
                 (reserved, todo)
             });
             let before = item.clone();
+            // Known before the subagent starts, since the file says who
+            // works on the item first.
+            let llm = match continued {
+                Some(_) => subagents
+                    .llm(id)
+                    .ok_or_else(|| format!("subagent {id} has ended"))?,
+                None => shared.spawner.llm(agent, ctx),
+            };
             // `0` is no limit, as in the config.
             let timeout = match args.timeout_ms {
                 Some(0) => None,
@@ -236,6 +244,9 @@ impl Tool for WorkAssign {
                 status: Status::Running,
                 agent: Some(agent.name.clone()),
                 task: Some(id),
+                name: Some(name.clone()),
+                effort: (llm.effort != Effort::Default).then(|| llm.effort.name().to_string()),
+                model: Some(llm.model),
                 assigned: Some(jiff::Timestamp::now()),
                 outcome: None,
                 result: None,

@@ -90,6 +90,12 @@ pub struct Item {
     pub agent: Option<String>,
     /// The subagent's number in the run of nth that assigned it.
     pub task: Option<u32>,
+    /// The instance name the orchestrator gave that subagent.
+    pub name: Option<String>,
+    /// What it ran on, `provider/model`.
+    pub model: Option<String>,
+    /// The effort it ran at, when one was picked.
+    pub effort: Option<String>,
     pub assigned: Option<jiff::Timestamp>,
     /// How its subagent's last turn ended, its text being `result`.
     pub outcome: Option<WorkOutcome>,
@@ -113,6 +119,9 @@ impl Item {
             status: Status::Pending,
             agent: None,
             task: None,
+            name: None,
+            model: None,
+            effort: None,
             assigned: None,
             outcome: None,
             note: None,

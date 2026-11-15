@@ -4,9 +4,11 @@
 use std::{borrow::Cow, sync::Arc};
 
 use nth_context::Agent;
-use nth_protocol::{Provider, Tool, ToolContext, Writable};
+use nth_protocol::{Llm, Provider, Tool, ToolContext, Writable};
 
-use super::{Limits, Reserved, SubagentId, Subagents, child_session, tools_for};
+use super::{
+    Limits, Reserved, SubagentId, Subagents, child::child_settings, child_session, tools_for,
+};
 
 /// The subagent the model named, or the refusal listing the ones there
 /// are.
@@ -72,6 +74,24 @@ impl Spawner {
         tools_for(&self.tools, agent, writable)
     }
 
+    /// `agent` with its own model, as its frontmatter wrote it and perhaps
+    /// bare, qualified: its tab names it as the picker would.
+    fn qualified<'a>(&self, agent: &'a Agent) -> Cow<'a, Agent> {
+        match &agent.model {
+            Some(model) => Cow::Owned(Agent {
+                model: Some(self.provider.qualify(model)),
+                ..agent.clone()
+            }),
+            None => Cow::Borrowed(agent),
+        }
+    }
+
+    /// What a subagent of `agent` started for the call `ctx` runs on, for
+    /// a caller that must say so before it starts one.
+    pub(crate) fn llm(&self, agent: &Agent, ctx: &ToolContext) -> Llm {
+        child_settings(&self.qualified(agent), ctx).llm
+    }
+
     /// Starts a subagent of `agent` for the call `ctx` as the number
     /// `reserved` holds, with `extra` tools beside its share, and returns
     /// its id.
@@ -84,15 +104,7 @@ impl Spawner {
         ctx: &ToolContext,
         extra: Vec<Arc<dyn Tool>>,
     ) -> SubagentId {
-        // The agent's own model is as its frontmatter wrote it, perhaps
-        // bare; qualified, its tab names it as the picker would.
-        let agent = match &agent.model {
-            Some(model) => Cow::Owned(Agent {
-                model: Some(self.provider.qualify(model)),
-                ..agent.clone()
-            }),
-            None => Cow::Borrowed(agent),
-        };
+        let agent = self.qualified(agent);
         let agent = agent.as_ref();
         let session = child_session(agent, ctx, self.limits.max_steps);
         let mut tools = self.tools_for(agent, &ctx.writable);

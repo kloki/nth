@@ -26,7 +26,7 @@ pub(crate) use child::child_session;
 pub use mention::resolve;
 pub use notice::{SubagentId, TaskNotice, TaskOutcome, TaskStall};
 use nth_context::Agent;
-use nth_protocol::{Event, Provider, Tool, Writable, tool_names};
+use nth_protocol::{Event, Llm, Provider, Tool, Writable, tool_names};
 pub(crate) use parent::Parent;
 use parent::Spending;
 pub(crate) use spawn::{Spawner, find_agent, validate_name};
@@ -234,6 +234,8 @@ struct Child {
     name: String,
     description: String,
     session_id: uuid::Uuid,
+    /// What its session started on.
+    llm: Llm,
     /// Whether its tools can change files, which a planning parent may not
     /// continue it with.
     writes: bool,
@@ -315,6 +317,10 @@ impl Subagents {
         let (commands, inbox) = mpsc::unbounded_channel();
         let (publish, status) = watch::channel(Status::default());
         let session_id = session.id;
+        let llm = Llm {
+            model: session.model.clone(),
+            effort: session.effort,
+        };
         let actor = tokio::spawn(actor::run(actor::Actor {
             id,
             name: name.to_string(),
@@ -335,6 +341,7 @@ impl Subagents {
                 name: name.to_string(),
                 description: description.to_string(),
                 session_id,
+                llm,
                 writes,
                 commands,
                 status,
@@ -401,6 +408,11 @@ impl Subagents {
     /// The stable instance name of a subagent.
     pub fn name(&self, id: SubagentId) -> Option<String> {
         Some(self.0.lock().children.get(&id)?.name.clone())
+    }
+
+    /// What subagent `id` runs on.
+    pub fn llm(&self, id: SubagentId) -> Option<Llm> {
+        Some(self.0.lock().children.get(&id)?.llm.clone())
     }
 
     /// The task number and agent name associated with a child session.

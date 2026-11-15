@@ -80,7 +80,7 @@ fn render(plan: &Plan, dir: &str) -> String {
     out.join("\n")
 }
 
-/// `- store: running · @general task 3 · 3/7 ticked · assigned 4m ago`
+/// `- store: running · Atlas @general task 3 on zen/glm · 3/7 ticked · assigned 4m ago`
 fn line(item: &Item) -> String {
     let mut parts = vec![match (&item.status, &item.outcome) {
         (Status::Broken(why), _) => format!("broken: {why}"),
@@ -88,7 +88,23 @@ fn line(item: &Item) -> String {
         (status, _) => status.to_string(),
     }];
     if let (Some(agent), Some(task)) = (&item.agent, item.task) {
-        parts.push(format!("@{agent} task {task}"));
+        let name = item
+            .name
+            .as_ref()
+            .map(|n| format!("{n} "))
+            .unwrap_or_default();
+        let model = item
+            .model
+            .as_ref()
+            .map(|m| format!(" on {m}"))
+            .unwrap_or_default();
+        // Nobody is on a pending item: the worker a rewrite kept is who
+        // made the last attempt.
+        let last = match item.status {
+            Status::Pending => "last ",
+            _ => "",
+        };
+        parts.push(format!("{last}{name}@{agent} task {task}{model}"));
     }
     let (done, total) = item.progress();
     parts.push(format!("{done}/{total} ticked"));
@@ -152,6 +168,8 @@ mod tests {
         x.note = Some("merged".into());
         x.agent = Some("general".into());
         x.task = Some(2);
+        x.name = Some("Atlas".into());
+        x.model = Some("zen/glm".into());
         x.todos[0].done = true;
         store.write(&x).await.unwrap();
         std::fs::write(
@@ -168,7 +186,7 @@ mod tests {
             format!(
                 "Work plan in {}\nTitle: Retry\nGoal: Add retries.\n\n\
                  ## 01-a: current, 1 of 2 closed\n\
-                 - x: done · @general task 2 · 1/2 ticked · note: merged\n\
+                 - x: done · Atlas @general task 2 on zen/glm · 1/2 ticked · note: merged\n\
                  - y: pending · 0/2 ticked\n\n\
                  ## 02-b: waits for 01-a, 0 of 1 closed\n\
                  - z: pending · 0/2 ticked\n\n\

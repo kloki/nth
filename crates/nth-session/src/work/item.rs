@@ -124,9 +124,20 @@ impl Tool for WorkItem {
                 .collect();
             let count = todos.len();
             let kept = todos.iter().filter(|t| t.done).count();
-            let item = Item {
-                result: before.and_then(|b| b.result.clone()),
-                ..Item::pending(at.clone(), &args.title, &args.instruction, todos)
+            // Who made the last attempt stays too, so a rewritten item
+            // still says whom `task_id` would continue.
+            let fresh = Item::pending(at.clone(), &args.title, &args.instruction, todos);
+            let item = match before {
+                Some(b) => Item {
+                    agent: b.agent.clone(),
+                    task: b.task,
+                    name: b.name.clone(),
+                    model: b.model.clone(),
+                    effort: b.effort.clone(),
+                    result: b.result.clone(),
+                    ..fresh
+                },
+                None => fresh,
             };
             plan::ensure_dir(&super::root(ctx)).await.map_err(|e| format!("preparing work directory failed: {e}"))?;
             store

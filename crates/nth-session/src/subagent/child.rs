@@ -12,21 +12,7 @@ use crate::{Session, TurnEnv};
 /// the clerk), else for subagents, else the parent's; the effort and limits
 /// come from the latter three.
 pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) -> Session {
-    let picked = ctx.child.for_agent(agent.clerk);
-    let settings = match &agent.model {
-        // An agent's own model is not listed here, so it counts as taking
-        // images, as an unknown one does, and prices by the live listing.
-        Some(model) => ModelSettings {
-            llm: Llm {
-                model: model.clone(),
-                effort: picked.llm.effort,
-            },
-            takes_images: true,
-            cost: None,
-            ..picked.clone()
-        },
-        None => picked.clone(),
-    };
+    let settings = child_settings(agent, ctx);
     let mut session = Session::new(settings.llm.model, ctx.cwd.clone())
         .with_extra_dirs(ctx.extra_dirs.clone())
         .with_context(ctx.context.clone())
@@ -51,6 +37,25 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
         clerk: None,
     };
     session
+}
+
+/// The model, effort and limits a subagent of `agent` runs on.
+pub(super) fn child_settings(agent: &Agent, ctx: &ToolContext) -> ModelSettings {
+    let picked = ctx.child.for_agent(agent.clerk);
+    match &agent.model {
+        // An agent's own model is not listed here, so it counts as taking
+        // images, as an unknown one does, and prices by the live listing.
+        Some(model) => ModelSettings {
+            llm: Llm {
+                model: model.clone(),
+                effort: picked.llm.effort,
+            },
+            takes_images: true,
+            cost: None,
+            ..picked.clone()
+        },
+        None => picked.clone(),
+    }
 }
 
 #[cfg(test)]
