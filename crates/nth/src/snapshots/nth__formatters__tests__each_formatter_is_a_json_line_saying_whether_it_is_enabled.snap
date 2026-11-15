@@ -1,0 +1,15 @@
+---
+source: crates/nth/src/formatters.rs
+expression: "lines[0]"
+---
+{
+  "command": [
+    "rustfmt",
+    "$FILE"
+  ],
+  "enabled": true,
+  "extensions": [
+    ".rs"
+  ],
+  "name": "rustfmt"
+}

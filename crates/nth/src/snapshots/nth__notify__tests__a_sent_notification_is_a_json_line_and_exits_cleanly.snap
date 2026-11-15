@@ -1,0 +1,8 @@
+---
+source: crates/nth/src/notify.rs
+expression: line
+---
+{
+  "backend": "notify-send",
+  "sent": true
+}

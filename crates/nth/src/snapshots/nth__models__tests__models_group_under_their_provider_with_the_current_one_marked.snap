@@ -1,0 +1,9 @@
+---
+source: crates/nth/src/models.rs
+expression: "testing::text(&report())"
+---
+OpenCode Zen
+→ claude-opus    1M ctx · 128k out · low/high · images
+  kimi
+OpenCode Go
+  glm-long-name

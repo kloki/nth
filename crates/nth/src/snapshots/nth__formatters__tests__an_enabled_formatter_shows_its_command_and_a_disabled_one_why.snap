@@ -1,0 +1,6 @@
+---
+source: crates/nth/src/formatters.rs
+expression: "testing::text(&report())"
+---
+✓ rustfmt  rustfmt $FILE
+✗ gofmt    gofmt not found

@@ -1,0 +1,6 @@
+---
+source: crates/nth/src/lsp.rs
+expression: "testing::text(&report)"
+---
+✗ rust-analyzer exited with status 1
+✓ no errors

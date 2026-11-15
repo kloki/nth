@@ -1,0 +1,12 @@
+---
+source: crates/nth/src/lsp.rs
+expression: "lines[0]"
+---
+{
+  "extensions": [
+    ".rs"
+  ],
+  "id": "rust-analyzer",
+  "program": "/usr/bin/rust-analyzer",
+  "root": "/repo"
+}

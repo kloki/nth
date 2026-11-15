@@ -1,0 +1,20 @@
+---
+source: crates/nth/src/models.rs
+expression: "lines[0]"
+---
+{
+  "context": 1000000,
+  "cost": null,
+  "efforts": [
+    "low",
+    "high"
+  ],
+  "id": "zen/claude-opus",
+  "name": null,
+  "origin": {
+    "id": "zen",
+    "name": "OpenCode Zen"
+  },
+  "output": 128000,
+  "takes_images": true
+}
