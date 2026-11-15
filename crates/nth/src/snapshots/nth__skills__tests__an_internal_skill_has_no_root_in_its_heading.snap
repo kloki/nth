@@ -1,0 +1,6 @@
+---
+source: crates/nth/src/skills.rs
+expression: "testing::text(&report)"
+---
+internal
+└─ config  How to set up config.toml

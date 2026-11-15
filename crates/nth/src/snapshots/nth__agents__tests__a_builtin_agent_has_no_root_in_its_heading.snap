@@ -1,0 +1,6 @@
+---
+source: crates/nth/src/agents.rs
+expression: "testing::text(&report)"
+---
+builtin
+└─ general  The general agent

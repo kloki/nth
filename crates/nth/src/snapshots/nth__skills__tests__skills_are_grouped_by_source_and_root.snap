@@ -1,0 +1,11 @@
+---
+source: crates/nth/src/skills.rs
+expression: "testing::text(&report)"
+---
+global  ~/.claude/skills
+├─ diagram  synced/1/diagram  Draw a diagram
+└─ review   no description, so the model is not offered it
+global  ~/.config/nth/skills
+└─ notes    Take notes
+project  /repo/.claude/skills
+└─ commit   Write the commit message. And more. And more. And more. And more. And mo…
