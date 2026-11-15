@@ -314,7 +314,7 @@ mod tests {
     async fn running_monitor_suppresses_done_but_not_failure_or_question() {
         let (mut app, mut rx) = answering("ok");
         app.monitors
-            .register("build", "watch")
+            .register("build", "watch", None)
             .await
             .expect("monitor");
         send(&mut app, "go");
@@ -411,7 +411,7 @@ mod tests {
         end(&mut app).await;
         assert!(app.plan.notice.is_some());
         app.monitors
-            .register("build", "watch")
+            .register("build", "watch", None)
             .await
             .expect("monitor");
         while app.plan.reading.is_running() {

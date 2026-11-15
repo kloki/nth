@@ -28,7 +28,10 @@ pub use image::{
 };
 pub use message::{AssistantMessage, Message, ToolCall};
 pub use mode::Mode;
-pub use monitor::{MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream};
+pub use monitor::{
+    InputRefused, MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StdinWrite, StoppedBy,
+    Stream,
+};
 pub use nth_context::agents::tool_names;
 pub use provider::{
     BoxError, ContextOverflow, Cost, Effort, Failed, Listing, Llm, ModelInfo, ModelSettings,

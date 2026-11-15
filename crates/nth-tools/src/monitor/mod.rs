@@ -1,3 +1,5 @@
+mod stdin;
+
 use std::{
     collections::VecDeque,
     path::Path,
@@ -8,8 +10,8 @@ use std::{
 
 use futures::{FutureExt, future::BoxFuture};
 use nth_protocol::{
-    MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StoppedBy, Stream, Tool,
-    ToolContext, ToolResult, ToolSpec,
+    InputRefused, MonitorEnd, MonitorEvent, MonitorId, Monitors, Registered, StdinWrite, StoppedBy,
+    Stream, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -17,6 +19,7 @@ use tokio::{
     fs::File,
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Child,
+    sync::mpsc,
 };
 
 use crate::{
@@ -31,6 +34,16 @@ const MAX_TIMEOUT_MS: u64 = 1_800_000;
 const FLOOD_LINES: usize = 100;
 const FLOOD_WINDOW: Duration = Duration::from_secs(10);
 
+/// Writes to a monitor's stdin waiting for the command to read, past which
+/// `monitor_input` refuses more rather than queue without end.
+const QUEUED_WRITES: usize = 8;
+/// How long `monitor_input` waits for its text to be written before it
+/// answers that the command has not read it yet, so a command that stopped
+/// reading never holds up the model's turn.
+const WRITE_WAIT: Duration = Duration::from_secs(5);
+/// Lines written to stdin on their way to the watch's log and tab.
+const ECHOED_LINES: usize = 64;
+
 /// Leaves a command running in the background and hands its stdout lines to
 /// the model as they come.
 pub struct Monitor;
@@ -40,6 +53,8 @@ struct Args {
     command: String,
     description: String,
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    stdin: bool,
 }
 
 impl Tool for Monitor {
@@ -52,7 +67,8 @@ impl Tool for Monitor {
                 "properties": {
                     "command": { "type": "string", "description": "Shell command or script. Each stdout line is an event; exit ends the watch." },
                     "description": { "type": "string", "description": "Short description of what you are monitoring, shown in every notice." },
-                    "timeout_ms": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS, "description": "Kill the monitor after this deadline. Default 300000." }
+                    "timeout_ms": { "type": "integer", "minimum": MIN_TIMEOUT_MS, "maximum": MAX_TIMEOUT_MS, "description": "Kill the monitor after this deadline. Default 300000." },
+                    "stdin": { "type": "boolean", "description": "Keep the command's stdin open so you can write to it with monitor_input, as for a REPL or a prompt. Default false: it reads end-of-input at once." }
                 },
                 "required": ["command", "description"]
             }),
@@ -75,18 +91,30 @@ impl Tool for Monitor {
                     .unwrap_or(DEFAULT_TIMEOUT_MS)
                     .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
             );
-            let child = process::shell(&args.command, &ctx.cwd, &ctx.session)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+            let mut command = process::shell(&args.command, &ctx.cwd, &ctx.session);
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            // Only on request: a command that reads stdin would otherwise
+            // wait on it forever rather than read end-of-input.
+            if args.stdin {
+                command.stdin(Stdio::piped());
+            }
+            let child = command
                 .spawn()
                 .map_err(|e| format!("failed to start bash: {e}"))?;
             // Armed before anything can fail: a command whose watch never
             // starts is killed with everything it started, where dropping
             // the child alone would reach only bash.
             let abandoned = KillGroupOnDrop(child.id());
+            let (writes, stdin) = match args.stdin {
+                true => {
+                    let (tx, rx) = mpsc::channel(QUEUED_WRITES);
+                    (Some(tx), Some(rx))
+                }
+                false => (None, None),
+            };
             let registered = ctx
                 .monitors
-                .register(&args.description, &args.command)
+                .register(&args.description, &args.command, writes)
                 .await
                 .ok_or("the front-end is gone")?;
             let id = registered.id;
@@ -99,11 +127,16 @@ impl Tool for Monitor {
                 registered,
                 child,
                 abandoned,
+                stdin,
                 log,
                 timeout,
             ));
+            let stdin_note = match args.stdin {
+                true => " Write to its stdin with monitor_input.",
+                false => "",
+            };
             Ok(format!(
-                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it. {log_note} Stop it with monitor_stop.",
+                "Started monitor {id} (\"{}\"), for at most {}s. Each stdout line reaches you as a notice. Do not sleep or poll for it. {log_note}{stdin_note} Stop it with monitor_stop.",
                 args.description,
                 timeout.as_secs()
             ))
@@ -122,18 +155,28 @@ async fn open_log(path: &Path) -> std::io::Result<File> {
 /// Runs until the command exits, the timeout, a stop, a flood or the
 /// front-end leaving, and reports how it ended. Everything the command
 /// started dies with it unless it exited by itself: then, as with bash,
-/// what it put in the background lives on.
+/// what it put in the background lives on. `stdin` is the model's writes,
+/// for a command started with its stdin open.
 async fn watch(
     monitors: Monitors,
     registered: Registered,
     mut child: Child,
     mut abandoned: KillGroupOnDrop,
+    stdin: Option<mpsc::Receiver<StdinWrite>>,
     log: Option<File>,
     timeout: Duration,
 ) {
     let Registered { id, stop, .. } = registered;
     let mut out = child.stdout.take().map(Pipe::new);
     let mut err = child.stderr.take().map(Pipe::new);
+    // Held until the watch ends, which aborts the writer with it.
+    let (mut echoes, _writer) = match (child.stdin.take(), stdin) {
+        (Some(pipe), Some(writes)) => {
+            let (echo, echoes) = mpsc::channel(ECHOED_LINES);
+            (Some(echoes), Some(stdin::spawn(pipe, writes, echo)))
+        }
+        _ => (None, None),
+    };
     let mut watch = Watch {
         monitors: &monitors,
         id,
@@ -150,6 +193,13 @@ async fn watch(
             biased;
             _ = stop.cancelled() => break MonitorEnd::Stopped(monitors.stopped_by(id)),
             _ = &mut deadline => break MonitorEnd::TimedOut { after_ms: timeout.as_millis() as u64 },
+            // Before the output, which may answer it. Past the flood guard:
+            // the model wrote it, so it is no flood of the command's.
+            line = echoed(&mut echoes) => {
+                if let Some(end) = watch.send(line, Stream::Stdin).await {
+                    break end;
+                }
+            }
             line = next_line(&mut out) => match line {
                 Some(line) => {
                     if let Some(end) = watch.line(line, Stream::Stdout).await {
@@ -202,6 +252,10 @@ async fn watch(
     }
     if let Some(line) = unfinished(&mut err) {
         watch.last_line(line, Stream::Stderr).await;
+    }
+    // What was written as the command ended still shows in the log and tab.
+    while let Some(line) = echoes.as_mut().and_then(|echoes| echoes.try_recv().ok()) {
+        watch.send(line, Stream::Stdin).await;
     }
     let events = watch.events;
     watch.write_log(&format!("{end}")).await;
@@ -344,6 +398,18 @@ async fn next_line<R: tokio::io::AsyncRead + Unpin>(pipe: &mut Option<Pipe<R>>) 
     }
 }
 
+/// The next line the writer wrote to stdin; never once it has none to send,
+/// so the `select!` arm sleeps, as a closed pipe's does.
+async fn echoed(echoes: &mut Option<mpsc::Receiver<String>>) -> String {
+    if let Some(rx) = echoes {
+        if let Some(line) = rx.recv().await {
+            return line;
+        }
+        *echoes = None;
+    }
+    std::future::pending().await
+}
+
 /// What a pipe holds of a line that has not ended, for a watch that ends
 /// before the line does.
 fn unfinished<R>(pipe: &mut Option<Pipe<R>>) -> Option<String> {
@@ -427,6 +493,7 @@ impl Watch<'_> {
         let prefix = match stream {
             Stream::Stdout => "",
             Stream::Stderr => "stderr: ",
+            Stream::Stdin => "stdin: ",
         };
         self.write_log(&format!("{prefix}{line}")).await;
         let output = MonitorEvent::Output {
@@ -498,6 +565,88 @@ impl Tool for MonitorStop {
             }
         }
         .boxed()
+    }
+}
+
+/// Writes to the stdin of a monitor started with one.
+pub struct MonitorInput;
+
+#[derive(Deserialize)]
+struct InputArgs {
+    id: MonitorId,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    close: bool,
+}
+
+impl Tool for MonitorInput {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "monitor_input",
+            description: include_str!("input.txt").into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "minimum": 1, "description": "The monitor's id, from the monitor tool's result" },
+                    "text": { "type": "string", "description": "Written as it is. End each line with \\n, as pressing Enter would." },
+                    "close": { "type": "boolean", "description": "Close stdin after text, or alone when text is empty, so the command reads end-of-input. Default false." }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    fn call<'a>(
+        &'a self,
+        args: serde_json::Value,
+        ctx: &'a ToolContext,
+    ) -> BoxFuture<'a, ToolResult> {
+        async move {
+            let InputArgs { id, text, close } = nth_protocol::parse_args(args)?;
+            if text.is_empty() && !close {
+                return Err("nothing to write: give text, or close".into());
+            }
+            let bytes = text.len();
+            let written = ctx
+                .monitors
+                .input(id, text, close)
+                .map_err(|refused| refused_input(id, refused))?;
+            match tokio::time::timeout(WRITE_WAIT, written).await {
+                Ok(Ok(Ok(()))) => Ok(match (bytes, close) {
+                    (0, _) => format!("Closed monitor {id}'s stdin."),
+                    (_, false) => format!("Wrote {bytes} bytes to monitor {id}'s stdin."),
+                    (_, true) => {
+                        format!("Wrote {bytes} bytes to monitor {id}'s stdin and closed it.")
+                    }
+                }),
+                Ok(Ok(Err(reason))) => {
+                    Err(format!("could not write to monitor {id}'s stdin: {reason}"))
+                }
+                // The writer went with the monitor, or with a failed write
+                // queued before this one.
+                Ok(Err(_)) => Err(format!(
+                    "monitor {id}'s stdin closed before this was written"
+                )),
+                Err(_) => Ok(format!(
+                    "Monitor {id} has not read it yet; it goes in when the command reads."
+                )),
+            }
+        }
+        .boxed()
+    }
+}
+
+fn refused_input(id: MonitorId, refused: InputRefused) -> String {
+    match refused {
+        InputRefused::NoMonitor => format!("there is no running monitor {id}"),
+        InputRefused::NoStdin => format!(
+            "monitor {id} was started without stdin; start it again with stdin: true to write to it"
+        ),
+        InputRefused::Closed => format!("monitor {id}'s stdin is closed"),
+        InputRefused::Backlogged => format!(
+            "monitor {id} has not read what you wrote before; wait for it to read, or stop it"
+        ),
     }
 }
 
@@ -790,6 +939,146 @@ mod tests {
         assert!(!alive(pid.trim()), "the background sleep is killed too");
         let again = MonitorStop.call(json!({ "id": 1 }), &f.ctx).await;
         assert_eq!(again, Err("there is no running monitor 1".into()));
+    }
+
+    async fn start_with_stdin(ctx: &ToolContext, command: &str) -> ToolResult {
+        let args = json!({ "command": command, "description": "test", "timeout_ms": 30_000, "stdin": true });
+        Monitor.call(args, ctx).await
+    }
+
+    async fn input(ctx: &ToolContext, id: MonitorId, text: &str, close: bool) -> ToolResult {
+        let args = json!({ "id": id, "text": text, "close": close });
+        MonitorInput.call(args, ctx).await
+    }
+
+    fn stdin(seen: &[MonitorEvent]) -> Vec<&str> {
+        seen.iter()
+            .filter_map(|e| match e {
+                MonitorEvent::Output {
+                    line,
+                    stream: Stream::Stdin,
+                    ..
+                } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stdin_reaches_the_command_and_close_ends_it() {
+        let mut f = fixture();
+        let started = start_with_stdin(&f.ctx, r#"while read l; do echo "got $l"; done"#)
+            .await
+            .expect("starts");
+        assert!(
+            started.contains("Write to its stdin with monitor_input."),
+            "{started}"
+        );
+
+        let wrote = input(&f.ctx, 1, "a\nb\n", false).await;
+        assert_eq!(wrote, Ok("Wrote 4 bytes to monitor 1's stdin.".into()));
+        let closed = input(&f.ctx, 1, "", true).await;
+        assert_eq!(closed, Ok("Closed monitor 1's stdin.".into()));
+
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["got a", "got b"]);
+        assert_eq!(stdin(&seen), ["a", "b"]);
+        assert_eq!(
+            end(&seen),
+            (MonitorEnd::Exited(Some(0)), 2),
+            "echoes are no events"
+        );
+        let log = std::fs::read_to_string(f.dir.path().join("logs/1.log")).expect("log");
+        assert!(log.contains("] stdin: a\n"), "{log}");
+        assert!(log.contains("] got b\n"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn input_needs_a_stdin_monitor() {
+        let mut f = fixture();
+        start(&f.ctx, "sleep 30", 30_000).await.expect("starts");
+        assert_eq!(
+            input(&f.ctx, 1, "x\n", false).await,
+            Err("monitor 1 was started without stdin; start it again with stdin: true to write to it".into())
+        );
+        assert_eq!(
+            input(&f.ctx, 9, "x\n", false).await,
+            Err("there is no running monitor 9".into())
+        );
+        assert_eq!(
+            input(&f.ctx, 1, "", false).await,
+            Err("nothing to write: give text, or close".into())
+        );
+
+        start_with_stdin(&f.ctx, "cat").await.expect("starts");
+        assert_eq!(
+            input(&f.ctx, 2, "x\n", true).await,
+            Ok("Wrote 2 bytes to monitor 2's stdin and closed it.".into())
+        );
+        assert_eq!(
+            input(&f.ctx, 2, "y\n", false).await,
+            Err("monitor 2's stdin is closed".into())
+        );
+
+        f.ctx.monitors.stop(1, StoppedBy::Model);
+        let mut ended = 0;
+        while ended < 2 {
+            if let Some(MonitorEvent::Ended { .. }) = f.events.recv().await {
+                ended += 1;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_that_does_not_read_does_not_block_the_call() {
+        let mut f = fixture();
+        start_with_stdin(&f.ctx, "echo up; sleep 30")
+            .await
+            .expect("starts");
+        // Past any pipe buffer, so the write waits on a reader that never
+        // comes.
+        let flood = "x".repeat(256 * 1024);
+        let asked = Instant::now();
+        let wrote = input(&f.ctx, 1, &flood, false).await;
+        assert_eq!(
+            wrote,
+            Ok("Monitor 1 has not read it yet; it goes in when the command reads.".into())
+        );
+        assert!(asked.elapsed() < WRITE_WAIT + Duration::from_secs(2));
+
+        // The watch still reads the command's output and stops.
+        let stopped = MonitorStop.call(json!({ "id": 1 }), &f.ctx).await;
+        assert_eq!(stopped, Ok("Stopped monitor 1.".into()));
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdout(&seen), ["up"]);
+        assert!(stdin(&seen).is_empty(), "never written, never echoed");
+        assert_eq!(end(&seen).0, MonitorEnd::Stopped(StoppedBy::Model));
+    }
+
+    #[tokio::test]
+    async fn stdin_lines_do_not_count_toward_the_flood() {
+        let mut f = fixture();
+        start_with_stdin(&f.ctx, "cat > /dev/null")
+            .await
+            .expect("starts");
+        let lines = "x\n".repeat(FLOOD_LINES + 50);
+        input(&f.ctx, 1, &lines, true).await.expect("written");
+        let seen = until_ended(&mut f.events).await;
+        assert_eq!(stdin(&seen).len(), FLOOD_LINES + 50);
+        assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 0));
+    }
+
+    #[tokio::test]
+    async fn without_stdin_a_command_reads_end_of_input() {
+        let mut f = fixture();
+        start(&f.ctx, "cat; echo done", 30_000)
+            .await
+            .expect("starts");
+        let seen = tokio::time::timeout(Duration::from_secs(10), until_ended(&mut f.events))
+            .await
+            .expect("cat reads end-of-input at once");
+        assert_eq!(stdout(&seen), ["done"]);
+        assert_eq!(end(&seen), (MonitorEnd::Exited(Some(0)), 1));
     }
 
     #[tokio::test]

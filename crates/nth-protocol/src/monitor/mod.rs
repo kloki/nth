@@ -8,7 +8,8 @@ mod registry;
 
 use std::{fmt, path::PathBuf};
 
-pub use registry::Monitors;
+pub use registry::{InputRefused, Monitors};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// Numbered from 1 for as long as the front-end runs, so a monitor keeps its
@@ -24,7 +25,8 @@ pub enum MonitorEvent {
         command: String,
         log: PathBuf,
     },
-    /// One line of output. Only stdout lines are events for the model.
+    /// One line of output, or of what the model wrote to its stdin. Only
+    /// stdout lines are events for the model.
     Output {
         id: MonitorId,
         line: String,
@@ -42,6 +44,9 @@ pub enum MonitorEvent {
 pub enum Stream {
     Stdout,
     Stderr,
+    /// What the model wrote with `monitor_input`, echoed for the tab and
+    /// the log, so they show it between the output it answers.
+    Stdin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +104,19 @@ impl fmt::Display for MonitorEnd {
             MonitorEnd::Stopped(StoppedBy::Exit) => write!(f, "stopped: nth exited"),
         }
     }
+}
+
+/// Text the model writes to a monitor's stdin, for the task that owns the
+/// pipe.
+#[derive(Debug)]
+pub struct StdinWrite {
+    /// Written as it is: the model ends a line with `\n` itself, as a
+    /// terminal user presses Enter.
+    pub text: String,
+    /// Closes stdin after `text`, so the command reads end-of-input.
+    pub close: bool,
+    /// Answered once `text` is written, or with why it could not be.
+    pub done: oneshot::Sender<Result<(), String>>,
 }
 
 /// What the monitor tool gets for a new monitor.

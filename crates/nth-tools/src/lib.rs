@@ -33,7 +33,7 @@ pub use curios::{CurioPublish, CurioRead, CurioReply};
 pub use edit::Edit;
 pub use glob::Glob;
 pub use grep::Grep;
-pub use monitor::{Monitor, MonitorStop};
+pub use monitor::{Monitor, MonitorInput, MonitorStop};
 use nth_protocol::Tool;
 pub use panel::Panel;
 pub use post_write::PostWrite;
@@ -68,6 +68,7 @@ pub fn all(config: &ToolsConfig, post_write: PostWrite) -> Vec<Arc<dyn Tool>> {
         Arc::new(Bash::new(config.bash.clone())),
         Arc::new(Monitor),
         Arc::new(MonitorStop),
+        Arc::new(MonitorInput),
         Arc::new(Glob),
         Arc::new(Grep),
         Arc::new(Skill),

@@ -7,10 +7,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::mpsc;
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
 use tokio_util::sync::CancellationToken;
 
-use super::{MonitorEvent, MonitorId, Registered, StoppedBy};
+use super::{MonitorEvent, MonitorId, Registered, StdinWrite, StoppedBy};
 
 /// The front-end's monitors, shared by the monitor tools that start and
 /// stop them and the front-end that shows them. The default has no
@@ -36,6 +39,30 @@ struct State {
 struct Running {
     stop: CancellationToken,
     stopped_by: Option<StoppedBy>,
+    stdin: Stdin,
+}
+
+/// A monitor's stdin, as far as the model can still write to it.
+#[derive(Debug)]
+enum Stdin {
+    /// Started without one: the command reads end-of-input at once.
+    None,
+    /// Writes go to the task that owns the pipe.
+    Open(mpsc::Sender<StdinWrite>),
+    /// The model closed it, or the task writing it has gone.
+    Closed,
+}
+
+/// Why [`Monitors::input`] could not hand text to a monitor's stdin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputRefused {
+    NoMonitor,
+    /// It was started without `stdin`.
+    NoStdin,
+    Closed,
+    /// Writes the command has not read yet fill the queue in front of its
+    /// pipe.
+    Backlogged,
 }
 
 impl Monitors {
@@ -64,8 +91,14 @@ impl Monitors {
     }
 
     /// Numbers a new monitor and tells the front-end it started. `None` when
-    /// there is no front-end to hear from it.
-    pub async fn register(&self, description: &str, command: &str) -> Option<Registered> {
+    /// there is no front-end to hear from it. `stdin` is where the model's
+    /// writes to it go, for a monitor started with an open stdin.
+    pub async fn register(
+        &self,
+        description: &str,
+        command: &str,
+        stdin: Option<mpsc::Sender<StdinWrite>>,
+    ) -> Option<Registered> {
         let inner = self.0.as_ref()?;
         let registered = {
             let mut state = inner.lock();
@@ -78,6 +111,7 @@ impl Monitors {
                 Running {
                     stop: stop.clone(),
                     stopped_by: None,
+                    stdin: stdin.map_or(Stdin::None, Stdin::Open),
                 },
             );
             Registered { id, stop, log }
@@ -93,6 +127,44 @@ impl Monitors {
             return None;
         }
         Some(registered)
+    }
+
+    /// Hands `text` to the task that writes a running monitor's stdin, and
+    /// closes it after when `close` is set. The receiver hears once it is
+    /// written, or why it could not be; it errs when the task went first.
+    /// Never waits: a command that stopped reading holds up its own writes,
+    /// never the caller's lock or the monitors of others.
+    pub fn input(
+        &self,
+        id: MonitorId,
+        text: String,
+        close: bool,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, InputRefused> {
+        let inner = self.0.as_ref().ok_or(InputRefused::NoMonitor)?;
+        let mut state = inner.lock();
+        let running = state.running.get_mut(&id).ok_or(InputRefused::NoMonitor)?;
+        let writer = match &running.stdin {
+            Stdin::None => return Err(InputRefused::NoStdin),
+            Stdin::Closed => return Err(InputRefused::Closed),
+            Stdin::Open(writer) => writer,
+        };
+        let (done, written) = oneshot::channel();
+        match writer.try_send(StdinWrite { text, close, done }) {
+            Ok(()) => {
+                // Closed as it is queued, so a write after it is refused
+                // here rather than lost behind the close.
+                if close {
+                    running.stdin = Stdin::Closed;
+                }
+                Ok(written)
+            }
+            Err(TrySendError::Full(_)) => Err(InputRefused::Backlogged),
+            // The task ends after a close or a failed write.
+            Err(TrySendError::Closed(_)) => {
+                running.stdin = Stdin::Closed;
+                Err(InputRefused::Closed)
+            }
+        }
     }
 
     /// Stops a running monitor; `false` when there is none with that id.
@@ -181,15 +253,22 @@ mod tests {
     #[tokio::test]
     async fn headless_has_no_monitors() {
         let monitors = Monitors::default();
-        assert!(monitors.register("tail", "tail -f x").await.is_none());
+        assert!(monitors.register("tail", "tail -f x", None).await.is_none());
+        assert_eq!(
+            monitors.input(1, "x".into(), false).unwrap_err(),
+            InputRefused::NoMonitor
+        );
         assert!(!monitors.reaches_front_end());
     }
 
     #[tokio::test]
     async fn register_numbers_and_announces() {
         let (monitors, mut rx) = monitors();
-        let first = monitors.register("errors", "tail -f log").await.unwrap();
-        let second = monitors.register("ci", "gh run watch").await.unwrap();
+        let first = monitors
+            .register("errors", "tail -f log", None)
+            .await
+            .unwrap();
+        let second = monitors.register("ci", "gh run watch", None).await.unwrap();
         assert_eq!((first.id, second.id), (1, 2));
         assert_eq!(first.log, PathBuf::from("/logs/1.log"));
         assert_eq!(
@@ -207,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn an_end_reaches_the_front_end_and_stops_running() {
         let (monitors, mut rx) = monitors();
-        let m = monitors.register("ci", "watch").await.unwrap();
+        let m = monitors.register("ci", "watch", None).await.unwrap();
         let ended = MonitorEvent::Ended {
             id: m.id,
             end: MonitorEnd::Exited(Some(1)),
@@ -226,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn stop_remembers_who_stopped_it() {
         let (monitors, _rx) = monitors();
-        let m = monitors.register("ci", "watch").await.unwrap();
+        let m = monitors.register("ci", "watch", None).await.unwrap();
         assert!(!monitors.stop(9, StoppedBy::Model), "no such monitor");
         assert!(monitors.stop(m.id, StoppedBy::User));
         assert!(m.stop.is_cancelled());
@@ -246,13 +325,13 @@ mod tests {
             0,
             "none without a front-end"
         );
-        let m = monitors.register("ci", "watch").await.unwrap();
-        monitors.register("logs", "tail").await.unwrap();
+        let m = monitors.register("ci", "watch", None).await.unwrap();
+        monitors.register("logs", "tail", None).await.unwrap();
 
         assert_eq!(monitors.forget_all(), 2);
         assert!(m.stop.is_cancelled());
         assert_eq!(monitors.running(), 0);
-        let next = monitors.register("new", "watch").await.unwrap();
+        let next = monitors.register("new", "watch", None).await.unwrap();
         assert_eq!(next.id, 3, "numbers go on across sessions");
 
         let ended = MonitorEvent::Ended {
@@ -267,5 +346,69 @@ mod tests {
             }
         }
         panic!("the front-end never heard it ended");
+    }
+
+    #[tokio::test]
+    async fn input_reaches_the_writer_and_close_shuts_it() {
+        let (monitors, _rx) = monitors();
+        let (tx, mut writes) = mpsc::channel(1);
+        let m = monitors
+            .register("repl", "python3", Some(tx))
+            .await
+            .unwrap();
+
+        let written = monitors.input(m.id, "1+1\n".into(), false).unwrap();
+        let write = writes.recv().await.expect("queued");
+        assert_eq!((write.text.as_str(), write.close), ("1+1\n", false));
+        write.done.send(Ok(())).unwrap();
+        assert_eq!(written.await, Ok(Ok(())));
+
+        monitors.input(m.id, String::new(), true).unwrap();
+        assert!(writes.recv().await.expect("queued").close);
+        assert_eq!(
+            monitors.input(m.id, "late\n".into(), false).unwrap_err(),
+            InputRefused::Closed,
+            "nothing goes in after a close"
+        );
+    }
+
+    #[tokio::test]
+    async fn input_is_refused_without_a_stdin_to_write() {
+        let (monitors, _rx) = monitors();
+        let plain = monitors.register("ci", "watch", None).await.unwrap();
+        assert_eq!(
+            monitors.input(plain.id, "x".into(), false).unwrap_err(),
+            InputRefused::NoStdin
+        );
+        assert_eq!(
+            monitors.input(9, "x".into(), false).unwrap_err(),
+            InputRefused::NoMonitor
+        );
+
+        // Room for one write the command has not read.
+        let (tx, writes) = mpsc::channel(1);
+        let m = monitors.register("repl", "cat", Some(tx)).await.unwrap();
+        monitors.input(m.id, "a".into(), false).unwrap();
+        assert_eq!(
+            monitors.input(m.id, "b".into(), false).unwrap_err(),
+            InputRefused::Backlogged
+        );
+
+        // The writer gone, as after a failed write.
+        drop(writes);
+        assert_eq!(
+            monitors.input(m.id, "c".into(), false).unwrap_err(),
+            InputRefused::Closed
+        );
+        assert_eq!(
+            monitors.input(m.id, "d".into(), false).unwrap_err(),
+            InputRefused::Closed
+        );
+
+        monitors.forget_all();
+        assert_eq!(
+            monitors.input(m.id, "e".into(), false).unwrap_err(),
+            InputRefused::NoMonitor
+        );
     }
 }

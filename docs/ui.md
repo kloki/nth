@@ -91,10 +91,12 @@ running · 42s · 3 events · ~/.local/share/nth/sessions/monitors/<session>/1.l
 
 ERROR db timeout
 warning: slow query        (stderr, dim)
+> retry                    (written to stdin, cyan)
 ```
 
 The tab follows the newest line unless scrolled up, and keeps the last 2000 lines; the log has all of them.
 
+- **Stdin.** A monitor the model started with `stdin` takes what it writes with `monitor_input`. Each line written shows as `>` and the text, in cyan, between the output it answers, and goes to the log as `stdin: `; it is no event and never reaches the model as a notice.
 - **Stopping.** ctrl+w stops the showing monitor. The model stops one with `monitor_stop`, and one also ends by exiting, timing out or printing too much.
 - **Closing.** A monitor's tab closes by itself the moment its process stops, however it ended; the log keeps all of its output, and the model hears how it ended. ctrl+q and `/close` leave a running one open and say on the status bar to stop it first.
 - **Leaving.** `/clear` and `/resume` stop every monitor; their tabs close as each process stops.
