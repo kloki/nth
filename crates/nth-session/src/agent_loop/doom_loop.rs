@@ -8,6 +8,13 @@ use super::{Error, Turn, answer_unrun};
 
 /// How many times the same call in a row trips the doom-loop guard.
 pub(super) const DOOM_LOOP_THRESHOLD: usize = 3;
+/// The tools whose identical calls in a row are work, not a loop, so they
+/// never count toward the guard. `monitor_input` answers prompts and pages
+/// output, where the same input (`"y\n"` to three installer prompts, `"\n"`
+/// to page on) is what the command asks for each time. `schedule_wakeup`
+/// re-arms the same failsafe deadline while the model waits on background
+/// work, as notices arrive between its steps.
+const REPEATABLE: [&str; 2] = ["monitor_input", "schedule_wakeup"];
 /// The doom-loop question's answers.
 const CONTINUE: &str = "Run it";
 const STOP: &str = "Stop";
@@ -50,7 +57,10 @@ impl Turn<'_> {
 /// The first of the latest reply's calls that completes a run of identical
 /// calls (same name and arguments) `DOOM_LOOP_THRESHOLD` long, counted over
 /// `turn`. Only whole multiples of the threshold count, so after a "Run it"
-/// the question comes back after another full run, not on every repeat.
+/// the question comes back after another full run, not on every repeat. A
+/// call of a `REPEATABLE` tool never extends a run, so those tools repeat
+/// freely, and one between two other calls breaks their run as any other
+/// call does.
 fn repeating(turn: &[Message]) -> Option<&ToolCall> {
     let replies = turn.iter().filter_map(|message| match message {
         Message::Assistant(reply) => Some(reply),
@@ -61,8 +71,9 @@ fn repeating(turn: &[Message]) -> Option<&ToolCall> {
     let first_new = calls.len() - latest;
     let mut run = 0;
     for (i, call) in calls.iter().enumerate() {
-        let same =
-            i > 0 && (&calls[i - 1].name, &calls[i - 1].arguments) == (&call.name, &call.arguments);
+        let same = i > 0
+            && (&calls[i - 1].name, &calls[i - 1].arguments) == (&call.name, &call.arguments)
+            && !REPEATABLE.contains(&call.name.as_str());
         run = if same { run + 1 } else { 1 };
         if i >= first_new && run % DOOM_LOOP_THRESHOLD == 0 {
             return Some(call);
@@ -282,6 +293,56 @@ mod tests {
             ["1", "2", "3"].map(|id| Message::tool_failed(id, UNASKED)),
             "stopped without blocking on a question nobody would answer"
         );
+    }
+
+    /// One reply per call, each `(name, arguments)`.
+    fn replies(calls: &[(&str, &str)]) -> Vec<Message> {
+        calls
+            .iter()
+            .enumerate()
+            .map(|(i, (name, arguments))| {
+                Message::Assistant(AssistantMessage {
+                    tool_calls: vec![call(&(i + 1).to_string(), name, arguments)],
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repeatable_tools_repeat_without_tripping() {
+        let input = ("monitor_input", r#"{"id":1,"input":"y\n"}"#);
+        for n in [DOOM_LOOP_THRESHOLD, 2 * DOOM_LOOP_THRESHOLD] {
+            let turn = replies(&vec![input; n]);
+            assert!(
+                (1..=n).all(|end| repeating(&turn[..end]).is_none()),
+                "{n} monitor_input calls never trip"
+            );
+        }
+        let wakeup = ("schedule_wakeup", r#"{"delay_secs":300}"#);
+        let turn = replies(&[wakeup; DOOM_LOOP_THRESHOLD]);
+        assert!(repeating(&turn).is_none());
+    }
+
+    #[test]
+    fn other_tools_still_trip_at_the_threshold() {
+        let turn = replies(&[("echo", "{}"); DOOM_LOOP_THRESHOLD]);
+        assert_eq!(repeating(&turn).map(|c| c.id.as_str()), Some("3"));
+    }
+
+    #[test]
+    fn a_repeatable_call_beside_a_run_leaves_its_count_as_before() {
+        let echo = ("echo", "{}");
+        let input = ("monitor_input", r#"{"id":1,"input":"\n"}"#);
+        // Before and after the run, the run is counted as without them.
+        let around = replies(&[input, input, echo, echo, echo, input]);
+        assert_eq!(repeating(&around[..5]).map(|c| c.id.as_str()), Some("5"));
+        assert!(repeating(&around).is_none(), "the run ended at 5");
+        // Between two calls, it breaks their run as any other call does.
+        let between = replies(&[echo, echo, input, echo, echo]);
+        assert!((1..=5).all(|end| repeating(&between[..end]).is_none()));
+        let after = replies(&[echo, echo, input, echo, echo, echo]);
+        assert_eq!(repeating(&after).map(|c| c.id.as_str()), Some("6"));
     }
 
     #[test]
