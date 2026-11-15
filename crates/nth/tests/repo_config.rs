@@ -1,41 +1,35 @@
 //! Repository configuration through the real CLI, isolated from user settings.
+mod support;
+
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
-use tempfile::TempDir;
+use support::Env;
 
 struct Fixture {
-    _temp: TempDir,
+    env: Env,
     root: PathBuf,
-    home: PathBuf,
     global: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("repo");
-        let home = temp.path().join("home");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&home).unwrap();
-        let global = temp.path().join("global.toml");
+        let env = Env::new();
+        let root = env.dir("repo");
+        let global = env.root().join("global.toml");
         fs::write(&global, "").unwrap();
-        Self {
-            _temp: temp,
-            root,
-            home,
-            global,
-        }
+        Self { env, root, global }
     }
 
     fn git(&self, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(&self.root)
             .args(args)
-            .env("HOME", &self.home)
+            .env("HOME", self.env.home())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
@@ -55,18 +49,9 @@ impl Fixture {
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_nth"))
-            .current_dir(cwd)
-            .env("HOME", &self.home)
-            .env("XDG_CONFIG_HOME", self.home.join("config"))
-            .env("XDG_DATA_HOME", self.home.join("data"))
-            .env_remove("NTH_CONFIG")
-            .env_remove("NTH_MODEL")
-            .arg("--config")
-            .arg(&self.global)
-            .args(args)
-            .output()
-            .unwrap()
+        let mut all: Vec<OsString> = vec!["--config".into(), self.global.clone().into()];
+        all.extend(args.iter().map(OsString::from));
+        self.env.run(cwd, &all)
     }
 
     fn success(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -217,7 +202,7 @@ fn linked_worktree_uses_main_checkout_config_and_paths() {
         "-m",
         "initial",
     ]);
-    let worktree = f._temp.path().join("linked");
+    let worktree = f.env.root().join("linked");
     f.git(&[
         "worktree",
         "add",

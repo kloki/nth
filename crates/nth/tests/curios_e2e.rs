@@ -1,40 +1,18 @@
 //! Independent real-CLI acceptance checks. Set CURIOS_E2E_KEEP to retain a
 //! browser-ready repository and fixture.json; no provider is contacted.
-use std::{path::Path, process::Command};
+mod support;
+
+use std::process::Command;
 
 use nth_protocol::Message;
 use nth_session::{Session, Store};
-use serde_json::{Value, json};
-
-fn cli(repo: &Path, data: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_nth"))
-        .current_dir(repo)
-        .env("HOME", data)
-        .env("XDG_DATA_HOME", data)
-        .env("XDG_CONFIG_HOME", data.join("config"))
-        .env_remove("NTH_CONFIG")
-        .env_remove("NTH_MODEL")
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn run(repo: &Path, data: &Path, args: &[&str]) -> Value {
-    let output = cli(repo, data, args);
-    assert!(
-        output.status.success(),
-        "{args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
+use serde_json::json;
+use support::Env;
 
 #[tokio::test]
 async fn real_cli_review_revisions_pagination_and_deletion() {
-    let temp = tempfile::tempdir().unwrap();
-    let repo = temp.path().join("repo");
-    let data = temp.path().join("data");
-    std::fs::create_dir_all(&repo).unwrap();
+    let env = Env::new();
+    let repo = env.dir("repo");
     assert!(
         Command::new("git")
             .args(["init", "--quiet"])
@@ -50,14 +28,10 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     let scope = session.prepare_curios().unwrap();
     let source = scope.source_dir().join("roundtrip.html");
     std::fs::write(&source, "<!doctype html><html><head><title>Roundtrip</title><style>body{font:18px system-ui;margin:32px}section{padding:24px;background:#eaf0f5;margin:16px 0}svg{max-width:100%}</style></head><body><h1 id=title>Independent browser review</h1><section id=summary>Stable summary for element and region review.</section><section id=removed>This section disappears in revision two.</section></body></html>").unwrap();
-    Store::at(data.join("nth/sessions"))
-        .save(&session)
-        .await
-        .unwrap();
+    Store::at(env.sessions()).save(&session).await.unwrap();
     let sid = session.id.to_string();
-    let pub1 = run(
+    let pub1 = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "publish",
@@ -71,12 +45,11 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     );
     let id = pub1["curio"]["id"].as_str().unwrap();
     assert_eq!(
-        run(&repo, &data, &["curio", "list", "--limit", "1", "--json"])["total"],
+        env.json(&repo, &["curio", "list", "--limit", "1", "--json"])["total"],
         1
     );
-    let comment = run(
+    let comment = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "comment",
@@ -95,16 +68,11 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     let mid = comment["messages"][0]["id"].as_str().unwrap();
     assert_eq!(comment["messages"][0]["delivery"], "saved");
     assert_eq!(
-        run(
-            &repo,
-            &data,
-            &["curio", "read", id, "--view", "batches", "--json"]
-        )["total"],
+        env.json(&repo, &["curio", "read", id, "--view", "batches", "--json"])["total"],
         0
     );
-    let sent = run(
+    let sent = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "send",
@@ -117,16 +85,11 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
         ],
     );
     assert_eq!(sent["recorded"], false);
-    let threads = run(
-        &repo,
-        &data,
-        &["curio", "read", id, "--view", "threads", "--json"],
-    );
+    let threads = env.json(&repo, &["curio", "read", id, "--view", "threads", "--json"]);
     let version = threads["items"][0]["version"].to_string();
     // Simulated agent response, explicitly authored by CLI, not inference.
-    let reply = run(
+    let reply = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "reply",
@@ -143,9 +106,8 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
         ],
     );
     assert_eq!(reply["status"], "addressed");
-    let resolved = run(
+    let resolved = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "resolve",
@@ -157,9 +119,8 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
         ],
     );
     assert_eq!(resolved["status"], "resolved");
-    let reopened = run(
+    let reopened = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "reopen",
@@ -180,9 +141,8 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
         ),
     )
     .unwrap();
-    let pub2 = run(
+    let pub2 = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "publish",
@@ -198,24 +158,15 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     );
     assert_eq!(pub2["revision"]["number"], 2);
     assert_eq!(
-        run(
-            &repo,
-            &data,
-            &["curio", "read", id, "--view", "threads", "--json"]
-        )["items"][0]["attachment"],
+        env.json(&repo, &["curio", "read", id, "--view", "threads", "--json"])["items"][0]["attachment"],
         "detached"
     );
     assert_eq!(
-        run(
-            &repo,
-            &data,
-            &["curio", "read", id, "--revision", "1", "--json"]
-        )["revision"]["number"],
+        env.json(&repo, &["curio", "read", id, "--revision", "1", "--json"])["revision"]["number"],
         1
     );
-    let page = run(
+    let page = env.json(
         &repo,
-        &data,
         &[
             "curio", "read", id, "--view", "messages", "--thread", tid, "--limit", "1", "--json",
         ],
@@ -223,9 +174,8 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     assert_eq!(page["total"], 2);
     assert_eq!(page["next_offset"], 1);
     assert_eq!(
-        run(
+        env.json(
             &repo,
-            &data,
             &[
                 "curio", "read", id, "--view", "messages", "--thread", tid, "--offset", "1",
                 "--limit", "1", "--json"
@@ -235,14 +185,14 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
     );
     for invalid in ["0", "../state.json", "missing"] {
         assert!(
-            !cli(&repo, &data, &["curio", "read", invalid, "--json"])
+            !env.run(&repo, &["curio", "read", invalid, "--json"])
                 .status
                 .success()
         );
     }
     for limit in ["0", "101"] {
         assert!(
-            !cli(&repo, &data, &["curio", "list", "--limit", limit])
+            !env.run(&repo, &["curio", "list", "--limit", limit])
                 .status
                 .success()
         );
@@ -264,13 +214,14 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
             .is_empty()
     );
     if std::env::var_os("CURIOS_E2E_KEEP").is_some() {
-        let path = temp.keep();
+        let data = env.data().to_path_buf();
+        let path = env.keep();
         std::fs::write(path.join("fixture.json"), serde_json::to_vec_pretty(&json!({"repo":repo,"data":data,"session":sid,"curio":id,"thread":tid,"source":source})).unwrap()).unwrap();
         println!("browser fixture: {}", path.display());
     } else {
         let project = repo.join("project.html");
         std::fs::write(&project, "project source survives deletion").unwrap();
-        let output = cli(&repo, &data, &["session", "delete", &sid[..8]]);
+        let output = env.run(&repo, &["session", "delete", &sid[..8]]);
         assert!(
             output.status.success(),
             "{}",
@@ -278,6 +229,6 @@ async fn real_cli_review_revisions_pagination_and_deletion() {
         );
         assert!(!scope.source_dir().exists());
         assert!(project.exists());
-        assert_eq!(run(&repo, &data, &["curio", "list", "--json"])["total"], 0);
+        assert_eq!(env.json(&repo, &["curio", "list", "--json"])["total"], 0);
     }
 }

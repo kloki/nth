@@ -42,6 +42,7 @@ getrandom = "0.3"
 hoodrich = "0.1.2"
 htmd = "0.5"
 ignore = "0.4"
+insta = { version = "1", features = ["json"] }
 jiff = "0.2"
 jsonwebtoken = "9"
 libc = "0.2"

@@ -394,6 +394,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.16.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e96a4956774c13c126a8b5af4daa79384f4d826534c95a02d76afb39e2ab64e3"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -692,6 +703,12 @@ name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "equivalent"
@@ -1055,7 +1072,7 @@ checksum = "4533c9e6941a9df1a7b09bfa893bbc60bad3a33f76a16b5578be34aa1ad02e3d"
 dependencies = [
  "pulldown-cmark",
  "ratatui",
- "similar",
+ "similar 3.2.0",
  "syntect",
  "unicode-width",
 ]
@@ -1414,6 +1431,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
 dependencies = [
  "rustversion",
+]
+
+[[package]]
+name = "insta"
+version = "1.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67d3d2e287e4b86c10b3f3b641033d1f89b74bdb39d05f34952e2b9a6fe21cd"
+dependencies = [
+ "console",
+ "once_cell",
+ "serde",
+ "similar 2.7.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -1816,6 +1846,7 @@ dependencies = [
  "clap",
  "fastrand",
  "futures",
+ "insta",
  "jiff",
  "nth-auth",
  "nth-config",
@@ -1992,7 +2023,7 @@ dependencies = [
  "nth-context",
  "serde",
  "serde_json",
- "similar",
+ "similar 3.2.0",
  "tokio",
  "tokio-util",
 ]
@@ -2012,7 +2043,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "similar",
+ "similar 3.2.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2073,7 +2104,7 @@ dependencies = [
  "nucleo-matcher",
  "ratatui",
  "serde_json",
- "similar",
+ "similar 3.2.0",
  "tempfile",
  "textwrap",
  "tokio",
@@ -3092,6 +3123,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "similar"

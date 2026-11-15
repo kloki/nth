@@ -1,0 +1,10 @@
+---
+source: crates/nth/tests/listings.rs
+expression: "redacted(&env, &lines[0])"
+---
+{
+  "description": "Colour names are terminal colours",
+  "name": "colours",
+  "path": "[root]/work/.nth/memory/colours.md",
+  "type": "feedback"
+}

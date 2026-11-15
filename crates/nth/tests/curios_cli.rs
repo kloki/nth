@@ -1,4 +1,6 @@
 //! Exercise the real binary without provider credentials or the user's data.
+mod support;
+
 use std::{
     io::{BufRead, BufReader},
     process::{Command, Stdio},
@@ -8,41 +10,21 @@ use nth_curios::{self as core, Author, Comment, Publish, Reply, Target, TargetKi
 use nth_protocol::Message;
 use nth_session::{Session, Store};
 use serde_json::Value;
-
-fn command(repo: &std::path::Path, data: &std::path::Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nth"));
-    command
-        .current_dir(repo)
-        .env("XDG_DATA_HOME", data)
-        .env("HOME", data)
-        .env_remove("NTH_CONFIG")
-        .env_remove("NTH_MODEL");
-    command
-}
-
-fn json(repo: &std::path::Path, data: &std::path::Path, args: &[&str]) -> Value {
-    let output = command(repo, data).args(args).output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
+use support::Env;
 
 #[test]
 fn long_thread_mutations_return_bounded_retry_safe_receipts() {
-    let repo = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
+    let env = Env::new();
+    let repo = env.dir("repo");
     assert!(
         Command::new("git")
             .args(["init", "--quiet"])
-            .arg(repo.path())
+            .arg(&repo)
             .status()
             .unwrap()
             .success()
     );
-    let store = core::Store::new(repo.path(), "long-thread-owner").unwrap();
+    let store = core::Store::new(&repo, "long-thread-owner").unwrap();
     let source = store.source_dir().join("review.html");
     std::fs::write(&source, "<p id=title>Review</p>").unwrap();
     let published = store
@@ -96,10 +78,7 @@ fn long_thread_mutations_return_bounded_retry_safe_receipts() {
     assert!(serde_json::to_vec(&thread).unwrap().len() > 256 * 1024);
     let tid = &thread.id;
     let run = |args: &[&str]| {
-        let output = command(repo.path(), data.path())
-            .args(args)
-            .output()
-            .unwrap();
+        let output = env.run(&repo, args);
         assert!(
             output.status.success(),
             "{}",
@@ -179,17 +158,17 @@ fn long_thread_mutations_return_bounded_retry_safe_receipts() {
 
 #[test]
 fn immutable_large_batch_is_recoverable_by_message_pages() {
-    let repo = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
+    let env = Env::new();
+    let repo = env.dir("repo");
     assert!(
         Command::new("git")
             .args(["init", "--quiet"])
-            .arg(repo.path())
+            .arg(&repo)
             .status()
             .unwrap()
             .success()
     );
-    let store = core::Store::new(repo.path(), "batch-owner").unwrap();
+    let store = core::Store::new(&repo, "batch-owner").unwrap();
     let published = store
         .publish(Publish {
             request_id: "publish".into(),
@@ -275,11 +254,7 @@ fn immutable_large_batch_is_recoverable_by_message_pages() {
             Author::Human,
         )
         .unwrap();
-    let summaries = json(
-        repo.path(),
-        data.path(),
-        &["curio", "read", id, "--view", "batches"],
-    );
+    let summaries = env.json(&repo, &["curio", "read", id, "--view", "batches"]);
     assert_eq!(summaries["items"][0]["message_count"], 20);
     assert_eq!(summaries["items"][0]["revision"], 2);
     assert_eq!(
@@ -290,8 +265,9 @@ fn immutable_large_batch_is_recoverable_by_message_pages() {
     let mut offset = 0;
     let mut recovered = Vec::new();
     loop {
-        let output = command(repo.path(), data.path())
-            .args([
+        let output = env.run(
+            &repo,
+            &[
                 "curio",
                 "read",
                 id,
@@ -304,9 +280,8 @@ fn immutable_large_batch_is_recoverable_by_message_pages() {
                 "--limit",
                 "100",
                 "--json",
-            ])
-            .output()
-            .unwrap();
+            ],
+        );
         assert!(
             output.status.success(),
             "{}",
@@ -330,10 +305,7 @@ fn immutable_large_batch_is_recoverable_by_message_pages() {
         offset = next;
     }
     assert_eq!(Value::Array(recovered), expected);
-    let help = command(repo.path(), data.path())
-        .args(["curio", "read", "--help"])
-        .output()
-        .unwrap();
+    let help = env.run(&repo, &["curio", "read", "--help"]);
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("--batch"));
     assert!(help.contains("submitted context/versions"));
@@ -341,10 +313,8 @@ fn immutable_large_batch_is_recoverable_by_message_pages() {
 
 #[tokio::test]
 async fn isolated_binary_publish_read_and_missing_repository() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().join("repo");
-    let data = dir.path().join("data");
-    std::fs::create_dir_all(&repo).unwrap();
+    let env = Env::new();
+    let repo = env.dir("repo");
     assert!(
         Command::new("git")
             .args(["init", "--quiet"])
@@ -362,14 +332,10 @@ async fn isolated_binary_publish_read_and_missing_repository() {
         "<!doctype html><html><body><h1 id=title>Review</h1></body></html>",
     )
     .unwrap();
-    Store::at(data.join("nth/sessions"))
-        .save(&session)
-        .await
-        .unwrap();
+    Store::at(env.sessions()).save(&session).await.unwrap();
     let session_id = session.id.to_string();
-    let published = json(
+    let published = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "publish",
@@ -382,12 +348,11 @@ async fn isolated_binary_publish_read_and_missing_repository() {
         ],
     );
     let id = published["curio"]["id"].as_str().unwrap();
-    let read = json(&repo, &data, &["curio", "read", id, "--json"]);
+    let read = env.json(&repo, &["curio", "read", id, "--json"]);
     assert_eq!(read["revision"]["number"], 1);
-    assert_eq!(json(&repo, &data, &["curio", "list", "--json"])["total"], 1);
-    let comment = json(
+    assert_eq!(env.json(&repo, &["curio", "list", "--json"])["total"], 1);
+    let comment = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "comment",
@@ -404,9 +369,8 @@ async fn isolated_binary_publish_read_and_missing_repository() {
     );
     assert_eq!(comment["messages"][0]["delivery"], "saved");
     let mid = comment["messages"][0]["id"].as_str().unwrap();
-    let sent = json(
+    let sent = env.json(
         &repo,
-        &data,
         &[
             "curio",
             "send",
@@ -423,8 +387,8 @@ async fn isolated_binary_publish_read_and_missing_repository() {
 
     #[cfg(unix)]
     {
-        let mut child = command(&repo, &data)
-            .args(["curio", "serve", id, "--json"])
+        let mut child = env
+            .command(&repo, &["curio", "serve", id, "--json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -463,11 +427,8 @@ async fn isolated_binary_publish_read_and_missing_repository() {
         }
         assert!(std::net::TcpStream::connect(address).is_err());
     }
-    let no_repo = tempfile::tempdir().unwrap();
-    let output = command(no_repo.path(), &data)
-        .args(["curio", "list", "--json"])
-        .output()
-        .unwrap();
+    let no_repo = env.dir("elsewhere");
+    let output = env.run(&no_repo, &["curio", "list", "--json"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("requires a Git repository"));
 }

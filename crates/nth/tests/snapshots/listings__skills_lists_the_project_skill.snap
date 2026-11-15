@@ -1,0 +1,11 @@
+---
+source: crates/nth/tests/listings.rs
+expression: "redacted(&env, x)"
+---
+{
+  "description": "The x skill",
+  "name": "x",
+  "path": "[root]/work/.claude/skills/x/SKILL.md",
+  "root": "[root]/work/.claude/skills",
+  "source": "project"
+}
