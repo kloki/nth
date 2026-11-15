@@ -49,17 +49,28 @@ enum Stdin {
     None,
     /// Writes go to the task that owns the pipe.
     Open(mpsc::Sender<StdinWrite>),
-    /// The model closed it, or the task writing it has gone.
+    /// The model closed it.
     Closed,
+    /// A write failed, or the task writing it went with the watch: kept so
+    /// that later writes say why, which a write the model stopped waiting
+    /// for would otherwise never tell it.
+    Failed(String),
 }
 
+/// What a monitor's stdin is left with once the task writing it has gone
+/// without saying why: the watch stopped it as the monitor ended.
+const WRITER_GONE: &str = "the monitor is ending";
+
 /// Why [`Monitors::input`] could not hand text to a monitor's stdin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputRefused {
     NoMonitor,
     /// It was started without `stdin`.
     NoStdin,
+    /// The model closed it.
     Closed,
+    /// Writing to it failed, for this reason.
+    Failed(String),
     /// Writes the command has not read yet fill the queue in front of its
     /// pipe.
     Backlogged,
@@ -146,6 +157,7 @@ impl Monitors {
         let writer = match &running.stdin {
             Stdin::None => return Err(InputRefused::NoStdin),
             Stdin::Closed => return Err(InputRefused::Closed),
+            Stdin::Failed(reason) => return Err(InputRefused::Failed(reason.clone())),
             Stdin::Open(writer) => writer,
         };
         let (done, written) = oneshot::channel();
@@ -159,11 +171,24 @@ impl Monitors {
                 Ok(written)
             }
             Err(TrySendError::Full(_)) => Err(InputRefused::Backlogged),
-            // The task ends after a close or a failed write.
+            // A close or a failed write has already said so above; this is
+            // the task stopped with the watch.
             Err(TrySendError::Closed(_)) => {
-                running.stdin = Stdin::Closed;
-                Err(InputRefused::Closed)
+                running.stdin = Stdin::Failed(WRITER_GONE.into());
+                Err(InputRefused::Failed(WRITER_GONE.into()))
             }
+        }
+    }
+
+    /// Records why writing a monitor's stdin failed, so every later write
+    /// is refused with the reason, also after the model stopped waiting for
+    /// the write that failed.
+    pub fn stdin_failed(&self, id: MonitorId, reason: String) {
+        let Some(inner) = &self.0 else { return };
+        if let Some(running) = inner.lock().running.get_mut(&id)
+            && !matches!(running.stdin, Stdin::None)
+        {
+            running.stdin = Stdin::Failed(reason);
         }
     }
 
@@ -394,21 +419,40 @@ mod tests {
             InputRefused::Backlogged
         );
 
-        // The writer gone, as after a failed write.
+        // The writer gone with the watch.
         drop(writes);
-        assert_eq!(
-            monitors.input(m.id, "c".into(), false).unwrap_err(),
-            InputRefused::Closed
-        );
-        assert_eq!(
-            monitors.input(m.id, "d".into(), false).unwrap_err(),
-            InputRefused::Closed
-        );
+        let gone = InputRefused::Failed(WRITER_GONE.into());
+        assert_eq!(monitors.input(m.id, "c".into(), false).unwrap_err(), gone);
+        assert_eq!(monitors.input(m.id, "d".into(), false).unwrap_err(), gone);
 
         monitors.forget_all();
         assert_eq!(
             monitors.input(m.id, "e".into(), false).unwrap_err(),
             InputRefused::NoMonitor
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_named_by_every_later_one() {
+        let (monitors, _rx) = monitors();
+        let (tx, _writes) = mpsc::channel(4);
+        let m = monitors.register("repl", "cat", Some(tx)).await.unwrap();
+        monitors.input(m.id, "a".into(), false).unwrap();
+
+        monitors.stdin_failed(m.id, "the command stopped reading its stdin".into());
+        let failed = InputRefused::Failed("the command stopped reading its stdin".into());
+        assert_eq!(monitors.input(m.id, "b".into(), false).unwrap_err(), failed);
+        assert_eq!(
+            monitors.input(m.id, String::new(), true).unwrap_err(),
+            failed
+        );
+
+        let plain = monitors.register("ci", "watch", None).await.unwrap();
+        monitors.stdin_failed(plain.id, "no".into());
+        assert_eq!(
+            monitors.input(plain.id, "x".into(), false).unwrap_err(),
+            InputRefused::NoStdin,
+            "a monitor without stdin keeps saying so"
         );
     }
 }
