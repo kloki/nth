@@ -2,7 +2,7 @@
 //! the latest session by default. Nothing runs here, so a running item
 //! shows as its file says.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
 use anyhow::{Result, bail};
 use nth_icons::icons;
@@ -14,6 +14,8 @@ use nth_work::{
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
 
+use crate::output::{self, Report};
+
 pub async fn run(session: Option<String>, json: bool) -> Result<()> {
     let store = Store::open()?;
     let session = crate::session::pick(&store, session.as_deref()).await?;
@@ -24,15 +26,27 @@ pub async fn run(session: Option<String>, json: bool) -> Result<()> {
             session.work_dir().display()
         );
     };
-    let mut out = std::io::stdout().lock();
-    match json || !out.is_terminal() {
-        true => writeln!(out, "{}", plan_json(&session, &plan))?,
-        false => text(&mut out, &session, &plan)?,
-    }
-    Ok(())
+    output::print(&WorkReport { session, plan }, json)
 }
 
-fn text(out: &mut impl Write, session: &Session, plan: &Plan) -> Result<()> {
+/// A session's work plan, as `nth work` prints it.
+struct WorkReport {
+    session: Session,
+    plan: Plan,
+}
+
+impl Report for WorkReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        text(out, &self.session, &self.plan)
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(out, "{}", plan_json(&self.session, &self.plan))?;
+        Ok(())
+    }
+}
+
+fn text(out: &mut dyn Write, session: &Session, plan: &Plan) -> Result<()> {
     let outline = plan.outline();
     let title = plan
         .title
@@ -306,6 +320,7 @@ mod tests {
     use nth_work::{Cycle, ItemRef, Todo, WorkOutcome};
 
     use super::*;
+    use crate::output::testing;
 
     fn plan() -> Plan {
         let at = |cycle: &str, item: &str| ItemRef {
@@ -357,32 +372,53 @@ mod tests {
         }
     }
 
-    /// The text without its colours.
-    fn plain(text: &str) -> String {
-        let mut out = String::new();
-        let mut chars = text.chars();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                chars.by_ref().find(|c| *c == 'm');
-            } else {
-                out.push(c);
-            }
-        }
-        out
+    /// A session with an id and a state root a snapshot can hold: the
+    /// root is set, since one found by asking git about `/repo` would
+    /// depend on what the machine has there.
+    fn session() -> Session {
+        let mut session = Session::new("glm", "/repo".into());
+        session.id = "0a1b2c3d-0000-4000-8000-000000000000"
+            .parse()
+            .expect("a uuid");
+        session.state_root = Some("/repo".into());
+        session
+    }
+
+    #[test]
+    fn a_plan_draws_as_a_tree_of_cycles_items_and_todos() {
+        let report = WorkReport {
+            session: session(),
+            plan: plan(),
+        };
+
+        let text = testing::text(&report);
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_plan_is_one_json_document() {
+        let report = WorkReport {
+            session: session(),
+            plan: plan(),
+        };
+
+        let value: Value = serde_json::from_str(&testing::json(&report)).unwrap();
+
+        insta::assert_json_snapshot!(value);
     }
 
     #[test]
     fn the_text_draws_the_tree() {
         let session = Session::new("glm", "/repo".into());
-        let mut out = Vec::new();
+        let id = session.id;
+        let report = WorkReport {
+            session,
+            plan: plan(),
+        };
 
-        text(&mut out, &session, &plan()).unwrap();
-
-        let lines: Vec<String> = plain(&String::from_utf8(out).unwrap())
-            .lines()
-            .map(String::from)
-            .collect();
-        assert_eq!(lines[0], format!("→ Retry  {}", session.id));
+        let lines: Vec<String> = testing::text(&report).lines().map(String::from).collect();
+        assert_eq!(lines[0], format!("→ Retry  {id}"));
         assert_eq!(
             lines[1..],
             [
@@ -408,11 +444,9 @@ mod tests {
         plan.cycles[1].items[0].model = Some("chatgpt/gpt-5".into());
         let again = plan.cycles[1].items[0].clone();
         plan.cycles[1].items.push(again);
-        let mut out = Vec::new();
 
-        text(&mut out, &session, &plan).unwrap();
+        let text = testing::text(&WorkReport { session, plan });
 
-        let text = plain(&String::from_utf8(out).unwrap());
         assert_eq!(text.lines().nth(2), Some("  chatgpt/gpt-5 2 · zen/glm 1"));
     }
 

@@ -12,6 +12,7 @@ mod lsp;
 mod memory;
 mod models;
 mod notify;
+mod output;
 mod run;
 mod runtime;
 mod session;

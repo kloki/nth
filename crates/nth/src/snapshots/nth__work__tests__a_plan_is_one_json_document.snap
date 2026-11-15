@@ -1,0 +1,82 @@
+---
+source: crates/nth/src/work.rs
+expression: value
+---
+{
+  "cycles": [
+    {
+      "items": [
+        {
+          "agent": "general",
+          "assigned": null,
+          "broken": null,
+          "done": 1,
+          "effort": "high",
+          "item": "store",
+          "model": "zen/glm",
+          "name": "Atlas",
+          "note": null,
+          "outcome": "completed",
+          "result": "ok",
+          "status": "returned",
+          "task": 2,
+          "title": "Store",
+          "todos": [
+            {
+              "done": true,
+              "text": "parse"
+            },
+            {
+              "done": false,
+              "text": "write"
+            }
+          ],
+          "total": 2
+        }
+      ],
+      "number": 1,
+      "slug": "a",
+      "state": "current"
+    },
+    {
+      "items": [
+        {
+          "agent": "explore",
+          "assigned": null,
+          "broken": null,
+          "done": 1,
+          "effort": null,
+          "item": "tab",
+          "model": null,
+          "name": null,
+          "note": null,
+          "outcome": null,
+          "result": null,
+          "status": "pending",
+          "task": 1,
+          "title": "Tab",
+          "todos": [
+            {
+              "done": true,
+              "text": "parse"
+            },
+            {
+              "done": false,
+              "text": "write"
+            }
+          ],
+          "total": 2
+        }
+      ],
+      "number": 2,
+      "slug": "b",
+      "state": "upcoming"
+    }
+  ],
+  "dir": "/repo/.nth/work/0a1b2c3d-0000-4000-8000-000000000000",
+  "done": 0,
+  "goal": "Add retries.",
+  "id": "0a1b2c3d-0000-4000-8000-000000000000",
+  "title": "Retry",
+  "total": 2
+}

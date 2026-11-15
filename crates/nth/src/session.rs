@@ -2,7 +2,7 @@
 //! one with what it left on disk.
 
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::Path,
     time::SystemTime,
 };
@@ -14,6 +14,8 @@ use nth_icons::icons;
 use nth_session::{Session, Store, Summary, store::age};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
+
+use crate::output::{self, Report};
 
 #[derive(Subcommand)]
 pub enum SessionCommand {
@@ -46,13 +48,12 @@ pub async fn run(command: SessionCommand) -> Result<()> {
         } => {
             let cwd = std::env::current_dir().context("no working directory")?;
             let sessions = store.list().await?;
-            let shown = select(&sessions, (!all).then_some(cwd.as_path()), max_count);
-            let mut out = io::stdout().lock();
-            match json || !out.is_terminal() {
-                true => writeln!(out, "{}", list_json(&shown))?,
-                false => list_text(&mut out, &shown, all, SystemTime::now())?,
-            }
-            Ok(())
+            let report = SessionListReport {
+                sessions: select(&sessions, (!all).then_some(cwd.as_path()), max_count),
+                all,
+                now: SystemTime::now(),
+            };
+            output::print(&report, json)
         }
         SessionCommand::Delete { session } => {
             let session = pick(&store, Some(&session)).await?;
@@ -121,12 +122,26 @@ fn select<'a>(sessions: &'a [Summary], cwd: Option<&Path>, max: Option<usize>) -
         .collect()
 }
 
-fn list_text(
-    out: &mut impl Write,
-    sessions: &[&Summary],
+/// The sessions `nth session list` shows, and what their lines depend on:
+/// whether each names its directory, and the time their ages count to.
+struct SessionListReport<'a> {
+    sessions: Vec<&'a Summary>,
     all: bool,
     now: SystemTime,
-) -> Result<()> {
+}
+
+impl Report for SessionListReport<'_> {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        list_text(out, &self.sessions, self.all, self.now)
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(out, "{}", list_json(&self.sessions))?;
+        Ok(())
+    }
+}
+
+fn list_text(out: &mut dyn Write, sessions: &[&Summary], all: bool, now: SystemTime) -> Result<()> {
     if sessions.is_empty() {
         let what = match all {
             true => "no saved sessions",
@@ -172,6 +187,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::output::testing;
 
     fn summary(id: &str, cwd: &str, at_secs: u64) -> Summary {
         Summary {
@@ -192,18 +208,76 @@ mod tests {
         ]
     }
 
-    /// The text without its colours.
-    fn plain(text: &str) -> String {
-        let mut out = String::new();
-        let mut chars = text.chars();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                chars.by_ref().find(|c| *c == 'm');
-            } else {
-                out.push(c);
-            }
+    /// The time the snapshots are taken at.
+    const NOW: u64 = 10 * 86_400;
+
+    /// Sessions of different ages and places, newest first.
+    fn aged() -> Vec<Summary> {
+        vec![
+            summary("11111111-0000-4000-8000-000000000000", "/a", NOW - 30),
+            summary(
+                "12222222-0000-4000-8000-000000000000",
+                "/b/longer",
+                NOW - 300,
+            ),
+            summary(
+                "21111111-0000-4000-8000-000000000000",
+                "/a",
+                NOW - 2 * 86_400,
+            ),
+        ]
+    }
+
+    /// The report of `cwd`'s sessions, or of all of them, at `NOW`.
+    fn listed<'a>(sessions: &'a [Summary], cwd: Option<&Path>) -> SessionListReport<'a> {
+        SessionListReport {
+            sessions: select(sessions, cwd, None),
+            all: cwd.is_none(),
+            now: SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
         }
-        out
+    }
+
+    #[test]
+    fn the_working_directorys_sessions_list_a_line_each() {
+        let sessions = aged();
+
+        let text = testing::text(&listed(&sessions, Some(Path::new("/a"))));
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn every_directorys_sessions_list_with_their_place() {
+        let sessions = aged();
+
+        let text = testing::text(&listed(&sessions, None));
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn no_sessions_here_points_at_all() {
+        let sessions = aged();
+
+        let text = testing::text(&listed(&sessions, Some(Path::new("/c"))));
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn no_sessions_anywhere_says_so() {
+        let text = testing::text(&listed(&[], None));
+
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn the_sessions_are_one_json_array() {
+        let sessions = aged();
+
+        let value: Value = serde_json::from_str(&testing::json(&listed(&sessions, None))).unwrap();
+
+        insta::assert_json_snapshot!(value);
     }
 
     #[test]
@@ -255,14 +329,14 @@ mod tests {
     #[test]
     fn the_text_has_a_line_per_session_and_its_place_with_all() {
         let sessions = sessions();
-        let shown: Vec<&Summary> = sessions.iter().take(1).collect();
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(3 + 2 * 3_600);
-        let mut out = Vec::new();
-
-        list_text(&mut out, &shown, true, now).unwrap();
+        let report = SessionListReport {
+            sessions: sessions.iter().take(1).collect(),
+            all: true,
+            now: SystemTime::UNIX_EPOCH + Duration::from_secs(3 + 2 * 3_600),
+        };
 
         assert_eq!(
-            plain(&String::from_utf8(out).unwrap()),
+            testing::text(&report),
             "11111111-0000-4000-8000-000000000000   2h  in /a  glm\n  /a\n"
         );
     }

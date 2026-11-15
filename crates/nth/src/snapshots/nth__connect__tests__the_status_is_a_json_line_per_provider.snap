@@ -1,0 +1,9 @@
+---
+source: crates/nth/src/connect.rs
+expression: value
+---
+{
+  "connected": true,
+  "id": "chatgpt",
+  "name": "ChatGPT"
+}

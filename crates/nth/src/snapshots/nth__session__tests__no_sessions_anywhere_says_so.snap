@@ -1,0 +1,5 @@
+---
+source: crates/nth/src/session.rs
+expression: text
+---
+→ no saved sessions

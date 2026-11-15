@@ -1,0 +1,27 @@
+---
+source: crates/nth/src/session.rs
+expression: value
+---
+[
+  {
+    "cwd": "/a",
+    "id": "11111111-0000-4000-8000-000000000000",
+    "model": "glm",
+    "title": "in /a",
+    "updated": "1970-01-10T23:59:30Z"
+  },
+  {
+    "cwd": "/b/longer",
+    "id": "12222222-0000-4000-8000-000000000000",
+    "model": "glm",
+    "title": "in /b/longer",
+    "updated": "1970-01-10T23:55:00Z"
+  },
+  {
+    "cwd": "/a",
+    "id": "21111111-0000-4000-8000-000000000000",
+    "model": "glm",
+    "title": "in /a",
+    "updated": "1970-01-09T00:00:00Z"
+  }
+]
