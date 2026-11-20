@@ -14,7 +14,7 @@ pub use layers::repo_config;
 use layers::skill_path;
 use nth_context::Paths;
 use nth_protocol::{Effort, Mode};
-pub use selection::{Cycled, Profile, Selection, Slots, Target};
+pub use selection::{Cycled, Profile, ProfileSelectionError, Selection, Slots, Target};
 use serde::{Deserialize, Serialize};
 
 /// Everything in `config.toml`. Every key is optional: a missing key keeps

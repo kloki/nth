@@ -61,6 +61,15 @@ pub struct Profile {
     pub needs_chatgpt: bool,
 }
 
+impl Profile {
+    /// Why this profile cannot run with the current ChatGPT connection.
+    pub fn unavailable_reason(&self, chatgpt_connected: bool) -> Option<&str> {
+        self.unavailable.as_deref().or_else(|| {
+            (self.needs_chatgpt && !chatgpt_connected).then_some("ChatGPT is not connected")
+        })
+    }
+}
+
 /// What a picked LLM goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -135,6 +144,13 @@ pub enum Cycled {
     /// No other profile can run, each said as `name (reason)`; empty when
     /// there is only the one.
     Stayed(Vec<String>),
+}
+
+/// Why a direct profile selection could not be applied.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProfileSelectionError {
+    InvalidIndex,
+    Unavailable(String),
 }
 
 /// The model and effort every kind of turn runs with, and what runs next:
@@ -352,6 +368,35 @@ impl Selection {
         &self.slots
     }
 
+    /// Qualified profiles in configuration order.
+    pub fn profiles(&self) -> &[Profile] {
+        &self.profiles
+    }
+
+    /// Last applied profile, even when its slots have since been customized.
+    pub fn profile_index(&self) -> Option<usize> {
+        self.profile
+    }
+
+    /// Apply a profile if it exists and can run now, returning its name.
+    pub fn select_profile(
+        &mut self,
+        index: usize,
+        chatgpt_connected: bool,
+    ) -> Result<String, ProfileSelectionError> {
+        let profile = self
+            .profiles
+            .get(index)
+            .ok_or(ProfileSelectionError::InvalidIndex)?;
+        if let Some(reason) = profile.unavailable_reason(chatgpt_connected) {
+            return Err(ProfileSelectionError::Unavailable(reason.to_owned()));
+        }
+        let Cycled::Applied { name, .. } = self.apply(index, Vec::new()) else {
+            unreachable!("applying a profile always succeeds")
+        };
+        Ok(name)
+    }
+
     /// The active profile's name, while every slot still runs it. A model
     /// picked by hand, or a resumed session's own, leaves the profile, and
     /// ctrl+p puts it back.
@@ -385,10 +430,7 @@ impl Selection {
                 None => step,
             };
             let profile = &self.profiles[i];
-            let blocked = profile.unavailable.clone().or_else(|| {
-                (profile.needs_chatgpt && !chatgpt_connected)
-                    .then(|| "ChatGPT is not connected".into())
-            });
+            let blocked = profile.unavailable_reason(chatgpt_connected);
             match blocked {
                 None => return self.apply(i, skipped),
                 Some(reason) => skipped.push(format!("{} ({reason})", profile.name)),
@@ -657,6 +699,70 @@ mod tests {
         assert_eq!(selection.next_profile(true), Cycled::Stayed(Vec::new()));
         let mut selection = Selection::same(plain("glm"));
         assert_eq!(selection.next_profile(true), Cycled::NoProfiles);
+    }
+
+    #[test]
+    fn direct_selection_restores_slots_and_sets_the_cycle_position() {
+        let mut selection = profiled(vec![profile("go"), profile("zen"), profile("ly")]);
+        selection.switch_mode(Mode::Plan);
+        selection.set(Target::Clerk, plain("custom"));
+        assert_eq!(selection.profile_index(), Some(0));
+        assert_eq!(selection.profile_name(), None);
+        assert_eq!(selection.profiles()[1].name, "zen");
+
+        assert_eq!(selection.select_profile(0, true), Ok("go".into()));
+        assert_eq!(selection.slots(), &profile("go").slots);
+        assert_eq!(selection.select_profile(1, true), Ok("zen".into()));
+        assert_eq!(selection.slots(), &profile("zen").slots);
+        assert_eq!(selection.mode, Mode::Plan);
+        assert_eq!(selection.profile_index(), Some(1));
+        assert_eq!(selection.profile_name(), Some("zen"));
+        assert_eq!(selection.next_profile(true), applied("ly"));
+    }
+
+    #[test]
+    fn direct_selection_preserves_agent_pinning() {
+        let mut selection = profiled(vec![profile("go"), profile("zen")]);
+        selection.set_agent("review".into(), None);
+        selection.select_profile(1, true).unwrap();
+        assert_eq!(selection.current(), plain("zen-act"));
+        selection.set_current(plain("pinned"));
+        selection.select_profile(0, true).unwrap();
+        assert_eq!(selection.current(), plain("pinned"));
+        assert_eq!(selection.agent.as_deref(), Some("review"));
+    }
+
+    #[test]
+    fn direct_selection_checks_availability_without_mutation() {
+        let mut blocked = profile("blocked");
+        blocked.unavailable = Some("missing key".into());
+        blocked.needs_chatgpt = true;
+        let mut chatgpt = profile("chatgpt");
+        chatgpt.needs_chatgpt = true;
+        let mut selection = profiled(vec![profile("go"), blocked, chatgpt]);
+        selection.set(Target::Plan, plain("custom"));
+        let before = selection.clone();
+
+        assert_eq!(
+            selection.select_profile(99, true),
+            Err(ProfileSelectionError::InvalidIndex)
+        );
+        assert_eq!(
+            selection.select_profile(1, false),
+            Err(ProfileSelectionError::Unavailable("missing key".into()))
+        );
+        assert_eq!(
+            selection.select_profile(2, false),
+            Err(ProfileSelectionError::Unavailable(
+                "ChatGPT is not connected".into()
+            ))
+        );
+        assert_eq!(selection, before);
+        assert_eq!(selection.select_profile(2, true), Ok("chatgpt".into()));
+        assert_eq!(selection.slots(), &profile("chatgpt").slots);
+        let before = selection.clone();
+        assert!(selection.select_profile(2, false).is_err());
+        assert_eq!(selection, before);
     }
 
     #[test]

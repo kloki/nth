@@ -952,6 +952,7 @@ impl App {
             Input::LlmPicker(picker) => crate::llm_picker::draw(frame, input, picker),
             Input::SessionPicker(picker) => crate::session_picker::draw(frame, input, picker),
             Input::AgentPicker(picker) => crate::agent_picker::draw(frame, input, picker),
+            Input::ProfilePicker(picker) => crate::profile_picker::draw(frame, input, picker),
             Input::Curios(picker) => picker.draw(frame, input, self.session_id),
             Input::Question(panel) => crate::question::draw(frame, input, panel),
             Input::Settings(panel) => crate::settings::draw(frame, input, panel, self.settings),
@@ -1212,6 +1213,7 @@ impl App {
             }
             Command::Models => self.open_llm_picker(),
             Command::Agents => self.open_agent_picker(),
+            Command::Profiles => self.open_profile_picker(),
             Command::Connect => self.open_connect(),
             Command::Context => self.open_content(Tab::Context),
             Command::Resume => self.open_session_picker(),
