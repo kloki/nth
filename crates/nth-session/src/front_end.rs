@@ -24,4 +24,7 @@ pub struct FrontEnd {
     pub title_prompt: Option<String>,
     pub title_jobs: Option<tokio::sync::mpsc::UnboundedSender<crate::title::Job>>,
     pub title_store: Option<crate::Store>,
+    /// The owner's live metadata, which may hold a rename the session copied
+    /// into the turn before it happened.
+    pub title_owner: Option<crate::title::Owner>,
 }

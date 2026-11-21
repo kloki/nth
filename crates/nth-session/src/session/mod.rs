@@ -315,9 +315,13 @@ impl Session {
         }
     }
 
-    /// Nothing has been asked yet.
+    /// Nothing has been asked yet. A message carrying only a notice is still
+    /// a prompt the session ran, so it is kept; it just does not name it.
     pub fn is_empty(&self) -> bool {
-        self.history_title().is_none()
+        !self
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::User(_)))
     }
 
     /// The first line of the first prompt, which names the session in lists.
@@ -341,7 +345,15 @@ impl Session {
                         return Some(format!("!{}", call.summary(&self.cwd)));
                     }
                 }
-                Message::User(text) => return Some(first_line(text).to_string()),
+                Message::User(text) => {
+                    // Notices the turn was woken for sit in front of the
+                    // prompt; a message of only notices asks nothing.
+                    let (_, rest) = crate::inbox::split_notices(text);
+                    if rest.trim().is_empty() {
+                        continue;
+                    }
+                    return Some(first_line(rest).to_string());
+                }
                 _ => {}
             }
         }
@@ -835,6 +847,97 @@ pub(crate) mod tests {
         assert_eq!(old.env.compaction, Compaction::default());
         assert_eq!(old.context_window, None);
         assert_eq!(old.max_output, None);
+    }
+
+    /// A rename the owner made after the turn took its metadata snapshot
+    /// names the session instead of the attempt claim's title.
+    #[tokio::test]
+    async fn a_rename_before_the_first_claim_survives_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::at(dir.path());
+        let mut session = Session::new("glm-5.3", dir.path().into());
+        let owner = crate::title::Owner::new(&session, Some(store.clone()));
+        owner.rename("mine").await.unwrap();
+        let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
+            "ok".into(),
+        )]]);
+        let (tx, _rx) = mpsc::channel(64);
+        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
+        let front_end = FrontEnd {
+            title_prompt: Some("hello".into()),
+            title_jobs: Some(title_tx),
+            title_store: Some(store.clone()),
+            title_owner: Some(owner.clone()),
+            ..FrontEnd::default()
+        };
+        session
+            .prompt(
+                "hello",
+                &provider,
+                &[],
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+        assert!(
+            title_rx.try_recv().is_err(),
+            "a rename leaves nothing to generate"
+        );
+        assert_eq!(
+            session
+                .title_metadata
+                .as_ref()
+                .and_then(|m| m.title.as_ref())
+                .map(|t| t.text.as_str()),
+            Some("mine")
+        );
+        let saved = store.save_with_metadata(&session).await.unwrap().unwrap();
+        assert_eq!(saved.title.unwrap().text, "mine");
+    }
+
+    /// A claim that could not persist is not consumed: the next prompt may
+    /// still generate once the store works again.
+    #[tokio::test]
+    async fn a_failed_claim_leaves_generation_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let mut session = Session::new("glm-5.3", dir.path().into());
+        let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
+            "ok".into(),
+        )]]);
+        let (tx, _rx) = mpsc::channel(64);
+        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
+        let front_end = FrontEnd {
+            title_prompt: Some("hello".into()),
+            title_jobs: Some(title_tx),
+            title_store: Some(crate::Store::at(blocked)),
+            ..FrontEnd::default()
+        };
+        session
+            .prompt(
+                "hello",
+                &provider,
+                &[],
+                &front_end,
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+        assert!(title_rx.try_recv().is_err(), "no job from a failed claim");
+        assert_eq!(
+            session.title_metadata.as_ref().map(|m| m.generation),
+            Some(crate::title::Generation::Pending),
+            "the unclaimed attempt is not consumed"
+        );
+        assert!(
+            crate::title::Job::admit(&mut session, "again")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

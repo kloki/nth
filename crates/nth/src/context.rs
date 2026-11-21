@@ -20,7 +20,13 @@ const SOURCE: &str = "Reconstructed from saved state; another process's unsaved 
 pub async fn run(id: Option<String>, json: bool, runtime: &Runtime) -> Result<()> {
     let store = Store::open()?;
     let session = crate::session::pick(&store, id.as_deref()).await?;
-    let (session, tools, warnings) = reconstruct(session, runtime).await?;
+    let (session, mut tools, warnings) = reconstruct(session, runtime).await?;
+    // The turn offers the main session's rename tool; the preview must too.
+    if !session.subagent {
+        tools.push(Arc::new(nth_session::title::Rename(
+            nth_session::title::Owner::new(&session, Some(store)),
+        )));
+    }
     for warning in session.context().warnings.iter().chain(&warnings) {
         eprintln!("{} {warning}", icons().warn.yellow().bold());
     }

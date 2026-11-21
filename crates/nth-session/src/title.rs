@@ -39,11 +39,19 @@ impl Owner {
                 Ok(metadata) => {
                     let replace = match (&*state, &metadata) {
                         (Some(local), Some(saved)) => {
-                            saved
-                                .title
-                                .as_ref()
-                                .is_some_and(|title| title.origin == Origin::User)
-                                || saved.revision >= local.revision
+                            let user = |metadata: &Metadata| {
+                                metadata
+                                    .title
+                                    .as_ref()
+                                    .is_some_and(|title| title.origin == Origin::User)
+                            };
+                            // A local user rename is the newest state the
+                            // process knows of; a save at the same revision
+                            // without it (an attempt claim on an unsaved
+                            // session) must not displace it.
+                            user(saved)
+                                || saved.revision > local.revision
+                                || (saved.revision == local.revision && !user(local))
                         }
                         (None, _) => true,
                         _ => false,
@@ -312,6 +320,26 @@ mod tests {
         store.rename(session.id, "external").await.unwrap();
         owner.refresh().await.unwrap();
         assert_eq!(owner.snapshot().unwrap().title.unwrap().text, "external");
+    }
+
+    #[tokio::test]
+    async fn refresh_keeps_a_local_rename_over_an_attempt_at_the_same_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::at(dir.path());
+        let mut session = crate::Session::new("model", dir.path().into());
+        session
+            .messages
+            .push(nth_protocol::Message::User("shell".into()));
+        let owner = Owner::new(&session, Some(store.clone()));
+        // No save yet: the rename is held by the live owner, at revision 1.
+        owner.rename("mine").await.unwrap();
+        let mut claimed = session.clone();
+        Job::admit(&mut claimed, "hello").unwrap().unwrap();
+        assert!(store.claim_title_attempt(&claimed, 0).await.unwrap().1);
+        owner.refresh().await.unwrap();
+        let metadata = owner.snapshot().unwrap();
+        assert_eq!(metadata.revision, 1);
+        assert_eq!(metadata.title.unwrap().text, "mine");
     }
 
     #[tokio::test]

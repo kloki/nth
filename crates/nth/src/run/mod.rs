@@ -226,6 +226,7 @@ async fn work(
         title_prompt: Some(original_prompt),
         title_jobs: Some(title_tx),
         title_store: store.as_ref().ok().cloned(),
+        title_owner: Some(title_owner.clone()),
         ..FrontEnd::default()
     };
     let title_cancel = CancellationToken::new();

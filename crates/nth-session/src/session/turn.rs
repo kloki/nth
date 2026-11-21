@@ -107,20 +107,48 @@ impl Session {
         if !cancel.is_cancelled()
             && let (Some(prompt), Some(jobs)) = (&front_end.title_prompt, &front_end.title_jobs)
         {
+            // A rename made by the owner after this turn copied its metadata
+            // is not in the session yet; the session copy is what the claim
+            // would write over the first save.
+            if let Some(owner) = &front_end.title_owner
+                && let Some(live) = owner.metadata().await
+            {
+                let revision = self.title_metadata.as_ref().map_or(0, |m| m.revision);
+                let user = live
+                    .title
+                    .as_ref()
+                    .is_some_and(|title| title.origin == crate::title::Origin::User);
+                let local_user = self.title_metadata.as_ref().is_some_and(|m| {
+                    m.title
+                        .as_ref()
+                        .is_some_and(|title| title.origin == crate::title::Origin::User)
+                });
+                if live.revision > revision || (user && !local_user) {
+                    self.title_metadata = Some(live);
+                }
+            }
             let old = self.title_metadata.clone();
             let job = crate::title::Job::admit(self, prompt).ok().flatten();
             let changed = old != self.title_metadata;
             let claimed = if changed {
-                if let (Some(store), Some(old)) = (&front_end.title_store, old) {
-                    match store.claim_title_attempt(self, old.revision).await {
-                        Ok((metadata, claimed)) => {
-                            self.title_metadata = metadata;
-                            claimed
+                match (&front_end.title_store, old.as_ref()) {
+                    (Some(store), Some(old)) => {
+                        match store.claim_title_attempt(self, old.revision).await {
+                            Ok((metadata, claimed)) => {
+                                self.title_metadata = metadata;
+                                claimed
+                            }
+                            // The store still holds the state before this
+                            // attempt; putting it back lets a later prompt
+                            // claim the one-shot title after a transient
+                            // failure, rather than suppressing it for the run.
+                            Err(_) => {
+                                self.title_metadata = Some(old.clone());
+                                false
+                            }
                         }
-                        Err(_) => false,
                     }
-                } else {
-                    true
+                    _ => true,
                 }
             } else {
                 false

@@ -293,8 +293,22 @@ impl App {
             },
         };
         let original_prompt = human.then(|| text.clone());
-        if self.title_fallback.is_none() && human && !text.trim().is_empty() {
-            self.title_fallback = text.lines().next().map(str::to_owned);
+        // The first human prompt names the session while it generates; a
+        // stray newline before it must not become the whole title.
+        if human
+            && self
+                .title_fallback
+                .as_deref()
+                .is_none_or(|title| title.trim().is_empty())
+            && !text.trim().is_empty()
+        {
+            self.title_fallback = text
+                .trim()
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned);
         }
         self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
@@ -347,6 +361,7 @@ impl App {
         front_end.title_prompt = original_prompt;
         front_end.title_jobs = Some(title_tx);
         front_end.title_store = store.as_deref().cloned();
+        front_end.title_owner = Some(title_owner.clone());
         self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -606,7 +621,9 @@ impl App {
         }
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
-        self.title_fallback = session.title();
+        // A message of only notices has no title, so a failed preparation
+        // clears the fallback it set; a real title still wins.
+        self.title_fallback = session.title().filter(|title| !title.trim().is_empty());
         self.session = Some(session);
         // Quitting took the session back only to save it: a read, a
         // notification or the next turn started now would be cut off by
