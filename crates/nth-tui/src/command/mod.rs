@@ -33,6 +33,7 @@ pub enum Command {
     Memory,
     Models,
     Plan,
+    Profiles,
     Rename,
     Resume,
     Settings,
@@ -41,7 +42,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 22] = [
+    const ALL: [Command; 23] = [
         Command::AddDir,
         Command::Agents,
         Command::Approve,
@@ -59,6 +60,7 @@ impl Command {
         Command::Memory,
         Command::Models,
         Command::Plan,
+        Command::Profiles,
         Command::Rename,
         Command::Resume,
         Command::Settings,
@@ -85,6 +87,7 @@ impl Command {
             Command::Memory => "memory",
             Command::Models => "models",
             Command::Plan => "plan",
+            Command::Profiles => "profiles",
             Command::Rename => "rename",
             Command::Resume => "resume",
             Command::Settings => "settings",
@@ -112,6 +115,7 @@ impl Command {
             Command::Memory => "show what the model remembers",
             Command::Models => "switch model and effort",
             Command::Plan => "show the plan",
+            Command::Profiles => "switch profile",
             Command::Rename => "rename this session",
             Command::Resume => "reopen a past session",
             Command::Settings => "toggle thinking and tool output",
@@ -253,6 +257,7 @@ mod tests {
         );
         assert_eq!(add("/clear"), Some((Command::Clear, String::new())));
         assert_eq!(add("/compact"), Some((Command::Compact, String::new())));
+        assert_eq!(add("/profiles"), Some((Command::Profiles, String::new())));
         assert_eq!(add("/approve"), Some((Command::Approve, String::new())));
         assert_eq!(
             add("/approve  \n "),
@@ -305,6 +310,10 @@ mod tests {
             builtins(&[Command::Memory, Command::Models])
         );
         assert_eq!(
+            Entry::matching("/prof", &none),
+            builtins(&[Command::Profiles])
+        );
+        assert_eq!(
             Entry::matching("/r", &none),
             builtins(&[Command::Rename, Command::Resume])
         );
@@ -343,6 +352,7 @@ mod tests {
                 "memory",
                 "models",
                 "plan",
+                "profiles",
                 "rename",
                 "resume",
                 "settings",

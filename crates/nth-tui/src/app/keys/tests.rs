@@ -129,7 +129,7 @@ fn arrows_cycle_without_touching_the_prompt() {
     let mut app = typed("/");
     app.apply(Action::SelectNext);
     assert_eq!(selected(&app), Command::Agents);
-    for _ in 0..21 {
+    for _ in 0..22 {
         app.apply(Action::SelectNext);
     }
     assert_eq!(selected(&app), Command::AddDir, "around the whole list");
@@ -181,6 +181,7 @@ fn skills_are_listed_after_the_commands() {
             "memory",
             "models",
             "plan",
+            "profiles",
             "rename",
             "resume",
             "settings",

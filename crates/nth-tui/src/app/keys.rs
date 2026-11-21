@@ -139,6 +139,7 @@ impl App {
             Input::LlmPicker(_) => return self.key_llm_picker(action),
             Input::SessionPicker(_) => return self.key_session_picker(action),
             Input::AgentPicker(_) => return self.key_agent_picker(action),
+            Input::ProfilePicker(_) => return self.key_profile_picker(action),
             Input::Settings(_) => return self.key_settings(action),
             Input::Connect(_) => return self.key_connect(action),
             Input::Question(_) => return self.key_question(action),
