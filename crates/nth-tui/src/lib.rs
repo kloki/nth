@@ -24,6 +24,7 @@ mod pager;
 mod path;
 mod plan;
 mod popup;
+mod profile_picker;
 mod prompt;
 mod question;
 mod rich;

@@ -4,11 +4,67 @@
 //! profile comes next is `Selection::next_profile`'s; this says it.
 
 use nth_auth::ChatGpt;
-use nth_config::Cycled;
+use nth_config::{Cycled, ProfileSelectionError};
 
-use super::App;
+use super::{App, input::Input, keys::Action};
+use crate::profile_picker::ProfilePicker;
 
 impl App {
+    pub(super) fn open_profile_picker(&mut self) {
+        self.completion = None;
+        let connected = self.chatgpt.as_ref().is_some_and(ChatGpt::connected);
+        self.input = Input::ProfilePicker(ProfilePicker::new(
+            self.selection.profiles(),
+            self.selection.profile_index(),
+            self.selection.profile_name().is_some(),
+            connected,
+        ));
+    }
+
+    pub(super) fn key_profile_picker(&mut self, action: Action) {
+        let Input::ProfilePicker(picker) = &mut self.input else {
+            return;
+        };
+        match action {
+            Action::SelectNext => picker.next(),
+            Action::SelectPrev => picker.prev(),
+            Action::Right => picker.next_detail(true),
+            Action::Left => picker.next_detail(false),
+            Action::Insert(c) => picker.insert(c),
+            Action::Backspace => picker.backspace(),
+            Action::Submit => self.choose_profile(),
+            Action::ClearOrQuit if picker.clear_query() => {}
+            Action::Interrupt | Action::ClearOrQuit => self.input = Input::Prompt,
+            _ => {}
+        }
+    }
+
+    fn choose_profile(&mut self) {
+        let Input::ProfilePicker(picker) = &self.input else {
+            return;
+        };
+        let Some(index) = picker.chosen() else {
+            return;
+        };
+        let connected = self.chatgpt.as_ref().is_some_and(ChatGpt::connected);
+        match self.selection.select_profile(index, connected) {
+            Ok(name) => {
+                self.input = Input::Prompt;
+                self.profile_applied();
+                self.hint = Some(format!("Profile set to {name}").into());
+                self.refresh_context();
+            }
+            Err(ProfileSelectionError::Unavailable(reason)) => self.hint = Some(reason.into()),
+            Err(ProfileSelectionError::InvalidIndex) => {}
+        }
+    }
+
+    fn profile_applied(&mut self) {
+        if self.llms_partial() {
+            self.list_llms();
+        }
+    }
+
     /// ctrl+p: to the next profile that can run, saying on the status bar
     /// where it went and what it skipped.
     pub(super) fn next_profile(&mut self) {
@@ -17,9 +73,7 @@ impl App {
             Cycled::Applied { name, skipped } => {
                 // Its models may be of a provider that could not list,
                 // whose limits only another listing brings.
-                if self.llms_partial() {
-                    self.list_llms();
-                }
+                self.profile_applied();
                 match skipped.is_empty() {
                     true => format!("Profile set to {name}"),
                     false => format!("Profile set to {name} · skipped {}", skipped.join(", ")),
@@ -216,5 +270,38 @@ mod tests {
 
         assert_eq!(app.hint.as_deref(), Some("no profiles configured"));
         assert_eq!(app.selection.current().model, "glm");
+    }
+
+    #[test]
+    fn picker_selects_a_profile_and_preserves_prompt() {
+        let mut app = profiled();
+        app.prompt.set_entry("draft");
+        app.run_command(crate::command::Command::Profiles);
+        assert!(matches!(app.input, Input::ProfilePicker(_)));
+        let shown = rows(&mut app).join("\n");
+        assert!(shown.contains("Subagent"), "{shown}");
+        app.apply(Action::SelectNext);
+        app.apply(Action::Submit);
+        assert!(matches!(app.input, Input::Prompt));
+        assert_eq!(app.prompt.text(), "draft");
+        assert_eq!(app.selection.current().model, "zen-act");
+        assert_eq!(app.selection.profile_name(), Some("zen"));
+        app.apply(Action::NextProfile);
+        assert_eq!(app.selection.profile_name(), Some("go"));
+    }
+
+    #[test]
+    fn picker_refuses_an_unavailable_profile() {
+        let mut zen = profile("zen", "zen");
+        zen.unavailable = Some("ZEN_API_KEY is not set".into());
+        let mut app = profiled_with(vec![profile("go", "go"), zen]);
+        app.run_command(crate::command::Command::Profiles);
+        app.apply(Action::SelectNext);
+        app.apply(Action::Submit);
+        assert!(matches!(app.input, Input::ProfilePicker(_)));
+        assert_eq!(app.selection.profile_name(), Some("go"));
+        assert_eq!(app.hint.as_deref(), Some("ZEN_API_KEY is not set"));
+        app.apply(Action::Interrupt);
+        assert!(matches!(app.input, Input::Prompt));
     }
 }

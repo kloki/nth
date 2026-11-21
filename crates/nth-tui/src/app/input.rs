@@ -21,6 +21,7 @@ pub(super) enum Input {
     LlmPicker(LlmPicker),
     SessionPicker(SessionPicker),
     AgentPicker(AgentPicker),
+    ProfilePicker(crate::profile_picker::ProfilePicker),
     Question(QuestionPanel),
     Settings(SettingsPanel),
     Connect(ConnectPanel),
@@ -38,6 +39,7 @@ impl Input {
             Input::LlmPicker(_)
             | Input::SessionPicker(_)
             | Input::AgentPicker(_)
+            | Input::ProfilePicker(_)
             | Input::Search(_)
             | Input::Curios(_) => picker_rows(screen),
             Input::Question(panel) => question::rows(panel, screen),
