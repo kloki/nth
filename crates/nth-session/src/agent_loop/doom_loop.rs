@@ -2,7 +2,10 @@
 //! input: it asks before running the call again, or stops the turn when
 //! there is nobody to ask.
 
-use nth_protocol::{INTERRUPTED, Message, Question, QuestionOption, Reply, ToolCall, ToolContext};
+use nth_protocol::{
+    AssistantMessage, INTERRUPTED, Message, Question, QuestionOption, Reply, ToolCall, ToolContext,
+    tool_names,
+};
 
 use super::{Error, Turn, answer_unrun};
 
@@ -51,13 +54,16 @@ impl Turn<'_> {
 /// calls (same name and arguments) `DOOM_LOOP_THRESHOLD` long, counted over
 /// `turn`. Only whole multiples of the threshold count, so after a "Run it"
 /// the question comes back after another full run, not on every repeat.
+///
+/// A wakeup is never counted: it replaces itself, so a model woken by every
+/// line of a chatty monitor rightly answers each with the same one.
 fn repeating(turn: &[Message]) -> Option<&ToolCall> {
     let replies = turn.iter().filter_map(|message| match message {
         Message::Assistant(reply) => Some(reply),
         _ => None,
     });
-    let latest = replies.clone().next_back()?.tool_calls.len();
-    let calls: Vec<&ToolCall> = replies.flat_map(|reply| &reply.tool_calls).collect();
+    let latest = counted(replies.clone().next_back()?).len();
+    let calls: Vec<&ToolCall> = replies.flat_map(counted).collect();
     let first_new = calls.len() - latest;
     let mut run = 0;
     for (i, call) in calls.iter().enumerate() {
@@ -69,6 +75,15 @@ fn repeating(turn: &[Message]) -> Option<&ToolCall> {
         }
     }
     None
+}
+
+/// The calls of `reply` the guard counts.
+fn counted(reply: &AssistantMessage) -> Vec<&ToolCall> {
+    reply
+        .tool_calls
+        .iter()
+        .filter(|call| call.name != tool_names::SCHEDULE_WAKEUP)
+        .collect()
 }
 
 /// Asks whether to run a call that keeps repeating. `true` means run it. A
@@ -282,6 +297,29 @@ mod tests {
             ["1", "2", "3"].map(|id| Message::tool_failed(id, UNASKED)),
             "stopped without blocking on a question nobody would answer"
         );
+    }
+
+    #[tokio::test]
+    async fn repeating_a_wakeup_is_never_a_loop() {
+        let wait = || vec![StreamEvent::ToolCall(call("w", "schedule_wakeup", "{}"))];
+        let provider = Scripted::new(vec![
+            wait(),
+            wait(),
+            wait(),
+            vec![StreamEvent::TextDelta("done".into())],
+        ]);
+        let inbox = crate::Inbox::new();
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::saying_a_line(&inbox))];
+        // Nobody to ask, so a trip would stop the turn.
+        let ctx = woken();
+        let mut messages = vec![Message::User("go".into())];
+
+        turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+            .await
+            .0
+            .expect("turn completes");
+
+        assert_eq!(provider.requests(), 4, "each line woke it again");
     }
 
     #[test]

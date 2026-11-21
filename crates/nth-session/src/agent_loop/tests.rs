@@ -713,9 +713,32 @@ fn settling_a_dropped_turn_answers_only_the_calls_left_open() {
 }
 
 /// schedule_wakeup as nth-tools has it: refused without a front-end to
-/// wake the session. Says one monitor line while it runs when given an
-/// inbox, as a command the model waits on would.
-struct SetWakeup(Option<crate::Inbox>);
+/// wake the session. What it posts to the inbox while it runs stands for
+/// what arrives meanwhile.
+pub(crate) struct SetWakeup(Option<Box<dyn Fn() + Send + Sync>>);
+
+impl SetWakeup {
+    pub(crate) fn quiet() -> Self {
+        Self(None)
+    }
+
+    /// A monitor's line arrives while it runs.
+    pub(crate) fn saying_a_line(inbox: &crate::Inbox) -> Self {
+        let inbox = inbox.clone();
+        Self(Some(Box::new(move || {
+            let log = std::path::Path::new("/logs/1.log");
+            inbox.monitor_line(1, "ci", log, "build failed".into());
+        })))
+    }
+
+    /// You send a prompt while it runs.
+    pub(crate) fn prompted(inbox: &crate::Inbox, text: &'static str) -> Self {
+        let inbox = inbox.clone();
+        Self(Some(Box::new(move || {
+            inbox.post_prompt(text.into());
+        })))
+    }
+}
 
 impl Tool for SetWakeup {
     fn spec(&self) -> ToolSpec {
@@ -732,9 +755,8 @@ impl Tool for SetWakeup {
                 return Err("there is no front-end to wake this session".into());
             }
             ctx.wakeup.schedule(Duration::from_secs(60))?;
-            if let Some(inbox) = &self.0 {
-                let log = std::path::Path::new("/logs/1.log");
-                inbox.monitor_line(1, "ci", log, "build failed".into());
+            if let Some(meanwhile) = &self.0 {
+                meanwhile();
             }
             Ok("Wakeup scheduled in 60000 ms.".into())
         }
@@ -743,7 +765,7 @@ impl Tool for SetWakeup {
 }
 
 /// A tool context whose wakeup a front-end watches.
-fn woken() -> ToolContext {
+pub(crate) fn woken() -> ToolContext {
     ToolContext {
         wakeup: nth_protocol::Wakeup::new(),
         ..ToolContext::new(".".into())
@@ -760,7 +782,7 @@ async fn a_reply_that_only_schedules_a_wakeup_ends_the_turn() {
         StreamEvent::TextDelta("waiting on the build".into()),
         StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}")),
     ]]);
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::quiet())];
     let ctx = woken();
     let inbox = crate::Inbox::new();
     let mut messages = vec![Message::User("go".into())];
@@ -785,7 +807,7 @@ async fn a_wakeable_notice_keeps_the_turn_going() {
         vec![StreamEvent::TextDelta("the build failed".into())],
     ]);
     let inbox = crate::Inbox::new();
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(Some(inbox.clone())))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::saying_a_line(&inbox))];
     let ctx = woken();
     let mut messages = vec![Message::User("go".into())];
 
@@ -810,7 +832,7 @@ async fn todo_ticks_alone_do_not_keep_it_going() {
         "schedule_wakeup",
         "{}",
     ))]]);
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::quiet())];
     let ctx = woken();
     let inbox = crate::Inbox::new();
     assert!(inbox.post_work(crate::work::WorkNotice {
@@ -844,7 +866,7 @@ async fn a_refused_wakeup_does_not_end_the_turn() {
         vec![StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}"))],
         vec![StreamEvent::TextDelta("waiting instead".into())],
     ]);
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::quiet())];
     let ctx = ToolContext::new(".".into());
     let mut messages = vec![Message::User("go".into())];
 
@@ -872,7 +894,7 @@ async fn a_wakeup_beside_other_calls_does_not_end_the_turn() {
         ],
         vec![StreamEvent::TextDelta("hi".into())],
     ]);
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo), Arc::new(SetWakeup(None))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo), Arc::new(SetWakeup::quiet())];
     let ctx = woken();
     let inbox = crate::Inbox::new();
     let mut messages = vec![Message::User("go".into())];
@@ -883,4 +905,25 @@ async fn a_wakeup_beside_other_calls_does_not_end_the_turn() {
         .expect("turn completes");
 
     assert_eq!(provider.requests(), 2, "the echo's result is for the model");
+}
+
+#[tokio::test]
+async fn a_prompt_sent_while_the_wakeup_is_set_keeps_the_turn_going() {
+    let provider = Scripted::new(vec![
+        vec![StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}"))],
+        vec![StreamEvent::TextDelta("on it".into())],
+    ]);
+    let inbox = crate::Inbox::new();
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup::prompted(&inbox, "check the logs"))];
+    let ctx = woken();
+    let mut messages = vec![Message::User("go".into())];
+
+    turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 2);
+    assert_eq!(messages[3], Message::User("check the logs".into()));
+    assert!(!inbox.has_notices());
 }
