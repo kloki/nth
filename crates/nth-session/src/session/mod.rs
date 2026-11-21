@@ -788,12 +788,16 @@ pub(crate) mod tests {
             "the turn's and the aside's"
         );
         let mut named = Vec::new();
+        let mut work_ended = 0;
         while let Ok(event) = rx.try_recv() {
-            if let nth_protocol::Event::Named(name) = event {
-                named.push(name);
+            match event {
+                nth_protocol::Event::Named(name) => named.push(name),
+                nth_protocol::Event::WorkEnded => work_ended += 1,
+                _ => {}
             }
         }
         assert_eq!(named, ["Fix the build"]);
+        assert_eq!(work_ended, 1, "said once the turn's own work was over");
 
         session
             .prompt(
@@ -808,6 +812,52 @@ pub(crate) mod tests {
             .expect("turn completes");
         assert_eq!(provider.requests(), 3, "only the turn");
         assert_eq!(asides(&session), 1);
+    }
+
+    /// A skill is named by the command you typed, while the model gets the
+    /// skill filled in.
+    #[tokio::test]
+    async fn a_skill_is_named_by_its_command_not_its_body() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill = dir.path().join(".agents/skills/fix");
+        std::fs::create_dir_all(&skill).expect("dirs");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: fix\ndescription: fix it\n---\nFix $ARGUMENTS carefully.\n",
+        )
+        .expect("writes");
+        let context = Arc::new(Context::discover(
+            dir.path(),
+            &nth_context::Paths::default(),
+        ));
+        let mut session = Session::new("glm-5.3", dir.path().into()).with_context(context);
+        session.env.auto_title = true;
+        let provider = crate::agent_loop::tests::Scripted::always(
+            crate::agent_loop::tests::Reply::Events(vec![StreamEvent::TextDelta("Fix".into())]),
+        );
+        let (tx, _rx) = mpsc::channel(64);
+        session
+            .prompt(
+                "/fix the build",
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("turn completes");
+
+        let sent = provider.sent.lock().unwrap().clone();
+        let asked = |request: &Vec<Message>| match request.last() {
+            Some(Message::User(text)) => text.clone(),
+            _ => String::new(),
+        };
+        let naming = |request: &&Vec<Message>| matches!(&request[0], Message::System(system) if system == crate::title::INSTRUCTION);
+        let title = sent.iter().find(naming).expect("the title's request");
+        assert_eq!(asked(title), "/fix the build");
+        let turn = sent.iter().find(|r| !naming(r)).expect("the turn's");
+        assert!(asked(turn).contains("Fix the build carefully."), "{turn:?}");
     }
 
     #[test]

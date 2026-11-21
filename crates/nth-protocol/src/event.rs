@@ -48,6 +48,10 @@ pub enum Event {
     /// The request beside the session's first turn named the session, so a
     /// front-end can show the name before the turn hands the session back.
     Named(String),
+    /// The turn's own work is over while a request beside it, such as the
+    /// title's, still runs; stopping now cuts only that short, so a
+    /// front-end must not take it for stopping the turn.
+    WorkEnded,
 }
 
 /// How a retry reads, the same in every front-end: whole seconds rounded

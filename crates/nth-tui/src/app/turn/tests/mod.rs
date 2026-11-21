@@ -296,3 +296,72 @@ fn command(app: &mut App, text: &str) {
     app.apply(crate::app::keys::Action::Insert('!'));
     send(app, text);
 }
+
+/// Never answers the title's request; answers the turn's at once.
+struct SlowTitle;
+
+impl Provider for SlowTitle {
+    fn models(&self) -> futures::future::BoxFuture<'_, Result<Listing, nth_protocol::BoxError>> {
+        Box::pin(async { Ok(Listing::default()) })
+    }
+
+    fn stream<'a>(
+        &'a self,
+        request: nth_protocol::Request<'a>,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<
+            futures::stream::BoxStream<'static, Result<StreamEvent, nth_protocol::BoxError>>,
+            nth_protocol::BoxError,
+        >,
+    > {
+        use futures::StreamExt;
+        let naming = matches!(
+            request.messages.first(),
+            Some(Message::System(system)) if system == nth_session::title::INSTRUCTION
+        );
+        Box::pin(async move {
+            match naming {
+                true => Ok(futures::stream::pending().boxed()),
+                false => {
+                    let reply = [Ok(StreamEvent::TextDelta("done".into()))];
+                    Ok(futures::stream::iter(reply).boxed())
+                }
+            }
+        })
+    }
+}
+
+/// Esc while only the title still runs beside a turn that answered cuts
+/// the title short and stops nothing: the wakeup the model scheduled
+/// stays and the turn counts as done.
+#[tokio::test]
+async fn esc_while_only_the_title_runs_leaves_the_turn_done() {
+    let mut app = app_on(Session::new("glm", "/repo".into()), Arc::new(SlowTitle));
+    app.env.auto_title = true;
+    app.prompt.insert_str("the build fails");
+    app.submit();
+    loop {
+        let event = app.channels.events.rx.recv().await.expect("an event");
+        let over = matches!(event, Event::WorkEnded);
+        app.on_session(event);
+        if over {
+            break;
+        }
+    }
+    assert!(app.is_busy(), "the title still runs");
+    app.wakeup
+        .schedule(std::time::Duration::from_secs(60))
+        .expect("schedules");
+
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    let ended = app.turn.join().await.expect("ends");
+    app.end_turn(ended);
+
+    assert_eq!(app.last_turn, crate::app::content::TabState::Done);
+    let wakeup = app.wakeup.subscribe().expect("enabled");
+    assert!(wakeup.borrow().is_some(), "the wakeup stays");
+    assert!(!app.turns.holds_notices());
+    let session = app.session.as_ref().expect("came back");
+    assert_eq!(session.name, None, "the title was cut short");
+}

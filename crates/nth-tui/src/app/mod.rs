@@ -1210,6 +1210,7 @@ impl App {
             Event::Spend(spend) => self.spend_reported(spend.as_ref().clone()),
             Event::Moved(cwd) => self.follow(cwd.clone()),
             Event::Named(name) => self.title_fallback = Some(name.clone()),
+            Event::WorkEnded => self.turns.work_ended(),
             _ => {}
         }
         self.chat.apply(&event);

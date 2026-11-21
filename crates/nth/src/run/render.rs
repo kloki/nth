@@ -96,7 +96,8 @@ impl Printer {
             | Event::Usage(_)
             | Event::Spend(_)
             | Event::Notice(_)
-            | Event::Named(_) => {}
+            | Event::Named(_)
+            | Event::WorkEnded => {}
         }
     }
 

@@ -36,9 +36,16 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
-        // Named from what you asked, before an `@mention` adds opencode's
-        // instruction to it.
+        // The title is made from what you typed, so a skill is named by its
+        // command rather than by the `SKILL.md` it fills in.
         let title = title::aside(self, &text);
+        // `/name args` runs a skill: the model gets it filled in. A
+        // subagent's prompt is the model's, never a command of yours.
+        if !self.subagent
+            && let Some((skill, args)) = nth_context::skills::parse(&text, &self.context.skills)
+        {
+            text = skill.invoke(args, &self.cwd).await.map_err(Error::Skill)?;
+        }
         // Plan mode names the source folder the model may write review
         // documents in, so it is made ready; otherwise Curios waits for its
         // tools.
@@ -52,24 +59,39 @@ impl Session {
         {
             text.push_str(&mention);
         }
-        let stop = cancel.child_token();
-        let title = title.map(|aside| async {
-            let mut answer = aside.run(provider, &stop).await;
-            answer.text = answer.text.as_deref().and_then(title::normalize);
-            if let Some(name) = &answer.text {
-                emit(events, cancel, Event::Named(name.clone())).await;
+        // Before the title's request goes out, so a turn that cannot run
+        // costs nothing and fails at once.
+        self.ready_state().await?;
+        let title = title.map(|aside| {
+            move |stop: CancellationToken| async move {
+                let mut answer = aside.run(provider, &stop).await;
+                answer.text = answer.text.as_deref().and_then(title::normalize);
+                if let Some(name) = &answer.text {
+                    emit(events, &stop, Event::Named(name.clone())).await;
+                }
+                answer
             }
-            answer
         });
-        let turn = self.prepared_turn(
-            TurnInput::Prompt(text),
-            provider,
-            tools,
-            front_end,
-            events,
-            cancel,
-        );
-        let (result, answer) = aside::beside(turn, title, &stop).await;
+        let naming = title.is_some();
+        let turn = async {
+            let result = self
+                .prepared_turn(
+                    TurnInput::Prompt(text),
+                    provider,
+                    tools,
+                    front_end,
+                    events,
+                    cancel,
+                )
+                .await;
+            // Stopping from here on cuts only the title short, so the
+            // front-end must not take it for stopping the turn.
+            if naming {
+                emit(events, cancel, Event::WorkEnded).await;
+            }
+            result
+        };
+        let (result, answer) = aside::beside(turn, title, cancel).await;
         if let Some(answer) = answer {
             if answer.text.is_some() {
                 self.name = answer.text;
@@ -90,11 +112,8 @@ impl Session {
         events: &mpsc::Sender<Event>,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        // Feedback arrives already taken, by `deliver_curios`, which readied
-        // the state before taking it.
-        if matches!(input, TurnInput::Prompt(_)) {
-            self.ready_state().await?;
-        }
+        // Both callers readied the state before this: `prompt` before the
+        // title's request, `deliver_curios` before taking the feedback.
         // Notices lead the message, as `split_notices` reads them; feedback
         // is notices alone, with only the reminders after it.
         let (curios, mut text) = match input {
@@ -584,6 +603,8 @@ mod tests {
         });
         let mut session =
             Session::new("glm-5.3", tmp.path().to_path_buf()).with_context(context.clone());
+        // Naming the session waits for a turn that can run.
+        session.env.auto_title = true;
         let front_end = FrontEnd {
             inbox: crate::Inbox::new(),
             ..FrontEnd::default()
@@ -619,6 +640,8 @@ mod tests {
         assert!(why.contains(&dir.display().to_string()), "{why}");
         assert!(why.contains("[memory]"), "{why}");
         assert!(provider.sent.lock().unwrap().is_empty(), "nothing was sent");
+        assert_eq!(session.name, None);
+        assert!(session.usage.spends().is_empty(), "nothing was spent");
         assert!(
             !session
                 .messages

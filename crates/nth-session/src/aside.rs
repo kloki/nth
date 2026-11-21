@@ -1,8 +1,8 @@
 //! A side request beside a turn: one bounded, tool-free request on the
 //! clerk's model that answers a small question about the turn, such as what
-//! to name the session, while the turn itself runs. What it spends is
-//! tagged with its `AsideKind`, so the ledger keeps it apart from the
-//! turn's own requests. A new one-shot request of this kind goes through
+//! to name the session, while the turn itself runs. The usage the
+//! provider reported for it is tagged with its `AsideKind`, so the ledger
+//! keeps it apart from the turn's own requests. A new one-shot request of this kind goes through
 //! here rather than growing a race of its own in a front-end.
 
 use std::{future::Future, time::Duration};
@@ -38,7 +38,8 @@ pub struct Aside {
 }
 
 /// What an aside said, `None` when it failed, was cut short or ran out of
-/// time, and what it spent either way.
+/// time, and the usage the provider reported for it. Providers report
+/// usage at the end of a reply, so one cut short usually reports none.
 #[derive(Debug)]
 pub struct Answer {
     pub text: Option<String>,
@@ -61,8 +62,8 @@ impl Aside {
     }
 
     /// Runs the request to its end, `TIMEOUT` or `cancel`. Await it after
-    /// cancelling rather than dropping it, so the usage the provider
-    /// already reported is kept.
+    /// cancelling rather than dropping it, so whatever usage the provider
+    /// reported before then is kept; most report it only at the end.
     pub async fn run(self, provider: &dyn Provider, cancel: &CancellationToken) -> Answer {
         let mut spend = Spend::new(&self.model.llm.model, None);
         spend.aside = Some(self.kind);
@@ -119,22 +120,26 @@ impl Aside {
     }
 }
 
-/// Runs `work` with `aside` beside it and returns what both gave. Once
-/// `work` ends the aside has `GRACE` left before `stop` cancels it; it
-/// should run on `stop`, a child of the turn's own token, so cancelling the
-/// turn cancels it at once. Its answer, with what it spent, always comes
-/// back, even when it was cut short.
-pub async fn beside<T, A>(
+/// Runs `work` with the aside `start` builds beside it and returns what
+/// both gave. The aside runs on a token of its own, a child of `cancel`,
+/// which `start` is handed: cancelling the turn cuts it short at once, and
+/// once `work` ends it has `GRACE` left before that token is cancelled.
+/// Its answer comes back however it ended, with whatever usage the
+/// provider reported by then.
+pub async fn beside<T, S, A>(
     work: impl Future<Output = T>,
-    aside: Option<A>,
-    stop: &CancellationToken,
+    start: Option<S>,
+    cancel: &CancellationToken,
 ) -> (T, Option<Answer>)
 where
+    S: FnOnce(CancellationToken) -> A,
     A: Future<Output = Answer>,
 {
-    let Some(aside) = aside else {
+    let Some(start) = start else {
         return (work.await, None);
     };
+    let stop = cancel.child_token();
+    let aside = start(stop.clone());
     tokio::pin!(work);
     tokio::pin!(aside);
     let (out, answer) = tokio::select! {
@@ -308,19 +313,41 @@ mod tests {
         assert_eq!(answer.spend.tokens.input, 42);
     }
 
+    /// What `beside` starts: the aside on the token it is handed, which
+    /// it reports back cancelled or not.
+    fn started<'a>(
+        aside: Aside,
+        provider: &'a Fake,
+        seen: &'a Mutex<Option<CancellationToken>>,
+    ) -> impl FnOnce(CancellationToken) -> BoxFuture<'a, Answer> {
+        move |stop| {
+            Box::pin(async move {
+                let answer = aside.run(provider, &stop).await;
+                *seen.lock().unwrap() = Some(stop);
+                answer
+            })
+        }
+    }
+
+    fn was_cancelled(seen: &Mutex<Option<CancellationToken>>) -> bool {
+        seen.lock().unwrap().as_ref().expect("ran").is_cancelled()
+    }
+
     /// An aside still running when the work ends gets `GRACE`, then is
-    /// cancelled; what it spent comes back all the same.
+    /// cancelled; what the provider reported by then comes back.
     #[tokio::test(start_paused = true)]
-    async fn beside_cancels_after_the_grace_and_keeps_the_spend() {
+    async fn beside_cancels_after_the_grace_and_keeps_the_reported_usage() {
         let session = Session::new("model", ".".into());
         let provider = fake(true, false);
-        let stop = CancellationToken::new();
-        let started = tokio::time::Instant::now();
-        let running = aside(&session, "prompt").run(&provider, &stop);
-        let (out, answer) = beside(async { 7 }, Some(running), &stop).await;
+        let seen = Mutex::default();
+        let cancel = CancellationToken::new();
+        let started_at = tokio::time::Instant::now();
+        let start = started(aside(&session, "prompt"), &provider, &seen);
+        let (out, answer) = beside(async { 7 }, Some(start), &cancel).await;
         assert_eq!(out, 7);
-        assert_eq!(started.elapsed(), GRACE);
-        assert!(stop.is_cancelled());
+        assert_eq!(started_at.elapsed(), GRACE);
+        assert!(was_cancelled(&seen));
+        assert!(!cancel.is_cancelled(), "the turn's own token is left alone");
         let answer = answer.expect("an answer");
         assert!(answer.text.is_none());
         assert_eq!(answer.spend.tokens.input, 42);
@@ -331,28 +358,29 @@ mod tests {
     async fn beside_waits_for_an_aside_that_answers_in_the_grace() {
         let session = Session::new("model", ".".into());
         let provider = fake(false, false);
-        let stop = CancellationToken::new();
-        let running = aside(&session, "prompt").run(&provider, &stop);
-        let (_, answer) = beside(async {}, Some(running), &stop).await;
-        assert!(!stop.is_cancelled());
+        let seen = Mutex::default();
+        let start = started(aside(&session, "prompt"), &provider, &seen);
+        let (_, answer) = beside(async {}, Some(start), &CancellationToken::new()).await;
+        assert!(!was_cancelled(&seen));
         assert_eq!(answer.unwrap().text.as_deref(), Some("an answer"));
     }
 
-    /// The turn's own token, `stop`'s parent, cuts it short at once.
+    /// The turn's own token cuts it short at once.
     #[tokio::test(start_paused = true)]
     async fn cancelling_the_turn_cancels_the_aside_at_once() {
         let session = Session::new("model", ".".into());
         let provider = fake(true, false);
+        let seen = Mutex::default();
         let cancel = CancellationToken::new();
-        let stop = cancel.child_token();
-        let started = tokio::time::Instant::now();
-        let running = aside(&session, "prompt").run(&provider, &stop);
+        let started_at = tokio::time::Instant::now();
+        let start = started(aside(&session, "prompt"), &provider, &seen);
         let work = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
             cancel.cancel();
         };
-        let (_, answer) = beside(work, Some(running), &stop).await;
-        assert_eq!(started.elapsed(), Duration::from_millis(100));
+        let (_, answer) = beside(work, Some(start), &cancel).await;
+        assert_eq!(started_at.elapsed(), Duration::from_millis(100));
+        assert!(was_cancelled(&seen));
         assert_eq!(answer.unwrap().spend.tokens.input, 42);
     }
 }

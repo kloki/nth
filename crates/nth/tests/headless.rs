@@ -344,6 +344,36 @@ async fn generated_title_survives_load_and_is_not_generated_twice() {
     assert!(nth_session::title::aside(&resumed, "second prompt").is_none());
 }
 
+/// A skill run headless is named by the command typed, while the model's
+/// turn gets the skill filled in.
+#[test]
+fn a_skill_is_named_by_the_command_typed() {
+    let mock = Mock::start(Script::Answer);
+    let config = config_for(mock.port(), &["mock-model"], false)
+        .replace("auto_title = false", "auto_title = true");
+    let dirs = Dirs::new(&config);
+    let skill = dirs.work.join(".agents/skills/fix");
+    std::fs::create_dir_all(&skill).expect("dirs");
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: fix\ndescription: fix it\n---\nFix $ARGUMENTS carefully.\n",
+    )
+    .expect("writes");
+
+    let run = run_nth(&dirs, "/fix the build");
+    assert!(run.status.success(), "{}", run.stderr);
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2, "the turn and the title");
+    let (title, turn): (Vec<_>, Vec<_>) = requests
+        .iter()
+        .partition(|body| body.contains("session title"));
+    assert!(title[0].contains("/fix the build"), "{}", title[0]);
+    assert!(!title[0].contains("carefully"), "{}", title[0]);
+    assert!(turn[0].contains("Fix the build carefully."), "{}", turn[0]);
+    assert_eq!(dirs.session()["name"], ANSWER);
+}
+
 /// A headless run answers on stdout, prints its summary line on stderr and
 /// saves a session that carries the config: the model it ran, the
 /// `[context]` policy, the prompt and the answer.

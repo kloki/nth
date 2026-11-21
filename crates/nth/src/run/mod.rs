@@ -84,16 +84,7 @@ pub async fn run(
     if let Ok(store) = &store {
         session.env.images = Some(store.images_dir(session.id));
     }
-    let cwd = session.cwd.clone();
     let lsp = checkers.lsp;
-    // `/name args` runs a skill, as in the chat.
-    let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
-        Some((skill, args)) => skill
-            .invoke(args, &cwd)
-            .await
-            .map_err(|e| anyhow!("could not run the skill: {e}"))?,
-        None => prompt,
-    };
 
     let interrupt = Interrupt::default();
     let watcher = tokio::spawn({

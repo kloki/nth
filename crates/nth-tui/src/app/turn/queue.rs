@@ -127,6 +127,9 @@ pub(crate) struct TurnQueue {
     /// Esc was pressed during the running turn, which may have finished
     /// before it saw the cancel.
     interrupted: bool,
+    /// The running turn's own work is over and only a request beside it,
+    /// the title's, still runs: Esc no longer stops the turn.
+    work_ended: bool,
     /// Notices wait for your next prompt rather than start a turn, after
     /// you stopped one.
     hold_notices: bool,
@@ -185,19 +188,34 @@ impl TurnQueue {
     pub fn started(&mut self, runs_as: Steerable) {
         self.steerable = Some(runs_as);
         self.notices_due = None;
+        self.work_ended = false;
+    }
+
+    /// The running turn's own work is over (`Event::WorkEnded`), though
+    /// the turn has not handed the session back yet.
+    pub fn work_ended(&mut self) {
+        self.work_ended = true;
+    }
+
+    /// Whether a turn that is `busy` still does its own work, which Esc
+    /// stops.
+    pub fn working(&self, busy: bool) -> bool {
+        busy && !self.work_ended
     }
 
     /// A command or a compaction started: neither asks the model anything,
     /// so nothing would pick a prompt up.
     pub fn started_without_model(&mut self) {
         self.steerable = None;
+        self.work_ended = false;
     }
 
-    /// Esc, with a turn `busy` or not, and whether prompts sent earlier
-    /// still wait in the inbox. A turn held for a save goes back as a
-    /// running one would: nothing runs yet, but Esc still means stop.
-    pub fn interrupt(&mut self, busy: bool, prompts_waiting: bool) -> Stop {
-        if busy {
+    /// Esc, with a turn `working` or not (see [`TurnQueue::working`]),
+    /// and whether prompts sent earlier still wait in the inbox. A turn
+    /// held for a save goes back as a running one would: nothing runs
+    /// yet, but Esc still means stop.
+    pub fn interrupt(&mut self, working: bool, prompts_waiting: bool) -> Stop {
+        if working {
             self.interrupted = true;
             return Stop::Nothing;
         }
@@ -219,6 +237,7 @@ impl TurnQueue {
         let interrupted = std::mem::take(&mut self.interrupted)
             || matches!(result, Err(nth_session::Error::Interrupted));
         self.steerable = None;
+        self.work_ended = false;
         Ending {
             interrupted,
             went_well: result.is_ok() && !interrupted,
@@ -469,6 +488,32 @@ mod tests {
         );
         assert!(queue.queued().is_empty());
         assert!(!queue.interrupted(), "the next turn starts clean");
+    }
+
+    /// Esc while only the title runs beside a turn whose work is over
+    /// stops nothing: the turn went well and what waits runs.
+    #[test]
+    fn esc_after_the_work_ended_leaves_the_turn_alone() {
+        let mut queue = running();
+        assert!(queue.working(true));
+        queue.work_ended();
+        assert!(!queue.working(true));
+        assert!(!queue.working(false));
+        assert_eq!(queue.interrupt(queue.working(true), false), Stop::Nothing);
+        assert!(!queue.interrupted());
+        let ending = queue.ended(&Ok(()));
+        assert_eq!(
+            ending,
+            Ending {
+                interrupted: false,
+                went_well: true
+            }
+        );
+        assert_eq!(queue.after(ending, false), AfterTurn::StartEmpty);
+        assert!(!queue.holds_notices());
+        // The next turn's work is its own again.
+        queue.started(runs_as(Mode::Act));
+        assert!(queue.working(true));
     }
 
     #[test]

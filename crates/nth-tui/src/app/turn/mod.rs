@@ -256,22 +256,21 @@ impl App {
             return;
         };
         // `/name args` runs a skill: the chat shows it as typed, and the
-        // model gets the skill filled in.
-        let skill = nth_context::skills::parse(&text, &self.context.skills)
-            .map(|(skill, args)| (skill.clone(), args.to_string()));
-        // A skill is filled in before the model is asked, and that can
-        // fail; notices taken now would be lost with the turn. They stay
-        // in the inbox, where the loop hands them over between steps and
-        // the end of the turn wakes the model for the rest.
+        // session fills it in for the model, which can fail before the
+        // model is asked; notices taken now would be lost with the turn.
+        // They stay in the inbox, where the loop hands them over between
+        // steps and the end of the turn wakes the model for the rest. The
+        // command must also come first for the session to see it.
+        let skill = nth_context::skills::parse(&text, &self.context.skills).is_some();
         let notices = match skill {
-            Some(_) => None,
-            None => self.inbox.take_notices(),
+            true => None,
+            false => self.inbox.take_notices(),
         };
         // Prompts the last turn never picked up are this one's own: the
         // session treats them as it does `text`.
         let text = match skill {
-            Some(_) => text,
-            None => match self.inbox.take_prompts() {
+            true => text,
+            false => match self.inbox.take_prompts() {
                 Some(prompts) if text.is_empty() => prompts,
                 Some(prompts) => format!("{prompts}\n\n{text}"),
                 None => text,
@@ -319,30 +318,22 @@ impl App {
         self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
-                let text = match skill {
-                    Some((skill, args)) => skill
-                        .invoke(&args, &session.cwd)
-                        .await
-                        .map_err(nth_session::Error::Skill),
-                    None => Ok(text),
-                };
-                let text = text.map(|text| match notices {
+                let text = match notices {
                     Some(notices) if text.is_empty() => notices,
                     Some(notices) => format!("{notices}\n\n{text}"),
                     None => text,
-                });
-                let result = match text {
-                    Ok(text) if text.is_empty() => {
+                };
+                let result = match text.is_empty() {
+                    true => {
                         session
                             .deliver_curios(provider.as_ref(), &tools, &front_end, &events, &token)
                             .await
                     }
-                    Ok(text) => {
+                    false => {
                         session
                             .prompt(text, provider.as_ref(), &tools, &front_end, &events, &token)
                             .await
                     }
-                    Err(e) => Err(e),
                 };
                 ended(session, result, subagents, store, Ran::Turn).await
             })
@@ -427,13 +418,16 @@ impl App {
     /// aborting the task would drop the session with it.
     /// Stopping a running turn also cancels its wakeup; Esc while idle
     /// leaves one alone, since there was nothing to stop.
+    /// Once the turn's own work is over only the title beside it runs:
+    /// Esc then cuts that short and stops nothing the model did.
     pub(super) fn interrupt(&mut self) {
-        if self.is_busy() {
+        let working = self.turns.working(self.is_busy());
+        if working {
             self.wakeup.clear();
             self.inbox.discard_wakeup();
         }
         let prompts_waiting = self.inbox.prompts_waiting().is_some();
-        let stop = self.turns.interrupt(self.is_busy(), prompts_waiting);
+        let stop = self.turns.interrupt(working, prompts_waiting);
         self.turn.cancel();
         match stop {
             Stop::Nothing => {}
