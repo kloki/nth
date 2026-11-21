@@ -573,7 +573,7 @@ mod tests {
         let mut app = test_app();
         app.open_content(Tab::Diagnostics);
         let header = rows(&mut app)[0].clone();
-        assert!(header.starts_with("  › chat ["), "{header:?}");
+        assert!(header.starts_with("  › Chat ["), "{header:?}");
 
         click(&mut app, MouseButton::Left, 3, 0);
         assert_eq!(app.content.active(), Tab::Chat);
@@ -585,6 +585,20 @@ mod tests {
         click(&mut app, MouseButton::Left, 30, 0);
         click(&mut app, MouseButton::Left, 0, 0);
         assert_eq!(app.content.active(), Tab::Diagnostics);
+    }
+
+    #[tokio::test]
+    async fn renamed_chat_tab_keeps_its_click_identity() {
+        let mut app = test_app();
+        app.title_owner
+            .rename("A long 界 session title for the chat")
+            .await
+            .unwrap();
+        app.open_content(Tab::Diagnostics);
+        let header = rows(&mut app)[0].clone();
+        assert!(header.contains('…'), "{header}");
+        click(&mut app, MouseButton::Left, 3, 0);
+        assert_eq!(app.content.active(), Tab::Chat);
     }
 
     /// An app with more tabs than the header has room for, the chat focused.

@@ -296,6 +296,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn busy_notification_uses_the_live_title() {
+        let (mut app, _) = app_in("/repo".into(), Scripted::hang());
+        send(&mut app, "first prompt");
+        assert!(app.session.is_none());
+        assert_eq!(app.notify_context(Duration::ZERO).title, "first prompt");
+        app.title_owner.rename("renamed while busy").await.unwrap();
+        assert_eq!(
+            app.notify_context(Duration::ZERO).title,
+            "renamed while busy"
+        );
+        app.interrupt();
+        end(&mut app).await;
+    }
+
+    #[tokio::test]
     async fn a_monitor_end_not_heard_yet_suppresses_done() {
         let (mut app, mut rx) = answering("ok");
         let m = crate::app::monitor::tests::start(&mut app, "build").await;

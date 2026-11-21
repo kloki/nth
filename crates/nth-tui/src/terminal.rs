@@ -2,7 +2,10 @@
 //! exit path, including a panic. Also the clipboard, which is the terminal's
 //! too, and the [`Screen`] the app's loop draws on.
 
-use std::io::{self, Write, stdout};
+use std::{
+    io::{self, Write, stdout},
+    sync::Mutex,
+};
 
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -49,6 +52,7 @@ impl Screen for DefaultTerminal {
     /// that changes everywhere at once (the empty chat's field) never shows
     /// half old, half new.
     fn draw(&mut self, app: &mut App) -> Result<()> {
+        set_title(&mut stdout(), app.session_title().as_deref())?;
         queue!(self.backend_mut(), BeginSynchronizedUpdate)?;
         app.frame(self)?;
         execute!(self.backend_mut(), EndSynchronizedUpdate)?;
@@ -106,6 +110,7 @@ fn resume(terminal: &mut DefaultTerminal) -> Result<()> {
 /// The modes on top of what `ratatui::init` enables: the mouse, pasting,
 /// focus reports and keys told apart.
 fn capture() {
+    let _ = title_push(&mut stdout());
     // Focus reports decide whether a notification goes out; tmux passes
     // them on only with `focus-events on`.
     let _ = execute!(
@@ -133,6 +138,7 @@ pub fn restore() {
 /// Undoes the modes set on top of what `ratatui::init` enables; popping
 /// keyboard flags that were never pushed is a no-op for the terminal.
 fn release() {
+    let _ = title_pop(&mut stdout());
     let _ = execute!(
         stdout(),
         PopKeyboardEnhancementFlags,
@@ -140,6 +146,60 @@ fn release() {
         DisableBracketedPaste,
         DisableMouseCapture
     );
+}
+
+/// The terminal title stack is shared with the panic hook and editor handoff.
+static TITLE: Mutex<TitleState> = Mutex::new(TitleState {
+    active: false,
+    last: None,
+});
+
+struct TitleState {
+    active: bool,
+    last: Option<String>,
+}
+
+fn title_push(out: &mut impl Write) -> io::Result<()> {
+    let mut state = TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.active {
+        out.write_all(b"\x1b[22;0t")?;
+        out.flush()?;
+        state.active = true;
+        state.last = None;
+    }
+    Ok(())
+}
+
+fn title_pop(out: &mut impl Write) -> io::Result<()> {
+    let mut state = TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.active {
+        out.write_all(b"\x1b[23;0t")?;
+        out.flush()?;
+        state.active = false;
+        state.last = None;
+    }
+    Ok(())
+}
+
+fn window_title(title: Option<&str>) -> String {
+    let clean = crate::header::clean_title(title.unwrap_or_default());
+    let clean = clean.trim();
+    if clean.is_empty() {
+        "nth".into()
+    } else {
+        crate::header::ellipsize(&format!("nth | {clean}"), 80)
+    }
+}
+
+fn set_title(out: &mut impl Write, title: Option<&str>) -> io::Result<()> {
+    let title = window_title(title);
+    let mut state = TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.active && state.last.as_ref() != Some(&title) {
+        write!(out, "\x1b]0;{title}\x1b\\")?;
+        out.flush()?;
+        state.last = Some(title);
+    }
+    Ok(())
 }
 
 /// The most text `copy` sends. Terminals drop an OSC 52 payload over their
@@ -166,5 +226,29 @@ mod tests {
     #[test]
     fn the_clipboard_sequence_carries_the_text_in_base64() {
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
+    }
+
+    #[test]
+    fn title_stack_deduplicates_and_restores_across_handoffs() {
+        let mut output = Vec::new();
+        title_push(&mut output).unwrap();
+        set_title(&mut output, Some("hello\x1b]0;bad\x07")).unwrap();
+        let after_first = output.len();
+        set_title(&mut output, Some("hello\x1b]0;bad\x07")).unwrap();
+        assert_eq!(output.len(), after_first);
+        title_pop(&mut output).unwrap();
+        title_pop(&mut output).unwrap();
+        title_push(&mut output).unwrap();
+        set_title(&mut output, Some("hello\x1b]0;bad\x07")).unwrap();
+        title_pop(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.matches("\x1b[22;0t").count(), 2);
+        assert_eq!(text.matches("\x1b[23;0t").count(), 2);
+        assert_eq!(text.matches("\x1b]0;nth | hello]0;bad\x1b\\").count(), 2);
+        assert_eq!(window_title(None), "nth");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(window_title(Some(&"界".repeat(100))).as_str())
+                <= 80
+        );
     }
 }

@@ -12,6 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{app::TabState, theme};
@@ -38,7 +39,7 @@ impl TabLabel {
         format!("{open}{} {}{close}", self.icon, self.name)
     }
 
-    fn span(&self) -> Span<'static> {
+    fn span(&self, text: String) -> Span<'static> {
         let mut style = match theme::tab_colour(self.state) {
             Some(colour) => Style::new().fg(colour),
             None => Style::new(),
@@ -46,13 +47,44 @@ impl TabLabel {
         if self.focused {
             style = style.add_modifier(Modifier::BOLD);
         }
-        Span::styled(self.text(), style)
+        Span::styled(text, style)
     }
+}
+
+/// Shorten on grapheme boundaries, measured in terminal columns.
+pub(crate) fn ellipsize(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for grapheme in text.graphemes(true) {
+        let w = grapheme.width();
+        if used + w > width - 1 {
+            break;
+        }
+        out.push_str(grapheme);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+pub(crate) fn clean_title(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// A single geometry for rendering and mouse targets. The version owns its
 /// columns first; each run then shows a window containing its focused tab.
-fn layout(tabs: &[TabLabel], area: Rect, split: Option<u16>) -> (Vec<Rect>, Vec<Rect>, Rect) {
+fn layout(
+    tabs: &[TabLabel],
+    area: Rect,
+    split: Option<u16>,
+) -> (Vec<Rect>, Vec<Rect>, Rect, Vec<String>) {
     let name_width = u16::try_from(concat!("nth ", env!("CARGO_PKG_VERSION")).width())
         .unwrap_or(u16::MAX)
         .min(area.width);
@@ -62,6 +94,7 @@ fn layout(tabs: &[TabLabel], area: Rect, split: Option<u16>) -> (Vec<Rect>, Vec<
         .saturating_sub(u16::from(name_width > 0 && name.x > area.x));
     let mut areas = vec![Rect::new(area.x, area.y, 0, area.height); tabs.len()];
     let mut indicators = Vec::new();
+    let mut texts: Vec<String> = tabs.iter().map(TabLabel::text).collect();
     let runs = match split {
         Some(x) if x > area.x && x < tabs_right => vec![
             (area.x, x, 0, tabs.len().min(1)),
@@ -73,7 +106,22 @@ fn layout(tabs: &[TabLabel], area: Rect, split: Option<u16>) -> (Vec<Rect>, Vec<
         if start == end || left >= right {
             continue;
         }
-        let width = |i: usize| u16::try_from(tabs[i].text().width()).unwrap_or(u16::MAX);
+        if start == 0 {
+            let tab = &tabs[0];
+            let room = usize::from(right - left);
+            let overhead = tab.icon.width() + 3;
+            let other = if end > 1 {
+                texts[1].width().min(room.saturating_sub(overhead + 1))
+            } else {
+                0
+            };
+            let overflow = usize::from(end > 2);
+            let budget = room.saturating_sub(other + overflow + overhead).min(40);
+            let name = ellipsize(&clean_title(&tab.name), budget);
+            let (open, close) = if tab.shown { ("[", "]") } else { (" ", " ") };
+            texts[0] = format!("{open}{} {name}{close}", tab.icon);
+        }
+        let width = |i: usize| u16::try_from(texts[i].width()).unwrap_or(u16::MAX);
         let total = (start..end).fold(0u16, |n, i| n.saturating_add(width(i)));
         let room = right - left;
         let focus = (start..end)
@@ -104,14 +152,14 @@ fn layout(tabs: &[TabLabel], area: Rect, split: Option<u16>) -> (Vec<Rect>, Vec<
             indicators.push(Rect::new(right - 1, area.y, 1, area.height));
         }
     }
-    (areas, indicators, name)
+    (areas, indicators, name, texts)
 }
 
 /// Draws the same clipped tab areas used for mouse hit testing.
 pub fn draw(frame: &mut Frame, area: Rect, tabs: &[TabLabel], split: Option<u16>) {
-    let (areas, indicators, name) = layout(tabs, area, split);
-    for (tab, area) in tabs.iter().zip(areas) {
-        frame.render_widget(Paragraph::new(tab.span()), area);
+    let (areas, indicators, name, texts) = layout(tabs, area, split);
+    for ((tab, area), text) in tabs.iter().zip(areas).zip(texts) {
+        frame.render_widget(Paragraph::new(tab.span(text)), area);
     }
     for area in indicators {
         frame.render_widget(Paragraph::new(icons().overflow), area);
@@ -189,7 +237,7 @@ mod tests {
         tabs[13].focused = true;
         tabs[13].shown = true;
         for split in [None, Some(15)] {
-            let (areas, indicators, name) = layout(&tabs, Rect::new(0, 0, 40, 1), split);
+            let (areas, indicators, name, _) = layout(&tabs, Rect::new(0, 0, 40, 1), split);
             assert!(areas[13].width > 0);
             assert!(!indicators.is_empty());
             assert!(areas.iter().all(|r| r.width == 0 || r.right() <= name.x));
@@ -199,11 +247,29 @@ mod tests {
     #[test]
     fn tabs_do_not_overlap_the_version() {
         let area = Rect::new(0, 0, 12, 1);
-        let (tabs, _, name) = layout(&labels(), area, None);
+        let (tabs, _, name, _) = layout(&labels(), area, None);
         assert!(
             tabs.iter()
                 .all(|tab| tab.width == 0 || tab.right() <= name.x)
         );
+    }
+
+    #[test]
+    fn title_is_grapheme_safe_and_leaves_the_next_tab_clickable() {
+        let mut tabs = labels();
+        tabs[0].name = "界e\u{301}".repeat(30);
+        for (area, split) in [
+            (Rect::new(0, 0, 44, 1), None),
+            (Rect::new(0, 0, 80, 1), Some(25)),
+        ] {
+            let (areas, _, _, texts) = layout(&tabs, area, split);
+            assert!(texts[0].ends_with("…]"), "{}", texts[0]);
+            assert!(texts[0].contains("e\u{301}"));
+            assert_eq!(usize::from(areas[0].width), texts[0].width());
+            assert!(areas[1].width > 0);
+            assert!(areas[0].right() <= areas[1].x);
+            assert_eq!(tab_areas(&tabs, area, split), areas);
+        }
     }
 
     #[test]
@@ -227,7 +293,7 @@ mod tests {
             for width in 0..60 {
                 let area = Rect::new(1, 0, width, 1);
                 for split in [None, Some(1), Some(area.x + width / 2), Some(area.right())] {
-                    let (areas, indicators, name) = layout(&tabs, area, split);
+                    let (areas, indicators, name, _) = layout(&tabs, area, split);
                     for draw in areas.iter().chain(&indicators).filter(|r| r.width > 0) {
                         assert!(
                             draw.x >= area.x && draw.right() <= area.right(),

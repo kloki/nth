@@ -299,7 +299,7 @@ pub(super) mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Subagent(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" [› chat] "), "{}", rows[0]);
+        assert!(rows[0].starts_with(" [› Chat] "), "{}", rows[0]);
         assert!(
             rows[0].contains(" Atlas ") && !rows[0].contains('@') && !rows[0].contains("explore"),
             "the spinner stands in for @ while it runs: {}",
