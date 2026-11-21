@@ -219,6 +219,9 @@ async fn work(
         out
     });
     let (title_tx, mut title_rx) = mpsc::unbounded_channel();
+    let title_owner = nth_session::title::Owner::new(session, store.as_ref().ok().cloned());
+    let mut owned_tools = tools.to_vec();
+    owned_tools.push(Arc::new(nth_session::title::Rename(title_owner.clone())));
     let front_end = FrontEnd {
         title_prompt: Some(original_prompt),
         title_jobs: Some(title_tx),
@@ -233,7 +236,14 @@ async fn work(
     };
     tokio::pin!(title);
     let (turn, early_title) = {
-        let turn = session.prompt(prompt, provider, tools, &front_end, &tx, &interrupt.cancel);
+        let turn = session.prompt(
+            prompt,
+            provider,
+            &owned_tools,
+            &front_end,
+            &tx,
+            &interrupt.cancel,
+        );
         tokio::pin!(turn);
         tokio::select! {
             result = &mut turn => (result, None),
@@ -247,9 +257,13 @@ async fn work(
             if interrupt.cancel.is_cancelled() {
                 title_cancel.cancel();
             }
-            match tokio::time::timeout(Duration::from_secs(1), &mut title).await {
-                Ok(outcome) => outcome,
-                Err(_) => {
+            tokio::select! {
+                outcome = &mut title => outcome,
+                _ = interrupt.cancel.cancelled() => {
+                    title_cancel.cancel();
+                    title.await
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
                     title_cancel.cancel();
                     title.await
                 }
@@ -264,6 +278,8 @@ async fn work(
         }
         session.usage.record(outcome.spend);
     }
+    title_owner.adopt(session.title_metadata.clone()).await;
+    session.title_metadata = title_owner.metadata().await;
     interrupt.ended.cancel();
     drop(tx);
     // Cancelled subagents record what they spent as their turns end, which

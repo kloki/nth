@@ -103,6 +103,7 @@ impl App {
             match (command, arg.is_empty()) {
                 (Command::AddDir, false) => self.add_dir(&arg),
                 (Command::Approve, _) => self.approve(arg),
+                (Command::Rename, _) => self.rename_session(&arg),
                 (command, _) => self.run_command(command),
             }
             return;
@@ -161,6 +162,9 @@ impl App {
         // Held as sent, so the status bar names an approval or plan edits
         // rather than what the model gets for them.
         if self.session_saving.is_running() {
+            return self.after_save(next);
+        }
+        if self.title_rename.is_running() {
             return self.after_save(next);
         }
         match next {
@@ -269,6 +273,9 @@ impl App {
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
         let original_prompt = human.then(|| text.clone());
+        if self.title_fallback.is_none() && human && !text.trim().is_empty() {
+            self.title_fallback = text.lines().next().map(str::to_owned);
+        }
         let skill = nth_context::skills::parse(&text, &self.context.skills)
             .map(|(skill, args)| (skill.clone(), args.to_string()));
         // A skill is filled in before the model is asked, and that can
@@ -302,6 +309,9 @@ impl App {
         if session.agent != self.selection.agent {
             session.set_agent(self.selection.agent.clone());
         }
+        if let Some(metadata) = self.title_owner.snapshot() {
+            session.title_metadata = Some(metadata);
+        }
         self.turns.started(self.runs_as());
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
@@ -314,11 +324,15 @@ impl App {
         self.busy_since = Some(Instant::now());
 
         let provider = self.provider.clone();
-        let tools = self.tools.clone();
+        let mut tools = self.tools.clone();
+        tools.push(Arc::new(nth_session::title::Rename(
+            self.title_owner.clone(),
+        )));
         let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
         let mut front_end = self.front_end();
+        let title_owner = self.title_owner.clone();
         let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
         front_end.title_prompt = original_prompt;
         front_end.title_jobs = Some(title_tx);
@@ -340,7 +354,20 @@ impl App {
                 let title_cancel = nth_session::CancellationToken::new();
                 let title = async {
                     match title_rx.recv().await {
-                        Some(job) => Some(job.run(provider.as_ref(), &title_cancel).await),
+                        Some(job) => {
+                            let mut attempted = title_owner.metadata().await.unwrap_or_default();
+                            if attempted.revision < job.expected_revision {
+                                let _ = attempted.attempted();
+                                title_owner.adopt(Some(attempted)).await;
+                            }
+                            let outcome = job.run(provider.as_ref(), &title_cancel).await;
+                            if let Some(candidate) = &outcome.candidate {
+                                title_owner
+                                    .generated(outcome.expected_revision, candidate)
+                                    .await;
+                            }
+                            Some(outcome)
+                        }
                         None => None,
                     }
                 };
@@ -387,9 +414,13 @@ impl App {
                         if token.is_cancelled() {
                             title_cancel.cancel();
                         }
-                        match tokio::time::timeout(Duration::from_secs(1), &mut title).await {
-                            Ok(outcome) => outcome,
-                            Err(_) => {
+                        tokio::select! {
+                            outcome = &mut title => outcome,
+                            _ = token.cancelled() => {
+                                title_cancel.cancel();
+                                title.await
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {
                                 title_cancel.cancel();
                                 title.await
                             }
@@ -397,13 +428,11 @@ impl App {
                     }
                 };
                 if let Some(outcome) = outcome {
-                    if let Some(candidate) = outcome.candidate
-                        && let Some(metadata) = session.title_metadata.as_mut()
-                    {
-                        let _ = metadata.generated(outcome.expected_revision, &candidate);
-                    }
                     session.usage.record(outcome.spend);
                 }
+                let _ = title_owner.refresh().await;
+                title_owner.adopt(session.title_metadata.clone()).await;
+                session.title_metadata = title_owner.metadata().await;
                 ended(session, result, subagents, store, Ran::Turn).await
             })
         });

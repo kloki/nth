@@ -98,7 +98,7 @@ impl App {
     pub(super) fn notify_context(&self, elapsed: Duration) -> Context {
         let session = self.session.as_ref();
         Context {
-            title: session.and_then(|s| s.title()).unwrap_or_default(),
+            title: self.session_title().unwrap_or_default(),
             elapsed,
             reply: session.and_then(|s| last_reply(&s.messages)),
         }

@@ -61,6 +61,22 @@ impl App {
         // A turn whose own save failed hands back a session the file does
         // not hold yet.
         let mut unsaved = self.stop_turn_for_exit().await;
+        if self.title_rename.is_running() {
+            match self.title_rename.join().await {
+                Ok((id, Ok(metadata))) if id == self.session_id => {
+                    if let Some(session) = &mut self.session {
+                        session.title_metadata = Some(metadata);
+                    }
+                }
+                Ok((_, Err(error))) => self
+                    .exit_notes
+                    .push(format!("session not renamed: {error}")),
+                Err(error) => self
+                    .exit_notes
+                    .push(format!("session not renamed: {error}")),
+                _ => {}
+            }
+        }
         self.curios.invalidate();
         self.stop_subagents_for_exit().await;
         self.monitors.stop_all(StoppedBy::Exit);
