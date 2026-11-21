@@ -1,0 +1,5 @@
+# nth-work
+
+Notes for working in this crate. The root `CLAUDE.md` has the commands, the crate map and the rules every crate keeps.
+
+the work plan on disk and nothing that runs it: `plan.rs` (`Status`, `ItemRef`, `Item`, `Cycle`, `Plan`, and `Todo` and `WorkOutcome`, which an item file keeps; `Item.task` is the subagent's number in the run of nth that assigned it), `store.rs` (`Store`: `.nth/work/<session>/` under the session's state root (`work_dir`), a numbered folder per cycle (`cycle_name`) and one markdown file per item; `load` scans the folders in one hop to the blocking pool, `write` goes aside and renames over), `format.rs` (an item file's frontmatter for its state and its brief, `## Todo` and `## Result` in the body: `render`, `parse`, and the todo lines the inbox's `<work_item>` notices share) and `outline.rs` (the tree `nth work` and the TUI's work tab both draw). nth-session's work tools write it, holding their own lock; nth and nth-tui read it directly. Depends on nth-context (`frontmatter`) and nth-directories.
