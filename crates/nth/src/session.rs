@@ -36,6 +36,16 @@ pub enum SessionCommand {
         /// The session, by its id or the start of it
         session: String,
     },
+    /// Rename a saved session
+    Rename {
+        /// The session, by its id or the start of it
+        session: String,
+        /// The new title
+        title: String,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run(command: SessionCommand) -> Result<()> {
@@ -84,6 +94,46 @@ pub async fn run(command: SessionCommand) -> Result<()> {
                 n => bail!("{n} of what the session kept could not be removed"),
             }
         }
+        SessionCommand::Rename {
+            session,
+            title,
+            json,
+        } => {
+            let session = pick(&store, Some(&session)).await?;
+            let metadata = store.rename(session.id, &title).await?;
+            let report = RenameReport {
+                id: session.id.to_string(),
+                title: metadata.title.expect("rename sets a title").text,
+            };
+            output::print(&report, json)
+        }
+    }
+}
+
+struct RenameReport {
+    id: String,
+    title: String,
+}
+
+impl Report for RenameReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(
+            out,
+            "{} renamed {}  {}",
+            icons().ok.green().bold(),
+            self.title.bold(),
+            self.id.dimmed()
+        )?;
+        Ok(())
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(
+            out,
+            "{}",
+            json!({"id": self.id, "title": self.title, "outcome": "renamed"})
+        )?;
+        Ok(())
     }
 }
 
@@ -290,6 +340,34 @@ mod tests {
         assert!(both.contains("more than one"), "{both}");
         assert!(find(&sessions, "3").is_err());
         assert!(find(&sessions[..1], "").is_err(), "not the only one");
+    }
+
+    #[tokio::test]
+    async fn rename_by_prefix_preserves_history_and_updates_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut session = Session::new("model", dir.path().to_path_buf());
+        session
+            .messages
+            .push(nth_protocol::Message::User("original".into()));
+        store.save(&session).await.unwrap();
+        let id = session.id.to_string();
+        let picked = pick(&store, Some(&id[..8])).await.unwrap();
+        let metadata = store.rename(picked.id, "  New title  ").await.unwrap();
+        let report = RenameReport {
+            id,
+            title: metadata.title.unwrap().text,
+        };
+        let value: Value = serde_json::from_str(&testing::json(&report)).unwrap();
+        assert_eq!(value["title"], "New title");
+        assert_eq!(value["outcome"], "renamed");
+        assert_eq!(store.list().await.unwrap()[0].title, "New title");
+        assert_eq!(
+            store.load(session.id).await.unwrap().messages,
+            session.messages
+        );
+        assert!(store.rename(session.id, "bad\nname").await.is_err());
+        assert_eq!(store.list().await.unwrap()[0].title, "New title");
     }
 
     #[test]

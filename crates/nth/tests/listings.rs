@@ -13,6 +13,31 @@ use nth_session::{Session, Spend, ToolUse};
 use serde_json::{Value, json};
 use support::Env;
 
+#[tokio::test]
+async fn session_rename_cli_updates_the_saved_title_without_overwriting_history() {
+    let env = Env::new();
+    let work = env.dir("work");
+    let mut session = Session::new("model", work.clone());
+    session.messages.push(Message::User("original".into()));
+    env.save(&session).await;
+    let id = session.id.to_string();
+    let output = env.run(&work, &["session", "rename", &id[..8], "New title"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["id"], id);
+    assert_eq!(result["title"], "New title");
+    assert_eq!(result["outcome"], "renamed");
+    let store = nth_session::Store::at(env.sessions());
+    let saved = store.load(session.id).await.unwrap();
+    assert_eq!(saved.messages, session.messages);
+    assert_eq!(saved.updated_at, session.updated_at);
+    assert_eq!(store.list().await.unwrap()[0].title, "New title");
+}
+
 /// A project with one of each thing the listings read: a skill, an agent
 /// and a memory entry with its index.
 fn project(env: &Env) -> PathBuf {
