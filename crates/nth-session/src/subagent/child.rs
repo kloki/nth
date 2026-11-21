@@ -25,6 +25,7 @@ pub(crate) fn child_session(agent: &Agent, ctx: &ToolContext, max_steps: usize) 
     session.set_limits(settings.context_window, settings.max_output);
     session.parent = ctx.session.parse().ok();
     session.env = TurnEnv {
+        auto_title: false,
         compaction: ctx.child.compaction,
         max_steps,
         tool_timeout: ctx.tool_timeout,

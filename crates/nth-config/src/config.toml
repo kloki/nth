@@ -69,6 +69,8 @@ model = ""
 [session]
 # Stop a turn after this many model requests without a final answer.
 max_steps = 100
+# Generate a session title from its first human prompt.
+auto_title = true
 # Stop a tool call that has not returned after this many seconds, and tell
 # the model it timed out. Tools that wait for you or for a subagent are
 # never timed, nor are the commands you run with `!`. 0 turns the ceiling

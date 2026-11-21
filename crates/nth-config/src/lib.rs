@@ -101,6 +101,8 @@ impl ProviderConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
     pub max_steps: usize,
+    /// Generate a title for the first human prompt.
+    pub auto_title: bool,
     /// `0` lets a tool call run as long as it likes.
     pub tool_timeout_secs: u64,
 }
@@ -109,6 +111,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_steps: nth_session::DEFAULT_MAX_STEPS,
+            auto_title: true,
             tool_timeout_secs: nth_session::DEFAULT_TOOL_TIMEOUT.as_secs(),
         }
     }
@@ -449,6 +452,17 @@ mod tests {
     #[test]
     fn template_parses_to_the_defaults() {
         assert_eq!(Config::parse(TEMPLATE).expect("parses"), Config::default());
+    }
+
+    #[test]
+    fn automatic_titles_default_on_and_can_be_disabled() {
+        assert!(Config::parse("").unwrap().session.auto_title);
+        assert!(
+            !Config::parse("[session]\nauto_title = false")
+                .unwrap()
+                .session
+                .auto_title
+        );
     }
 
     #[test]

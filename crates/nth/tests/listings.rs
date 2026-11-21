@@ -157,6 +157,7 @@ async fn usage_all_reads_the_saved_spend() {
     session.messages.push(Message::User("spend".into()));
     session.usage.record(Spend {
         model: "seed/model".into(),
+        source: None,
         agent: None,
         steps: 2,
         tokens: Usage {

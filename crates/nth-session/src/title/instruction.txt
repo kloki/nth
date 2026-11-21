@@ -1,0 +1,1 @@
+Write one concise session title in the user's language, retaining technical terms. Aim for 50 characters. Output only the title, with no explanation or response to the task.

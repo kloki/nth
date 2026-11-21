@@ -442,6 +442,7 @@ mod tests {
     fn spend(model: &str, agent: Option<&str>, at: SystemTime, input: u64) -> Spend {
         Spend {
             model: model.into(),
+            source: None,
             agent: agent.map(String::from),
             steps: 1,
             tokens: Usage {

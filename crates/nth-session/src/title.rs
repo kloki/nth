@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod generation;
+pub use generation::{Job, Outcome};
+
 /// A title's provenance. A user title always wins over generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

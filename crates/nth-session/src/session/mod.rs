@@ -39,6 +39,8 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// of the models, which a later listing may say differently.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnEnv {
+    /// Whether the first human prompt gets an automatic title.
+    pub auto_title: bool,
     /// How the session keeps itself inside the model's window.
     pub compaction: Compaction,
     /// Model requests a turn may make before it gives up.
@@ -66,6 +68,7 @@ pub struct TurnEnv {
 impl Default for TurnEnv {
     fn default() -> Self {
         Self {
+            auto_title: true,
             compaction: Compaction::default(),
             max_steps: DEFAULT_MAX_STEPS,
             tool_timeout: Some(DEFAULT_TOOL_TIMEOUT),
@@ -779,6 +782,7 @@ pub(crate) mod tests {
             },
         ]);
         session.env = TurnEnv {
+            auto_title: false,
             compaction: Compaction {
                 auto: false,
                 reserved: 1_000,

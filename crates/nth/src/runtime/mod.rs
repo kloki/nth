@@ -232,6 +232,7 @@ impl Runtime {
             slots.clerk.as_ref().map(picked),
         );
         session.env = TurnEnv {
+            auto_title: config.session.auto_title,
             compaction: config.context,
             max_steps: config.session.max_steps,
             tool_timeout: config.session.tool_timeout(),

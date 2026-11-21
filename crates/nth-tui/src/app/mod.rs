@@ -1327,6 +1327,7 @@ impl App {
 /// keeps; the model's share is the listing's, which `adopt_llm` hands over.
 fn configured(env: &TurnEnv) -> TurnEnv {
     TurnEnv {
+        auto_title: env.auto_title,
         compaction: env.compaction,
         max_steps: env.max_steps,
         tool_timeout: env.tool_timeout,

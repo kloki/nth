@@ -253,6 +253,9 @@ pub fn turns(ledger: &Ledger) -> impl Iterator<Item = (String, &Spend)> {
         .map(|(n, spend)| {
             let who = match &spend.agent {
                 Some(agent) => format!("#{} @{agent} {}", n + 1, spend.model),
+                None if spend.source == Some(nth_protocol::SpendSource::Title) => {
+                    format!("#{} title {}", n + 1, spend.model)
+                }
                 None => format!("#{} {}", n + 1, spend.model),
             };
             (who, spend)
@@ -403,6 +406,7 @@ mod tests {
         let spend = &ledger.spends()[0];
         assert!(spend.tools.is_empty());
         assert_eq!(spend.cost, None);
+        assert_eq!(spend.source, None);
         assert_eq!(spend.tokens.reasoning, None);
     }
 

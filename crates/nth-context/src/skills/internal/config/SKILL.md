@@ -267,6 +267,7 @@ enabled = true        # sent only while the terminal is unfocused
 ```toml
 [session]
 max_steps = 100         # model requests in a turn without a final answer
+auto_title = true       # generate a title from the first human prompt
 tool_timeout_secs = 900 # seconds a tool call may run; 0 for no limit
 
 [task]                  # subagents started with the task tool
@@ -310,6 +311,7 @@ Every key with its default, in the order of `nth init`'s template
 | Key                 | Default | Meaning                                                          |
 | ------------------- | ------- | ---------------------------------------------------------------- |
 | `max_steps`         | `100`   | Model requests in a turn without a final answer.                 |
+| `auto_title`        | `true`  | Generate a title from the first human prompt.                    |
 | `tool_timeout_secs` | `900`   | Seconds a tool call may run, bash's timeout too; 0 for no limit. |
 
 **`[context]`**

@@ -15,6 +15,9 @@ use crate::{Cost, Message, Usage, failure_reason};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spend {
     pub model: String,
+    /// Absent for ordinary conversational turns and older saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SpendSource>,
     /// The subagent that spent it on the session's behalf; `None` for the
     /// session's own turns.
     pub agent: Option<String>,
@@ -31,6 +34,12 @@ pub struct Spend {
     /// did, not only what it cost.
     #[serde(default)]
     pub tools: BTreeMap<String, ToolUse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpendSource {
+    Title,
 }
 
 /// What the calls of one tool used: how many ran, how many failed, how long
@@ -57,6 +66,7 @@ impl Default for Spend {
     fn default() -> Self {
         Self {
             model: String::new(),
+            source: None,
             agent: None,
             steps: 0,
             tokens: Usage::default(),
