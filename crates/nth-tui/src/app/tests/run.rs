@@ -154,12 +154,15 @@ async fn scheduled_wakeup_runs_once_after_the_countdown() {
     use nth_protocol::{StreamEvent, ToolCall};
 
     let provider = Arc::new(Scripted::replying([
-        super::Reply::Events(vec![StreamEvent::ToolCall(ToolCall {
-            id: "schedule".into(),
-            name: "schedule_wakeup".into(),
-            arguments: r#"{"duration_ms":5000}"#.into(),
-        })]),
-        super::Reply::text("waiting"),
+        // The wakeup alone ends the turn: no request after it until it fires.
+        super::Reply::Events(vec![
+            StreamEvent::TextDelta("waiting".into()),
+            StreamEvent::ToolCall(ToolCall {
+                id: "schedule".into(),
+                name: "schedule_wakeup".into(),
+                arguments: r#"{"duration_ms":5000}"#.into(),
+            }),
+        ]),
         super::Reply::text("checked"),
     ]));
     let mut config = AppConfig::test(Session::new("glm", nowhere()), provider.clone());
@@ -180,9 +183,9 @@ async fn scheduled_wakeup_runs_once_after_the_countdown() {
     .0
     .expect("runs");
     let requests = provider.sent();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
     assert!(
-        requests[2]
+        requests[1]
             .iter()
             .any(|message| matches!(message, Message::User(text) if text.contains("<wakeup")))
     );

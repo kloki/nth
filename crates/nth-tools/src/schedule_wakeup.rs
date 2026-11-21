@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures::{FutureExt, future::BoxFuture};
-use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, Wakeup, parse_args};
+use nth_protocol::{Tool, ToolContext, ToolResult, ToolSpec, Wakeup, parse_args, tool_names};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -16,8 +16,8 @@ struct Args {
 impl Tool for ScheduleWakeup {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "schedule_wakeup",
-            description: "Schedule a one-shot wakeup for the main session after duration_ms milliseconds (at most one hour), as a failsafe while waiting for background work. This call returns immediately and replaces any pending wakeup. It lasts through the rest of this turn; if a later turn starts before it expires (the user's prompt or another notice waking you), the wakeup is cancelled, so schedule another if still needed. The timer exists only while this session is open. Not available headless or to subagents.".into(),
+            name: tool_names::SCHEDULE_WAKEUP,
+            description: "Schedule a one-shot wakeup for the main session after duration_ms milliseconds (at most one hour), as a failsafe while waiting for background work. It is not a sleep: it returns immediately and replaces any pending wakeup. Make it the last call of your reply, with a short status in the same reply's text: a reply whose only calls are schedule_wakeup ends the turn, unless something already waits for you (a notice or a prompt), which you then get at once. If a later turn starts before it expires (the user's prompt or another notice waking you), the wakeup is cancelled, so schedule another if still needed. The timer exists only while this session is open. Not available headless or to subagents.".into(),
             parameters: json!({"type":"object", "additionalProperties":false, "properties":{"duration_ms":{"type":"integer", "minimum":1, "maximum":Wakeup::MAX.as_millis()}}, "required":["duration_ms"]}),
         }
     }
@@ -35,7 +35,10 @@ impl Tool for ScheduleWakeup {
             let args: Args = parse_args(args)?;
             ctx.wakeup
                 .schedule(Duration::from_millis(args.duration_ms))?;
-            Ok(format!("Wakeup scheduled in {} ms.", args.duration_ms))
+            Ok(format!(
+                "Wakeup scheduled in {} ms. The turn ends here unless other calls in this reply need you.",
+                args.duration_ms
+            ))
         }
         .boxed()
     }

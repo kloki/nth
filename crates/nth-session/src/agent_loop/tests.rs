@@ -711,3 +711,176 @@ fn settling_a_dropped_turn_answers_only_the_calls_left_open() {
     settle_unanswered(&mut answer);
     assert_eq!(answer.len(), 2, "an answer has no calls");
 }
+
+/// schedule_wakeup as nth-tools has it: refused without a front-end to
+/// wake the session. Says one monitor line while it runs when given an
+/// inbox, as a command the model waits on would.
+struct SetWakeup(Option<crate::Inbox>);
+
+impl Tool for SetWakeup {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: nth_protocol::tool_names::SCHEDULE_WAKEUP,
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        }
+    }
+
+    fn call<'a>(&'a self, _: serde_json::Value, ctx: &'a ToolContext) -> BoxFuture<'a, ToolResult> {
+        async move {
+            if !ctx.wakeup.enabled() {
+                return Err("there is no front-end to wake this session".into());
+            }
+            ctx.wakeup.schedule(Duration::from_secs(60))?;
+            if let Some(inbox) = &self.0 {
+                let log = std::path::Path::new("/logs/1.log");
+                inbox.monitor_line(1, "ci", log, "build failed".into());
+            }
+            Ok("Wakeup scheduled in 60000 ms.".into())
+        }
+        .boxed()
+    }
+}
+
+/// A tool context whose wakeup a front-end watches.
+fn woken() -> ToolContext {
+    ToolContext {
+        wakeup: nth_protocol::Wakeup::new(),
+        ..ToolContext::new(".".into())
+    }
+}
+
+fn wakeup_set(ctx: &ToolContext) -> bool {
+    ctx.wakeup.subscribe().expect("enabled").borrow().is_some()
+}
+
+#[tokio::test]
+async fn a_reply_that_only_schedules_a_wakeup_ends_the_turn() {
+    let provider = Scripted::new(vec![vec![
+        StreamEvent::TextDelta("waiting on the build".into()),
+        StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}")),
+    ]]);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let ctx = woken();
+    let inbox = crate::Inbox::new();
+    let mut messages = vec![Message::User("go".into())];
+
+    turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 1);
+    assert_eq!(
+        messages.last(),
+        Some(&Message::tool_result("1", "Wakeup scheduled in 60000 ms."))
+    );
+    assert!(wakeup_set(&ctx), "the wakeup is what wakes the model next");
+}
+
+#[tokio::test]
+async fn a_wakeable_notice_keeps_the_turn_going() {
+    let provider = Scripted::new(vec![
+        vec![StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}"))],
+        vec![StreamEvent::TextDelta("the build failed".into())],
+    ]);
+    let inbox = crate::Inbox::new();
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(Some(inbox.clone())))];
+    let ctx = woken();
+    let mut messages = vec![Message::User("go".into())];
+
+    turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 2);
+    assert!(
+        matches!(&messages[3], Message::User(text) if text.starts_with("<monitor")),
+        "handed over: {:?}",
+        messages[3]
+    );
+    assert!(!inbox.has_notices());
+}
+
+#[tokio::test]
+async fn todo_ticks_alone_do_not_keep_it_going() {
+    let provider = Scripted::new(vec![vec![StreamEvent::ToolCall(call(
+        "1",
+        "schedule_wakeup",
+        "{}",
+    ))]]);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let ctx = woken();
+    let inbox = crate::Inbox::new();
+    assert!(inbox.post_work(crate::work::WorkNotice {
+        cycle: "01-a".into(),
+        item: "tabs".into(),
+        task: 1,
+        name: "Atlas".into(),
+        agent: "general".into(),
+        state: crate::work::WorkState::Todo(vec![nth_work::Todo {
+            text: "read the tabs".into(),
+            done: true,
+        }]),
+    }));
+    let mut messages = vec![Message::User("go".into())];
+
+    turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 1);
+    assert!(
+        inbox.has_notices() && !inbox.wakes(),
+        "the tick waits for the next wake"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_wakeup_does_not_end_the_turn() {
+    let provider = Scripted::new(vec![
+        vec![StreamEvent::ToolCall(call("1", "schedule_wakeup", "{}"))],
+        vec![StreamEvent::TextDelta("waiting instead".into())],
+    ]);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(SetWakeup(None))];
+    let ctx = ToolContext::new(".".into());
+    let mut messages = vec![Message::User("go".into())];
+
+    turn(&provider, &tools, &ctx, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 2);
+    assert!(matches!(
+        &messages[2],
+        Message::ToolResult { is_error: true, .. }
+    ));
+    assert!(
+        matches!(messages.last(), Some(Message::Assistant(reply)) if reply.text == "waiting instead")
+    );
+}
+
+#[tokio::test]
+async fn a_wakeup_beside_other_calls_does_not_end_the_turn() {
+    let provider = Scripted::new(vec![
+        vec![
+            StreamEvent::ToolCall(call("1", "echo", r#"{"say":"hi"}"#)),
+            StreamEvent::ToolCall(call("2", "schedule_wakeup", "{}")),
+        ],
+        vec![StreamEvent::TextDelta("hi".into())],
+    ]);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Echo), Arc::new(SetWakeup(None))];
+    let ctx = woken();
+    let inbox = crate::Inbox::new();
+    let mut messages = vec![Message::User("go".into())];
+
+    turn_with(&provider, &tools, &ctx, &inbox, &mut messages)
+        .await
+        .0
+        .expect("turn completes");
+
+    assert_eq!(provider.requests(), 2, "the echo's result is for the model");
+}
