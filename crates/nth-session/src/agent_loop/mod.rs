@@ -150,7 +150,8 @@ pub struct Turn<'a> {
 
 impl Turn<'_> {
     /// Runs the turn: stream a reply, run its tool calls in parallel, feed
-    /// the results back, and repeat until the model answers without tools.
+    /// the results back, and repeat until the model answers without tools,
+    /// or with only a wakeup it set while nothing waits to wake it.
     ///
     /// Cancelling `cancel` ends the turn with [`Error::Interrupted`], leaving
     /// `messages` valid to continue from: partial text is kept, and every
@@ -324,16 +325,40 @@ impl Turn<'_> {
             for (call, message, took) in &answers {
                 self.spend.tool(&call.name, message, *took);
             }
+            let waiting = answers
+                .iter()
+                .all(|(call, message, _)| set_wakeup(call, message));
             self.messages
                 .extend(answers.into_iter().map(|(_, message, _)| message));
             if cancel.is_cancelled() {
                 return Err(Error::Interrupted);
+            }
+            // A reply that only set a wakeup means the model is waiting:
+            // another request would only have it wait again, step after
+            // step, while the wakeup never fires. Anything that would wake
+            // it keeps the turn going instead; todo ticks alone wait for
+            // the next wake, as they do between turns.
+            if waiting && !self.inbox.wakes() {
+                return Ok(());
             }
             self.hand_over().await;
             self.publish_preview(Phase::Ready, false, *last_usage);
         }
         Err(Error::TooManySteps(max_steps))
     }
+}
+
+/// Whether `call` set the session's wakeup: a refused one (headless, a
+/// subagent, bad arguments) leaves nothing to wait for.
+fn set_wakeup(call: &nth_protocol::ToolCall, result: &Message) -> bool {
+    call.name == nth_protocol::tool_names::SCHEDULE_WAKEUP
+        && matches!(
+            result,
+            Message::ToolResult {
+                is_error: false,
+                ..
+            }
+        )
 }
 
 pub(crate) fn offered_tools<'a>(

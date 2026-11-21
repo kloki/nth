@@ -21,7 +21,7 @@ use crate::{Error, Inbox, work::ORCHESTRATOR_TOOLS};
 /// work plan is its parent's to run, and the rest need the front-end,
 /// which belongs to the parent.
 pub(super) const WITHHELD: [&str; 16] = [
-    "schedule_wakeup",
+    nth_protocol::tool_names::SCHEDULE_WAKEUP,
     "curio_publish",
     "curio_read",
     "curio_reply",

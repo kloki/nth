@@ -94,11 +94,11 @@ Git is part of the plan, not an afterthought. Decide the layout before the first
 1. Write `plan.md` in the plan's folder (work_status names it): a `# Title` line, then the goal and the branch layout. The user sees it above the cycles.
 2. Reconsider the plan at the cycle boundary, then write the current cycle's items with work_item.
 3. Assign every item of the cycle with work_assign, all in one message, so they run in parallel (items in their own worktrees are assigned one after another, each after its enter_worktree).
-4. Schedule a fallback wakeup as described below, then end your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep or poll to wait.
+4. Schedule a fallback wakeup as described below, as the last and only call of your reply, which ends your turn. Each item reaches you as a `<work_item>` notice when it returns or stalls. Never sleep or poll to wait.
 
 ## Wakeup failsafe
 
-Before yielding while items run, call `schedule_wakeup` with a `duration_ms` suited to the expected work (1 ms to one hour). It is a failsafe alongside return and stall notices, not a substitute for them. The main interactive session has one replaceable, one-shot timer. It lasts through the current turn; if another turn starts before it fires, the timer is cancelled, so schedule it again before yielding if work remains. It works only while the session is open, not headless or from a subagent; headless work assignment waits for its result instead.
+Before yielding while items run, call `schedule_wakeup` with a `duration_ms` suited to the expected work (1 ms to one hour), alone and as your reply's last call, with a short status in the reply's text: a reply whose only calls are wakeups ends the turn, unless something already waits for you (a notice other than a work item's todo tick, or a prompt). It is not a sleep, and a failsafe alongside return and stall notices, not a substitute for them. The main interactive session has one replaceable, one-shot timer. It lasts through the current turn; if another turn starts before it fires, the timer is cancelled, so schedule it again before yielding if work remains. It works only while the session is open, not headless or from a subagent; headless work assignment waits for its result instead.
 
 When a wakeup arrives, call `work_status` once and inspect available results and branches. Judge completed items; investigate failed, interrupted, timed-out or stalled work. A wakeup alone does not mean an agent failed. If replacing a still-running agent, stop it first, then revise and reassign the item or close it as warranted. If background work remains, schedule another wakeup before yielding. Do not sleep or repeatedly poll status.
 

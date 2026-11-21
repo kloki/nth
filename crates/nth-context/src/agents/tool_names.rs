@@ -23,6 +23,10 @@ pub const CURIOS: [&str; 3] = ["curio_publish", "curio_read", "curio_reply"];
 /// The tool a subagent on a work item ticks its todo with.
 pub const WORK_TODO: &str = "work_todo";
 
+/// The tool the main session sets its wakeup with: a reply that calls only
+/// it ends the turn, since the model is waiting.
+pub const SCHEDULE_WAKEUP: &str = "schedule_wakeup";
+
 /// Whether the tool `name` changes files.
 pub fn writes_files(name: &str) -> bool {
     WRITERS.contains(&name)
