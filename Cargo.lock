@@ -2033,6 +2033,7 @@ name = "nth-session"
 version = "1.8.4"
 dependencies = [
  "base64 0.22.1",
+ "fs2",
  "futures",
  "jiff",
  "nth-context",

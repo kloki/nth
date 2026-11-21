@@ -138,6 +138,9 @@ pub struct Session {
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
     pub messages: Vec<Message>,
+    /// Authoritative title state. Absent on saves predating title metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_metadata: Option<crate::title::Metadata>,
     /// Instruction files the read tool has attached, so a resumed session
     /// does not get them again.
     #[serde(default)]
@@ -223,6 +226,7 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages,
+            title_metadata: Some(crate::title::Metadata::default()),
             loaded_instructions: BTreeSet::new(),
             usage: Ledger::default(),
             last_usage: None,
@@ -310,12 +314,20 @@ impl Session {
 
     /// Nothing has been asked yet.
     pub fn is_empty(&self) -> bool {
-        self.title().is_none()
+        self.history_title().is_none()
     }
 
     /// The first line of the first prompt, which names the session in lists.
     /// A command the user ran comes first as `!command`.
     pub fn title(&self) -> Option<String> {
+        self.title_metadata
+            .as_ref()
+            .and_then(|m| m.title.as_ref())
+            .map(|t| t.text.clone())
+            .or_else(|| self.history_title())
+    }
+
+    fn history_title(&self) -> Option<String> {
         let mut messages = self.messages.iter();
         while let Some(message) = messages.next() {
             match message {
