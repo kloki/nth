@@ -139,12 +139,18 @@ impl App {
             Ok(Err(e)) => {
                 self.exit_notes
                     .push(format!("the turn task failed: {e}; {LAST_SAVED}"));
+                if let Some(outcome) = self.recover_pending_name().await {
+                    self.exit_notes.push(outcome.unwrap_or_else(|error| error));
+                }
                 false
             }
             Err(_) => {
                 // Aborted now rather than when the app is dropped, so it
                 // runs no tool while the rest of the exit goes on.
                 self.turn = Job::default();
+                if let Some(outcome) = self.recover_pending_name().await {
+                    self.exit_notes.push(outcome.unwrap_or_else(|error| error));
+                }
                 self.exit_notes.push(format!(
                     "the turn did not stop within {} s; {LAST_SAVED}",
                     TURN_EXIT_WAIT.as_secs()

@@ -286,7 +286,7 @@ async fn a_failed_turn_task_forgets_what_it_asked() {
     let Err(error) = app.turn.join().await else {
         panic!("the task panicked");
     };
-    app.turn_task_failed(error);
+    app.turn_task_failed(error).await;
     assert!(!app.context_tab.slot.builds());
 }
 

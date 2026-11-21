@@ -126,10 +126,10 @@ mod tests {
     #[test]
     fn a_question_turns_the_chat_tab_magenta() {
         let mut app = test_app();
-        assert_eq!(tab_colour(&mut app, "› chat"), Color::Reset);
+        assert_eq!(tab_colour(&mut app, "› Chat"), Color::Reset);
         let (ask, _replied) = ask(vec![question("auth", false, &["oauth", "key"])]);
         app.on_ask(ask);
-        assert_eq!(tab_colour(&mut app, "› chat"), Color::Magenta);
+        assert_eq!(tab_colour(&mut app, "› Chat"), Color::Magenta);
     }
 
     #[test]

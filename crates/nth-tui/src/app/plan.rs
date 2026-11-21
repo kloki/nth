@@ -267,7 +267,7 @@ mod tests {
 
         let rows = crate::app::tests::rows(&mut app);
 
-        assert!(rows[0].starts_with("  › chat [≡ plan +1 -1] "), "{rows:#?}");
+        assert!(rows[0].starts_with("  › Chat [≡ plan +1 -1] "), "{rows:#?}");
         assert!(rows[2].starts_with(" .nth/plans/"));
         assert_eq!(rows[4].trim_end(), "   Plan");
         assert_eq!(rows[5].trim_end(), " - step");

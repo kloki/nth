@@ -137,6 +137,8 @@ impl App {
         self.context = session.context().clone();
         self.session_since = session.created_at;
         self.session_id = session.id;
+        self.title_fallback = session.title();
+        self.pending_name = None;
         // The session's model and effort are its mode's or its agent's now;
         // the rest keep what they had. An agent no longer found leaves the
         // session in its mode.
@@ -235,6 +237,40 @@ mod tests {
             entries,
             [Entry::User("fix it".into()), Entry::Answer("fixed".into())]
         );
+    }
+
+    #[tokio::test]
+    async fn renamed_saved_session_is_searchable_and_restored_on_resume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::at(dir.path());
+        let mut saved = Session::new("kimi", dir.path().into());
+        saved.messages.push(Message::User("original prompt".into()));
+        store.save(&saved).await.expect("saves");
+        store
+            .rename(saved.id, "Distinctive title")
+            .await
+            .expect("renames");
+        let mut app = App::new(AppConfig {
+            store: Some(store),
+            ..test_config()
+        });
+
+        app.open_session_picker();
+        let sessions = app.session_listing.join().await.expect("lists");
+        app.sessions_listed(sessions);
+        for c in "Distinctive".chars() {
+            app.apply(Action::Insert(c));
+        }
+        let rows = crate::app::tests::rows_of(&mut app, 100);
+        assert!(
+            rows.iter().any(|row| row.contains("★ Distinctive title")),
+            "{rows:?}"
+        );
+        app.apply(Action::Submit);
+        let loaded = app.session_loading.join().await.expect("loads");
+        app.session_loaded(loaded);
+        assert_eq!(app.session_id, saved.id);
+        assert_eq!(app.session_title().as_deref(), Some("Distinctive title"));
     }
 
     #[tokio::test]

@@ -101,6 +101,9 @@ pub struct Session {
     pub curio_receipts: BTreeSet<String>,
     /// Also sent to the provider so it can route and cache per conversation.
     pub id: Uuid,
+    /// A manually chosen title, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub cwd: PathBuf,
     /// The directory the session left to work in a worktree, which
     /// `exit_worktree` goes back to; `None` outside one.
@@ -206,6 +209,7 @@ impl Session {
         let now = SystemTime::now();
         Self {
             id,
+            name: None,
             curio_root: None,
             curio_root_found: false,
             curio_source_ready: false,
@@ -310,12 +314,18 @@ impl Session {
 
     /// Nothing has been asked yet.
     pub fn is_empty(&self) -> bool {
-        self.title().is_none()
+        !self
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::User(_)))
     }
 
-    /// The first line of the first prompt, which names the session in lists.
+    /// The manual name, or the first line of the first prompt.
     /// A command the user ran comes first as `!command`.
     pub fn title(&self) -> Option<String> {
+        if let Some(name) = &self.name {
+            return Some(name.clone());
+        }
         let mut messages = self.messages.iter();
         while let Some(message) = messages.next() {
             match message {
@@ -326,7 +336,12 @@ impl Session {
                         return Some(format!("!{}", call.summary(&self.cwd)));
                     }
                 }
-                Message::User(text) => return Some(first_line(text).to_string()),
+                Message::User(text) => {
+                    let (_, prompt) = crate::inbox::split_notices(text);
+                    if !prompt.trim().is_empty() {
+                        return Some(first_line(prompt).to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -477,6 +492,29 @@ pub(crate) mod tests {
 
         assert!(!session.is_empty());
         assert_eq!(session.title().as_deref(), Some("fix the build"));
+    }
+
+    #[test]
+    fn name_does_not_make_an_empty_session_nonempty() {
+        let mut session = Session::new("glm", ".".into());
+        session.name = Some("my name".into());
+        assert!(session.is_empty());
+        assert_eq!(session.title().as_deref(), Some("my name"));
+        session.messages.push(Message::User("hello".into()));
+        assert!(!session.is_empty());
+        assert_eq!(session.title().as_deref(), Some("my name"));
+    }
+
+    #[test]
+    fn title_skips_notice_only_messages() {
+        let mut session = Session::new("glm", ".".into());
+        session.messages.push(Message::User(
+            "<wakeup type=\"scheduled\">\nwoke\n</wakeup>".into(),
+        ));
+        assert_eq!(session.title(), None);
+        assert!(!session.is_empty());
+        session.messages.push(Message::User("actual prompt".into()));
+        assert_eq!(session.title().as_deref(), Some("actual prompt"));
     }
 
     fn listed(id: &str, context: Option<u64>, output: Option<u64>) -> nth_protocol::ModelInfo {

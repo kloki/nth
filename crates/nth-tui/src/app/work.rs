@@ -227,7 +227,7 @@ mod tests {
         assert!(app.flash.is_none());
         app.content.select_tab(Tab::Work);
         let top = rows(&mut app);
-        assert!(top[0].starts_with("  › chat [⊞ work 1/2] "), "{top:?}");
+        assert!(top[0].starts_with("  › Chat [⊞ work 1/2] "), "{top:?}");
         assert!(top[2].starts_with(" ▎ work · 1/2 done"), "{top:?}");
         // The scrollbar sits on the right: the second cycle's item is below.
         let shown = |row: &str| row.trim_end_matches([' ', '┃']).to_string();

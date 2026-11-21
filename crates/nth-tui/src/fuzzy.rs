@@ -13,6 +13,7 @@ use ratatui::{
     text::Span,
     widgets::Paragraph,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{BAR_WIDTH, dim, panel_row};
 
@@ -55,7 +56,7 @@ impl Filter {
             .into_iter()
             .enumerate()
             .filter_map(|(i, haystack)| {
-                let score = pattern.score(Utf32Str::new(haystack, &mut buf), &mut matcher)?;
+                let score = pattern.score(Self::matcher_text(haystack, &mut buf), &mut matcher)?;
                 Some((i, score))
             })
             .collect();
@@ -63,7 +64,7 @@ impl Filter {
         scored.into_iter().map(|(i, _)| i).collect()
     }
 
-    /// Which characters of `haystack` the query matched, in order.
+    /// Scalar offsets of the graphemes in `haystack` the query matched, in order.
     pub fn indices(&self, haystack: &str) -> Vec<u32> {
         let mut indices = Vec::new();
         if self.is_empty() {
@@ -72,13 +73,42 @@ impl Filter {
         let mut matcher = Matcher::new(Config::DEFAULT);
         let mut buf = Vec::new();
         self.pattern().indices(
-            Utf32Str::new(haystack, &mut buf),
+            Self::matcher_text(haystack, &mut buf),
             &mut matcher,
             &mut indices,
         );
         indices.sort_unstable();
         indices.dedup();
-        indices
+        // Nucleo's Utf32Str keeps one character per grapheme, whereas the
+        // callers' offsets are in Unicode scalar values.
+        let mut scalar = 0usize;
+        haystack
+            .graphemes(true)
+            .enumerate()
+            .filter_map(|(i, grapheme)| {
+                let start = scalar;
+                scalar += grapheme.chars().count();
+                u32::try_from(i)
+                    .ok()
+                    .filter(|i| indices.binary_search(i).is_ok())
+                    .and_then(|_| u32::try_from(start).ok())
+            })
+            .collect()
+    }
+
+    /// Nucleo's `new` can treat UTF-8 bytes as ASCII when non-ASCII combining
+    /// marks follow ASCII grapheme starts. Construct Unicode explicitly instead.
+    fn matcher_text<'a>(text: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
+        if text.is_ascii() {
+            Utf32Str::Ascii(text.as_bytes())
+        } else {
+            buf.clear();
+            buf.extend(
+                text.graphemes(true)
+                    .filter_map(|grapheme| grapheme.chars().next()),
+            );
+            Utf32Str::Unicode(buf)
+        }
     }
 
     fn pattern(&self) -> Pattern {
@@ -91,8 +121,8 @@ impl Filter {
     }
 }
 
-/// `text` as spans in `base`, the characters `indices` marks in `hit`.
-/// `text` starts at character `offset` of the haystack `indices` are into,
+/// `text` as spans in `base`, the graphemes `indices` marks in `hit`.
+/// `text` starts at scalar offset `offset` of the haystack `indices` are into,
 /// so one match can mark several columns of a row.
 pub fn highlight<'a>(
     text: &str,
@@ -104,14 +134,16 @@ pub fn highlight<'a>(
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut run = String::new();
     let mut run_hit = false;
-    for (i, c) in text.chars().enumerate() {
+    let mut i = 0;
+    for grapheme in text.graphemes(true) {
         let is_hit = u32::try_from(offset + i).is_ok_and(|at| indices.binary_search(&at).is_ok());
         if is_hit != run_hit && !run.is_empty() {
             let style = if run_hit { hit } else { base };
             spans.push(Span::styled(std::mem::take(&mut run), style));
         }
         run_hit = is_hit;
-        run.push(c);
+        run.push_str(grapheme);
+        i += grapheme.chars().count();
     }
     if !run.is_empty() {
         spans.push(Span::styled(run, if run_hit { hit } else { base }));
@@ -203,5 +235,23 @@ mod tests {
         let later = highlight("x", &f.indices("x glm"), 0, base, hit);
         assert_eq!(later.len(), 1);
         assert_eq!(highlight("lm", &indices, 1, base, hit)[1].content, "m");
+    }
+
+    #[test]
+    fn combining_graphemes_keep_scalar_offsets_and_one_style() {
+        let text = "e\u{301}x /o\u{308}z";
+        let indices = filter("exz").indices(text);
+        assert_eq!(indices, [0, 2, 7]);
+        let base = Style::new();
+        let hit = Style::new().add_modifier(Modifier::BOLD);
+        let spans = highlight(text, &indices, 0, base, hit);
+        let parts: Vec<_> = spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style == hit))
+            .collect();
+        assert_eq!(
+            parts,
+            [("e\u{301}x", true), (" /o\u{308}", false), ("z", true)]
+        );
     }
 }

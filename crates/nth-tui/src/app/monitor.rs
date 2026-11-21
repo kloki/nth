@@ -200,7 +200,7 @@ pub(super) mod tests {
         assert_eq!(app.content.tabs(), [Tab::Chat, Tab::Monitor(1)]);
         assert_eq!(app.content.active(), Tab::Chat);
         let rows = rows(&mut app);
-        assert!(rows[0].starts_with(" [› chat] $ ci "), "{}", rows[0]);
+        assert!(rows[0].starts_with(" [› Chat] $ ci "), "{}", rows[0]);
         assert_eq!(tab_colour(&mut app, "$ ci"), Color::Blue, "running");
     }
 

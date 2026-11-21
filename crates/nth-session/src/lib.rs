@@ -15,6 +15,7 @@ mod session;
 pub mod store;
 pub mod subagent;
 mod system_prompt;
+pub mod title;
 pub mod usage;
 pub mod work;
 

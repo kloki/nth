@@ -282,7 +282,7 @@ impl App {
     /// The tab's name in the header, after its icon.
     pub(super) fn tab_label(&self, tab: Tab) -> String {
         match tab {
-            Tab::Chat => "chat".into(),
+            Tab::Chat => self.session_title().unwrap_or_else(|| "Chat".into()),
             Tab::Context => "context".into(),
             Tab::Diagnostics => "diagnostics".into(),
             Tab::Usage => "usage".into(),

@@ -3,16 +3,17 @@
 
 use std::{
     collections::HashMap,
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use base64::Engine;
+use fs2::FileExt;
 use nth_context::Paths;
 use nth_directories::Directories;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
@@ -39,14 +40,34 @@ pub enum Error {
     CurioRoot { root: PathBuf, reason: &'static str },
     #[error("refusing Curios deletion through symlink {}", path.display())]
     CurioSymlink { path: PathBuf },
+    #[error(transparent)]
+    Title(#[from] crate::title::Error),
+    #[error("timed out waiting for session lock {}; another nth process may be saving it; try again", .0.display())]
+    LockTimeout(PathBuf),
+    #[error("{}: saved session is not a JSON object", .0.display())]
+    InvalidSession(PathBuf),
+}
+
+const LOCK_WAIT: Duration = Duration::from_secs(3);
+const LOCK_POLL: Duration = Duration::from_millis(10);
+
+/// Dropping a save future tells a blocking worker not to start a write.
+struct SaveGuard(Arc<AtomicBool>);
+
+impl Drop for SaveGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// What the resume picker shows of a saved session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
     pub id: Uuid,
-    /// First line of the first prompt.
+    /// The chosen name, or the first line of the first prompt.
     pub title: String,
+    /// Whether the title was chosen manually.
+    pub renamed: bool,
     pub cwd: PathBuf,
     /// Where it started, when it moved into a worktree.
     pub origin: Option<PathBuf>,
@@ -97,6 +118,8 @@ struct Head {
     model: String,
     updated_at: SystemTime,
     title: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 /// Where nth keeps what it saves: `$XDG_DATA_HOME/nth`, or
@@ -121,12 +144,74 @@ impl Store {
         Self { dir: dir.into() }
     }
 
-    /// Writes `session`, replacing its earlier save. A session nothing was
-    /// asked in yet is not worth keeping, so it is skipped.
+    /// Writes `session`, replacing its earlier save. An unnamed session
+    /// nothing was asked in yet is skipped.
     pub async fn save(&self, session: &Session) -> Result<(), Error> {
-        if session.is_empty() {
+        if session.is_empty() && session.name.is_none() {
             return Ok(());
         }
+        let store = self.clone();
+        let session = session.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = SaveGuard(cancelled.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            let _lock = store.lock_until(session.id, LOCK_WAIT, Some(&cancelled))?;
+            if cancelled.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            store.save_locked(&session)
+        })
+        .await?;
+        drop(guard);
+        result
+    }
+
+    /// The lock lives in a separate, permanent file: replacing the JSON or
+    /// deleting a session must never change the inode other writers lock.
+    fn lock(&self, id: Uuid) -> Result<std::fs::File, Error> {
+        self.lock_until(id, LOCK_WAIT, None)
+    }
+
+    fn lock_until(
+        &self,
+        id: Uuid,
+        wait: Duration,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<std::fs::File, Error> {
+        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
+        let path = self.dir.join(format!("{id}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(io_at(&path))?;
+        let deadline = Instant::now() + wait;
+        loop {
+            if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                return Err(io_at(&path)(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "session save cancelled",
+                )));
+            }
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(file),
+                Err(e) if e.kind() == fs2::lock_contended_error().kind() => {
+                    if Instant::now() >= deadline {
+                        return Err(Error::LockTimeout(path));
+                    }
+                    std::thread::sleep(
+                        LOCK_POLL.min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                }
+                Err(e) => return Err(io_at(&path)(e)),
+            }
+        }
+    }
+
+    /// Caller holds the session's lock until the rename and directory sync.
+    fn save_locked(&self, session: &Session) -> Result<(), Error> {
         let json_error = |source| Error::Json {
             path: self.path(session.id),
             source,
@@ -137,39 +222,58 @@ impl Store {
             fields.insert("title".into(), session.title().into());
         }
         let json = serde_json::to_vec_pretty(&json).map_err(json_error)?;
-        tokio::fs::create_dir_all(&self.dir)
-            .await
-            .map_err(io_at(&self.dir))?;
+        self.write_locked(session.id, &json)
+    }
+
+    fn write_locked(&self, id: Uuid, json: &[u8]) -> Result<(), Error> {
         // Written aside and renamed over, so a crash mid-write never leaves
-        // a half file in place of the last good save. The name is this
-        // save's own: saves of one session can still overlap, as the save
-        // on quitting does with one in flight, or through another store or
-        // another nth, and two sharing a name could rename a file the other
-        // is still writing. Counted per process, not per store, since more
-        // than one store may point at the same folder.
+        // a half file in place of the last good save. The temporary name is
+        // unique even if an earlier process died before removing its file.
         static SAVES: AtomicU64 = AtomicU64::new(0);
         let n = SAVES.fetch_add(1, Ordering::Relaxed);
-        let path = self.path(session.id);
-        let tmp = self.dir.join(format!(
-            "{}.{}.{n}.json.tmp",
-            session.id,
-            std::process::id()
-        ));
-        let written = write_synced(&tmp, &json, &path).await;
+        let path = self.path(id);
+        let tmp = self
+            .dir
+            .join(format!("{}.{}.{n}.json.tmp", id, std::process::id()));
+        let written = write_synced(&tmp, json, &path);
         if written.is_err() {
             // A full disk or a folder gone mid-write leaves no stray half.
             // One cut short by quitting or a crash stays until the session
             // is deleted.
-            let _ = tokio::fs::remove_file(&tmp).await;
+            let _ = std::fs::remove_file(&tmp);
         }
         written?;
-        tokio::fs::File::open(&self.dir)
-            .await
+        std::fs::File::open(&self.dir)
             .map_err(io_at(&self.dir))?
             .sync_all()
-            .await
             .map_err(io_at(&self.dir))?;
         Ok(())
+    }
+
+    /// Rename a saved session. A later save of an open copy wins over this.
+    pub async fn rename(&self, id: Uuid, text: &str) -> Result<String, Error> {
+        let name = crate::title::validate(text)?;
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = store.lock(id)?;
+            let path = store.path(id);
+            let json = std::fs::read(&path).map_err(io_at(&path))?;
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&json).map_err(|source| Error::Json {
+                    path: path.clone(),
+                    source,
+                })?;
+            let fields = value
+                .as_object_mut()
+                .ok_or_else(|| Error::InvalidSession(path.clone()))?;
+            fields.insert("name".into(), name.clone().into());
+            fields.insert("title".into(), name.clone().into());
+            let json =
+                serde_json::to_vec_pretty(&value).map_err(|source| Error::Json { path, source })?;
+            store.write_locked(id, &json)?;
+            Ok(name)
+        })
+        .await?
     }
 
     /// Every saved session, the most recently used first. Files that don't
@@ -207,21 +311,30 @@ impl Store {
 
     /// Removes `id`'s save; one that was never saved is an error.
     pub async fn delete(&self, id: Uuid) -> Result<(), Error> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = store.lock(id)?;
+            store.delete_locked(id)
+        })
+        .await?
+    }
+
+    fn delete_locked(&self, id: Uuid) -> Result<(), Error> {
         let path = self.path(id);
-        tokio::fs::remove_file(&path).await.map_err(io_at(&path))?;
+        std::fs::remove_file(&path).map_err(io_at(&path))?;
         // A save cut short, on quitting or by a crash, leaves its temp file,
         // and no later save replaces one named its own, so they stay until
         // here. The save is gone either way, so a temp file that stays is
         // no reason to fail.
         let prefix = format!("{id}.");
-        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return Ok(());
         };
-        while let Ok(Some(entry)) = entries.next_entry().await {
+        for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.starts_with(&prefix) && name.ends_with(".json.tmp") {
-                let _ = tokio::fs::remove_file(entry.path()).await;
+                let _ = std::fs::remove_file(entry.path());
             }
         }
         Ok(())
@@ -344,15 +457,11 @@ fn curio_owner_dir(
 }
 
 /// Writes `bytes` to `tmp`, syncs it and renames it over `path`.
-async fn write_synced(tmp: &Path, bytes: &[u8], path: &Path) -> Result<(), Error> {
-    tokio::fs::write(tmp, bytes).await.map_err(io_at(tmp))?;
-    tokio::fs::File::open(tmp)
-        .await
-        .map_err(io_at(tmp))?
-        .sync_all()
-        .await
-        .map_err(io_at(tmp))?;
-    tokio::fs::rename(tmp, path).await.map_err(io_at(path))
+fn write_synced(tmp: &Path, bytes: &[u8], path: &Path) -> Result<(), Error> {
+    let mut file = std::fs::File::create(tmp).map_err(io_at(tmp))?;
+    file.write_all(bytes).map_err(io_at(tmp))?;
+    file.sync_all().map_err(io_at(tmp))?;
+    std::fs::rename(tmp, path).map_err(io_at(path))
 }
 
 /// Reads the bytes of every image the tools showed, which the save leaves
@@ -444,7 +553,8 @@ fn spending(dir: &Path) -> Result<Vec<Spending>, Error> {
 
 fn summary(json: &[u8]) -> Option<Summary> {
     let head: Head = serde_json::from_slice(json).ok()?;
-    let title = match head.title {
+    let renamed = head.name.is_some();
+    let title = match head.name.or(head.title) {
         Some(title) => title,
         // Saved before the title was kept beside the session.
         None => serde_json::from_slice::<Session>(json)
@@ -455,6 +565,7 @@ fn summary(json: &[u8]) -> Option<Summary> {
     Some(Summary {
         id: head.id,
         title,
+        renamed,
         cwd: head.cwd,
         origin: head.origin,
         model: head.model,
@@ -693,6 +804,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rename_waits_for_save_then_reads_its_new_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut session = session("first", 1);
+        store.save(&session).await.unwrap();
+        let lock = store.lock(session.id).unwrap();
+        let other = Store::at(dir.path());
+        let id = session.id;
+        let rename = tokio::spawn(async move { other.rename(id, "chosen").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "rename must wait for the writer");
+
+        session.messages.push(Message::User("new history".into()));
+        store.save_locked(&session).unwrap();
+        drop(lock);
+        rename.await.unwrap().unwrap();
+
+        let loaded = store.load(id).await.unwrap();
+        assert_eq!(loaded.messages, session.messages);
+        assert_eq!(loaded.name.as_deref(), Some("chosen"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiting_save_cannot_overwrite_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let session = session("first", 1);
+        store.save(&session).await.unwrap();
+        let lock = store.lock(session.id).unwrap();
+        let other = store.clone();
+        let saved = session.clone();
+        let task = tokio::spawn(async move { other.save(&saved).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(lock);
+        store.rename(session.id, "recovered").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            store.load(session.id).await.unwrap().name.as_deref(),
+            Some("recovered")
+        );
+    }
+
+    #[test]
+    fn lock_wait_is_bounded_and_explains_the_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let id = Uuid::new_v4();
+        let _lock = store.lock(id).unwrap();
+        let start = Instant::now();
+        let error = store
+            .lock_until(id, Duration::from_millis(30), None)
+            .unwrap_err();
+        assert!(matches!(error, Error::LockTimeout(_)));
+        assert!(error.to_string().contains("try again"));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn rename_preserves_unknown_nested_fields_and_message_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let session = session("first", 1);
+        store.save(&session).await.unwrap();
+        let path = store.path(session.id);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["future"] = serde_json::json!({"nested": [{"unknown": [1, true, null]}]});
+        value["messages"][0] = serde_json::json!({"future_message": {"data": [1, 2]}});
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        store.rename(session.id, "chosen").await.unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        value["name"] = "chosen".into();
+        value["title"] = "chosen".into();
+        assert_eq!(actual, value);
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed[0].title, "chosen");
+    }
+
+    // A separate test process models another running nth holding the lock.
+    #[test]
+    fn cross_process_writer() {
+        let Some(dir) = std::env::var_os("NTH_TEST_LOCK_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let id: Uuid = std::env::var("NTH_TEST_LOCK_ID").unwrap().parse().unwrap();
+        let store = Store::at(&dir);
+        let _lock = store.lock(id).unwrap();
+        std::fs::write(dir.join("ready"), "").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dir.join("release").exists() {
+            assert!(std::time::Instant::now() < deadline, "parent timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let json = std::fs::read(store.path(id)).unwrap();
+        let mut session: Session = serde_json::from_slice(&json).unwrap();
+        session
+            .messages
+            .push(Message::User("from another process".into()));
+        store.save_locked(&session).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_waits_for_a_writer_in_another_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let session = session("first", 1);
+        store.save(&session).await.unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "store::tests::cross_process_writer"])
+            .env("NTH_TEST_LOCK_DIR", dir.path())
+            .env("NTH_TEST_LOCK_ID", session.id.to_string())
+            .spawn()
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("ready").exists() {
+            assert!(tokio::time::Instant::now() < deadline, "child timed out");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let other = store.clone();
+        let id = session.id;
+        let rename = tokio::spawn(async move { other.rename(id, "chosen").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!rename.is_finished(), "another process holds the lock");
+        std::fs::write(dir.path().join("release"), "").unwrap();
+        rename.await.unwrap().unwrap();
+        assert!(child.wait().unwrap().success());
+        let loaded = store.load(id).await.unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("chosen"));
+        assert_eq!(
+            loaded.messages.last(),
+            Some(&Message::User("from another process".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn named_empty_session_saves_lists_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut session = Session::new("glm", dir.path().into());
+        session.name = Some("fresh".into());
+        assert!(session.is_empty());
+
+        store.save(&session).await.unwrap();
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, session.id);
+        assert_eq!(listed[0].title, "fresh");
+        assert!(listed[0].renamed);
+        let resumed = store.latest().await.unwrap().unwrap();
+        assert_eq!(resumed, session);
+        assert!(resumed.is_empty());
+    }
+
+    #[tokio::test]
     async fn deletes_a_saved_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());
@@ -733,6 +1002,44 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "fix the build");
         assert_eq!(listed[0].id, old.id);
+        assert!(!listed[0].renamed);
+    }
+
+    #[tokio::test]
+    async fn rename_persists_and_later_saves_win() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let session = session("original", 1);
+        store.save(&session).await.unwrap();
+        assert_eq!(
+            store.rename(session.id, "  chosen  ").await.unwrap(),
+            "chosen"
+        );
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed[0].title, "chosen");
+        assert!(listed[0].renamed);
+        assert_eq!(
+            store.load(session.id).await.unwrap().name.as_deref(),
+            Some("chosen")
+        );
+        assert!(store.rename(session.id, "bad\nname").await.is_err());
+        assert_eq!(store.list().await.unwrap()[0].title, "chosen");
+        store.save(&session).await.unwrap();
+        let listed = store.list().await.unwrap();
+        assert_eq!(listed[0].title, "original");
+        assert!(!listed[0].renamed);
+    }
+
+    #[test]
+    fn summary_uses_name_without_parsing_history() {
+        let session = session("original", 1);
+        let mut value = serde_json::to_value(session).unwrap();
+        value["name"] = "chosen".into();
+        value["title"] = "stale".into();
+        value["messages"] = "not a valid history".into();
+        let listed = summary(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(listed.title, "chosen");
+        assert!(listed.renamed);
     }
 
     #[tokio::test]

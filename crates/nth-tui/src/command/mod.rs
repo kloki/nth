@@ -34,6 +34,7 @@ pub enum Command {
     Models,
     Plan,
     Profiles,
+    Rename,
     Resume,
     Settings,
     Usage,
@@ -41,7 +42,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 22] = [
+    const ALL: [Command; 23] = [
         Command::AddDir,
         Command::Agents,
         Command::Approve,
@@ -60,6 +61,7 @@ impl Command {
         Command::Models,
         Command::Plan,
         Command::Profiles,
+        Command::Rename,
         Command::Resume,
         Command::Settings,
         Command::Usage,
@@ -86,6 +88,7 @@ impl Command {
             Command::Models => "models",
             Command::Plan => "plan",
             Command::Profiles => "profiles",
+            Command::Rename => "rename",
             Command::Resume => "resume",
             Command::Settings => "settings",
             Command::Usage => "usage",
@@ -113,6 +116,7 @@ impl Command {
             Command::Models => "switch model and effort",
             Command::Plan => "show the plan",
             Command::Profiles => "switch profile",
+            Command::Rename => "rename this session",
             Command::Resume => "reopen a past session",
             Command::Settings => "toggle thinking and tool output",
             Command::Usage => "show what the session spent",
@@ -122,7 +126,7 @@ impl Command {
 
     /// Commands that accept text after their name.
     fn takes_arg(self) -> bool {
-        matches!(self, Command::AddDir | Command::Approve)
+        matches!(self, Command::AddDir | Command::Approve | Command::Rename)
     }
 
     /// A command to run and the argument it was given: the first command is
@@ -305,10 +309,13 @@ mod tests {
             Entry::matching("/m", &none),
             builtins(&[Command::Memory, Command::Models])
         );
-        assert_eq!(Entry::matching("/r", &none), builtins(&[Command::Resume]));
         assert_eq!(
             Entry::matching("/prof", &none),
             builtins(&[Command::Profiles])
+        );
+        assert_eq!(
+            Entry::matching("/r", &none),
+            builtins(&[Command::Rename, Command::Resume])
         );
         assert_eq!(Entry::matching("/x", &none), []);
         assert_eq!(Entry::matching("/c x", &none), []);
@@ -346,6 +353,7 @@ mod tests {
                 "models",
                 "plan",
                 "profiles",
+                "rename",
                 "resume",
                 "settings",
                 "usage",
@@ -373,6 +381,7 @@ mod tests {
         assert_eq!(
             Entry::matching("/re", &skills),
             [
+                Entry::Builtin(Command::Rename),
                 Entry::Builtin(Command::Resume),
                 Entry::Skill {
                     name: "review".into(),
@@ -390,6 +399,7 @@ mod tests {
         assert_eq!(
             Entry::rows(&entries),
             [
+                ("/rename             ".to_string(), "rename this session"),
                 ("/resume             ".to_string(), "reopen a past session"),
                 ("/research-opencode  ".to_string(), "does research-opencode"),
             ]

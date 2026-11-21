@@ -145,6 +145,57 @@ fn session_list_all_is_empty_on_an_empty_data_dir() {
     assert_eq!(sessions, json!([]));
 }
 
+#[tokio::test]
+async fn session_rename_by_prefix_updates_the_saved_title() {
+    let env = Env::new();
+    let work = project(&env);
+    let mut session = Session::new("seed/model", work.clone());
+    session.messages.push(Message::User("original".into()));
+    env.save(&session).await;
+    let id = session.id.to_string();
+
+    let renamed = env.json(&work, &["session", "rename", &id[..8], "  new title  "]);
+    assert_eq!(
+        renamed,
+        json!({"id": id, "title": "new title", "outcome": "renamed"})
+    );
+    let listed = env.json(&work, &["session", "list", "--all"]);
+    assert_eq!(listed[0]["title"], "new title");
+}
+
+#[tokio::test]
+async fn rename_legacy_save_and_reject_invalid_names_without_changing_it() {
+    let env = Env::new();
+    let work = project(&env);
+    let mut session = Session::new("seed/model", work.clone());
+    session
+        .messages
+        .push(Message::User("original prompt".into()));
+    env.save(&session).await;
+    let id = session.id.to_string();
+    let path = env.sessions().join(format!("{id}.json"));
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    old.as_object_mut().unwrap().remove("title");
+    old.as_object_mut().unwrap().remove("name");
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+    let listed = env.json(&work, &["session", "list", "--all"]);
+    assert_eq!(listed[0]["title"], "original prompt");
+    env.success(&work, &["session", "rename", &id, "legacy renamed"]);
+    for invalid in ["   ", "bad\nname"] {
+        let result = env.run(&work, &["session", "rename", &id, invalid]);
+        assert!(!result.status.success(), "accepted {invalid:?}");
+        let listed = env.json(&work, &["session", "list", "--all"]);
+        assert_eq!(listed[0]["title"], "legacy renamed");
+    }
+    let loaded = nth_session::Store::at(env.sessions())
+        .load(session.id)
+        .await
+        .unwrap();
+    assert_eq!(loaded.name.as_deref(), Some("legacy renamed"));
+    assert_eq!(loaded.messages, session.messages);
+}
+
 /// The gather reads the env's data dir: one saved session's spend comes
 /// back as its model's line for the day and its tool's line. The spend
 /// stores no rates and no provider is configured to list them, so its
