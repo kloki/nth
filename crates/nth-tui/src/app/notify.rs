@@ -301,7 +301,7 @@ mod tests {
         send(&mut app, "first prompt");
         assert!(app.session.is_none());
         assert_eq!(app.notify_context(Duration::ZERO).title, "first prompt");
-        app.title_owner.rename("renamed while busy").await.unwrap();
+        app.rename_session("renamed while busy");
         assert_eq!(
             app.notify_context(Duration::ZERO).title,
             "renamed while busy"

@@ -1,4 +1,5 @@
 mod agent_loop;
+pub mod aside;
 mod compaction;
 pub mod context_preview;
 pub mod curios;

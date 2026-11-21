@@ -22,16 +22,6 @@ pub(super) enum Finished {
     SessionLoaded(Result<anyhow::Result<session_picker::Loaded>, JoinError>),
     HistorySaved(Result<std::io::Result<()>, JoinError>),
     SessionSaved(Result<Result<(), store::Error>, JoinError>),
-    TitleRenamed(
-        Result<
-            (
-                uuid::Uuid,
-                Result<nth_session::title::Metadata, store::Error>,
-            ),
-            JoinError,
-        >,
-    ),
-    TitleRefreshed(Result<(), JoinError>),
     LlmUsageSaved(Result<std::io::Result<()>, JoinError>),
     PlanRead(Result<Option<String>, JoinError>),
     WorkRead(Result<(PathBuf, Option<nth_work::Plan>), JoinError>),
@@ -88,33 +78,6 @@ impl App {
                 self.job_failed("saving the session", e);
                 self.save_ended();
             }
-            Finished::TitleRenamed(Ok((id, result))) if id == self.session_id => {
-                match result {
-                    Ok(metadata) => {
-                        if let Some(session) = &mut self.session {
-                            session.title_metadata = Some(metadata);
-                        }
-                        self.hint = Some("session renamed".into());
-                    }
-                    Err(e) => self.hint = Some(format!("could not rename session: {e}").into()),
-                }
-                self.save_ended();
-            }
-            Finished::TitleRenamed(Err(e)) => {
-                self.job_failed("renaming session", e);
-                self.save_ended();
-            }
-            Finished::TitleRefreshed(Err(e)) => {
-                self.job_failed("refreshing session title", e);
-            }
-            Finished::TitleRefreshed(Ok(())) => {
-                if let (Some(session), Some(metadata)) =
-                    (&mut self.session, self.title_owner.snapshot())
-                {
-                    session.title_metadata = Some(metadata);
-                }
-            }
-            Finished::TitleRenamed(_) => self.save_ended(),
             Finished::LlmUsageSaved(Ok(saved)) => self.llm_usage_saved(saved),
             Finished::LlmUsageSaved(Err(e)) => {
                 self.job_failed("saving model usage", e);

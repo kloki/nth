@@ -243,7 +243,8 @@ pub fn padded(rows: &[Row]) -> Vec<Row> {
 }
 
 /// Each turn that made a request, numbered from 1 in that order, with who
-/// spent it: `#2 @explore kimi-k3`.
+/// spent it: `#2 @explore kimi-k3`, or for a request beside a turn what
+/// it was for: `#3 title kimi-k3`.
 pub fn turns(ledger: &Ledger) -> impl Iterator<Item = (String, &Spend)> {
     ledger
         .spends()
@@ -251,12 +252,10 @@ pub fn turns(ledger: &Ledger) -> impl Iterator<Item = (String, &Spend)> {
         .filter(|spend| spend.steps > 0)
         .enumerate()
         .map(|(n, spend)| {
-            let who = match &spend.agent {
-                Some(agent) => format!("#{} @{agent} {}", n + 1, spend.model),
-                None if spend.source == Some(nth_protocol::SpendSource::Title) => {
-                    format!("#{} title {}", n + 1, spend.model)
-                }
-                None => format!("#{} {}", n + 1, spend.model),
+            let who = match (&spend.agent, spend.aside) {
+                (Some(agent), _) => format!("#{} @{agent} {}", n + 1, spend.model),
+                (None, Some(aside)) => format!("#{} {} {}", n + 1, aside.label(), spend.model),
+                (None, None) => format!("#{} {}", n + 1, spend.model),
             };
             (who, spend)
         })
@@ -406,7 +405,7 @@ mod tests {
         let spend = &ledger.spends()[0];
         assert!(spend.tools.is_empty());
         assert_eq!(spend.cost, None);
-        assert_eq!(spend.source, None);
+        assert_eq!(spend.aside, None);
         assert_eq!(spend.tokens.reasoning, None);
     }
 

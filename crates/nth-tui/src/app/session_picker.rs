@@ -137,8 +137,8 @@ impl App {
         self.context = session.context().clone();
         self.session_since = session.created_at;
         self.session_id = session.id;
-        self.title_owner = nth_session::title::Owner::new(&session, self.store.as_deref().cloned());
         self.title_fallback = session.title();
+        self.pending_name = None;
         // The session's model and effort are its mode's or its agent's now;
         // the rest keep what they had. An agent no longer found leaves the
         // session in its mode.

@@ -39,7 +39,7 @@ pub use provider::{
 };
 pub use question::{Answer, Ask, Asker, Question, QuestionOption, Reply};
 pub use screen::{Panel, Screen, Show};
-pub use spend::{Price, Spend, SpendSource, ToolUse};
+pub use spend::{AsideKind, Price, Spend, ToolUse};
 pub use tool::{
     ChildLlm, INTERRUPTED, LoadedInstructions, OutputSink, Tool, ToolContext, ToolResult, ToolSpec,
     failure_reason, parse_args, reject_old_timeout, timed_out,

@@ -345,9 +345,7 @@ pub(crate) fn offered_tools<'a>(
         .iter()
         .map(|tool| (tool.spec(), tool.as_ref()))
         .filter(|(spec, _)| {
-            !(subagent
-                && (nth_protocol::tool_names::CURIOS.contains(&spec.name)
-                    || spec.name == "session_rename"))
+            !(subagent && nth_protocol::tool_names::CURIOS.contains(&spec.name))
                 && agent.is_none_or(|agent| agent.allows(spec.name))
         })
         .collect()

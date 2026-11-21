@@ -13,7 +13,6 @@ use std::{
 };
 
 use base64::Engine;
-use fs2::FileExt;
 use nth_context::Paths;
 use nth_directories::Directories;
 use nth_protocol::{Image, MAX_IMAGE_BYTES, Message};
@@ -48,7 +47,7 @@ pub enum Error {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
     pub id: Uuid,
-    /// First line of the first prompt.
+    /// Its name, else the first line of the first prompt.
     pub title: String,
     pub cwd: PathBuf,
     /// Where it started, when it moved into a worktree.
@@ -124,279 +123,66 @@ impl Store {
         Self { dir: dir.into() }
     }
 
-    /// Saves a conversation, reconciling title state under the per-session lock.
+    /// Writes `session`, replacing its earlier save. A session nothing was
+    /// asked in yet is not worth keeping, so it is skipped.
     pub async fn save(&self, session: &Session) -> Result<(), Error> {
-        self.save_with_metadata(session).await.map(|_| ())
-    }
-
-    /// As `save`, returning the authoritative metadata for the owner to adopt.
-    pub async fn save_with_metadata(
-        &self,
-        session: &Session,
-    ) -> Result<Option<crate::title::Metadata>, Error> {
         if session.is_empty() {
-            return Ok(session.title_metadata.clone());
+            return Ok(());
         }
-        let store = self.clone();
-        let session = session.clone();
-        tokio::task::spawn_blocking(move || {
-            let _lock = store.lock(session.id)?;
-            let path = store.path(session.id);
-            let stored = store.read_json_optional(&path)?;
-            let mut json = serde_json::to_value(&session).map_err(|source| Error::Json {
-                path: path.clone(),
-                source,
-            })?;
-            let metadata = match stored {
-                Some(ref value) => {
-                    let saved = metadata_from_json(value, &path)?;
-                    match (&saved, &session.title_metadata) {
-                        // A local rename made before the first save wins over a
-                        // concurrent initial save with untouched metadata.
-                        (Some(old), Some(new))
-                            if old.revision == 0
-                                && new
-                                    .title
-                                    .as_ref()
-                                    .is_some_and(|t| t.origin == crate::title::Origin::User) =>
-                        {
-                            Some(new.clone())
-                        }
-                        _ => saved,
-                    }
-                }
-                None => session.title_metadata.clone(),
-            };
-            let fields = json.as_object_mut().expect("session is an object");
-            match &metadata {
-                Some(metadata) => {
-                    fields.insert(
-                        "title_metadata".into(),
-                        serde_json::to_value(metadata).expect("metadata serializes"),
-                    );
-                }
-                None => {
-                    fields.remove("title_metadata");
-                }
-            }
-            let title = metadata
-                .as_ref()
-                .and_then(|m| m.title.as_ref())
-                .map(|t| t.text.clone())
-                .or_else(|| {
-                    let mut fallback = session.clone();
-                    fallback.title_metadata = None;
-                    fallback.title()
-                });
-            fields.insert("title".into(), title.into());
-            store.write_json(&path, &json)?;
-            Ok(metadata)
-        })
-        .await?
-    }
-
-    /// Rename a saved session without reconstructing its conversation.
-    pub async fn rename(&self, id: Uuid, text: &str) -> Result<crate::title::Metadata, Error> {
-        let text = crate::title::validate(text)?;
-        self.mutate_title(id, move |metadata| {
-            metadata.rename(&text)?;
-            Ok(true)
-        })
-        .await
-        .map(|(m, _)| m)
-    }
-
-    /// Compare-and-set a generated title against the revision captured by its job.
-    pub async fn set_generated_title(
-        &self,
-        id: Uuid,
-        expected: u64,
-        text: &str,
-    ) -> Result<(crate::title::Metadata, bool), Error> {
-        let text = text.to_owned();
-        self.mutate_title(id, move |metadata| metadata.generated(expected, &text))
-            .await
-    }
-
-    /// Persist the one-shot attempt before starting the request.
-    /// Creates the first save with the admitted prompt under the same lock,
-    /// so competing owners cannot both claim an unsaved session.
-    pub async fn claim_title_attempt(
-        &self,
-        session: &Session,
-        expected: u64,
-    ) -> Result<(Option<crate::title::Metadata>, bool), Error> {
-        let store = self.clone();
-        let session = session.clone();
-        tokio::task::spawn_blocking(move || {
-            let _lock = store.lock(session.id)?;
-            let path = store.path(session.id);
-            let existing = store.read_json_optional(&path)?;
-            let mut json = match existing {
-                Some(json) => json,
-                None => {
-                    let mut original = session.clone();
-                    if let Some(metadata) = original.title_metadata.as_mut() {
-                        metadata.revision = expected;
-                        metadata.generation = crate::title::Generation::Pending;
-                    }
-                    serde_json::to_value(&original).map_err(|source| Error::Json {
-                        path: path.clone(),
-                        source,
-                    })?
-                }
-            };
-            let metadata = metadata_from_json(&json, &path)?;
-            let Some(mut metadata) = metadata else {
-                return Ok((None, false));
-            };
-            if metadata.revision != expected
-                || metadata.generation != crate::title::Generation::Pending
-            {
-                return Ok((Some(metadata), false));
-            }
-            metadata.attempted()?;
-            let fields = json.as_object_mut().expect("session object");
-            fields.insert(
-                "title_metadata".into(),
-                serde_json::to_value(&metadata).expect("metadata serializes"),
-            );
-            if !fields.contains_key("title") {
-                fields.insert("title".into(), session.title().into());
-            }
-            store.write_json(&path, &json)?;
-            Ok((Some(metadata), true))
-        })
-        .await?
-    }
-
-    /// Persist the one-shot attempt before starting the request.
-    pub async fn mark_title_attempted(
-        &self,
-        id: Uuid,
-        expected: u64,
-    ) -> Result<(crate::title::Metadata, bool), Error> {
-        self.mutate_title(id, move |metadata| {
-            if metadata.revision != expected
-                || metadata.generation != crate::title::Generation::Pending
-            {
-                return Ok(false);
-            }
-            metadata.attempted()?;
-            Ok(true)
-        })
-        .await
-    }
-
-    /// Read just the saved metadata; legacy saves return `None`.
-    pub async fn title_metadata(&self, id: Uuid) -> Result<Option<crate::title::Metadata>, Error> {
-        let path = self.path(id);
-        tokio::task::spawn_blocking(move || {
-            let bytes = std::fs::read(&path).map_err(io_at(&path))?;
-            let value = serde_json::from_slice(&bytes).map_err(|source| Error::Json {
-                path: path.clone(),
-                source,
-            })?;
-            metadata_from_json(&value, &path)
-        })
-        .await?
-    }
-
-    async fn mutate_title(
-        &self,
-        id: Uuid,
-        change: impl FnOnce(&mut crate::title::Metadata) -> Result<bool, crate::title::Error>
-        + Send
-        + 'static,
-    ) -> Result<(crate::title::Metadata, bool), Error> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let _lock = store.lock(id)?;
-            let path = store.path(id);
-            let mut json = store
-                .read_json_optional(&path)?
-                .ok_or_else(|| io_at(&path)(io::Error::from(io::ErrorKind::NotFound)))?;
-            let mut metadata =
-                metadata_from_json(&json, &path)?.unwrap_or_else(crate::title::Metadata::legacy);
-            let changed = change(&mut metadata)?;
-            if changed {
-                let fields = json.as_object_mut().ok_or_else(|| {
-                    io_at(&path)(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "session is not an object",
-                    ))
-                })?;
-                fields.insert(
-                    "title_metadata".into(),
-                    serde_json::to_value(&metadata).expect("metadata serializes"),
-                );
-                if let Some(title) = &metadata.title {
-                    fields.insert("title".into(), title.text.clone().into());
-                }
-                store.write_json(&path, &json)?;
-            }
-            Ok((metadata, changed))
-        })
-        .await?
-    }
-
-    fn lock(&self, id: Uuid) -> Result<std::fs::File, Error> {
-        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
-        // Never unlink: a waiter may already have opened this inode.
-        let path = self.dir.join(format!("{id}.lock"));
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(io_at(&path))?;
-        file.lock_exclusive().map_err(io_at(&path))?;
-        Ok(file)
-    }
-
-    fn read_json_optional(&self, path: &Path) -> Result<Option<serde_json::Value>, Error> {
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io_at(path)(e)),
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|source| Error::Json {
-                path: path.to_path_buf(),
-                source,
-            })
-    }
-
-    fn write_json(&self, path: &Path, json: &serde_json::Value) -> Result<(), Error> {
-        let bytes = serde_json::to_vec_pretty(json).map_err(|source| Error::Json {
-            path: path.to_path_buf(),
+        let json_error = |source| Error::Json {
+            path: self.path(session.id),
             source,
-        })?;
+        };
+        let mut json = serde_json::to_value(session).map_err(json_error)?;
+        // The title goes beside the session for [`Head`]; loading ignores it.
+        if let Some(fields) = json.as_object_mut() {
+            fields.insert("title".into(), session.title().into());
+        }
+        let json = serde_json::to_vec_pretty(&json).map_err(json_error)?;
+        tokio::fs::create_dir_all(&self.dir)
+            .await
+            .map_err(io_at(&self.dir))?;
+        // Written aside and renamed over, so a crash mid-write never leaves
+        // a half file in place of the last good save. The name is this
+        // save's own: saves of one session can still overlap, as the save
+        // on quitting does with one in flight, or through another store or
+        // another nth, and two sharing a name could rename a file the other
+        // is still writing. Counted per process, not per store, since more
+        // than one store may point at the same folder.
         static SAVES: AtomicU64 = AtomicU64::new(0);
         let n = SAVES.fetch_add(1, Ordering::Relaxed);
+        let path = self.path(session.id);
         let tmp = self.dir.join(format!(
             "{}.{}.{n}.json.tmp",
-            path.file_stem().expect("session id").to_string_lossy(),
+            session.id,
             std::process::id()
         ));
-        let result = (|| {
-            use std::io::Write;
-            let mut file = std::fs::File::create(&tmp).map_err(io_at(&tmp))?;
-            file.write_all(&bytes).map_err(io_at(&tmp))?;
-            file.sync_all().map_err(io_at(&tmp))?;
-            std::fs::rename(&tmp, path).map_err(io_at(path))?;
-            std::fs::File::open(&self.dir)
-                .map_err(io_at(&self.dir))?
-                .sync_all()
-                .map_err(io_at(&self.dir))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        let written = write_synced(&tmp, &json, &path).await;
+        if written.is_err() {
+            // A full disk or a folder gone mid-write leaves no stray half.
+            // One cut short by quitting or a crash stays until the session
+            // is deleted.
+            let _ = tokio::fs::remove_file(&tmp).await;
         }
-        result
+        written?;
+        tokio::fs::File::open(&self.dir)
+            .await
+            .map_err(io_at(&self.dir))?
+            .sync_all()
+            .await
+            .map_err(io_at(&self.dir))?;
+        Ok(())
+    }
+
+    /// Names a saved session `text`, checked as `/rename` checks it, and
+    /// returns the name. A process that has the session open saves its own
+    /// copy after each turn, so its next save wins over this one.
+    pub async fn rename(&self, id: Uuid, text: &str) -> Result<String, Error> {
+        let name = crate::title::validate(text)?;
+        let mut session = self.load(id).await?;
+        session.name = Some(name.clone());
+        self.save(&session).await?;
+        Ok(name)
     }
 
     /// Every saved session, the most recently used first. Files that don't
@@ -570,19 +356,16 @@ fn curio_owner_dir(
     Ok(Some(dir))
 }
 
-fn metadata_from_json(
-    value: &serde_json::Value,
-    path: &Path,
-) -> Result<Option<crate::title::Metadata>, Error> {
-    match value.get("title_metadata") {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|source| Error::Json {
-                path: path.to_path_buf(),
-                source,
-            }),
-    }
+/// Writes `bytes` to `tmp`, syncs it and renames it over `path`.
+async fn write_synced(tmp: &Path, bytes: &[u8], path: &Path) -> Result<(), Error> {
+    tokio::fs::write(tmp, bytes).await.map_err(io_at(tmp))?;
+    tokio::fs::File::open(tmp)
+        .await
+        .map_err(io_at(tmp))?
+        .sync_all()
+        .await
+        .map_err(io_at(tmp))?;
+    tokio::fs::rename(tmp, path).await.map_err(io_at(path))
 }
 
 /// Reads the bytes of every image the tools showed, which the save leaves
@@ -953,8 +736,7 @@ mod tests {
     async fn a_save_from_before_titles_still_lists_by_its_prompt() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::at(dir.path());
-        let mut old = session("fix the build", 1);
-        old.title_metadata = None;
+        let old = session("fix the build", 1);
         let json = serde_json::to_vec(&old).expect("serializes");
         assert!(!json.windows(7).any(|w| w == b"\"title\""));
         std::fs::write(dir.path().join(format!("{}.json", old.id)), json).expect("writes");
@@ -964,166 +746,6 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "fix the build");
         assert_eq!(listed[0].id, old.id);
-    }
-
-    #[tokio::test]
-    async fn rename_survives_stale_saves_and_preserves_unknown_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path());
-        let other = Store::at(dir.path());
-        let original = session("first", 42);
-        store.save(&original).await.unwrap();
-        let stale = other.load(original.id).await.unwrap();
-        let path = store.path(original.id);
-        let mut raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        raw["future_field"] = serde_json::json!({"contents": [1, 2, 3]});
-        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
-
-        let renamed = store.rename(original.id, "  Better title  ").await.unwrap();
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(after["messages"], raw["messages"]);
-        assert_eq!(after["future_field"], raw["future_field"]);
-        assert_eq!(after["updated_at"], raw["updated_at"]);
-        assert_eq!(renamed.revision, 1);
-        let (metadata, applied) = other
-            .set_generated_title(original.id, 0, "late")
-            .await
-            .unwrap();
-        assert!(!applied);
-        assert_eq!(metadata, renamed);
-        let saved = other.save_with_metadata(&stale).await.unwrap();
-        assert_eq!(saved, Some(renamed));
-        assert_eq!(
-            store.load(original.id).await.unwrap().title().as_deref(),
-            Some("Better title")
-        );
-        assert_eq!(store.list().await.unwrap()[0].title, "Better title");
-    }
-
-    #[tokio::test]
-    async fn initial_save_keeps_a_local_rename_over_a_stale_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path());
-        let mut fresh = Session::new("model", "/repo".into());
-        fresh
-            .title_metadata
-            .as_mut()
-            .unwrap()
-            .rename("local")
-            .unwrap();
-        assert!(fresh.is_empty());
-        store.save(&fresh).await.unwrap();
-        assert!(store.list().await.unwrap().is_empty());
-        let mut stale = fresh.clone();
-        stale.title_metadata = Some(crate::title::Metadata::default());
-        fresh.messages.push(Message::User("hello".into()));
-        stale.messages.push(Message::User("hello".into()));
-        store.save(&stale).await.unwrap();
-        store.save(&fresh).await.unwrap();
-        store.save(&stale).await.unwrap();
-        assert_eq!(
-            store.load(fresh.id).await.unwrap().title().as_deref(),
-            Some("local")
-        );
-    }
-
-    #[tokio::test]
-    async fn shell_first_save_accepts_attempt_but_external_rename_wins() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path());
-        let mut first = session("shell history", 42);
-        store.save(&first).await.unwrap();
-        let job = crate::title::Job::admit(&mut first, "real prompt")
-            .unwrap()
-            .unwrap();
-        assert!(store.claim_title_attempt(&first, 0).await.unwrap().1);
-        assert!(
-            store
-                .set_generated_title(first.id, job.expected_revision, "generated")
-                .await
-                .unwrap()
-                .1
-        );
-        let metadata = store.save_with_metadata(&first).await.unwrap().unwrap();
-        assert_eq!(metadata.title.unwrap().text, "generated");
-
-        let mut other = session("another history", 43);
-        store.save(&other).await.unwrap();
-        let job = crate::title::Job::admit(&mut other, "real prompt")
-            .unwrap()
-            .unwrap();
-        assert!(store.claim_title_attempt(&other, 0).await.unwrap().1);
-        store.rename(other.id, "manual").await.unwrap();
-        other
-            .title_metadata
-            .as_mut()
-            .unwrap()
-            .generated(job.expected_revision, "late")
-            .unwrap();
-        let metadata = store.save_with_metadata(&other).await.unwrap().unwrap();
-        assert_eq!(metadata.title.unwrap().text, "manual");
-    }
-
-    #[tokio::test]
-    async fn claim_is_durable_and_only_one_owner_can_generate() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path());
-        let mut first = session("admitted", 1);
-        let mut second = first.clone();
-        let first_job = crate::title::Job::admit(&mut first, "first")
-            .unwrap()
-            .unwrap();
-        let second_job = crate::title::Job::admit(&mut second, "second")
-            .unwrap()
-            .unwrap();
-        let (a, b) = tokio::join!(
-            store.claim_title_attempt(&first, 0),
-            store.claim_title_attempt(&second, 0)
-        );
-        assert_ne!(a.unwrap().1, b.unwrap().1);
-        let mut restarted = store.load(first.id).await.unwrap();
-        assert!(
-            crate::title::Job::admit(&mut restarted, "again")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .set_generated_title(first.id, first_job.expected_revision, "winner")
-                .await
-                .unwrap()
-                .1
-        );
-        assert!(
-            !store
-                .set_generated_title(first.id, second_job.expected_revision, "late")
-                .await
-                .unwrap()
-                .1
-        );
-        assert_eq!(
-            store.load(first.id).await.unwrap().title().as_deref(),
-            Some("winner")
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_cache_is_not_explicit_metadata_and_attempts_are_one_shot() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path());
-        let mut old = session("original", 1);
-        old.title_metadata = None;
-        let mut value = serde_json::to_value(&old).unwrap();
-        value["title"] = "original".into();
-        std::fs::write(store.path(old.id), serde_json::to_vec(&value).unwrap()).unwrap();
-        assert_eq!(store.load(old.id).await.unwrap().title_metadata, None);
-        let (state, applied) = store.mark_title_attempted(old.id, 0).await.unwrap();
-        assert!(!applied);
-        assert_eq!(state.generation, crate::title::Generation::Attempted);
-        store.rename(old.id, "renamed").await.unwrap();
-        assert_eq!(store.list().await.unwrap()[0].title, "renamed");
     }
 
     #[tokio::test]

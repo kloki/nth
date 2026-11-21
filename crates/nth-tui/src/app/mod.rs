@@ -30,6 +30,7 @@ mod plan;
 mod profiles;
 mod question;
 mod quit;
+mod rename;
 mod search;
 mod session_picker;
 mod settings;
@@ -185,13 +186,13 @@ pub struct App {
     /// The current session's id, kept here because the session itself is
     /// in the turn task while a turn runs.
     session_id: uuid::Uuid,
-    title_owner: nth_session::title::Owner,
+    /// What names the session while a turn holds it: its title when the
+    /// turn took it, else the first line of the prompt, until the turn's
+    /// aside names it (`Event::Named`) or the session comes back.
     title_fallback: Option<String>,
-    title_rename: Job<(
-        uuid::Uuid,
-        Result<nth_session::title::Metadata, store::Error>,
-    )>,
-    title_refresh: Job<()>,
+    /// A `/rename` sent while a turn ran, put on the session once the turn
+    /// hands it back.
+    pending_name: Option<String>,
     curios: crate::curios::CuriosTab,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
@@ -475,14 +476,15 @@ enum Step {
 }
 
 impl App {
-    /// Effective title snapshot, also available while a turn owns the session.
+    /// What names the session, also while a turn holds it: a `/rename`
+    /// waiting for the turn first, then the session's own title.
     pub fn session_title(&self) -> Option<String> {
-        self.title_owner
-            .snapshot()
-            .and_then(|metadata| metadata.title.map(|title| title.text))
-            .or_else(|| self.session.as_ref().and_then(Session::title))
-            .or_else(|| self.title_fallback.clone())
+        self.pending_name.clone().or_else(|| match &self.session {
+            Some(session) => session.title(),
+            None => self.title_fallback.clone(),
+        })
     }
+
     /// The chat on `config`'s runtime, installed as `/resume` installs one,
     /// so the two cannot set up a runtime differently.
     pub fn new(config: AppConfig) -> Self {
@@ -549,10 +551,8 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
-            title_owner: nth_session::title::Owner::new(session, store.clone()),
             title_fallback: session.title(),
-            title_rename: Job::default(),
-            title_refresh: Job::default(),
+            pending_name: None,
             curios: crate::curios::CuriosTab::new(session.state_root()),
             hero_since: Instant::now(),
             flash: None,
@@ -747,8 +747,6 @@ impl App {
                 session = self.session_loading.join() => Step::Job(Finished::SessionLoaded(session)),
                 saved = self.history_saving.join() => Step::Job(Finished::HistorySaved(saved)),
                 saved = self.session_saving.join() => Step::Job(Finished::SessionSaved(saved)),
-                result = self.title_rename.join() => Step::Job(Finished::TitleRenamed(result)),
-                result = self.title_refresh.join() => Step::Job(Finished::TitleRefreshed(result)),
                 saved = self.llm_usage_saving.join() => Step::Job(Finished::LlmUsageSaved(saved)),
                 plan = self.plan.next() => Step::Job(Finished::PlanRead(plan)),
                 plan = self.work.next() => Step::Job(Finished::WorkRead(plan)),
@@ -825,14 +823,6 @@ impl App {
     /// the whole history.
     fn every_second(&mut self) {
         self.refresh_stale_context();
-        if !self.title_refresh.is_running() {
-            let owner = self.title_owner.clone();
-            self.title_refresh.start(|_| {
-                tokio::spawn(async move {
-                    let _ = owner.refresh().await;
-                })
-            });
-        }
     }
 
     /// One frame after a step: what the step leads to is settled first,
@@ -1219,6 +1209,7 @@ impl App {
             Event::Usage(usage) => self.usage = Some(*usage),
             Event::Spend(spend) => self.spend_reported(spend.as_ref().clone()),
             Event::Moved(cwd) => self.follow(cwd.clone()),
+            Event::Named(name) => self.title_fallback = Some(name.clone()),
             _ => {}
         }
         self.chat.apply(&event);
@@ -1325,8 +1316,8 @@ impl App {
         self.search_jump = None;
         self.session_since = session.created_at;
         self.session_id = session.id;
-        self.title_owner = nth_session::title::Owner::new(&session, self.store.as_deref().cloned());
         self.title_fallback = session.title();
+        self.pending_name = None;
         self.session = Some(session);
         self.context_tab.view.update(None);
         self.refresh_context();

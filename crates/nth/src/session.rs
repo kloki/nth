@@ -36,7 +36,8 @@ pub enum SessionCommand {
         /// The session, by its id or the start of it
         session: String,
     },
-    /// Rename a saved session
+    /// Rename a saved session; a chat that has it open saves its own copy
+    /// after each turn, so its next save wins
     Rename {
         /// The session, by its id or the start of it
         session: String,
@@ -100,10 +101,10 @@ pub async fn run(command: SessionCommand) -> Result<()> {
             json,
         } => {
             let session = pick(&store, Some(&session)).await?;
-            let metadata = store.rename(session.id, &title).await?;
+            let title = store.rename(session.id, &title).await?;
             let report = RenameReport {
                 id: session.id.to_string(),
-                title: metadata.title.expect("rename sets a title").text,
+                title,
             };
             output::print(&report, json)
         }
@@ -353,11 +354,8 @@ mod tests {
         store.save(&session).await.unwrap();
         let id = session.id.to_string();
         let picked = pick(&store, Some(&id[..8])).await.unwrap();
-        let metadata = store.rename(picked.id, "  New title  ").await.unwrap();
-        let report = RenameReport {
-            id,
-            title: metadata.title.unwrap().text,
-        };
+        let title = store.rename(picked.id, "  New title  ").await.unwrap();
+        let report = RenameReport { id, title };
         let value: Value = serde_json::from_str(&testing::json(&report)).unwrap();
         assert_eq!(value["title"], "New title");
         assert_eq!(value["outcome"], "renamed");

@@ -98,11 +98,7 @@ impl App {
         if session.extra_dirs != self.extra_dirs {
             session.set_extra_dirs(self.extra_dirs.clone());
         }
-        let mut tools = self.tools.clone();
-        tools.push(std::sync::Arc::new(nth_session::title::Rename(
-            self.title_owner.clone(),
-        )));
-        let preview = session.context_preview_for(&tools, &self.inbox, true);
+        let preview = session.context_preview_for(&self.tools, &self.inbox, true);
         #[cfg(test)]
         {
             self.context_tab.rebuilds += 1;

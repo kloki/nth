@@ -69,9 +69,7 @@ async fn ended(
 ) -> Ended {
     session.usage.extend(subagents.take_spent());
     let saved = match &store {
-        Some(store) => store.save_with_metadata(&session).await.map(|metadata| {
-            session.title_metadata = metadata;
-        }),
+        Some(store) => store.save(&session).await,
         None => Ok(()),
     };
     // Only a saved session may tell the store its feedback is recorded.
@@ -164,18 +162,13 @@ impl App {
         if self.session_saving.is_running() {
             return self.after_save(next);
         }
-        if self.title_rename.is_running() {
-            return self.after_save(next);
-        }
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
-            Queued::Approve(instructions) => {
-                self.start_nonhuman_turn(self.plan.approval(&instructions))
-            }
+            Queued::Approve(instructions) => self.start_turn(self.plan.approval(&instructions)),
             Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
-                self.start_nonhuman_turn(plan::edits::render(self.plan.path(), &original, &edited))
+                self.start_turn(plan::edits::render(self.plan.path(), &original, &edited))
             }
         }
     }
@@ -253,14 +246,6 @@ impl App {
     /// Starts a turn with `text` after what monitors said since the last
     /// turn; `text` is empty when only the monitors have something to say.
     pub(super) fn start_turn(&mut self, text: String) {
-        self.start_turn_inner(text, true);
-    }
-
-    fn start_nonhuman_turn(&mut self, text: String) {
-        self.start_turn_inner(text, false);
-    }
-
-    fn start_turn_inner(&mut self, text: String, human: bool) {
         if self.session.is_none() || (text.is_empty() && !self.inbox.wakes()) {
             return;
         }
@@ -292,22 +277,13 @@ impl App {
                 None => text,
             },
         };
-        let original_prompt = human.then(|| text.clone());
-        // The first human prompt names the session while it generates; a
-        // stray newline before it must not become the whole title.
-        if human
-            && self
-                .title_fallback
-                .as_deref()
-                .is_none_or(|title| title.trim().is_empty())
-            && !text.trim().is_empty()
-        {
+        // Until the session hands back its own title, the first line of
+        // what you asked names it.
+        if self.title_fallback.is_none() {
             self.title_fallback = text
-                .trim()
                 .lines()
-                .next()
                 .map(str::trim)
-                .filter(|line| !line.is_empty())
+                .find(|line| !line.is_empty())
                 .map(str::to_owned);
         }
         self.adopt_llm(&mut session);
@@ -323,20 +299,7 @@ impl App {
         if session.agent != self.selection.agent {
             session.set_agent(self.selection.agent.clone());
         }
-        if let Some(metadata) = self.title_owner.snapshot() {
-            session.title_metadata = Some(metadata);
-        }
-        if human
-            && original_prompt
-                .as_ref()
-                .is_some_and(|text| !text.trim().is_empty())
-        {
-            self.turns.started(self.runs_as());
-        } else {
-            // A first human prompt must run as its own admitted prompt,
-            // rather than being absorbed by automatic feedback or approval.
-            self.turns.started_without_model();
-        }
+        self.turns.started(self.runs_as());
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }
@@ -348,20 +311,11 @@ impl App {
         self.busy_since = Some(Instant::now());
 
         let provider = self.provider.clone();
-        let mut tools = self.tools.clone();
-        tools.push(Arc::new(nth_session::title::Rename(
-            self.title_owner.clone(),
-        )));
+        let tools = self.tools.clone();
         let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
-        let mut front_end = self.front_end();
-        let title_owner = self.title_owner.clone();
-        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
-        front_end.title_prompt = original_prompt;
-        front_end.title_jobs = Some(title_tx);
-        front_end.title_store = store.as_deref().cloned();
-        front_end.title_owner = Some(title_owner.clone());
+        let front_end = self.front_end();
         self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -377,88 +331,19 @@ impl App {
                     Some(notices) => format!("{notices}\n\n{text}"),
                     None => text,
                 });
-                let title_cancel = nth_session::CancellationToken::new();
-                let title = async {
-                    match title_rx.recv().await {
-                        Some(job) => {
-                            let mut attempted = title_owner.metadata().await.unwrap_or_default();
-                            if attempted.revision < job.expected_revision {
-                                let _ = attempted.attempted();
-                                title_owner.adopt(Some(attempted)).await;
-                            }
-                            let outcome = job.run(provider.as_ref(), &title_cancel).await;
-                            if let Some(candidate) = &outcome.candidate {
-                                title_owner
-                                    .generated(outcome.expected_revision, candidate)
-                                    .await;
-                            }
-                            Some(outcome)
-                        }
-                        None => None,
+                let result = match text {
+                    Ok(text) if text.is_empty() => {
+                        session
+                            .deliver_curios(provider.as_ref(), &tools, &front_end, &events, &token)
+                            .await
                     }
-                };
-                tokio::pin!(title);
-                let (result, early_title) = {
-                    let turn = async {
-                        match text {
-                            Ok(text) if text.is_empty() => {
-                                session
-                                    .deliver_curios(
-                                        provider.as_ref(),
-                                        &tools,
-                                        &front_end,
-                                        &events,
-                                        &token,
-                                    )
-                                    .await
-                            }
-                            Ok(text) => {
-                                session
-                                    .prompt(
-                                        text,
-                                        provider.as_ref(),
-                                        &tools,
-                                        &front_end,
-                                        &events,
-                                        &token,
-                                    )
-                                    .await
-                            }
-                            Err(e) => Err(e),
-                        }
-                    };
-                    tokio::pin!(turn);
-                    tokio::select! {
-                        result = &mut turn => (result, None),
-                        outcome = &mut title => (turn.await, Some(outcome)),
+                    Ok(text) => {
+                        session
+                            .prompt(text, provider.as_ref(), &tools, &front_end, &events, &token)
+                            .await
                     }
+                    Err(e) => Err(e),
                 };
-                drop(front_end);
-                let outcome = match early_title {
-                    Some(outcome) => outcome,
-                    None => {
-                        if token.is_cancelled() {
-                            title_cancel.cancel();
-                        }
-                        tokio::select! {
-                            outcome = &mut title => outcome,
-                            _ = token.cancelled() => {
-                                title_cancel.cancel();
-                                title.await
-                            }
-                            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                                title_cancel.cancel();
-                                title.await
-                            }
-                        }
-                    }
-                };
-                if let Some(outcome) = outcome {
-                    session.usage.record(outcome.spend);
-                }
-                let _ = title_owner.refresh().await;
-                title_owner.adopt(session.title_metadata.clone()).await;
-                session.title_metadata = title_owner.metadata().await;
                 ended(session, result, subagents, store, Ran::Turn).await
             })
         });
@@ -475,6 +360,7 @@ impl App {
     fn take_session(&mut self) -> Option<Session> {
         let session = self.session.take()?;
         self.ledger = session.usage.clone();
+        self.title_fallback = session.title();
         Some(session)
     }
 
@@ -487,7 +373,6 @@ impl App {
             wakeup: self.wakeup.clone(),
             inbox: self.inbox.clone(),
             context_preview: self.context_tab.slot.clone(),
-            ..FrontEnd::default()
         }
     }
 
@@ -621,10 +506,18 @@ impl App {
         }
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
-        // A message of only notices has no title, so a failed preparation
-        // clears the fallback it set; a real title still wins.
-        self.title_fallback = session.title().filter(|title| !title.trim().is_empty());
+        // A name you gave while the turn ran comes after anything the turn
+        // named the session, so yours wins.
+        let renamed = self.pending_name.take();
+        let mut session = session;
+        if let Some(name) = &renamed {
+            session.name = Some(name.clone());
+        }
+        self.title_fallback = session.title();
         self.session = Some(session);
+        if renamed.is_some() {
+            self.save_session();
+        }
         // Quitting took the session back only to save it: a read, a
         // notification or the next turn started now would be cut off by
         // the exit, or outlive it.

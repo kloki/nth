@@ -50,18 +50,6 @@ fn has_user(preview: &Preview, text: &str) -> bool {
 }
 
 #[tokio::test]
-async fn idle_preview_offers_session_rename() {
-    let app = open_tab();
-    let preview = app.context_tab.view.preview().unwrap();
-    assert!(
-        preview
-            .tools
-            .iter()
-            .any(|tool| tool.name == "session_rename")
-    );
-}
-
-#[tokio::test]
 async fn the_tab_follows_the_turn_and_refreshes_on_events() {
     let hang = Arc::new(Scripted::hang());
     let session = Session::new("glm", "/repo".into());

@@ -19,12 +19,4 @@ pub struct FrontEnd {
     /// it from construction.
     pub inbox: Inbox,
     pub context_preview: ContextPreview,
-    /// Original human input and destination for a title job, supplied only
-    /// by an owner that will settle the job and its usage.
-    pub title_prompt: Option<String>,
-    pub title_jobs: Option<tokio::sync::mpsc::UnboundedSender<crate::title::Job>>,
-    pub title_store: Option<crate::Store>,
-    /// The owner's live metadata, which may hold a rename the session copied
-    /// into the turn before it happened.
-    pub title_owner: Option<crate::title::Owner>,
 }

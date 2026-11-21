@@ -39,7 +39,9 @@ pub const SHELL_PROMPT: &str = "The following tool was executed by the user";
 /// of the models, which a later listing may say differently.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnEnv {
-    /// Whether the first human prompt gets an automatic title.
+    /// Whether the first prompt names the session through an aside, as
+    /// `[session] auto_title` says; off until a front-end turns it on, so a
+    /// session nobody configured makes no request but its turns'.
     pub auto_title: bool,
     /// How the session keeps itself inside the model's window.
     pub compaction: Compaction,
@@ -68,7 +70,7 @@ pub struct TurnEnv {
 impl Default for TurnEnv {
     fn default() -> Self {
         Self {
-            auto_title: true,
+            auto_title: false,
             compaction: Compaction::default(),
             max_steps: DEFAULT_MAX_STEPS,
             tool_timeout: Some(DEFAULT_TOOL_TIMEOUT),
@@ -141,9 +143,10 @@ pub struct Session {
     /// When a prompt was last sent; saved sessions are listed by it.
     pub updated_at: SystemTime,
     pub messages: Vec<Message>,
-    /// Authoritative title state. Absent on saves predating title metadata.
+    /// What you or the model named the session; `title` falls back to the
+    /// first prompt without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title_metadata: Option<crate::title::Metadata>,
+    pub name: Option<String>,
     /// Instruction files the read tool has attached, so a resumed session
     /// does not get them again.
     #[serde(default)]
@@ -229,7 +232,7 @@ impl Session {
             created_at: now,
             updated_at: now,
             messages,
-            title_metadata: Some(crate::title::Metadata::default()),
+            name: None,
             loaded_instructions: BTreeSet::new(),
             usage: Ledger::default(),
             last_usage: None,
@@ -324,16 +327,14 @@ impl Session {
             .any(|message| matches!(message, Message::User(_)))
     }
 
-    /// The first line of the first prompt, which names the session in lists.
-    /// A command the user ran comes first as `!command`.
+    /// What names the session in lists: its name, else the first line of
+    /// the first prompt.
     pub fn title(&self) -> Option<String> {
-        self.title_metadata
-            .as_ref()
-            .and_then(|m| m.title.as_ref())
-            .map(|t| t.text.clone())
-            .or_else(|| self.history_title())
+        self.name.clone().or_else(|| self.history_title())
     }
 
+    /// The first line of the first prompt. A command the user ran comes
+    /// first as `!command`.
     fn history_title(&self) -> Option<String> {
         let mut messages = self.messages.iter();
         while let Some(message) = messages.next() {
@@ -736,6 +737,79 @@ pub(crate) mod tests {
             .expect("sent")
     }
 
+    /// The first prompt names the session beside its turn, tells the
+    /// front-end and books what naming spent apart from the turn; the
+    /// second leaves the name alone.
+    #[tokio::test]
+    async fn the_first_prompt_names_the_session() {
+        // Every request gets the same reply, so it does not matter whether
+        // the aside or the turn asks first.
+        let reply = vec![
+            StreamEvent::TextDelta("\"Fix the build\"".into()),
+            StreamEvent::Usage(nth_protocol::Usage {
+                input: 10,
+                ..Default::default()
+            }),
+        ];
+        let provider = crate::agent_loop::tests::Scripted::always(
+            crate::agent_loop::tests::Reply::Events(reply),
+        );
+        let mut session = Session::new("glm-5.3", ".".into());
+        session.env.auto_title = true;
+        let (tx, mut rx) = mpsc::channel(64);
+        let cancel = CancellationToken::new();
+        session
+            .prompt(
+                "the build fails",
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &cancel,
+            )
+            .await
+            .expect("turn completes");
+
+        assert_eq!(session.name.as_deref(), Some("Fix the build"));
+        assert_eq!(session.title().as_deref(), Some("Fix the build"));
+        assert_eq!(provider.requests(), 2, "the turn and the aside");
+        let asides = |session: &Session| {
+            session
+                .usage
+                .spends()
+                .iter()
+                .filter(|spend| spend.aside == Some(nth_protocol::AsideKind::Title))
+                .count()
+        };
+        assert_eq!(asides(&session), 1);
+        assert_eq!(
+            session.usage.spends().len(),
+            2,
+            "the turn's and the aside's"
+        );
+        let mut named = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let nth_protocol::Event::Named(name) = event {
+                named.push(name);
+            }
+        }
+        assert_eq!(named, ["Fix the build"]);
+
+        session
+            .prompt(
+                "and the tests",
+                &provider,
+                &[],
+                &FrontEnd::default(),
+                &tx,
+                &cancel,
+            )
+            .await
+            .expect("turn completes");
+        assert_eq!(provider.requests(), 3, "only the turn");
+        assert_eq!(asides(&session), 1);
+    }
+
     #[test]
     fn an_agent_that_is_gone_runs_in_the_mode() {
         let mut session = Session::new("glm-5.3", "/repo".into());
@@ -847,97 +921,6 @@ pub(crate) mod tests {
         assert_eq!(old.env.compaction, Compaction::default());
         assert_eq!(old.context_window, None);
         assert_eq!(old.max_output, None);
-    }
-
-    /// A rename the owner made after the turn took its metadata snapshot
-    /// names the session instead of the attempt claim's title.
-    #[tokio::test]
-    async fn a_rename_before_the_first_claim_survives_the_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::Store::at(dir.path());
-        let mut session = Session::new("glm-5.3", dir.path().into());
-        let owner = crate::title::Owner::new(&session, Some(store.clone()));
-        owner.rename("mine").await.unwrap();
-        let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
-            "ok".into(),
-        )]]);
-        let (tx, _rx) = mpsc::channel(64);
-        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
-        let front_end = FrontEnd {
-            title_prompt: Some("hello".into()),
-            title_jobs: Some(title_tx),
-            title_store: Some(store.clone()),
-            title_owner: Some(owner.clone()),
-            ..FrontEnd::default()
-        };
-        session
-            .prompt(
-                "hello",
-                &provider,
-                &[],
-                &front_end,
-                &tx,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("turn completes");
-        assert!(
-            title_rx.try_recv().is_err(),
-            "a rename leaves nothing to generate"
-        );
-        assert_eq!(
-            session
-                .title_metadata
-                .as_ref()
-                .and_then(|m| m.title.as_ref())
-                .map(|t| t.text.as_str()),
-            Some("mine")
-        );
-        let saved = store.save_with_metadata(&session).await.unwrap().unwrap();
-        assert_eq!(saved.title.unwrap().text, "mine");
-    }
-
-    /// A claim that could not persist is not consumed: the next prompt may
-    /// still generate once the store works again.
-    #[tokio::test]
-    async fn a_failed_claim_leaves_generation_available() {
-        let dir = tempfile::tempdir().unwrap();
-        let blocked = dir.path().join("blocked");
-        std::fs::write(&blocked, b"not a directory").unwrap();
-        let mut session = Session::new("glm-5.3", dir.path().into());
-        let provider = crate::agent_loop::tests::Scripted::new(vec![vec![StreamEvent::TextDelta(
-            "ok".into(),
-        )]]);
-        let (tx, _rx) = mpsc::channel(64);
-        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
-        let front_end = FrontEnd {
-            title_prompt: Some("hello".into()),
-            title_jobs: Some(title_tx),
-            title_store: Some(crate::Store::at(blocked)),
-            ..FrontEnd::default()
-        };
-        session
-            .prompt(
-                "hello",
-                &provider,
-                &[],
-                &front_end,
-                &tx,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("turn completes");
-        assert!(title_rx.try_recv().is_err(), "no job from a failed claim");
-        assert_eq!(
-            session.title_metadata.as_ref().map(|m| m.generation),
-            Some(crate::title::Generation::Pending),
-            "the unclaimed attempt is not consumed"
-        );
-        assert!(
-            crate::title::Job::admit(&mut session, "again")
-                .unwrap()
-                .is_some()
-        );
     }
 
     #[test]

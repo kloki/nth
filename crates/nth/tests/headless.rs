@@ -320,6 +320,8 @@ fn run_nth(dirs: &Dirs, prompt: &str) -> Run {
     }
 }
 
+/// The first prompt of a headless run names the session beside its turn,
+/// one more request, and a session with a name is never named again.
 #[tokio::test]
 async fn generated_title_survives_load_and_is_not_generated_twice() {
     let mock = Mock::start(Script::Answer);
@@ -337,12 +339,9 @@ async fn generated_title_survives_load_and_is_not_generated_twice() {
 
     let store = nth_session::Store::at(dirs.env.sessions());
     let mut resumed = store.load(id.parse().unwrap()).await.unwrap();
-    assert_eq!(resumed.title().as_deref(), Some(ANSWER));
-    assert!(
-        nth_session::title::Job::admit(&mut resumed, "second prompt")
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(resumed.name.as_deref(), Some(ANSWER));
+    resumed.env.auto_title = true;
+    assert!(nth_session::title::aside(&resumed, "second prompt").is_none());
 }
 
 /// A headless run answers on stdout, prints its summary line on stderr and

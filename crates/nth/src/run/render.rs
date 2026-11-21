@@ -89,12 +89,14 @@ impl Printer {
                 };
                 eprintln!("{}", format!("{} {said}", icons().context).dimmed());
             }
-            // The headless run prints the result's summary, not the stream.
+            // The headless run prints the result's summary, not the stream,
+            // and `nth session list` shows the name.
             Event::ToolFinished { .. }
             | Event::ToolOutput { .. }
             | Event::Usage(_)
             | Event::Spend(_)
-            | Event::Notice(_) => {}
+            | Event::Notice(_)
+            | Event::Named(_) => {}
         }
     }
 

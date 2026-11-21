@@ -590,10 +590,7 @@ mod tests {
     #[tokio::test]
     async fn renamed_chat_tab_keeps_its_click_identity() {
         let mut app = test_app();
-        app.title_owner
-            .rename("A long 界 session title for the chat")
-            .await
-            .unwrap();
+        app.rename_session("A long 界 session title for the chat");
         app.open_content(Tab::Diagnostics);
         let header = rows(&mut app)[0].clone();
         assert!(header.contains('…'), "{header}");

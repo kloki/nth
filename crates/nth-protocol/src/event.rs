@@ -45,6 +45,9 @@ pub enum Event {
     Compacted {
         summary: String,
     },
+    /// The request beside the session's first turn named the session, so a
+    /// front-end can show the name before the turn hands the session back.
+    Named(String),
 }
 
 /// How a retry reads, the same in every front-end: whole seconds rounded

@@ -15,11 +15,12 @@ use super::Session;
 use crate::{
     Error, FrontEnd, Inbox, Route, Spend, Turn,
     agent_loop::emit,
+    aside,
     curios::Receipts,
     inbox::instructions_notice,
     memory,
     plan::{self, Approver},
-    primary, subagent,
+    primary, subagent, title,
 };
 
 impl Session {
@@ -35,6 +36,9 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut text = text.into();
+        // Named from what you asked, before an `@mention` adds opencode's
+        // instruction to it.
+        let title = title::aside(self, &text);
         // Plan mode names the source folder the model may write review
         // documents in, so it is made ready; otherwise Curios waits for its
         // tools.
@@ -48,15 +52,31 @@ impl Session {
         {
             text.push_str(&mention);
         }
-        self.prepared_turn(
+        let stop = cancel.child_token();
+        let title = title.map(|aside| async {
+            let mut answer = aside.run(provider, &stop).await;
+            answer.text = answer.text.as_deref().and_then(title::normalize);
+            if let Some(name) = &answer.text {
+                emit(events, cancel, Event::Named(name.clone())).await;
+            }
+            answer
+        });
+        let turn = self.prepared_turn(
             TurnInput::Prompt(text),
             provider,
             tools,
             front_end,
             events,
             cancel,
-        )
-        .await
+        );
+        let (result, answer) = aside::beside(turn, title, &stop).await;
+        if let Some(answer) = answer {
+            if answer.text.is_some() {
+                self.name = answer.text;
+            }
+            self.usage.record(answer.spend);
+        }
+        result
     }
 
     /// Shared turn preparation for ordinary prompts and typed review feedback.
@@ -104,59 +124,6 @@ impl Session {
         self.last_turn_agent = agent;
         self.refresh_system_prompt();
         self.push_user(notices, text);
-        if !cancel.is_cancelled()
-            && let (Some(prompt), Some(jobs)) = (&front_end.title_prompt, &front_end.title_jobs)
-        {
-            // A rename made by the owner after this turn copied its metadata
-            // is not in the session yet; the session copy is what the claim
-            // would write over the first save.
-            if let Some(owner) = &front_end.title_owner
-                && let Some(live) = owner.metadata().await
-            {
-                let revision = self.title_metadata.as_ref().map_or(0, |m| m.revision);
-                let user = live
-                    .title
-                    .as_ref()
-                    .is_some_and(|title| title.origin == crate::title::Origin::User);
-                let local_user = self.title_metadata.as_ref().is_some_and(|m| {
-                    m.title
-                        .as_ref()
-                        .is_some_and(|title| title.origin == crate::title::Origin::User)
-                });
-                if live.revision > revision || (user && !local_user) {
-                    self.title_metadata = Some(live);
-                }
-            }
-            let old = self.title_metadata.clone();
-            let job = crate::title::Job::admit(self, prompt).ok().flatten();
-            let changed = old != self.title_metadata;
-            let claimed = if changed {
-                match (&front_end.title_store, old.as_ref()) {
-                    (Some(store), Some(old)) => {
-                        match store.claim_title_attempt(self, old.revision).await {
-                            Ok((metadata, claimed)) => {
-                                self.title_metadata = metadata;
-                                claimed
-                            }
-                            // The store still holds the state before this
-                            // attempt; putting it back lets a later prompt
-                            // claim the one-shot title after a transient
-                            // failure, rather than suppressing it for the run.
-                            Err(_) => {
-                                self.title_metadata = Some(old.clone());
-                                false
-                            }
-                        }
-                    }
-                    _ => true,
-                }
-            } else {
-                false
-            };
-            if claimed && let Some(job) = job {
-                let _ = jobs.send(job);
-            }
-        }
         // The model resumes here, so a wakeup it scheduled earlier has done
         // its job; one it schedules during this turn comes after.
         if !self.subagent {
@@ -280,21 +247,7 @@ impl Session {
             wakeup: front_end.wakeup.clone(),
             writable,
             agent: self.primary().cloned(),
-            child: ChildLlm {
-                own: ModelSettings {
-                    llm: Llm {
-                        model: self.model.clone(),
-                        effort: self.effort,
-                    },
-                    context_window: self.context_window,
-                    max_output: self.max_output,
-                    takes_images: self.env.takes_images,
-                    cost: self.env.cost,
-                },
-                subagent: self.env.subagent.clone(),
-                clerk: self.env.clerk.clone(),
-                compaction: self.env.compaction,
-            },
+            child: self.child_llm(),
             workdir: Workdir::new(self.origin.clone()),
             state_root: Some(self.state_root()),
             session: self.id.to_string(),
@@ -302,6 +255,26 @@ impl Session {
             images: self.env.images.clone(),
             tool_timeout: self.env.tool_timeout,
             ..ToolContext::new(self.cwd.clone())
+        }
+    }
+
+    /// What a session this one starts runs on: a subagent, the clerk or an
+    /// aside beside its turn.
+    pub(crate) fn child_llm(&self) -> ChildLlm {
+        ChildLlm {
+            own: ModelSettings {
+                llm: Llm {
+                    model: self.model.clone(),
+                    effort: self.effort,
+                },
+                context_window: self.context_window,
+                max_output: self.max_output,
+                takes_images: self.env.takes_images,
+                cost: self.env.cost,
+            },
+            subagent: self.env.subagent.clone(),
+            clerk: self.env.clerk.clone(),
+            compaction: self.env.compaction,
         }
     }
 

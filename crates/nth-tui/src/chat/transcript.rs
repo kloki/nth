@@ -341,7 +341,8 @@ impl Transcript {
                 }
             }
             // The tool's own row says where it went.
-            Event::Usage(_) | Event::Spend(_) | Event::Moved(_) => {}
+            // The header names the session; the chat has nothing to add.
+            Event::Usage(_) | Event::Spend(_) | Event::Moved(_) | Event::Named(_) => {}
             Event::Retry { attempt, delay } => {
                 self.close_reasoning();
                 self.push(Entry::Retry {

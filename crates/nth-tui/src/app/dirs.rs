@@ -8,25 +8,6 @@ use super::App;
 use crate::status;
 
 impl App {
-    pub(super) fn rename_session(&mut self, text: &str) {
-        if text.is_empty() {
-            self.hint = Some("usage: /rename <title>".into());
-            return;
-        }
-        if let Err(e) = nth_session::title::validate(text) {
-            self.hint = Some(format!("could not rename session: {e}").into());
-            return;
-        }
-        if self.title_rename.is_running() {
-            self.hint = Some("a rename is already running".into());
-            return;
-        }
-        let owner = self.title_owner.clone();
-        let id = self.session_id;
-        let text = text.to_owned();
-        self.title_rename
-            .start(|_| tokio::spawn(async move { (id, owner.rename(&text).await) }));
-    }
     /// Adds the directory `arg` names to the session's working directories,
     /// as `/add-dir` does: the argument expanded (`~` for home, a relative
     /// path against the working directory) and canonicalized, and only when
