@@ -295,6 +295,9 @@ models = [{models}]
 
 [context]
 auto = {auto}
+
+[session]
+auto_title = false
 "#
     )
 }
@@ -315,6 +318,31 @@ fn run_nth(dirs: &Dirs, prompt: &str) -> Run {
         stdout: text(output.stdout),
         stderr: text(output.stderr),
     }
+}
+
+#[tokio::test]
+async fn generated_title_survives_load_and_is_not_generated_twice() {
+    let mock = Mock::start(Script::Answer);
+    let config = config_for(mock.port(), &["mock-model"], false)
+        .replace("auto_title = false", "auto_title = true");
+    let dirs = Dirs::new(&config);
+    let first = run_nth(&dirs, "first human prompt");
+    assert!(first.status.success(), "{}", first.stderr);
+    let saved = dirs.session();
+    assert_eq!(saved["title"], ANSWER);
+    assert_eq!(mock.requests().len(), 2);
+    let id = saved["id"].as_str().unwrap();
+    let listed = dirs.json(&["session", "list"]);
+    assert_eq!(listed[0]["title"], ANSWER);
+
+    let store = nth_session::Store::at(dirs.env.sessions());
+    let mut resumed = store.load(id.parse().unwrap()).await.unwrap();
+    assert_eq!(resumed.title().as_deref(), Some(ANSWER));
+    assert!(
+        nth_session::title::Job::admit(&mut resumed, "second prompt")
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// A headless run answers on stdout, prints its summary line on stderr and

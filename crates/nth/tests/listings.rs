@@ -38,6 +38,35 @@ async fn session_rename_cli_updates_the_saved_title_without_overwriting_history(
     assert_eq!(store.list().await.unwrap()[0].title, "New title");
 }
 
+#[tokio::test]
+async fn cli_rename_survives_a_stale_owners_later_save() {
+    let env = Env::new();
+    let work = env.dir("work");
+    let store = nth_session::Store::at(env.sessions());
+    let mut original = Session::new("model", work.clone());
+    original.messages.push(Message::User("first prompt".into()));
+    store.save(&original).await.unwrap();
+    let mut stale = store.load(original.id).await.unwrap();
+
+    let id = original.id.to_string();
+    let renamed = env.json(&work, &["session", "rename", &id[..8], "External rename"]);
+    assert_eq!(renamed["title"], "External rename");
+    stale
+        .messages
+        .push(Message::Assistant(nth_protocol::AssistantMessage {
+            text: "later answer".into(),
+            ..Default::default()
+        }));
+    store.save(&stale).await.unwrap();
+
+    let resumed = store.load(original.id).await.unwrap();
+    assert_eq!(resumed.title().as_deref(), Some("External rename"));
+    assert_eq!(resumed.messages, stale.messages);
+    assert_eq!(store.list().await.unwrap()[0].title, "External rename");
+    let listed = env.json(&work, &["session", "list"]);
+    assert_eq!(listed[0]["title"], "External rename");
+}
+
 /// A project with one of each thing the listings read: a skill, an agent
 /// and a memory entry with its index.
 fn project(env: &Env) -> PathBuf {
