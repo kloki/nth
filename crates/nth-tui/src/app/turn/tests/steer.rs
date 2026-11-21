@@ -278,7 +278,7 @@ async fn a_turn_task_that_panics_leaves_the_app_running() {
     let Err(error) = app.turn.join().await else {
         panic!("the task panicked");
     };
-    app.turn_task_failed(error);
+    app.turn_task_failed(error).await;
 
     assert!(!app.is_busy());
     assert_eq!(app.prompt.text(), "next", "the queue comes back");

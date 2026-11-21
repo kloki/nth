@@ -101,6 +101,7 @@ impl App {
             match (command, arg.is_empty()) {
                 (Command::AddDir, false) => self.add_dir(&arg),
                 (Command::Approve, _) => self.approve(arg),
+                (Command::Rename, _) => self.rename_session(&arg),
                 (command, _) => self.run_command(command),
             }
             return;
@@ -182,6 +183,14 @@ impl App {
         let Some(mut session) = self.take_session() else {
             return;
         };
+        if self.title_fallback.is_none() {
+            let call = nth_protocol::ToolCall {
+                id: String::new(),
+                name: self.shell.spec().name.into(),
+                arguments: serde_json::json!({ "command": command }).to_string(),
+            };
+            self.title_fallback = Some(format!("!{}", call.summary(&session.cwd)));
+        }
         self.chat.jump_bottom();
         self.busy_since = Some(Instant::now());
         self.turns.started_without_model();
@@ -276,6 +285,13 @@ impl App {
                 None => text,
             },
         };
+        if self.title_fallback.is_none() {
+            self.title_fallback = text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(str::to_owned);
+        }
         self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
@@ -350,6 +366,7 @@ impl App {
     fn take_session(&mut self) -> Option<Session> {
         let session = self.session.take()?;
         self.ledger = session.usage.clone();
+        self.title_fallback = session.title();
         Some(session)
     }
 
@@ -495,7 +512,16 @@ impl App {
         }
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
+        let mut session = session;
+        let renamed = self.pending_name.take();
+        if let Some(name) = &renamed {
+            session.name = Some(name.clone());
+        }
+        self.title_fallback = session.title();
         self.session = Some(session);
+        if renamed.is_some() {
+            self.save_session();
+        }
         // Quitting took the session back only to save it: a read, a
         // notification or the next turn started now would be cut off by
         // the exit, or outlive it.
@@ -566,7 +592,7 @@ impl App {
     /// directory rather than exit: the lost one was saved after its
     /// previous turn, so `/resume` brings it back to there. A failed turn
     /// otherwise: the queue goes back into the prompt.
-    pub(super) fn turn_task_failed(&mut self, error: JoinError) {
+    pub(super) async fn turn_task_failed(&mut self, error: JoinError) {
         self.drain_events();
         self.drop_asks();
         self.context_turn_ended();
@@ -581,6 +607,12 @@ impl App {
             "turn task failed: {error} · continuing in a new session; \
              the old one was last saved after its previous turn, /resume brings it back"
         ));
+        if let Some(outcome) = self.recover_pending_name().await {
+            match outcome {
+                Ok(message) => self.hint = Some(message.into()),
+                Err(error) => self.chat.transcript.push_error(error),
+            }
+        }
         // Before the fresh session: starting one clears the inbox, and a
         // steered prompt still in it is yours to give back.
         let unqueued = self.turns.failed(self.inbox.take_prompts());

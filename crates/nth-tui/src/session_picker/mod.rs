@@ -146,6 +146,7 @@ pub(crate) mod tests {
         Summary {
             id: Uuid::new_v4(),
             title: title.into(),
+            renamed: false,
             cwd: "/repo".into(),
             origin: None,
             model: "glm".into(),

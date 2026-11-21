@@ -29,6 +29,7 @@ similar.workspace = true
 textwrap.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
+unicode-segmentation = "1"
 uuid.workspace = true
 
 [dev-dependencies]

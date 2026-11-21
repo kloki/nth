@@ -98,7 +98,7 @@ impl App {
     pub(super) fn notify_context(&self, elapsed: Duration) -> Context {
         let session = self.session.as_ref();
         Context {
-            title: session.and_then(|s| s.title()).unwrap_or_default(),
+            title: self.session_title().unwrap_or_default(),
             elapsed,
             reply: session.and_then(|s| last_reply(&s.messages)),
         }
@@ -293,6 +293,21 @@ mod tests {
         let n = next(&mut rx).await;
         assert_eq!(n.summary, "nth · needs you");
         assert_eq!(n.body, "Doom loop: Keep going?\nand 1 more question");
+    }
+
+    #[tokio::test]
+    async fn busy_notification_uses_the_live_title() {
+        let (mut app, _) = app_in("/repo".into(), Scripted::hang());
+        send(&mut app, "first prompt");
+        assert!(app.session.is_none());
+        assert_eq!(app.notify_context(Duration::ZERO).title, "first prompt");
+        app.rename_session("renamed while busy");
+        assert_eq!(
+            app.notify_context(Duration::ZERO).title,
+            "renamed while busy"
+        );
+        app.interrupt();
+        end(&mut app).await;
     }
 
     #[tokio::test]

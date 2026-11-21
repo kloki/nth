@@ -36,6 +36,16 @@ pub enum SessionCommand {
         /// The session, by its id or the start of it
         session: String,
     },
+    /// Rename a saved session; the next save of an open copy wins
+    Rename {
+        /// The session, by its id or the start of it
+        session: String,
+        /// The new title
+        title: String,
+        /// Print JSON, the default when stdout is not a terminal
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run(command: SessionCommand) -> Result<()> {
@@ -84,6 +94,49 @@ pub async fn run(command: SessionCommand) -> Result<()> {
                 n => bail!("{n} of what the session kept could not be removed"),
             }
         }
+        SessionCommand::Rename {
+            session,
+            title,
+            json,
+        } => {
+            let sessions = store.list().await?;
+            let id = find(&sessions, &session)?.id;
+            let title = store.rename(id, &title).await?;
+            output::print(
+                &RenameReport {
+                    id: id.to_string(),
+                    title,
+                },
+                json,
+            )
+        }
+    }
+}
+
+struct RenameReport {
+    id: String,
+    title: String,
+}
+
+impl Report for RenameReport {
+    fn text(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(
+            out,
+            "{} renamed {}  {}",
+            icons().ok.green().bold(),
+            self.title.bold(),
+            self.id.dimmed()
+        )?;
+        Ok(())
+    }
+
+    fn json(&self, out: &mut dyn Write) -> Result<()> {
+        writeln!(
+            out,
+            "{}",
+            json!({"id": self.id, "title": self.title, "outcome": "renamed"})
+        )?;
+        Ok(())
     }
 }
 
@@ -193,6 +246,7 @@ mod tests {
         Summary {
             id: id.parse().expect("a uuid"),
             title: format!("in {cwd}"),
+            renamed: false,
             cwd: cwd.into(),
             origin: None,
             model: "glm".into(),

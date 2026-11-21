@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     app::Tab,
@@ -181,8 +182,7 @@ impl Search {
                         .saturating_sub(2 + 2 + digits + 2)
                         .max(8);
                     let at = indices.first().map_or(0, |&i| i as usize);
-                    let start = at.saturating_sub(room / 2);
-                    let text: String = row.text.chars().skip(start).take(room).collect();
+                    let (text, start) = clip(&row.text, at.saturating_sub(room / 2), room);
                     let mut spans = vec![
                         Span::styled(if n == self.selected { "→ " } else { "  " }, theme::pick()),
                         Span::styled(format!("{} ", row.index + 1), theme::dim()),
@@ -191,7 +191,7 @@ impl Search {
                         spans.push(Span::styled("…", theme::dim()));
                     }
                     spans.extend(fuzzy::highlight(
-                        &text,
+                        text,
                         &indices,
                         start,
                         base,
@@ -205,8 +205,31 @@ impl Search {
     }
 }
 
+/// A grapheme-sized window starting at or before the desired scalar offset,
+/// with its original scalar offset for fuzzy highlighting.
+fn clip(text: &str, desired_start: usize, room: usize) -> (&str, usize) {
+    let mut scalar = 0;
+    let mut start_byte = 0;
+    let mut start = 0;
+    for (byte, grapheme) in text.grapheme_indices(true) {
+        if scalar > desired_start {
+            break;
+        }
+        start_byte = byte;
+        start = scalar;
+        scalar += grapheme.chars().count();
+    }
+    let mut end_byte = start_byte;
+    for (byte, grapheme) in text[start_byte..].grapheme_indices(true).take(room) {
+        end_byte = start_byte + byte + grapheme.len();
+    }
+    (&text[start_byte..end_byte], start)
+}
+
 #[cfg(test)]
 mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
     use super::*;
 
     fn lines(texts: &[&str]) -> Vec<Line<'static>> {
@@ -250,5 +273,28 @@ mod tests {
         search.insert_str("fé");
         assert_eq!(search.chosen().map(|r| r.text.as_str()), Some("café noir"));
         assert_eq!(search.chosen().map(|r| r.index), Some(0));
+    }
+
+    #[test]
+    fn clipped_result_keeps_combining_graphemes_and_highlights_the_match() {
+        let text = "aaaaae\u{301}bbbbx suffix";
+        let (window, offset) = clip(text, 6, 8);
+        assert_eq!(offset, 5);
+        assert_eq!(window, "e\u{301}bbbbx s");
+
+        let mut search = Search::new(Tab::Chat, 16);
+        search.update(rows(lines(&[text]).iter(), 0), 16);
+        search.insert('x');
+        let mut terminal = Terminal::new(TestBackend::new(16, 3)).unwrap();
+        terminal
+            .draw(|frame| search.draw(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let matched = (0..16)
+            .filter_map(|x| buffer.cell((x, 2)))
+            .find(|cell| cell.symbol() == "x")
+            .expect("match visible");
+        assert!(matched.modifier.contains(Modifier::UNDERLINED));
+        assert!(matched.modifier.contains(Modifier::BOLD));
     }
 }

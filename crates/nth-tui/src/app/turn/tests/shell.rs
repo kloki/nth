@@ -9,6 +9,7 @@ async fn a_command_runs_without_the_model_and_lands_in_the_session() {
 
     command(&mut app, "echo hi");
     assert!(app.is_busy());
+    assert_eq!(app.session_title().as_deref(), Some("!echo hi"));
     assert!(!app.prompt.shell(), "the prompt is back to the mode");
     end(&mut app).await;
 
@@ -18,6 +19,7 @@ async fn a_command_runs_without_the_model_and_lands_in_the_session() {
         "{entries:?}"
     );
     let session = app.session.as_ref().expect("session came back");
+    assert_eq!(session.title().as_deref(), Some("!echo hi"));
     assert!(matches!(
         session.messages.last(),
         Some(Message::ToolResult { content, .. }) if content == "hi\n"

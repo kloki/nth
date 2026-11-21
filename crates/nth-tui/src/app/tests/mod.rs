@@ -364,7 +364,7 @@ fn a_tiny_terminal_draws_a_question_without_overflow() {
 fn prompt_and_status_rows_never_move() {
     let mut app = test_app();
     let idle = rows(&mut app);
-    assert!(idle[0].starts_with(" [› chat] "), "tabs on the left");
+    assert!(idle[0].starts_with(" [› Chat] "), "tabs on the left");
     assert!(
         idle[0].ends_with(&format!(" nth {} ", env!("CARGO_PKG_VERSION"))),
         "right-aligned inside the margin"
@@ -895,7 +895,7 @@ async fn usage_opens_a_tab_of_what_the_session_spent() {
     app.prompt.insert_str("/usage");
     app.submit();
     let opened = rows(&mut app);
-    assert!(opened[0].starts_with("  › chat [∑ usage] "), "{opened:#?}");
+    assert!(opened[0].starts_with("  › Chat [∑ usage] "), "{opened:#?}");
     assert!(opened[2].starts_with(" ▎ current session "), "{opened:#?}");
     assert!(
         opened[3].starts_with(" ▎   all  1 step  2.0k in  75% cached"),
@@ -949,7 +949,7 @@ async fn tabs_open_switch_and_close() {
     app.submit();
     let opened = rows(&mut app);
     assert!(
-        opened[0].starts_with("  › chat [● diagnostics] "),
+        opened[0].starts_with("  › Chat [● diagnostics] "),
         "{opened:#?}"
     );
     assert!(opened[2].starts_with(" ▎ lsp usage"), "{:?}", opened[2]);
@@ -969,7 +969,7 @@ async fn tabs_open_switch_and_close() {
 
     app.apply(Action::CloseContent);
     assert_eq!(app.content.active(), Tab::Chat);
-    assert!(rows(&mut app)[0].trim_end().starts_with(" [› chat] "));
+    assert!(rows(&mut app)[0].trim_end().starts_with(" [› Chat] "));
     assert!(!rows(&mut app)[0].contains("diagnostics"));
 
     app.open_content(Tab::Diagnostics);
@@ -1012,7 +1012,7 @@ async fn a_wide_terminal_shows_the_chat_beside_the_other_tab() {
     let split = rows_of(&mut app, 100);
     assert!(shows_in(&split, 0..50, "hello there"), "{split:#?}");
     assert!(shows_in(&split, 50..100, "model"), "{split:#?}");
-    assert!(split[0].starts_with(" [› chat]"), "{:?}", split[0]);
+    assert!(split[0].starts_with(" [› Chat]"), "{:?}", split[0]);
     let header: Vec<char> = split[0].chars().collect();
     let right: String = header[50..].iter().collect();
     assert!(

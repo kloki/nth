@@ -30,6 +30,7 @@ mod plan;
 mod profiles;
 mod question;
 mod quit;
+mod rename;
 mod search;
 mod session_picker;
 mod settings;
@@ -185,6 +186,8 @@ pub struct App {
     /// The current session's id, kept here because the session itself is
     /// in the turn task while a turn runs.
     session_id: uuid::Uuid,
+    title_fallback: Option<String>,
+    pending_name: Option<String>,
     curios: crate::curios::CuriosTab,
     /// When the empty chat's field started moving, and where the mouse
     /// last was, for its ripple.
@@ -468,6 +471,13 @@ enum Step {
 }
 
 impl App {
+    pub fn session_title(&self) -> Option<String> {
+        self.pending_name.clone().or_else(|| match &self.session {
+            Some(session) => session.title(),
+            None => self.title_fallback.clone(),
+        })
+    }
+
     /// The chat on `config`'s runtime, installed as `/resume` installs one,
     /// so the two cannot set up a runtime differently.
     pub fn new(config: AppConfig) -> Self {
@@ -534,6 +544,8 @@ impl App {
             busy_since: None,
             session_since: session.created_at,
             session_id: session.id,
+            title_fallback: session.title(),
+            pending_name: None,
             curios: crate::curios::CuriosTab::new(session.state_root()),
             hero_since: Instant::now(),
             flash: None,
@@ -621,6 +633,8 @@ impl App {
             warnings,
             config,
         } = runtime;
+        self.title_fallback = session.title();
+        self.pending_name = None;
         self.apply_config(config);
         self.paths = paths;
         self.provider = provider;
@@ -760,7 +774,7 @@ impl App {
                 Step::HintExpired => self.hint_expired(),
                 Step::TurnEnded(ended) => match *ended {
                     Ok(ended) => self.end_turn(ended),
-                    Err(e) => self.turn_task_failed(e),
+                    Err(e) => self.turn_task_failed(e).await,
                 },
                 Step::Preview(snapshot) => self.context_tab.show(snapshot),
                 Step::Job(finished) => self.job_finished(finished),
@@ -1220,6 +1234,7 @@ impl App {
             Command::Diagnostics => self.open_content(Tab::Diagnostics),
             Command::Usage => self.open_content(Tab::Usage),
             Command::Plan => self.open_content(Tab::Plan),
+            Command::Rename => self.rename_session(""),
             Command::Work => self.open_content(Tab::Work),
             Command::Approve => self.approve(String::new()),
             Command::Compact => self.compact(),
@@ -1295,6 +1310,8 @@ impl App {
         self.search_jump = None;
         self.session_since = session.created_at;
         self.session_id = session.id;
+        self.title_fallback = session.title();
+        self.pending_name = None;
         self.session = Some(session);
         self.context_tab.view.update(None);
         self.refresh_context();

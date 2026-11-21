@@ -15,6 +15,8 @@ pub struct Icons {
     pub warn: &'static str,
     /// The highlighted row in a list.
     pub pick: &'static str,
+    /// A manually named session.
+    pub star: &'static str,
     /// Where something leads: a project root, a moved working directory.
     pub to: &'static str,
     /// The current one of a few, such as the mode.
@@ -137,6 +139,7 @@ pub static PLAIN: Icons = Icons {
     fail: "✗",
     warn: "!",
     pick: "→",
+    star: "★",
     to: "→",
     current: "→",
     dot: "●",
@@ -245,6 +248,7 @@ impl Icons {
             fail,
             warn,
             pick,
+            star,
             to,
             current,
             dot,
@@ -276,6 +280,7 @@ impl Icons {
             *fail,
             *warn,
             *pick,
+            *star,
             *to,
             *current,
             *dot,
