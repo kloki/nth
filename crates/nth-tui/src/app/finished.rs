@@ -114,7 +114,7 @@ impl App {
                     session.title_metadata = Some(metadata);
                 }
             }
-            Finished::TitleRenamed(_) => {}
+            Finished::TitleRenamed(_) => self.save_ended(),
             Finished::LlmUsageSaved(Ok(saved)) => self.llm_usage_saved(saved),
             Finished::LlmUsageSaved(Err(e)) => {
                 self.job_failed("saving model usage", e);

@@ -272,10 +272,6 @@ impl App {
         };
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
-        let original_prompt = human.then(|| text.clone());
-        if self.title_fallback.is_none() && human && !text.trim().is_empty() {
-            self.title_fallback = text.lines().next().map(str::to_owned);
-        }
         let skill = nth_context::skills::parse(&text, &self.context.skills)
             .map(|(skill, args)| (skill.clone(), args.to_string()));
         // A skill is filled in before the model is asked, and that can
@@ -296,6 +292,10 @@ impl App {
                 None => text,
             },
         };
+        let original_prompt = human.then(|| text.clone());
+        if self.title_fallback.is_none() && human && !text.trim().is_empty() {
+            self.title_fallback = text.lines().next().map(str::to_owned);
+        }
         self.adopt_llm(&mut session);
         // Added with `/add-dir`, maybe while the last turn ran: the session
         // is in its task while one does, so they reach it here.
@@ -312,7 +312,17 @@ impl App {
         if let Some(metadata) = self.title_owner.snapshot() {
             session.title_metadata = Some(metadata);
         }
-        self.turns.started(self.runs_as());
+        if human
+            && original_prompt
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+        {
+            self.turns.started(self.runs_as());
+        } else {
+            // A first human prompt must run as its own admitted prompt,
+            // rather than being absorbed by automatic feedback or approval.
+            self.turns.started_without_model();
+        }
         if let Some(notices) = &notices {
             self.chat.transcript.push_user(notices.clone());
         }
@@ -336,6 +346,7 @@ impl App {
         let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
         front_end.title_prompt = original_prompt;
         front_end.title_jobs = Some(title_tx);
+        front_end.title_store = store.as_deref().cloned();
         self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -595,6 +606,7 @@ impl App {
         }
         let plan_path = session.plan_path();
         let work_dir = session.work_dir();
+        self.title_fallback = session.title();
         self.session = Some(session);
         // Quitting took the session back only to save it: a read, a
         // notification or the next turn started now would be cut off by

@@ -106,9 +106,28 @@ impl Session {
         self.push_user(notices, text);
         if !cancel.is_cancelled()
             && let (Some(prompt), Some(jobs)) = (&front_end.title_prompt, &front_end.title_jobs)
-            && let Ok(Some(job)) = crate::title::Job::admit(self, prompt)
         {
-            let _ = jobs.send(job);
+            let old = self.title_metadata.clone();
+            let job = crate::title::Job::admit(self, prompt).ok().flatten();
+            let changed = old != self.title_metadata;
+            let claimed = if changed {
+                if let (Some(store), Some(old)) = (&front_end.title_store, old) {
+                    match store.claim_title_attempt(self, old.revision).await {
+                        Ok((metadata, claimed)) => {
+                            self.title_metadata = metadata;
+                            claimed
+                        }
+                        Err(_) => false,
+                    }
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+            if claimed && let Some(job) = job {
+                let _ = jobs.send(job);
+            }
         }
         // The model resumes here, so a wakeup it scheduled earlier has done
         // its job; one it schedules during this turn comes after.

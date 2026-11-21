@@ -104,8 +104,18 @@ impl Owner {
     }
 
     pub async fn generated(&self, expected: u64, text: &str) {
-        let _ = self.refresh().await;
         let mut state = self.state.lock().await;
+        if let Some(store) = &self.store {
+            match store.set_generated_title(self.id, expected, text).await {
+                Ok((metadata, _)) => {
+                    *state = Some(metadata);
+                    return;
+                }
+                Err(crate::store::Error::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return,
+            }
+        }
         if let Some(metadata) = state.as_mut() {
             let _ = metadata.generated(expected, text);
         }

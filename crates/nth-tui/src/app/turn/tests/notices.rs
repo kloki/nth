@@ -64,6 +64,37 @@ async fn notices_wake_an_idle_agent() {
 }
 
 #[tokio::test]
+async fn first_human_prompt_during_notice_turn_gets_its_own_admission() {
+    let gate = Arc::new(Notify::new());
+    let provider = Arc::new(Scripted::replying([
+        Reply::HangUntil(
+            gate.clone(),
+            vec![StreamEvent::TextDelta("notice handled".into())],
+        ),
+        Reply::text("answer"),
+    ]));
+    let mut app = app_logging_to_tmp(provider.clone());
+    app.env.auto_title = true;
+    monitor_says(&mut app, "build failed").await;
+    app.notices_due();
+    provider.asked.notified().await;
+    send(&mut app, "first human prompt");
+    gate.notify_one();
+    end(&mut app).await;
+    assert!(app.is_busy(), "human input waits for its own turn");
+    end(&mut app).await;
+    assert!(
+        provider
+            .sent()
+            .iter()
+            .any(|messages| messages.iter().any(
+                |message| matches!(message, Message::User(text) if text == "first human prompt")
+            ) && messages.len() == 2),
+        "title request uses the original human prompt"
+    );
+}
+
+#[tokio::test]
 async fn notices_during_a_turn_follow_it() {
     let mut app = app_logging_to_tmp(Arc::new(Scripted::default()));
     send(&mut app, "one");

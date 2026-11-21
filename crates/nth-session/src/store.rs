@@ -162,14 +162,6 @@ impl Store {
                         {
                             Some(new.clone())
                         }
-                        (Some(old), Some(new))
-                            if old.revision < new.revision
-                                && old.generation == crate::title::Generation::Pending
-                                && old.title.is_none()
-                                && new.generation == crate::title::Generation::Attempted =>
-                        {
-                            Some(new.clone())
-                        }
                         _ => saved,
                     }
                 }
@@ -224,6 +216,58 @@ impl Store {
         let text = text.to_owned();
         self.mutate_title(id, move |metadata| metadata.generated(expected, &text))
             .await
+    }
+
+    /// Persist the one-shot attempt before starting the request.
+    /// Creates the first save with the admitted prompt under the same lock,
+    /// so competing owners cannot both claim an unsaved session.
+    pub async fn claim_title_attempt(
+        &self,
+        session: &Session,
+        expected: u64,
+    ) -> Result<(Option<crate::title::Metadata>, bool), Error> {
+        let store = self.clone();
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = store.lock(session.id)?;
+            let path = store.path(session.id);
+            let existing = store.read_json_optional(&path)?;
+            let mut json = match existing {
+                Some(json) => json,
+                None => {
+                    let mut original = session.clone();
+                    if let Some(metadata) = original.title_metadata.as_mut() {
+                        metadata.revision = expected;
+                        metadata.generation = crate::title::Generation::Pending;
+                    }
+                    serde_json::to_value(&original).map_err(|source| Error::Json {
+                        path: path.clone(),
+                        source,
+                    })?
+                }
+            };
+            let metadata = metadata_from_json(&json, &path)?;
+            let Some(mut metadata) = metadata else {
+                return Ok((None, false));
+            };
+            if metadata.revision != expected
+                || metadata.generation != crate::title::Generation::Pending
+            {
+                return Ok((Some(metadata), false));
+            }
+            metadata.attempted()?;
+            let fields = json.as_object_mut().expect("session object");
+            fields.insert(
+                "title_metadata".into(),
+                serde_json::to_value(&metadata).expect("metadata serializes"),
+            );
+            if !fields.contains_key("title") {
+                fields.insert("title".into(), session.title().into());
+            }
+            store.write_json(&path, &json)?;
+            Ok((Some(metadata), true))
+        })
+        .await?
     }
 
     /// Persist the one-shot attempt before starting the request.
@@ -994,12 +1038,14 @@ mod tests {
         let job = crate::title::Job::admit(&mut first, "real prompt")
             .unwrap()
             .unwrap();
-        first
-            .title_metadata
-            .as_mut()
-            .unwrap()
-            .generated(job.expected_revision, "generated")
-            .unwrap();
+        assert!(store.claim_title_attempt(&first, 0).await.unwrap().1);
+        assert!(
+            store
+                .set_generated_title(first.id, job.expected_revision, "generated")
+                .await
+                .unwrap()
+                .1
+        );
         let metadata = store.save_with_metadata(&first).await.unwrap().unwrap();
         assert_eq!(metadata.title.unwrap().text, "generated");
 
@@ -1008,6 +1054,7 @@ mod tests {
         let job = crate::title::Job::admit(&mut other, "real prompt")
             .unwrap()
             .unwrap();
+        assert!(store.claim_title_attempt(&other, 0).await.unwrap().1);
         store.rename(other.id, "manual").await.unwrap();
         other
             .title_metadata
@@ -1017,6 +1064,49 @@ mod tests {
             .unwrap();
         let metadata = store.save_with_metadata(&other).await.unwrap().unwrap();
         assert_eq!(metadata.title.unwrap().text, "manual");
+    }
+
+    #[tokio::test]
+    async fn claim_is_durable_and_only_one_owner_can_generate() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut first = session("admitted", 1);
+        let mut second = first.clone();
+        let first_job = crate::title::Job::admit(&mut first, "first")
+            .unwrap()
+            .unwrap();
+        let second_job = crate::title::Job::admit(&mut second, "second")
+            .unwrap()
+            .unwrap();
+        let (a, b) = tokio::join!(
+            store.claim_title_attempt(&first, 0),
+            store.claim_title_attempt(&second, 0)
+        );
+        assert_ne!(a.unwrap().1, b.unwrap().1);
+        let mut restarted = store.load(first.id).await.unwrap();
+        assert!(
+            crate::title::Job::admit(&mut restarted, "again")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .set_generated_title(first.id, first_job.expected_revision, "winner")
+                .await
+                .unwrap()
+                .1
+        );
+        assert!(
+            !store
+                .set_generated_title(first.id, second_job.expected_revision, "late")
+                .await
+                .unwrap()
+                .1
+        );
+        assert_eq!(
+            store.load(first.id).await.unwrap().title().as_deref(),
+            Some("winner")
+        );
     }
 
     #[tokio::test]

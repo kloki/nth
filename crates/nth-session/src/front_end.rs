@@ -23,4 +23,5 @@ pub struct FrontEnd {
     /// by an owner that will settle the job and its usage.
     pub title_prompt: Option<String>,
     pub title_jobs: Option<tokio::sync::mpsc::UnboundedSender<crate::title::Job>>,
+    pub title_store: Option<crate::Store>,
 }

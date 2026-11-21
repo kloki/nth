@@ -161,6 +161,11 @@ async fn a_skill_that_cannot_be_read_fails_the_turn() {
     let ended = app.turn.join().await.expect("ends");
     app.end_turn(ended);
 
+    assert_eq!(
+        app.session_title(),
+        None,
+        "an unadmitted skill leaves no fallback"
+    );
     let Some(Entry::TurnError(e)) = app.chat.transcript.entries().last() else {
         panic!("the turn failed");
     };
@@ -168,6 +173,31 @@ async fn a_skill_that_cannot_be_read_fails_the_turn() {
         e.starts_with("could not run the skill: cannot read "),
         "{e}"
     );
+}
+
+#[tokio::test]
+async fn prompt_held_behind_a_rename_is_released_after_session_switch() {
+    let session = Session::new("glm", "/repo".into());
+    let mut app = app_on(session, Arc::new(Scripted::hang()));
+    let old = app.session_id;
+    let gate = Arc::new(Notify::new());
+    let wait = gate.clone();
+    app.title_rename.start(|_| {
+        tokio::spawn(async move {
+            wait.notified().await;
+            (old, Ok(nth_session::title::Metadata::default()))
+        })
+    });
+    app.start_fresh_session();
+    app.send(Queued::Prompt("new session prompt".into()));
+    assert!(!app.is_busy());
+    gate.notify_one();
+    let result = app.title_rename.join().await;
+    app.job_finished(crate::app::finished::Finished::TitleRenamed(result));
+    assert!(app.is_busy(), "the held prompt starts in the new session");
+    app.interrupt();
+    let ended = app.turn.join().await.unwrap();
+    app.end_turn(ended);
 }
 
 #[tokio::test]

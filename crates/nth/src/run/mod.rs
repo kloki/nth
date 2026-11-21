@@ -225,6 +225,7 @@ async fn work(
     let front_end = FrontEnd {
         title_prompt: Some(original_prompt),
         title_jobs: Some(title_tx),
+        title_store: store.as_ref().ok().cloned(),
         ..FrontEnd::default()
     };
     let title_cancel = CancellationToken::new();
@@ -271,10 +272,11 @@ async fn work(
         }
     };
     if let Some(outcome) = outcome {
-        if let Some(candidate) = outcome.candidate
-            && let Some(metadata) = session.title_metadata.as_mut()
-        {
-            let _ = metadata.generated(outcome.expected_revision, &candidate);
+        title_owner.adopt(session.title_metadata.clone()).await;
+        if let Some(candidate) = outcome.candidate {
+            title_owner
+                .generated(outcome.expected_revision, &candidate)
+                .await;
         }
         session.usage.record(outcome.spend);
     }
