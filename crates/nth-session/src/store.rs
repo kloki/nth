@@ -162,6 +162,14 @@ impl Store {
                         {
                             Some(new.clone())
                         }
+                        (Some(old), Some(new))
+                            if old.revision < new.revision
+                                && old.generation == crate::title::Generation::Pending
+                                && old.title.is_none()
+                                && new.generation == crate::title::Generation::Attempted =>
+                        {
+                            Some(new.clone())
+                        }
                         _ => saved,
                     }
                 }
@@ -975,6 +983,40 @@ mod tests {
             store.load(fresh.id).await.unwrap().title().as_deref(),
             Some("local")
         );
+    }
+
+    #[tokio::test]
+    async fn shell_first_save_accepts_attempt_but_external_rename_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut first = session("shell history", 42);
+        store.save(&first).await.unwrap();
+        let job = crate::title::Job::admit(&mut first, "real prompt")
+            .unwrap()
+            .unwrap();
+        first
+            .title_metadata
+            .as_mut()
+            .unwrap()
+            .generated(job.expected_revision, "generated")
+            .unwrap();
+        let metadata = store.save_with_metadata(&first).await.unwrap().unwrap();
+        assert_eq!(metadata.title.unwrap().text, "generated");
+
+        let mut other = session("another history", 43);
+        store.save(&other).await.unwrap();
+        let job = crate::title::Job::admit(&mut other, "real prompt")
+            .unwrap()
+            .unwrap();
+        store.rename(other.id, "manual").await.unwrap();
+        other
+            .title_metadata
+            .as_mut()
+            .unwrap()
+            .generated(job.expected_revision, "late")
+            .unwrap();
+        let metadata = store.save_with_metadata(&other).await.unwrap().unwrap();
+        assert_eq!(metadata.title.unwrap().text, "manual");
     }
 
     #[tokio::test]

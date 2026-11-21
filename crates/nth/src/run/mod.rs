@@ -87,6 +87,7 @@ pub async fn run(
     let cwd = session.cwd.clone();
     let lsp = checkers.lsp;
     // `/name args` runs a skill, as in the chat.
+    let original_prompt = prompt.clone();
     let prompt = match nth_context::skills::parse(&prompt, &session.context().skills) {
         Some((skill, args)) => skill
             .invoke(args, &cwd)
@@ -111,7 +112,7 @@ pub async fn run(
         let spends = session.usage.spends().len();
         let worked = work(
             &mut session,
-            prompt,
+            (prompt, original_prompt),
             provider.as_ref(),
             &tools,
             &subagents,
@@ -201,7 +202,7 @@ where
 /// Returns the turn's own result beside the printer that counted its calls.
 async fn work(
     session: &mut Session,
-    prompt: String,
+    (prompt, original_prompt): (String, String),
     provider: &dyn Provider,
     tools: &[Arc<dyn Tool>],
     subagents: &Subagents,
@@ -217,18 +218,52 @@ async fn work(
         }
         out
     });
-    let turn = session
-        // Nobody is there to answer or to show a panel to, so the question
-        // tool tells the model to decide for itself.
-        .prompt(
-            prompt,
-            provider,
-            tools,
-            &FrontEnd::default(),
-            &tx,
-            &interrupt.cancel,
-        )
-        .await;
+    let (title_tx, mut title_rx) = mpsc::unbounded_channel();
+    let front_end = FrontEnd {
+        title_prompt: Some(original_prompt),
+        title_jobs: Some(title_tx),
+        ..FrontEnd::default()
+    };
+    let title_cancel = CancellationToken::new();
+    let title = async {
+        match title_rx.recv().await {
+            Some(job) => Some(job.run(provider, &title_cancel).await),
+            None => None,
+        }
+    };
+    tokio::pin!(title);
+    let (turn, early_title) = {
+        let turn = session.prompt(prompt, provider, tools, &front_end, &tx, &interrupt.cancel);
+        tokio::pin!(turn);
+        tokio::select! {
+            result = &mut turn => (result, None),
+            outcome = &mut title => (turn.await, Some(outcome)),
+        }
+    };
+    drop(front_end);
+    let outcome = match early_title {
+        Some(outcome) => outcome,
+        None => {
+            if interrupt.cancel.is_cancelled() {
+                title_cancel.cancel();
+            }
+            match tokio::time::timeout(Duration::from_secs(1), &mut title).await {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    title_cancel.cancel();
+                    title.await
+                }
+            }
+        }
+    };
+    if let Some(outcome) = outcome {
+        if let Some(candidate) = outcome.candidate
+            && let Some(metadata) = session.title_metadata.as_mut()
+        {
+            let _ = metadata.generated(outcome.expected_revision, &candidate);
+        }
+        session.usage.record(outcome.spend);
+    }
     interrupt.ended.cancel();
     drop(tx);
     // Cancelled subagents record what they spent as their turns end, which
@@ -250,7 +285,9 @@ async fn work(
     // Saved even when the turn failed or was interrupted, so `nth -c` can
     // pick it up. Not saving is worth a warning, not a failed run.
     let saved = match store {
-        Ok(store) => store.save(session).await,
+        Ok(store) => store.save_with_metadata(session).await.map(|metadata| {
+            session.title_metadata = metadata;
+        }),
         Err(e) => Err(e),
     };
     match saved {
@@ -313,6 +350,68 @@ mod tests {
 
     /// A provider whose listing fails, as an unreachable endpoint's does.
     struct Unlistable;
+
+    struct TitleProvider;
+
+    impl Provider for TitleProvider {
+        fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
+            async { Ok(Listing::default()) }.boxed()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            request: Request<'a>,
+        ) -> BoxFuture<'a, Result<BoxStream<'static, Result<StreamEvent, BoxError>>, BoxError>>
+        {
+            let title = request.parent_session_id.is_some();
+            if title {
+                assert_eq!(request.messages[1], Message::User("/skill original".into()));
+                assert!(request.tools.is_empty());
+            }
+            let text = if title { "Generated title" } else { "answer" };
+            async move {
+                Ok(stream::iter(vec![
+                    Ok(StreamEvent::Usage(Usage {
+                        input: 3,
+                        ..Usage::default()
+                    })),
+                    Ok(StreamEvent::TextDelta(text.into())),
+                ])
+                .boxed())
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn headless_records_title_and_usage_from_original_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut session = Session::new("model", dir.path().to_path_buf());
+        let result = work(
+            &mut session,
+            ("expanded".into(), "/skill original".into()),
+            &TitleProvider,
+            &[],
+            &Subagents::default(),
+            Ok(store.clone()),
+            &Interrupt::default(),
+        )
+        .await
+        .unwrap();
+        assert!(result.0.is_ok());
+        let saved = store.load(session.id).await.unwrap();
+        assert_eq!(saved.title().as_deref(), Some("Generated title"));
+        assert_eq!(
+            saved
+                .usage
+                .spends()
+                .iter()
+                .filter(|s| s.source == Some(nth_protocol::SpendSource::Title))
+                .count(),
+            1
+        );
+    }
 
     impl Provider for Unlistable {
         fn models(&self) -> BoxFuture<'_, Result<Listing, BoxError>> {
@@ -396,7 +495,7 @@ mod tests {
 
         let worked = work(
             &mut session,
-            "wait".into(),
+            ("wait".into(), "wait".into()),
             &Stalling,
             &tools,
             &subagents,

@@ -69,7 +69,9 @@ impl AppConfig {
 /// mode on the session's llm, as a repository with an empty config would
 /// prepare it, but for two keys: notifications are off, so no test reaches
 /// your desktop, and the panel never splits unless a test asks.
-pub(crate) fn runtime(session: Session, provider: Arc<dyn Provider>) -> PreparedRuntime {
+pub(crate) fn runtime(mut session: Session, provider: Arc<dyn Provider>) -> PreparedRuntime {
+    // Scripted tests reserve replies for conversation unless they opt in.
+    session.env.auto_title = false;
     let llm = nth_protocol::Llm {
         model: session.model.clone(),
         effort: session.effort,

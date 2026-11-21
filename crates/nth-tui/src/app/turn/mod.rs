@@ -69,7 +69,9 @@ async fn ended(
 ) -> Ended {
     session.usage.extend(subagents.take_spent());
     let saved = match &store {
-        Some(store) => store.save(&session).await,
+        Some(store) => store.save_with_metadata(&session).await.map(|metadata| {
+            session.title_metadata = metadata;
+        }),
         None => Ok(()),
     };
     // Only a saved session may tell the store its feedback is recorded.
@@ -164,10 +166,12 @@ impl App {
         match next {
             Queued::Prompt(text) => self.start_turn(text),
             Queued::Shell(command) => self.start_shell(command),
-            Queued::Approve(instructions) => self.start_turn(self.plan.approval(&instructions)),
+            Queued::Approve(instructions) => {
+                self.start_nonhuman_turn(self.plan.approval(&instructions))
+            }
             Queued::Compact => self.start_compact(),
             Queued::PlanEdits { original, edited } => {
-                self.start_turn(plan::edits::render(self.plan.path(), &original, &edited))
+                self.start_nonhuman_turn(plan::edits::render(self.plan.path(), &original, &edited))
             }
         }
     }
@@ -245,6 +249,14 @@ impl App {
     /// Starts a turn with `text` after what monitors said since the last
     /// turn; `text` is empty when only the monitors have something to say.
     pub(super) fn start_turn(&mut self, text: String) {
+        self.start_turn_inner(text, true);
+    }
+
+    fn start_nonhuman_turn(&mut self, text: String) {
+        self.start_turn_inner(text, false);
+    }
+
+    fn start_turn_inner(&mut self, text: String, human: bool) {
         if self.session.is_none() || (text.is_empty() && !self.inbox.wakes()) {
             return;
         }
@@ -256,6 +268,7 @@ impl App {
         };
         // `/name args` runs a skill: the chat shows it as typed, and the
         // model gets the skill filled in.
+        let original_prompt = human.then(|| text.clone());
         let skill = nth_context::skills::parse(&text, &self.context.skills)
             .map(|(skill, args)| (skill.clone(), args.to_string()));
         // A skill is filled in before the model is asked, and that can
@@ -305,7 +318,10 @@ impl App {
         let events = self.channels.events.tx.clone();
         let store = self.store.clone();
         let subagents = self.subagents.clone();
-        let front_end = self.front_end();
+        let mut front_end = self.front_end();
+        let (title_tx, mut title_rx) = tokio::sync::mpsc::unbounded_channel();
+        front_end.title_prompt = original_prompt;
+        front_end.title_jobs = Some(title_tx);
         self.context_turn_starting();
         self.turn.start(|token| {
             tokio::spawn(async move {
@@ -321,19 +337,73 @@ impl App {
                     Some(notices) => format!("{notices}\n\n{text}"),
                     None => text,
                 });
-                let result = match text {
-                    Ok(text) if text.is_empty() => {
-                        session
-                            .deliver_curios(provider.as_ref(), &tools, &front_end, &events, &token)
-                            .await
+                let title_cancel = nth_session::CancellationToken::new();
+                let title = async {
+                    match title_rx.recv().await {
+                        Some(job) => Some(job.run(provider.as_ref(), &title_cancel).await),
+                        None => None,
                     }
-                    Ok(text) => {
-                        session
-                            .prompt(text, provider.as_ref(), &tools, &front_end, &events, &token)
-                            .await
-                    }
-                    Err(e) => Err(e),
                 };
+                tokio::pin!(title);
+                let (result, early_title) = {
+                    let turn = async {
+                        match text {
+                            Ok(text) if text.is_empty() => {
+                                session
+                                    .deliver_curios(
+                                        provider.as_ref(),
+                                        &tools,
+                                        &front_end,
+                                        &events,
+                                        &token,
+                                    )
+                                    .await
+                            }
+                            Ok(text) => {
+                                session
+                                    .prompt(
+                                        text,
+                                        provider.as_ref(),
+                                        &tools,
+                                        &front_end,
+                                        &events,
+                                        &token,
+                                    )
+                                    .await
+                            }
+                            Err(e) => Err(e),
+                        }
+                    };
+                    tokio::pin!(turn);
+                    tokio::select! {
+                        result = &mut turn => (result, None),
+                        outcome = &mut title => (turn.await, Some(outcome)),
+                    }
+                };
+                drop(front_end);
+                let outcome = match early_title {
+                    Some(outcome) => outcome,
+                    None => {
+                        if token.is_cancelled() {
+                            title_cancel.cancel();
+                        }
+                        match tokio::time::timeout(Duration::from_secs(1), &mut title).await {
+                            Ok(outcome) => outcome,
+                            Err(_) => {
+                                title_cancel.cancel();
+                                title.await
+                            }
+                        }
+                    }
+                };
+                if let Some(outcome) = outcome {
+                    if let Some(candidate) = outcome.candidate
+                        && let Some(metadata) = session.title_metadata.as_mut()
+                    {
+                        let _ = metadata.generated(outcome.expected_revision, &candidate);
+                    }
+                    session.usage.record(outcome.spend);
+                }
                 ended(session, result, subagents, store, Ran::Turn).await
             })
         });
@@ -362,6 +432,7 @@ impl App {
             wakeup: self.wakeup.clone(),
             inbox: self.inbox.clone(),
             context_preview: self.context_tab.slot.clone(),
+            ..FrontEnd::default()
         }
     }
 

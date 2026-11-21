@@ -104,6 +104,12 @@ impl Session {
         self.last_turn_agent = agent;
         self.refresh_system_prompt();
         self.push_user(notices, text);
+        if !cancel.is_cancelled()
+            && let (Some(prompt), Some(jobs)) = (&front_end.title_prompt, &front_end.title_jobs)
+            && let Ok(Some(job)) = crate::title::Job::admit(self, prompt)
+        {
+            let _ = jobs.send(job);
+        }
         // The model resumes here, so a wakeup it scheduled earlier has done
         // its job; one it schedules during this turn comes after.
         if !self.subagent {
